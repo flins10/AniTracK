@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#090D16" />
+      <stop offset="50%" stop-color="#111827" />
+      <stop offset="100%" stop-color="#1E1B4B" />
+    </linearGradient>
+    <radialGradient id="halo" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#5EEAD4" stop-opacity="0.25" />
+      <stop offset="100%" stop-color="#5EEAD4" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="108" height="108" fill="url(#bg)" />
+
+  <!-- Outer Astral Ring -->
+  <circle cx="54" cy="54" r="42" fill="none" stroke="#5EEAD4" stroke-width="0.8" stroke-opacity="0.3" />
+  <circle cx="54" cy="54" r="46" fill="none" stroke="#A7F3D0" stroke-width="0.5" stroke-opacity="0.2" />
+
+  <!-- Luminous Halo -->
+  <circle cx="54" cy="52" r="26" fill="url(#halo)" />
+
+  <!-- Radiant Crescent Moon of the Frostmoon Scions -->
+  <path fill="#5EEAD4" fill-opacity="0.35" stroke="#5EEAD4" stroke-width="1.2" stroke-opacity="0.7"
+        d="M54,34 C64,34 72,42 72,53 C72,64 63,72 52,72 C43,72 36,66 33,58 C38,62 45,63 51,60 C57,57 61,50 60,43 C59,38 56,35 54,34 Z" />
+
+  <!-- Lauma's Sacred Deer Antlers: Left Main Beam & Tines -->
+  <path fill="none" stroke="#5EEAD4" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"
+        d="M50,46 C48,40 43,36 38,32 C34,29 30,28 27,29 M38,32 C38,27 36,24 33,22 M43,36 C44,30 43,26 40,24" />
+
+  <!-- Lauma's Sacred Deer Antlers: Right Main Beam & Tines -->
+  <path fill="none" stroke="#5EEAD4" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"
+        d="M58,46 C60,40 65,36 70,32 C74,29 78,28 81,29 M70,32 C70,27 72,24 75,22 M65,36 C64,30 65,26 68,24" />
+
+  <!-- Antler Frostmoon Pearls -->
+  <circle cx="27" cy="29" r="1.8" fill="#E0F2FE" />
+  <circle cx="33" cy="22" r="1.5" fill="#E0F2FE" />
+  <circle cx="40" cy="24" r="1.5" fill="#E0F2FE" />
+  <circle cx="81" cy="29" r="1.8" fill="#E0F2FE" />
+  <circle cx="75" cy="22" r="1.5" fill="#E0F2FE" />
+  <circle cx="68" cy="24" r="1.5" fill="#E0F2FE" />
+
+  <!-- Golden Charm on Left Antler (Lauma's Signature Ornament) -->
+  <polygon points="38,32 39,36 36,37" fill="#FCD34D" />
+  <circle cx="37" cy="39" r="1.6" fill="#F59E0B" />
+
+  <!-- Lauma's Violet-Blue Hair & Silhouette Base -->
+  <path fill="#818CF8"
+        d="M48,46 C44,48 40,54 39,62 C38,68 37,74 35,78 C38,77 42,74 44,70 C45,67 46,62 47,58 C49,54 52,50 54,49 C56,50 59,54 61,58 C62,62 63,67 64,70 C66,74 70,77 73,78 C71,74 70,68 69,62 C68,54 64,48 60,46 Z" />
+
+  <!-- Priestess Face & Gentle Head Profile Contour -->
+  <path fill="#FEF3C7"
+        d="M49,46 C49,43 51,41 54,41 C57,41 59,43 59,46 C59,51 57,55 54,57 C51,55 49,51 49,46 Z" />
+
+  <!-- Side-swept Bangs over Left Eye -->
+  <path fill="#6366F1"
+        d="M51,41 C53,44 52,48 48,51 C48,47 50,43 51,41 Z" />
+
+  <!-- Pointed Ears -->
+  <polygon points="47,46 42,44 46,48" fill="#FDE68A" />
+  <polygon points="61,46 66,44 62,48" fill="#FDE68A" />
+
+  <!-- Central Dendro Sacred Leaf Motif (Lauma's Element Emblem) -->
+  <path fill="#34D399"
+        d="M54,62 C50,65 49,70 52,74 C54,76 56,76 56,74 C59,71 58,65 54,62 Z" />
+  <line x1="54" y1="62" x2="54" y2="74" stroke="#059669" stroke-width="0.8" />
+
+  <!-- Celestial Diamond & Starlight Shimmers -->
+  <polygon points="54,23 55.5,26 58.5,27.5 55.5,29 54,32 52.5,29 49.5,27.5 52.5,26" fill="#FFFFFF" />
+  <polygon points="24,42 25,44 27,45 25,46 24,48 23,46 21,45 23,44" fill="#5EEAD4" />
+  <polygon points="84,42 85,44 87,45 85,46 84,48 83,46 81,45 83,44" fill="#5EEAD4" />
+</svg>

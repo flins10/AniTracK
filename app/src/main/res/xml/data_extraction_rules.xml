@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup>
+        <include domain="database" path="anitrack_anime.db" />
+        <include domain="database" path="anitrack_anime.db-shm" />
+        <include domain="database" path="anitrack_anime.db-wal" />
+        <include domain="sharedpref" path="anitrack_prefs.xml" />
+        <include domain="sharedpref" path="archive_playback_prefs.xml" />
+        <include domain="sharedpref" path="playback_prefs.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <include domain="database" path="anitrack_anime.db" />
+        <include domain="database" path="anitrack_anime.db-shm" />
+        <include domain="database" path="anitrack_anime.db-wal" />
+        <include domain="sharedpref" path="anitrack_prefs.xml" />
+        <include domain="sharedpref" path="archive_playback_prefs.xml" />
+        <include domain="sharedpref" path="playback_prefs.xml" />
+    </device-transfer>
+</data-extraction-rules>

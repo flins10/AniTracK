@@ -1,0 +1,6 @@
+{
+  "name": "AniTrAk",
+  "description": "Weekly schedule tracker for currently airing anime with watch tracking, AniList search, and notifications.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Preserve durable SQLite database (saved anime, watchlists, favorites, history, playback prefs) -->
+    <include domain="database" path="anitrack_anime.db" />
+    <include domain="database" path="anitrack_anime.db-shm" />
+    <include domain="database" path="anitrack_anime.db-wal" />
+
+    <!-- Preserve non-sensitive app and playback preferences (OAuth token files are not included) -->
+    <include domain="sharedpref" path="anitrack_prefs.xml" />
+    <include domain="sharedpref" path="archive_playback_prefs.xml" />
+    <include domain="sharedpref" path="playback_prefs.xml" />
+</full-backup-content>

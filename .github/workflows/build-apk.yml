@@ -1,0 +1,208 @@
+name: Build Signed Release APK
+
+on:
+  push:
+    branches: [ "**" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "**" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  JAVA_OPTS: "-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8 -Djava.awt.headless=true"
+  GRADLE_OPTS: "-Dorg.gradle.daemon=true -Dorg.gradle.parallel=true -Dorg.gradle.caching=true -Dorg.gradle.configureondemand=true -Djava.awt.headless=true"
+
+jobs:
+  build-release-apk:
+    name: Build & Verify Signed Release APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Ensure Android SDK Platform 36.1 & Build Tools
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          mkdir -p "$SDK_ROOT/licenses"
+          printf "\n24333f8a63b6825ea9c5514f83c2829b004d1fee\n8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e\n" >> "$SDK_ROOT/licenses/android-sdk-license"
+          printf "\n84831b9409646a918e30573bab4c9c91346d8abd\n" >> "$SDK_ROOT/licenses/android-sdk-preview-license"
+
+          SDKMANAGER=$(find "$SDK_ROOT/cmdline-tools" -name "sdkmanager" -type f 2>/dev/null | sort -V | tail -n 1)
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER=$(find "$SDK_ROOT" -name "sdkmanager" -type f 2>/dev/null | grep -v "/tools/bin/" | head -n 1)
+          fi
+          if [ -n "$SDKMANAGER" ]; then
+            yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+            "$SDKMANAGER" "platform-tools" || true
+            "$SDKMANAGER" "build-tools;36.0.0" || true
+            "$SDKMANAGER" "platforms;android-36" || true
+            "$SDKMANAGER" "platforms;android-36.1" || true
+          fi
+
+          if [ ! -f "$SDK_ROOT/platforms/android-36.1/android.jar" ]; then
+            FALLBACK_PLAT=$(find "$SDK_ROOT/platforms" -maxdepth 1 -mindepth 1 -type d -name "android-*" | sort -V | tail -n 1)
+            if [ -n "$FALLBACK_PLAT" ]; then
+              rm -rf "$SDK_ROOT/platforms/android-36.1"
+              cp -r "$FALLBACK_PLAT" "$SDK_ROOT/platforms/android-36.1"
+              cat > "$SDK_ROOT/platforms/android-36.1/source.properties" << 'EOF'
+          Pkg.Desc=Android SDK Platform 16
+          Pkg.UserSrc=false
+          Platform.Version=16
+          Platform.CodeName=
+          Pkg.Revision=1
+          AndroidVersion.ApiLevel=36.1
+          AndroidVersion.ExtensionLevel=20
+          AndroidVersion.IsBaseSdk=true
+          Layoutlib.Api=15
+          Layoutlib.Revision=1
+          Platform.MinToolsRev=22
+          EOF
+              sed -i 's/^[[:space:]]*//' "$SDK_ROOT/platforms/android-36.1/source.properties"
+            fi
+          fi
+
+          if [ ! -d "$SDK_ROOT/build-tools/36.0.0" ]; then
+            FALLBACK_BT=$(find "$SDK_ROOT/build-tools" -maxdepth 1 -mindepth 1 -type d | sort -V | tail -n 1)
+            if [ -n "$FALLBACK_BT" ]; then
+              cp -r "$FALLBACK_BT" "$SDK_ROOT/build-tools/36.0.0"
+              sed -i 's/^Pkg.Revision=.*/Pkg.Revision=36.0.0/' "$SDK_ROOT/build-tools/36.0.0/source.properties" || true
+            fi
+          fi
+
+      - name: Setup Gradle with Build Cache
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: wrapper
+          cache-read-only: false
+
+      - name: Prepare Persistent Release Signing Keystore
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          if [ -f "debug.keystore.base64" ]; then
+            base64 -d debug.keystore.base64 > debug.keystore
+          fi
+
+          if [ ! -f "debug.keystore" ] && [ -z "$RELEASE_KEYSTORE_BASE64" ]; then
+            FALLBACK_KEYSTORE_B64="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"
+            echo "$FALLBACK_KEYSTORE_B64" | base64 -d > debug.keystore
+          fi
+
+          if [ -n "$RELEASE_KEYSTORE_BASE64" ]; then
+            echo "Using persistent release keystore from GitHub Secrets..."
+            echo "$RELEASE_KEYSTORE_BASE64" | base64 -d > "${GITHUB_WORKSPACE}/my-upload-key.jks"
+            echo "KEYSTORE_PATH=${GITHUB_WORKSPACE}/my-upload-key.jks" >> "$GITHUB_ENV"
+            echo "STORE_PASSWORD=${RELEASE_STORE_PASSWORD}" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=${RELEASE_KEY_PASSWORD}" >> "$GITHUB_ENV"
+          elif [ -f "debug.keystore" ]; then
+            echo "Preserving existing persistent signing certificate into release upload alias for seamless in-place updates..."
+            rm -f "${GITHUB_WORKSPACE}/my-upload-key.jks"
+            keytool -importkeystore \
+              -srckeystore debug.keystore \
+              -destkeystore "${GITHUB_WORKSPACE}/my-upload-key.jks" \
+              -srcstorepass android \
+              -deststorepass android \
+              -srcalias androiddebugkey \
+              -destalias upload \
+              -srckeypass android \
+              -destkeypass android \
+              -noprompt
+            echo "KEYSTORE_PATH=${GITHUB_WORKSPACE}/my-upload-key.jks" >> "$GITHUB_ENV"
+            echo "STORE_PASSWORD=android" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=android" >> "$GITHUB_ENV"
+          else
+            echo "Generating release signing keystore..."
+            rm -f "${GITHUB_WORKSPACE}/my-upload-key.jks"
+            keytool -genkeypair -v \
+              -keystore "${GITHUB_WORKSPACE}/my-upload-key.jks" \
+              -alias upload \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass android \
+              -keypass android \
+              -dname "CN=Android Debug,O=Android,C=US"
+            echo "KEYSTORE_PATH=${GITHUB_WORKSPACE}/my-upload-key.jks" >> "$GITHUB_ENV"
+            echo "STORE_PASSWORD=android" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=android" >> "$GITHUB_ENV"
+          fi
+
+      - name: Compute Monotonic Release Version
+        run: |
+          RUN_NUM="${GITHUB_RUN_NUMBER:-0}"
+          VERSION_CODE=$(( 2 + RUN_NUM ))
+          VERSION_NAME="2.0.${RUN_NUM}"
+          echo "VERSION_CODE=${VERSION_CODE}" >> "$GITHUB_ENV"
+          echo "VERSION_NAME=${VERSION_NAME}" >> "$GITHUB_ENV"
+          echo "Computed Release Version: versionName=${VERSION_NAME}, versionCode=${VERSION_CODE}"
+
+      - name: Build Signed Release APK
+        run: |
+          if [ ! -f ".env" ]; then
+            cp .env.example .env 2>/dev/null || touch .env
+          fi
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            ./gradlew assembleRelease \
+              -PversionCode="${VERSION_CODE}" \
+              -PversionName="${VERSION_NAME}" \
+              --build-cache --parallel --stacktrace
+          else
+            gradle assembleRelease \
+              -PversionCode="${VERSION_CODE}" \
+              -PversionName="${VERSION_NAME}" \
+              --build-cache --parallel --stacktrace
+          fi
+
+      - name: Verify Signed Release APK Integrity & Certificate
+        run: |
+          APK_SOURCE="app/build/outputs/apk/release/app-release.apk"
+          if [ ! -f "$APK_SOURCE" ]; then
+            echo "ERROR: Expected signed release APK not found at $APK_SOURCE"
+            exit 1
+          fi
+
+          mkdir -p dist
+          ARTIFACT_FILENAME="AniTrAk-v${VERSION_NAME}-b${VERSION_CODE}-release.apk"
+          cp "$APK_SOURCE" "dist/${ARTIFACT_FILENAME}"
+          echo "ARTIFACT_FILENAME=${ARTIFACT_FILENAME}" >> "$GITHUB_ENV"
+          echo "ARTIFACT_PATH=dist/${ARTIFACT_FILENAME}" >> "$GITHUB_ENV"
+
+          APKSIGNER_BIN=$(find "${ANDROID_HOME}" -name "apksigner" | sort -V | tail -n 1)
+          if [ -n "$APKSIGNER_BIN" ]; then
+            echo "Verifying APK signature Schemes (v1/v2/v3) with apksigner..."
+            "$APKSIGNER_BIN" verify --verbose --print-certs "dist/${ARTIFACT_FILENAME}"
+          fi
+
+          AAPT2_BIN=$(find "${ANDROID_HOME}" -name "aapt2" | sort -V | tail -n 1)
+          if [ -n "$AAPT2_BIN" ]; then
+            echo "Verifying package identity and versionCode..."
+            "$AAPT2_BIN" dump badging "dist/${ARTIFACT_FILENAME}" | head -n 5
+          fi
+
+      - name: Upload Signed Release APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AniTrAk-v${{ env.VERSION_NAME }}-b${{ env.VERSION_CODE }}-release
+          path: ${{ env.ARTIFACT_PATH }}
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Publish Direct Download on Tag Push
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ARTIFACT_PATH }}
+          generate_release_notes: true
