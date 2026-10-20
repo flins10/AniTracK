@@ -30,6 +30,7 @@ import com.example.data.repository.AnimeRepository
 import com.example.data.repository.ArchiveAnimeMatchResult
 import com.example.data.repository.ArchiveCandidateMatch
 import com.example.data.repository.ArchivePlayableMedia
+import com.example.data.repository.AnimeSeasonInfo
 import com.example.data.repository.InternetArchiveRepository
 import com.example.data.repository.PlaybackRepository
 import com.example.data.repository.SubtitleRepository
@@ -149,6 +150,18 @@ class PlayerViewModel @JvmOverloads constructor(
 
     private val _currentEpisode = MutableStateFlow(1)
     val currentEpisode: StateFlow<Int> = _currentEpisode.asStateFlow()
+
+    private val _currentSeasonNumber = MutableStateFlow(1)
+    val currentSeasonNumber: StateFlow<Int> = _currentSeasonNumber.asStateFlow()
+
+    private val _availableSeasons = MutableStateFlow<List<AnimeSeasonInfo>>(emptyList())
+    val availableSeasons: StateFlow<List<AnimeSeasonInfo>> = _availableSeasons.asStateFlow()
+
+    fun setAvailableSeasons(seasons: List<AnimeSeasonInfo>) {
+        if (seasons.isNotEmpty()) {
+            _availableSeasons.value = seasons
+        }
+    }
 
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
@@ -312,6 +325,8 @@ class PlayerViewModel @JvmOverloads constructor(
         })
     }
 
+    private var hasAutoMarkedWatchedForCurrentEp = false
+
     private fun startProgressTracking() {
         progressTrackingJob?.cancel()
         progressTrackingJob = viewModelScope.launch(Dispatchers.Main) {
@@ -329,6 +344,16 @@ class PlayerViewModel @JvmOverloads constructor(
                     if (anime != null && pos > 5000L) {
                         playbackRepository.savePositionMs(anime.id, _currentEpisode.value, pos)
                     }
+
+                    // Automatically register watched episode if played for more than 5 minutes (300,000ms)
+                    if (anime != null && pos >= 300_000L && !hasAutoMarkedWatchedForCurrentEp) {
+                        hasAutoMarkedWatchedForCurrentEp = true
+                        viewModelScope.launch(Dispatchers.IO) {
+                            animeRepository.updateWatchedEpisodeCount(anime.id, _currentEpisode.value)
+                            _currentAnime.value = animeRepository.getAnimeByIdSync(anime.id)
+                                ?: anime.copy(watchedEpisodeCount = maxOf(anime.watchedEpisodeCount, _currentEpisode.value))
+                        }
+                    }
                 }
                 delay(300)
             }
@@ -338,13 +363,13 @@ class PlayerViewModel @JvmOverloads constructor(
     /**
      * Loads the target anime and searches for verified streams.
      */
-    fun loadEpisode(animeId: Int, episodeNumber: Int, fallbackAnime: AnimeEntity? = null) {
+    fun loadEpisode(animeId: Int, episodeNumber: Int, seasonNumber: Int? = null, fallbackAnime: AnimeEntity? = null) {
         val targetEp = episodeNumber.coerceAtLeast(1)
-        _currentEpisode.value = targetEp
         _playbackError.value = null
         _isBuffering.value = true
         activeExternalSubtitleId = null
         failedCandidateIds.clear()
+        hasAutoMarkedWatchedForCurrentEp = false
         _uiState.value = PlayerUiState.Loading("")
 
         viewModelScope.launch(Dispatchers.IO) {
@@ -361,7 +386,15 @@ class PlayerViewModel @JvmOverloads constructor(
                 }
                 _currentAnime.value = anime
 
-                when (val matchResult = archiveRepository.findMatchesForAnime(anime, targetEp)) {
+                val detectedSeason = seasonNumber
+                    ?: archiveRepository.matchService.extractSeasonNumber(listOfNotNull(anime.titleEnglish, anime.titleRomaji, anime.displayTitle))
+                    ?: _currentSeasonNumber.value
+                    ?: 1
+
+                _currentEpisode.value = targetEp
+                _currentSeasonNumber.value = detectedSeason
+
+                when (val matchResult = archiveRepository.findMatchesForAnime(anime, targetEp, detectedSeason)) {
                     is ArchiveAnimeMatchResult.Success -> {
                         _activeCandidates.value = matchResult.allCandidates
                         val best = matchResult.bestMatch
@@ -521,11 +554,17 @@ class PlayerViewModel @JvmOverloads constructor(
 
                 if (type == C.TRACK_TYPE_AUDIO) {
                     val channels = if (format.channelCount > 2) "${format.channelCount}ch" else "Stereo"
+                    val label = when (langCode?.lowercase(Locale.ROOT)) {
+                        "hi", "hin" -> "Hindi (हिन्दी Dub • $channels)"
+                        "en", "eng" -> "English (Dub • $channels)"
+                        "ja", "jpn" -> "Japanese (Original • $channels)"
+                        else -> "$langName ($channels)"
+                    }
                     newAudio.add(
                         PlayerAudioTrack(
                             id = "audio_${groupIndex}_$trackIndex",
                             languageCode = langCode,
-                            languageName = "$langName ($channels)",
+                            languageName = label,
                             isSelected = isSelected,
                             groupIndex = groupIndex,
                             trackIndex = trackIndex
@@ -546,6 +585,39 @@ class PlayerViewModel @JvmOverloads constructor(
                     )
                 }
             }
+        }
+
+        if (newAudio.isEmpty()) {
+            newAudio.add(
+                PlayerAudioTrack(
+                    id = "audio_default_ja",
+                    languageCode = "ja",
+                    languageName = "Japanese (Original • Sub)",
+                    isSelected = true,
+                    groupIndex = 0,
+                    trackIndex = 0
+                )
+            )
+            newAudio.add(
+                PlayerAudioTrack(
+                    id = "audio_default_en",
+                    languageCode = "en",
+                    languageName = "English (Dub)",
+                    isSelected = false,
+                    groupIndex = 0,
+                    trackIndex = 1
+                )
+            )
+            newAudio.add(
+                PlayerAudioTrack(
+                    id = "audio_default_hi",
+                    languageCode = "hi",
+                    languageName = "Hindi (हिन्दी Dub)",
+                    isSelected = false,
+                    groupIndex = 0,
+                    trackIndex = 2
+                )
+            )
         }
 
         _audioTracks.value = newAudio
@@ -998,21 +1070,57 @@ class PlayerViewModel @JvmOverloads constructor(
         }
     }
 
+    fun selectSeason(season: AnimeSeasonInfo) {
+        _currentSeasonNumber.value = season.seasonNumber
+        _currentEpisode.value = 1
+        lastLoadedMediaUri = null
+        val anime = _currentAnime.value
+        loadEpisode(season.animeId, 1, season.seasonNumber, anime)
+    }
+
     fun nextEpisode(totalEpisodes: Int) {
         val ep = _currentEpisode.value
-        val nextEp = ep + 1
+        val sNum = _currentSeasonNumber.value
         val anime = _currentAnime.value ?: return
-        lastLoadedMediaUri = null
-        loadEpisode(anime.id, nextEp, anime)
+
+        if (ep < totalEpisodes) {
+            val nextEp = ep + 1
+            lastLoadedMediaUri = null
+            loadEpisode(anime.id, nextEp, sNum, anime)
+        } else {
+            val seasons = _availableSeasons.value
+            val currentSeasonIdx = seasons.indexOfFirst { it.seasonNumber == sNum || it.animeId == anime.id }
+            if (currentSeasonIdx != -1 && currentSeasonIdx + 1 < seasons.size) {
+                val nextSeason = seasons[currentSeasonIdx + 1]
+                selectSeason(nextSeason)
+            } else {
+                val nextEp = ep + 1
+                lastLoadedMediaUri = null
+                loadEpisode(anime.id, nextEp, sNum, anime)
+            }
+        }
     }
 
     fun previousEpisode() {
         val ep = _currentEpisode.value
+        val sNum = _currentSeasonNumber.value
+        val anime = _currentAnime.value ?: return
+
         if (ep > 1) {
             val prevEp = ep - 1
-            val anime = _currentAnime.value ?: return
             lastLoadedMediaUri = null
-            loadEpisode(anime.id, prevEp, anime)
+            loadEpisode(anime.id, prevEp, sNum, anime)
+        } else {
+            val seasons = _availableSeasons.value
+            val currentSeasonIdx = seasons.indexOfFirst { it.seasonNumber == sNum || it.animeId == anime.id }
+            if (currentSeasonIdx > 0) {
+                val prevSeason = seasons[currentSeasonIdx - 1]
+                val prevEpCount = prevSeason.totalEpisodes ?: 12
+                _currentSeasonNumber.value = prevSeason.seasonNumber
+                _currentEpisode.value = prevEpCount
+                lastLoadedMediaUri = null
+                loadEpisode(prevSeason.animeId, prevEpCount, prevSeason.seasonNumber, anime)
+            }
         }
     }
 

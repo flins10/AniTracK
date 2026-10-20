@@ -17,6 +17,7 @@ import com.example.data.local.PlaybackPreferenceEntity
 import com.example.data.local.SavedAnimeDao
 import com.example.data.local.SavedAnimeEntity
 import com.example.data.local.toSavedAnimeEntity
+import com.example.data.local.toAnimeEntity
 import com.example.data.remote.AniListApiService
 import com.example.data.remote.AniListMedia
 import com.example.data.remote.AniListQueries

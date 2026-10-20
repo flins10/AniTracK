@@ -39,7 +39,10 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Remove
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.VideoLibrary
@@ -106,7 +109,7 @@ fun AnimeDetailScreen(
     animeId: Int,
     viewModel: AnimeViewModel,
     onBack: () -> Unit,
-    onOpenPlayer: (animeId: Int, episodeNumber: Int) -> Unit = { _, _ -> },
+    onOpenPlayer: (animeId: Int, episodeNumber: Int, seasonNumber: Int) -> Unit = { _, _, _ -> },
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -136,6 +139,8 @@ fun AnimeDetailScreen(
     val isArchiveSearching by viewModel.isArchiveSearching.collectAsState()
     val fullDetails by viewModel.selectedAnimeFullDetails.collectAsState()
     val isResolvingArchive by viewModel.isResolvingArchiveMedia.collectAsState()
+    val activeSeasons by viewModel.activeDetailSeasons.collectAsState()
+    val selectedSeason by viewModel.selectedDetailSeason.collectAsState()
 
     var activeYouTubeVideo by remember { mutableStateOf<Pair<String, String>?>(null) }
     var activeArchiveMedia by remember { mutableStateOf<ArchivePlayableMedia?>(null) }
@@ -147,6 +152,8 @@ fun AnimeDetailScreen(
     var selectedEpisodeToWatch by remember(anime.id, anime.watchedEpisodeCount) { mutableStateOf(defaultEpToWatch) }
     var showCustomEpisodeSelectDialog by remember { mutableStateOf(false) }
     var showCustomWatchedInputDialog by remember { mutableStateOf(false) }
+    var episodeSearchQuery by remember { mutableStateOf("") }
+    var selectedRangeBatchIndex by remember { mutableIntStateOf(0) }
 
     val resolvedTitle = remember(anime, titlePreference) {
         anime.displayTitle
@@ -359,6 +366,68 @@ fun AnimeDetailScreen(
                         }
                     }
 
+                    if (activeSeasons.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = "AVAILABLE SEASONS",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.sp
+                            ),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            items(activeSeasons) { seasonItem ->
+                                val isSelectedSeason = (selectedSeason?.seasonNumber == seasonItem.seasonNumber) ||
+                                        (selectedSeason?.animeId == seasonItem.animeId)
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = if (isSelectedSeason) Color(0xFF0284C7) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                                    border = androidx.compose.foundation.BorderStroke(
+                                        1.dp,
+                                        if (isSelectedSeason) Color(0xFF38BDF8) else MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
+                                    ),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .clickable {
+                                            viewModel.selectDetailSeason(seasonItem)
+                                            if (seasonItem.animeId != anime.id) {
+                                                viewModel.selectAnimeDetail(seasonItem.animeId)
+                                            }
+                                            selectedEpisodeToWatch = 1
+                                        }
+                                        .testTag("season_chip_${seasonItem.seasonNumber}")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = seasonItem.title.ifBlank { "Season ${seasonItem.seasonNumber}" },
+                                            style = MaterialTheme.typography.labelMedium.copy(
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (isSelectedSeason) Color.White else MaterialTheme.colorScheme.onSurface
+                                            )
+                                        )
+                                        if (seasonItem.totalEpisodes != null && seasonItem.totalEpisodes > 0) {
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = "(${seasonItem.totalEpisodes} Ep)",
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    color = if (isSelectedSeason) Color.White.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     Spacer(modifier = Modifier.height(16.dp))
 
                     // Prominent Watch Button & Custom Episode Selection
@@ -368,7 +437,7 @@ fun AnimeDetailScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Button(
-                            onClick = { onOpenPlayer(anime.id, selectedEpisodeToWatch) },
+                            onClick = { onOpenPlayer(anime.id, selectedEpisodeToWatch, selectedSeason?.seasonNumber ?: 1) },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
                             shape = RoundedCornerShape(20.dp),
                             modifier = Modifier
@@ -410,62 +479,179 @@ fun AnimeDetailScreen(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
 
-                    // Quick Episode Selection Pills Row
-                    val episodeChipMax = (anime.totalEpisodes ?: maxOf(anime.getAiredEpisodeCount(), selectedEpisodeToWatch, 12)).coerceIn(1, 100)
-                    LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
+                    // 100-EPISODE CONTAINER BOX & RANGE SELECTOR TABS
+                    val totalAnimeEpisodes = (selectedSeason?.totalEpisodes ?: anime.totalEpisodes ?: maxOf(anime.getAiredEpisodeCount(), selectedEpisodeToWatch, 12)).coerceAtLeast(1)
+                    val batchSize = 100
+                    val totalBatches = ((totalAnimeEpisodes + batchSize - 1) / batchSize).coerceAtLeast(1)
+
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        shape = RoundedCornerShape(24.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f), RoundedCornerShape(24.dp))
                     ) {
-                        items((1..episodeChipMax).toList()) { epNum ->
-                            val isSelectedEp = epNum == selectedEpisodeToWatch
-                            val isAlreadyWatched = epNum <= anime.watchedEpisodeCount
-                            Surface(
-                                shape = RoundedCornerShape(14.dp),
-                                color = when {
-                                    isSelectedEp -> Color(0xFF0284C7)
-                                    isAlreadyWatched -> Color(0xFF00B894).copy(alpha = 0.2f)
-                                    else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
-                                },
-                                border = androidx.compose.foundation.BorderStroke(
-                                    1.dp,
-                                    if (isSelectedEp) Color(0xFF38BDF8) else MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
-                                ),
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .clickable {
-                                        selectedEpisodeToWatch = epNum
-                                    }
-                                    .testTag("episode_chip_$epNum")
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            // Header Row
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = "Ep $epNum",
-                                    style = MaterialTheme.typography.labelMedium.copy(
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (isSelectedEp) Color.White else MaterialTheme.colorScheme.onSurface
+                                    text = "SELECT EPISODE",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontWeight = FontWeight.ExtraBold,
+                                        letterSpacing = 1.sp
                                     ),
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                                    color = Color(0xFF38BDF8)
                                 )
+                                Surface(
+                                    color = Color(0xFF0284C7).copy(alpha = 0.2f),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Text(
+                                        text = "$totalAnimeEpisodes Ep Total",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8)),
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                    )
+                                }
                             }
-                        }
-                        item {
-                            Surface(
-                                shape = RoundedCornerShape(14.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant,
-                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.5f)),
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .clickable { showCustomEpisodeSelectDialog = true }
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            // 100-Episode Range Selector Tabs (1-100, 101-200, 201-300...)
+                            Text(
+                                text = "EPISODE RANGE SELECTOR",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            LazyRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text(
-                                    text = "Custom Ep...",
-                                    style = MaterialTheme.typography.labelMedium.copy(
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color(0xFF38BDF8)
-                                    ),
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                                )
+                                items(totalBatches) { batchIdx ->
+                                    val startEp = (batchIdx * batchSize) + 1
+                                    val rawEnd = (batchIdx + 1) * batchSize
+                                    val endEp = if (rawEnd < totalAnimeEpisodes) rawEnd else totalAnimeEpisodes
+                                    val isSelectedBatch = (batchIdx == selectedRangeBatchIndex)
+
+                                    Surface(
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = if (isSelectedBatch) Color(0xFF0284C7) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                                        border = androidx.compose.foundation.BorderStroke(
+                                            1.dp,
+                                            if (isSelectedBatch) Color(0xFF38BDF8) else MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
+                                        ),
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .clickable {
+                                                selectedRangeBatchIndex = batchIdx
+                                            }
+                                            .testTag("batch_range_$batchIdx")
+                                    ) {
+                                        Text(
+                                            text = "$startEp - $endEp",
+                                            style = MaterialTheme.typography.labelMedium.copy(
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (isSelectedBatch) Color.White else MaterialTheme.colorScheme.onSurface
+                                            ),
+                                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+                                        )
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(14.dp))
+
+                            // 100-EPISODE CONTAINER BOX
+                            val activeStartEp = (selectedRangeBatchIndex * batchSize) + 1
+                            val activeRawEnd = (selectedRangeBatchIndex + 1) * batchSize
+                            val activeEndEp = if (activeRawEnd < totalAnimeEpisodes) activeRawEnd else totalAnimeEpisodes
+                            val current100Episodes = (activeStartEp..activeEndEp).toList()
+
+                            Surface(
+                                shape = RoundedCornerShape(18.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.25f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(14.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "EPISODES $activeStartEp TO $activeEndEp",
+                                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.ExtraBold),
+                                            color = Color.White
+                                        )
+                                        val watchedCountInRange = current100Episodes.count { it <= anime.watchedEpisodeCount }
+                                        Text(
+                                            text = "Watched $watchedCountInRange / ${current100Episodes.size}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = Color(0xFF00B894)
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.height(10.dp))
+
+                                    // Episode Chips Row inside 100-Episode Box
+                                    LazyRow(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        items(current100Episodes) { epNum ->
+                                            val isSelectedEp = epNum == selectedEpisodeToWatch
+                                            val isAlreadyWatched = epNum <= anime.watchedEpisodeCount
+                                            Surface(
+                                                shape = RoundedCornerShape(14.dp),
+                                                color = when {
+                                                    isSelectedEp -> Color(0xFF0284C7)
+                                                    isAlreadyWatched -> Color(0xFF00B894).copy(alpha = 0.25f)
+                                                    else -> MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)
+                                                },
+                                                border = androidx.compose.foundation.BorderStroke(
+                                                    1.dp,
+                                                    if (isSelectedEp) Color(0xFF38BDF8) else MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
+                                                ),
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(14.dp))
+                                                    .clickable {
+                                                        selectedEpisodeToWatch = epNum
+                                                    }
+                                                    .testTag("episode_box_chip_$epNum")
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Text(
+                                                        text = "Ep $epNum",
+                                                        style = MaterialTheme.typography.labelMedium.copy(
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = if (isSelectedEp) Color.White else MaterialTheme.colorScheme.onSurface
+                                                        )
+                                                    )
+                                                    if (isAlreadyWatched) {
+                                                        Spacer(modifier = Modifier.width(4.dp))
+                                                        Icon(
+                                                            imageVector = Icons.Default.CheckCircle,
+                                                            contentDescription = "Watched",
+                                                            tint = Color(0xFF00B894),
+                                                            modifier = Modifier.size(14.dp)
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -954,7 +1140,7 @@ fun AnimeDetailScreen(
 
                             Spacer(modifier = Modifier.height(12.dp))
                             Button(
-                                onClick = { onOpenPlayer(anime.id, selectedEpisodeToWatch) },
+                                onClick = { onOpenPlayer(anime.id, selectedEpisodeToWatch, selectedSeason?.seasonNumber ?: 1) },
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
                                 shape = RoundedCornerShape(16.dp),
                                 modifier = Modifier.fillMaxWidth()
@@ -1938,48 +2124,118 @@ fun AnimeDetailScreen(
         }
 
         if (showCustomEpisodeSelectDialog) {
-            var customEpInput by remember { mutableStateOf(selectedEpisodeToWatch.toString()) }
+            val totalEpDialog = (selectedSeason?.totalEpisodes ?: anime.totalEpisodes ?: maxOf(anime.getAiredEpisodeCount(), selectedEpisodeToWatch, 12)).coerceAtLeast(1)
+            val batchSizeDialog = 100
+            val totalBatchesDialog = ((totalEpDialog + batchSizeDialog - 1) / batchSizeDialog).coerceAtLeast(1)
+            var dialogBatchIdx by remember { mutableIntStateOf(selectedRangeBatchIndex.coerceIn(0, totalBatchesDialog - 1)) }
+            var tempSelectedEp by remember { mutableIntStateOf(selectedEpisodeToWatch) }
+
             AlertDialog(
                 onDismissRequest = { showCustomEpisodeSelectDialog = false },
                 shape = RoundedCornerShape(24.dp),
                 containerColor = Color(0xFF090E1A),
                 title = {
-                    Text(
-                        text = "Select Episode",
-                        style = TextStyle(fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Episode Selector",
+                            style = TextStyle(fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                        )
+                        Text(
+                            text = "Selected: Ep $tempSelectedEp",
+                            style = TextStyle(fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
+                        )
+                    }
                 },
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text(
-                            text = "Enter custom episode number to watch:",
+                            text = "Select Episode Range (100 episodes per box):",
                             color = Color(0xFF94A3B8),
-                            fontSize = 13.sp
+                            fontSize = 12.sp
                         )
-                        OutlinedTextField(
-                            value = customEpInput,
-                            onValueChange = { customEpInput = it.filter { ch -> ch.isDigit() } },
-                            singleLine = true,
-                            placeholder = { Text("Episode number (e.g. 1, 12, 50)", color = Color(0xFF64748B)) },
-                            shape = RoundedCornerShape(12.dp),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color.White,
-                                focusedBorderColor = Color(0xFF38BDF8),
-                                unfocusedBorderColor = Color(0xFF334155)
-                            ),
+
+                        // 100-Episode Range Selector Tabs
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
                             modifier = Modifier.fillMaxWidth()
-                        )
+                        ) {
+                            items(totalBatchesDialog) { bIdx ->
+                                val sEp = (bIdx * batchSizeDialog) + 1
+                                val rEnd = (bIdx + 1) * batchSizeDialog
+                                val eEp = if (rEnd < totalEpDialog) rEnd else totalEpDialog
+                                val isSel = (bIdx == dialogBatchIdx)
+
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = if (isSel) Color(0xFF0284C7) else Color(0xFF1E293B),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, if (isSel) Color(0xFF38BDF8) else Color.White.copy(alpha = 0.1f)),
+                                    modifier = Modifier.clickable { dialogBatchIdx = bIdx }
+                                ) {
+                                    Text(
+                                        text = "$sEp - $eEp",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                        color = if (isSel) Color.White else Color(0xFF94A3B8),
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        // 100-Episode Box Container
+                        val startDialogEp = (dialogBatchIdx * batchSizeDialog) + 1
+                        val rawEndDialog = (dialogBatchIdx + 1) * batchSizeDialog
+                        val endDialogEp = if (rawEndDialog < totalEpDialog) rawEndDialog else totalEpDialog
+                        val dialogEpisodesList = (startDialogEp..endDialogEp).toList()
+
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = Color(0xFF131C2E),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.3f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(160.dp)
+                        ) {
+                            LazyRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(10.dp)
+                            ) {
+                                items(dialogEpisodesList) { epNum ->
+                                    val isCur = (epNum == tempSelectedEp)
+                                    val isW = epNum <= anime.watchedEpisodeCount
+                                    Surface(
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = when {
+                                            isCur -> Color(0xFF0284C7)
+                                            isW -> Color(0xFF00B894).copy(alpha = 0.25f)
+                                            else -> Color(0xFF1E293B)
+                                        },
+                                        border = androidx.compose.foundation.BorderStroke(1.dp, if (isCur) Color(0xFF38BDF8) else Color.White.copy(alpha = 0.1f)),
+                                        modifier = Modifier.clickable { tempSelectedEp = epNum }
+                                    ) {
+                                        Text(
+                                            text = "Ep $epNum",
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                            color = if (isCur) Color.White else Color(0xFFCBD5E1),
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 },
                 confirmButton = {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(
                             onClick = {
-                                val ep = customEpInput.toIntOrNull()?.coerceAtLeast(1)
-                                if (ep != null) {
-                                    selectedEpisodeToWatch = ep
-                                }
+                                selectedEpisodeToWatch = tempSelectedEp
+                                selectedRangeBatchIndex = dialogBatchIdx
                                 showCustomEpisodeSelectDialog = false
                             }
                         ) {
@@ -1987,10 +2243,10 @@ fun AnimeDetailScreen(
                         }
                         Button(
                             onClick = {
-                                val ep = customEpInput.toIntOrNull()?.coerceAtLeast(1) ?: selectedEpisodeToWatch
-                                selectedEpisodeToWatch = ep
+                                selectedEpisodeToWatch = tempSelectedEp
+                                selectedRangeBatchIndex = dialogBatchIdx
                                 showCustomEpisodeSelectDialog = false
-                                onOpenPlayer(anime.id, ep)
+                                onOpenPlayer(anime.id, tempSelectedEp, selectedSeason?.seasonNumber ?: 1)
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
                         ) {

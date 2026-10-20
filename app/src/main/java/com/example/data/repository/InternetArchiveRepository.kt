@@ -278,7 +278,8 @@ class InternetArchiveRepository(
      */
     suspend fun findMatchesForAnime(
         anime: AnimeEntity,
-        episodeNumber: Int? = null
+        episodeNumber: Int? = null,
+        seasonNumber: Int? = null
     ): ArchiveAnimeMatchResult = withContext(Dispatchers.IO) {
         val titlesToTry = matchService.extractSearchTitles(anime)
 
@@ -289,6 +290,14 @@ class InternetArchiveRepository(
                 requestedEpisode = episodeNumber
             )
         }
+
+        val extractedSeasonFromTitle = matchService.extractSeasonNumber(titlesToTry)
+        val activeSeason = if (seasonNumber != null && seasonNumber > 1) {
+            seasonNumber
+        } else {
+            extractedSeasonFromTitle ?: seasonNumber ?: 1
+        }
+        val seasonPadded = String.format(Locale.ROOT, "%02d", activeSeason)
 
         val candidateDocs = LinkedHashMap<String, ArchiveDocItem>()
 
@@ -313,13 +322,23 @@ class InternetArchiveRepository(
             val dashSlug = clean.lowercase(Locale.ROOT).replace(" ", "-")
 
             if (episodeNumber != null && episodeNumber > 0) {
-                // Tier 1: Exact Episode Queries (padded and unpadded, S01E01, Episode X, Ep X)
+                // Tier 1: Exact Episode & Season Queries
                 searchQueries.add(
-                    "(title:(\"$clean\") OR identifier:($slug* OR $dashSlug*)) AND (title:(\"Episode $episodeNumber\" OR \"Episode $epPadded\" OR \"Ep $episodeNumber\" OR \"Ep $epPadded\" OR \"E$epPadded\" OR \"S01E$epPadded\" OR \"$episodeNumber\")) AND (mediatype:(movies) OR mediatype:(animation)) AND $SEARCH_EXCLUSION_CLAUSE"
+                    "(title:(\"$clean\") OR identifier:($slug* OR $dashSlug*)) AND (title:(\"S${seasonPadded}E$epPadded\" OR \"S${activeSeason}E$epPadded\" OR \"Season $activeSeason Episode $episodeNumber\" OR \"Season $activeSeason Ep $episodeNumber\" OR \"Season $seasonPadded Ep $epPadded\" OR \"Episode $episodeNumber\" OR \"Episode $epPadded\" OR \"Ep $episodeNumber\" OR \"Ep $epPadded\" OR \"E$epPadded\")) AND (mediatype:(movies) OR mediatype:(animation)) AND $SEARCH_EXCLUSION_CLAUSE"
                 )
+                if (activeSeason > 1) {
+                    searchQueries.add(
+                        "(title:(\"$clean Season $activeSeason\") OR title:(\"$clean ${activeSeason}nd Season\") OR title:(\"$clean ${activeSeason}rd Season\") OR title:(\"$clean ${activeSeason}th Season\")) AND (title:(\"Episode $episodeNumber\" OR \"Ep $episodeNumber\" OR \"E$epPadded\" OR \"$epPadded\")) AND (mediatype:(movies) OR mediatype:(animation)) AND $SEARCH_EXCLUSION_CLAUSE"
+                    )
+                }
             }
 
-            // Tier 2: Full Series / Complete Batch Archive Collections (where individual episodes are inside the item's files list)
+            // Tier 2: Full Series / Complete Batch Archive Collections
+            if (activeSeason > 1) {
+                searchQueries.add(
+                    "(title:(\"$clean Season $activeSeason\") OR title:(\"$clean ${activeSeason}nd Season\") OR title:(\"$clean ${activeSeason}rd Season\") OR title:(\"$clean ${activeSeason}th Season\") OR identifier:(${slug}_season_${activeSeason}* OR ${slug}_s${activeSeason}*)) AND (mediatype:(movies) OR mediatype:(animation)) AND $SEARCH_EXCLUSION_CLAUSE"
+                )
+            }
             searchQueries.add(
                 "(title:(\"$clean\") OR identifier:($slug* OR $dashSlug*) OR subject:(\"$clean\")) AND (mediatype:(movies) OR mediatype:(animation)) AND $SEARCH_EXCLUSION_CLAUSE"
             )
@@ -352,7 +371,7 @@ class InternetArchiveRepository(
 
         if (candidateDocs.isEmpty()) {
             return@withContext ArchiveAnimeMatchResult.NoMatch(
-                reason = "No matching video found for ${anime.displayTitle}${if (episodeNumber != null) " Episode $episodeNumber" else ""}.",
+                reason = "No matching video found for ${anime.displayTitle}${if (episodeNumber != null) " Season $activeSeason Episode $episodeNumber" else ""}.",
                 queriedTitles = titlesToTry,
                 requestedEpisode = episodeNumber
             )
@@ -395,7 +414,8 @@ class InternetArchiveRepository(
                         doc = doc,
                         metadata = metadata,
                         anime = anime,
-                        requestedEpisode = episodeNumber
+                        requestedEpisode = episodeNumber,
+                        seasonNumber = activeSeason
                     )
                 }
             }.awaitAll().filterNotNull()

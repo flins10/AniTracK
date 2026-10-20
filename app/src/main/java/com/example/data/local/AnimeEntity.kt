@@ -208,4 +208,9 @@ data class AnimeEntity(
         }
         return baseTime + (weeksPassed * 604800L)
     }
+
+    val hasActiveUserState: Boolean
+        get() = inWatchlist || isWishlist || isFavorite || isPinned ||
+                watchedEpisodeCount > 0 || !userStatus.isNullOrBlank() ||
+                !userNotes.isNullOrBlank() || !archiveIdentifier.isNullOrBlank()
 }

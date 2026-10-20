@@ -83,7 +83,8 @@ class VideoMatchService {
         doc: ArchiveDocItem,
         metadata: ArchiveMetadataResponse,
         anime: AnimeEntity,
-        requestedEpisode: Int?
+        requestedEpisode: Int?,
+        seasonNumber: Int? = null
     ): ArchiveCandidateMatch? {
         val targetTitles = extractSearchTitles(anime)
         val docTitle = doc.title?.takeIf { it.isNotBlank() }
@@ -95,7 +96,6 @@ class VideoMatchService {
         val identifier = doc.identifier
 
         // 1. Reject reaction videos, live action, stage plays, dramas, AMVs, trailers, reviews, etc.
-        // Inspect title, subject, description, creator, and identifier.
         if (containsExcludedKeywords(docTitle, docSubject, identifier, docDesc, docCreator)) {
             return null
         }
@@ -126,8 +126,8 @@ class VideoMatchService {
             return null
         }
 
-        // 3. Check season alignment if the target anime specifies a season > 1
-        val targetSeason = extractSeasonNumber(targetTitles)
+        // 3. Check season alignment if the target anime specifies a season
+        val targetSeason = seasonNumber ?: extractSeasonNumber(targetTitles)
         if (targetSeason != null && targetSeason > 1) {
             val docSeason = extractSeasonNumber(listOf(docTitle, identifier))
             if (docSeason != null && docSeason != targetSeason) {
@@ -135,7 +135,7 @@ class VideoMatchService {
             }
         }
 
-        // 4. Strictly resolve the exact file for the requested episode
+        // 4. Strictly resolve the exact file for the requested episode and season
         val bestFile: ArchiveFileItem
         val detectedEp: Int?
         val isEpisodeSpecific: Boolean
@@ -147,7 +147,8 @@ class VideoMatchService {
                 identifier = identifier,
                 requestedEpisode = requestedEpisode,
                 targetTitles = targetTitles,
-                itemTitleScore = itemTitleScore
+                itemTitleScore = itemTitleScore,
+                seasonNumber = targetSeason
             ) ?: return null
 
             bestFile = exactEpisodeFile
@@ -428,12 +429,25 @@ class VideoMatchService {
         identifier: String,
         requestedEpisode: Int,
         targetTitles: List<String>,
-        itemTitleScore: Float = 1.0f
+        itemTitleScore: Float = 1.0f,
+        seasonNumber: Int? = null
     ): ArchiveFileItem? {
         if (files.isEmpty()) return null
 
+        val targetSeason = seasonNumber ?: extractSeasonNumber(targetTitles)
+        var candidateFiles = files
+        if (targetSeason != null) {
+            val seasonMatched = files.filter { file ->
+                val fSeason = detectSeasonNumber(file.name) ?: detectSeasonNumber(file.title.orEmpty())
+                fSeason == null || fSeason == targetSeason
+            }
+            if (seasonMatched.isNotEmpty()) {
+                candidateFiles = seasonMatched
+            }
+        }
+
         // 1. Check files whose filename or file title explicitly contains the requested episode number
-        val matchingFiles = files.filter { file ->
+        val matchingFiles = candidateFiles.filter { file ->
             val fileEp = detectEpisodeNumber(file.name) ?: detectEpisodeNumber(file.title.orEmpty())
             fileEp == requestedEpisode
         }
@@ -470,7 +484,7 @@ class VideoMatchService {
         // have conflicting episode numbers:
         val itemLevelEp = detectEpisodeNumber(docTitle) ?: detectEpisodeNumber(identifier)
         if (itemLevelEp == requestedEpisode && itemTitleScore >= 0.75f) {
-            val nonConflictingFiles = files.filter { file ->
+            val nonConflictingFiles = candidateFiles.filter { file ->
                 val fEp = detectEpisodeNumber(file.name)
                 fEp == null || fEp == requestedEpisode
             }
@@ -622,15 +636,78 @@ class VideoMatchService {
         return null
     }
 
-    private fun extractSeasonNumber(titles: List<String>): Int? {
+    fun detectSeasonNumber(filename: String): Int? {
+        val lower = filename.lowercase(Locale.ROOT)
+        val sEpMatch = Regex("""(?i)\b(?:s|season)\s*0*(\d{1,2})\s*(?:e|ep|episode|\x20|-)\s*0*(\d{1,3})\b""").find(lower)
+        if (sEpMatch != null) {
+            return sEpMatch.groupValues[1].toIntOrNull()
+        }
+        val xMatch = Regex("""\b0*(\d{1,2})x0*(\d{1,3})\b""").find(lower)
+        if (xMatch != null) {
+            return xMatch.groupValues[1].toIntOrNull()
+        }
+        val seasonOnlyMatch = Regex("""(?i)\b(?:season|s)\s*0*(\d{1,2})\b""").find(lower)
+        if (seasonOnlyMatch != null) {
+            return seasonOnlyMatch.groupValues[1].toIntOrNull()
+        }
+        val ordMatch = Regex("""(?i)\b(\d{1,2})(?:nd|rd|th|st)\s+(?:season|cour|part)\b""").find(lower)
+        if (ordMatch != null) {
+            return ordMatch.groupValues[1].toIntOrNull()
+        }
+        val partMatch = Regex("""(?i)\b(?:part|cour)\s*0*(\d{1,2})\b""").find(lower)
+        if (partMatch != null) {
+            return partMatch.groupValues[1].toIntOrNull()
+        }
+        val romanMatch = Regex("""(?i)\b(?:season|s|part)\s*(ii|iii|iv|v|vi|vii|viii|ix|x)\b""").find(lower)
+        if (romanMatch != null) {
+            return when (romanMatch.groupValues[1].lowercase(Locale.ROOT)) {
+                "ii" -> 2
+                "iii" -> 3
+                "iv" -> 4
+                "v" -> 5
+                "vi" -> 6
+                "vii" -> 7
+                "viii" -> 8
+                "ix" -> 9
+                "x" -> 10
+                else -> null
+            }
+        }
+        return null
+    }
+
+    fun extractSeasonNumber(titles: List<String>): Int? {
         for (title in titles) {
             val sMatch = Regex("""(?i)\b(?:season|s)\s*0*(\d{1,2})\b""").find(title)
             if (sMatch != null) {
-                return sMatch.groupValues[1].toIntOrNull()
+                val num = sMatch.groupValues[1].toIntOrNull()
+                if (num != null && num in 1..20) return num
             }
-            val ordMatch = Regex("""(?i)\b(\d{1,2})(?:nd|rd|th)\s+season\b""").find(title)
+            val ordMatch = Regex("""(?i)\b(\d{1,2})(?:nd|rd|th|st)\s+(?:season|cour|part)\b""").find(title)
             if (ordMatch != null) {
-                return ordMatch.groupValues[1].toIntOrNull()
+                val num = ordMatch.groupValues[1].toIntOrNull()
+                if (num != null && num in 1..20) return num
+            }
+            val partMatch = Regex("""(?i)\b(?:part|cour)\s*0*(\d{1,2})\b""").find(title)
+            if (partMatch != null) {
+                val num = partMatch.groupValues[1].toIntOrNull()
+                if (num != null && num in 1..20) return num
+            }
+            val romanMatch = Regex("""(?i)\b(?:season|s|part)\s*(ii|iii|iv|v|vi|vii|viii|ix|x)\b""").find(title)
+            if (romanMatch != null) {
+                val num = when (romanMatch.groupValues[1].lowercase(Locale.ROOT)) {
+                    "ii" -> 2
+                    "iii" -> 3
+                    "iv" -> 4
+                    "v" -> 5
+                    "vi" -> 6
+                    "vii" -> 7
+                    "viii" -> 8
+                    "ix" -> 9
+                    "x" -> 10
+                    else -> null
+                }
+                if (num != null) return num
             }
         }
         return null

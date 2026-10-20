@@ -182,6 +182,7 @@ fun Context.findActivity(): Activity? {
 fun StreamingPlayerScreen(
     animeId: Int,
     initialEpisode: Int,
+    initialSeason: Int = 1,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     playerViewModel: PlayerViewModel = androidx.lifecycle.viewmodel.compose.viewModel(),
@@ -197,6 +198,8 @@ fun StreamingPlayerScreen(
     val uiState by playerViewModel.uiState.collectAsState()
     val anime by playerViewModel.currentAnime.collectAsState()
     val currentEpisode by playerViewModel.currentEpisode.collectAsState()
+    val currentSeasonNumber by playerViewModel.currentSeasonNumber.collectAsState()
+    val availableSeasons by playerViewModel.availableSeasons.collectAsState()
     val isPlaying by playerViewModel.isPlaying.collectAsState()
     val isBuffering by playerViewModel.isBuffering.collectAsState()
     val currentPositionMs by playerViewModel.currentPositionMs.collectAsState()
@@ -307,9 +310,18 @@ fun StreamingPlayerScreen(
             ?: ongoingState?.value?.find { it.id == animeId }
     }
 
-    // Load episode on mount or when episode changes
-    LaunchedEffect(animeId, initialEpisode, fallbackAnime) {
-        playerViewModel.loadEpisode(animeId, initialEpisode, fallbackAnime)
+    val detailSeasonsState = viewModel?.activeDetailSeasons?.collectAsState()
+    LaunchedEffect(detailSeasonsState?.value) {
+        detailSeasonsState?.value?.let { seasons ->
+            if (seasons.isNotEmpty()) {
+                playerViewModel.setAvailableSeasons(seasons)
+            }
+        }
+    }
+
+    // Load episode on mount or when episode/season changes
+    LaunchedEffect(animeId, initialEpisode, initialSeason, fallbackAnime) {
+        playerViewModel.loadEpisode(animeId, initialEpisode, initialSeason, fallbackAnime)
     }
 
     BackHandler {
@@ -550,6 +562,49 @@ fun StreamingPlayerScreen(
                         }
                     }
 
+                    // Seasons Selector Card (if seasons available)
+                    if (availableSeasons.isNotEmpty()) {
+                        item {
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = Color(0xFF0F172A),
+                                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(14.dp)) {
+                                    Text(
+                                        text = "AVAILABLE SEASONS",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Color(0xFF94A3B8))
+                                    )
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    LazyRow(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        items(availableSeasons) { season ->
+                                            val isSelectedSeason = season.seasonNumber == currentSeasonNumber || season.animeId == anime?.id
+                                            Surface(
+                                                shape = RoundedCornerShape(10.dp),
+                                                color = if (isSelectedSeason) Color(0xFF0284C7) else Color(0xFF1E293B),
+                                                border = BorderStroke(1.dp, if (isSelectedSeason) Color(0xFF38BDF8) else Color.White.copy(alpha = 0.1f)),
+                                                modifier = Modifier.clickable {
+                                                    playerViewModel.selectSeason(season)
+                                                }
+                                            ) {
+                                                Text(
+                                                    text = season.title.ifBlank { "Season ${season.seasonNumber}" },
+                                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                                    color = Color.White,
+                                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Episode Navigation Buttons & Completion
                     item {
                         Surface(
@@ -567,10 +622,10 @@ fun StreamingPlayerScreen(
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         IconButton(
                                             onClick = { playerViewModel.previousEpisode() },
-                                            enabled = currentEpisode > 1,
+                                            enabled = currentEpisode > 1 || (availableSeasons.indexOfFirst { it.seasonNumber == currentSeasonNumber } > 0),
                                             modifier = Modifier.size(36.dp)
                                         ) {
-                                            Icon(Icons.Default.SkipPrevious, contentDescription = "Previous Episode", tint = if (currentEpisode > 1) Color.White else Color.Gray)
+                                            Icon(Icons.Default.SkipPrevious, contentDescription = "Previous Episode", tint = if (currentEpisode > 1 || (availableSeasons.indexOfFirst { it.seasonNumber == currentSeasonNumber } > 0)) Color.White else Color.Gray)
                                         }
                                         Spacer(modifier = Modifier.width(6.dp))
                                         Surface(
@@ -580,7 +635,7 @@ fun StreamingPlayerScreen(
                                             modifier = Modifier.clickable { showJumpDialog = true }
                                         ) {
                                             Text(
-                                                text = "Episode $currentEpisode${if (totalEpisodes > 1) " / $totalEpisodes" else ""} • Custom",
+                                                text = "Ep $currentEpisode${if (totalEpisodes > 1) " / $totalEpisodes" else ""} (S$currentSeasonNumber) • Custom",
                                                 style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                                                 color = Color.White,
                                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
@@ -612,8 +667,12 @@ fun StreamingPlayerScreen(
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    val maxChipEp = maxOf(totalEpisodes, currentEpisode, 12).coerceAtMost(50)
-                                    items((1..maxChipEp).toList()) { epNum ->
+                                    val totalEpCount = maxOf(totalEpisodes, currentEpisode, 1)
+                                    val startEp = maxOf(1, currentEpisode - 25)
+                                    val endEp = minOf(totalEpCount, maxOf(startEp + 50, currentEpisode + 25))
+                                    val epList = (startEp..endEp).toList()
+
+                                    items(epList) { epNum ->
                                         val isCurrent = epNum == currentEpisode
                                         Surface(
                                             shape = RoundedCornerShape(8.dp),
@@ -623,7 +682,7 @@ fun StreamingPlayerScreen(
                                                 if (isCurrent) Color(0xFF38BDF8) else Color.White.copy(alpha = 0.1f)
                                             ),
                                             modifier = Modifier.clickable {
-                                                playerViewModel.loadEpisode(animeId, epNum, fallbackAnime)
+                                                playerViewModel.loadEpisode(animeId, epNum, currentSeasonNumber, fallbackAnime)
                                             }
                                         ) {
                                             Text(
@@ -967,51 +1026,112 @@ fun StreamingPlayerScreen(
             )
         }
 
-        // Custom Episode Selection Dialog
+        // Custom Episode Selection Dialog (100-Episode Range Selector)
         if (showJumpDialog) {
-            var inputEp by remember(currentEpisode) { mutableStateOf(currentEpisode.toString()) }
+            val totalEpPlayer = maxOf(totalEpisodes, currentEpisode, 1)
+            val batchSizePlayer = 100
+            val totalBatchesPlayer = ((totalEpPlayer + batchSizePlayer - 1) / batchSizePlayer).coerceAtLeast(1)
+            var playerBatchIdx by remember { mutableIntStateOf(((currentEpisode - 1) / batchSizePlayer).coerceIn(0, totalBatchesPlayer - 1)) }
+            var selectedPlayerEp by remember { mutableIntStateOf(currentEpisode) }
+
             AlertDialog(
                 onDismissRequest = { showJumpDialog = false },
                 containerColor = Color(0xFF0F172A),
                 titleContentColor = Color.White,
-                title = { Text("Select Custom Episode") },
+                title = {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Select Episode", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Color.White))
+                        Text("Selected: Ep $selectedPlayerEp", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8)))
+                    }
+                },
                 text = {
-                    Column {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text(
-                            text = if (totalEpisodes > 1) "Enter any episode number (e.g. 1 to $totalEpisodes):" else "Enter custom episode number:",
+                            text = "Select Episode Range (100 episodes per box):",
                             style = MaterialTheme.typography.bodySmall,
                             color = Color(0xFF94A3B8)
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        OutlinedTextField(
-                            value = inputEp,
-                            onValueChange = { inputEp = it.filter { char -> char.isDigit() } },
-                            singleLine = true,
-                            label = { Text("Episode Number") },
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color.White,
-                                focusedBorderColor = Color(0xFF38BDF8),
-                                unfocusedBorderColor = Color.White.copy(alpha = 0.2f),
-                                focusedLabelColor = Color(0xFF38BDF8),
-                                unfocusedLabelColor = Color(0xFF94A3B8)
-                            ),
-                            modifier = Modifier.fillMaxWidth().testTag("custom_episode_player_input")
-                        )
+
+                        // 100-Episode Range Selector Tabs
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            items(totalBatchesPlayer) { bIdx ->
+                                val sEp = (bIdx * batchSizePlayer) + 1
+                                val rEnd = (bIdx + 1) * batchSizePlayer
+                                val eEp = if (rEnd < totalEpPlayer) rEnd else totalEpPlayer
+                                val isSel = (bIdx == playerBatchIdx)
+
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = if (isSel) Color(0xFF0284C7) else Color(0xFF1E293B),
+                                    border = BorderStroke(1.dp, if (isSel) Color(0xFF38BDF8) else Color.White.copy(alpha = 0.1f)),
+                                    modifier = Modifier.clickable { playerBatchIdx = bIdx }
+                                ) {
+                                    Text(
+                                        text = "$sEp - $eEp",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                        color = if (isSel) Color.White else Color(0xFF94A3B8),
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        // 100-Episode Box Container
+                        val startPEp = (playerBatchIdx * batchSizePlayer) + 1
+                        val rawPEnd = (playerBatchIdx + 1) * batchSizePlayer
+                        val endPEp = if (rawPEnd < totalEpPlayer) rawPEnd else totalEpPlayer
+                        val pEpisodesList = (startPEp..endPEp).toList()
+
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = Color(0xFF131C2E),
+                            border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.3f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(150.dp)
+                        ) {
+                            LazyRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(10.dp)
+                            ) {
+                                items(pEpisodesList) { epNum ->
+                                    val isCur = (epNum == selectedPlayerEp)
+                                    Surface(
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = if (isCur) Color(0xFF0284C7) else Color(0xFF1E293B),
+                                        border = BorderStroke(1.dp, if (isCur) Color(0xFF38BDF8) else Color.White.copy(alpha = 0.1f)),
+                                        modifier = Modifier.clickable { selectedPlayerEp = epNum }
+                                    ) {
+                                        Text(
+                                            text = "Ep $epNum",
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                            color = if (isCur) Color.White else Color(0xFFCBD5E1),
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 },
                 confirmButton = {
                     Button(
                         onClick = {
-                            val num = inputEp.toIntOrNull()
-                            if (num != null && num >= 1) {
-                                playerViewModel.loadEpisode(animeId, num, anime ?: fallbackAnime)
-                            }
+                            playerViewModel.loadEpisode(animeId = animeId, episodeNumber = selectedPlayerEp, seasonNumber = currentSeasonNumber, fallbackAnime = anime ?: fallbackAnime)
                             showJumpDialog = false
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
                     ) {
-                        Text("Watch")
+                        Text("Watch", color = Color.White, fontWeight = FontWeight.Bold)
                     }
                 },
                 dismissButton = {
@@ -1287,7 +1407,7 @@ fun VideoPlayerSurfaceContainer(
                 Button(
                     onClick = {
                         anime?.let {
-                            playerViewModel.loadEpisode(it.id, currentEpisode, it)
+                            playerViewModel.loadEpisode(animeId = it.id, episodeNumber = currentEpisode, seasonNumber = playerViewModel.currentSeasonNumber.value, fallbackAnime = it)
                         } ?: playerViewModel.retryPlayback()
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),

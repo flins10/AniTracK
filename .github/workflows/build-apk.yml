@@ -30,7 +30,7 @@ jobs:
           java-version: '21'
           distribution: 'temurin'
 
-      - name: Ensure Android SDK Platform & Build Tools
+      - name: Ensure Android SDK Licenses
         run: |
           SDK_ROOT="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
           mkdir -p "$SDK_ROOT/licenses"
@@ -43,40 +43,7 @@ jobs:
           fi
           if [ -n "$SDKMANAGER" ]; then
             yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
-            "$SDKMANAGER" "platform-tools" || true
-            "$SDKMANAGER" "build-tools;36.0.0" || true
-            "$SDKMANAGER" "platforms;android-36" || true
-            "$SDKMANAGER" "platforms;android-36.1" || true
-          fi
-
-          if [ ! -f "$SDK_ROOT/platforms/android-36.1/android.jar" ]; then
-            FALLBACK_PLAT=$(find "$SDK_ROOT/platforms" -maxdepth 1 -mindepth 1 -type d -name "android-*" | sort -V | tail -n 1)
-            if [ -n "$FALLBACK_PLAT" ]; then
-              rm -rf "$SDK_ROOT/platforms/android-36.1"
-              cp -r "$FALLBACK_PLAT" "$SDK_ROOT/platforms/android-36.1"
-              cat > "$SDK_ROOT/platforms/android-36.1/source.properties" << 'EOF'
-          Pkg.Desc=Android SDK Platform 16
-          Pkg.UserSrc=false
-          Platform.Version=16
-          Platform.CodeName=
-          Pkg.Revision=1
-          AndroidVersion.ApiLevel=36.1
-          AndroidVersion.ExtensionLevel=20
-          AndroidVersion.IsBaseSdk=true
-          Layoutlib.Api=15
-          Layoutlib.Revision=1
-          Platform.MinToolsRev=22
-          EOF
-              sed -i 's/^[[:space:]]*//' "$SDK_ROOT/platforms/android-36.1/source.properties"
-            fi
-          fi
-
-          if [ ! -d "$SDK_ROOT/build-tools/36.0.0" ]; then
-            FALLBACK_BT=$(find "$SDK_ROOT/build-tools" -maxdepth 1 -mindepth 1 -type d | sort -V | tail -n 1)
-            if [ -n "$FALLBACK_BT" ]; then
-              cp -r "$FALLBACK_BT" "$SDK_ROOT/build-tools/36.0.0"
-              sed -i 's/^Pkg.Revision=.*/Pkg.Revision=36.0.0/' "$SDK_ROOT/build-tools/36.0.0/source.properties" || true
-            fi
+            "$SDKMANAGER" "platform-tools" "platforms;android-35" || true
           fi
 
       - name: Setup Gradle with Build Cache

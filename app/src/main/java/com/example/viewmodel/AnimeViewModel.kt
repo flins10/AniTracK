@@ -25,6 +25,7 @@ import com.example.data.repository.ArchiveMediaItem
 import com.example.data.repository.ArchivePlayableMedia
 import com.example.data.repository.ArchiveSearchResultState
 import com.example.data.repository.ArchivePlayableMediaResult
+import com.example.data.repository.AnimeSeasonInfo
 import com.example.util.EpisodeDataParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -528,10 +529,21 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     private val _isLoadingFullDetails = MutableStateFlow(false)
     val isLoadingFullDetails = _isLoadingFullDetails.asStateFlow()
 
+    private val _selectedDetailSeason = MutableStateFlow<AnimeSeasonInfo?>(null)
+    val selectedDetailSeason = _selectedDetailSeason.asStateFlow()
+
+    private val _activeDetailSeasons = MutableStateFlow<List<AnimeSeasonInfo>>(emptyList())
+    val activeDetailSeasons = _activeDetailSeasons.asStateFlow()
+
+    fun selectDetailSeason(season: AnimeSeasonInfo) {
+        _selectedDetailSeason.value = season
+    }
+
     fun loadFullDetails(animeId: Int) {
         _isLoadingFullDetails.value = true
         _aniListVerifiedTrailer.value = null
         viewModelScope.launch(Dispatchers.IO) {
+            val currentEntity = repository.getAnimeByIdSync(animeId)
             val result = repository.fetchAniListFullDetails(animeId)
             if (result.isSuccess) {
                 val fullMedia = result.getOrNull()
@@ -552,9 +564,123 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                         sourceBadge = "AniList Verified Trailer"
                     )
                 }
+                if (currentEntity != null) {
+                    val resolvedSeasons = resolveFranchiseSeasons(currentEntity, fullMedia)
+                    _activeDetailSeasons.value = resolvedSeasons
+                    val matchedCurr = resolvedSeasons.firstOrNull { it.animeId == animeId } ?: resolvedSeasons.firstOrNull()
+                    _selectedDetailSeason.value = matchedCurr
+                }
+            } else if (currentEntity != null) {
+                val resolvedSeasons = resolveFranchiseSeasons(currentEntity, null)
+                _activeDetailSeasons.value = resolvedSeasons
+                _selectedDetailSeason.value = resolvedSeasons.firstOrNull()
             }
             _isLoadingFullDetails.value = false
         }
+    }
+
+    fun resolveFranchiseSeasons(anime: AnimeEntity, fullMedia: AniListMedia?): List<AnimeSeasonInfo> {
+        val seasons = mutableListOf<AnimeSeasonInfo>()
+
+        if (fullMedia?.relations?.edges != null) {
+            val edges = fullMedia.relations.edges.orEmpty()
+            val seasonNodes = edges.mapNotNull { edge ->
+                val node = edge.node ?: return@mapNotNull null
+                val type = edge.relationType?.uppercase() ?: ""
+                val title = node.title?.english ?: node.title?.romaji ?: "Season"
+                if (type in listOf("PREQUEL", "SEQUEL", "PARENT", "ALTERNATIVE", "SIDE_STORY") ||
+                    title.contains("Season", ignoreCase = true) ||
+                    title.contains("2nd", ignoreCase = true) ||
+                    title.contains("3rd", ignoreCase = true)
+                ) {
+                    Pair(type, node)
+                } else null
+            }
+
+            val prequels = seasonNodes.filter { it.first == "PREQUEL" }.map { it.second }.reversed()
+            val sequels = seasonNodes.filter { it.first == "SEQUEL" }.map { it.second }
+            val others = seasonNodes.filter { it.first !in listOf("PREQUEL", "SEQUEL") }.map { it.second }
+
+            var sNum = 1
+            for (node in prequels) {
+                val nodeTitle = node.title?.english ?: node.title?.romaji ?: "Season $sNum"
+                seasons.add(
+                    AnimeSeasonInfo(
+                        seasonNumber = sNum++,
+                        title = nodeTitle,
+                        animeId = node.id,
+                        totalEpisodes = null,
+                        coverImage = node.coverImage?.large ?: node.coverImage?.medium,
+                        format = node.format,
+                        isCurrentSeason = false
+                    )
+                )
+            }
+
+            seasons.add(
+                AnimeSeasonInfo(
+                    seasonNumber = sNum++,
+                    title = anime.getResolvedTitle(_titleLanguagePreference.value),
+                    animeId = anime.id,
+                    idMal = anime.idMal,
+                    totalEpisodes = anime.totalEpisodes,
+                    coverImage = anime.coverImage,
+                    bannerImage = anime.bannerImage,
+                    format = anime.format,
+                    isCurrentSeason = true
+                )
+            )
+
+            for (node in sequels) {
+                val nodeTitle = node.title?.english ?: node.title?.romaji ?: "Season $sNum"
+                seasons.add(
+                    AnimeSeasonInfo(
+                        seasonNumber = sNum++,
+                        title = nodeTitle,
+                        animeId = node.id,
+                        totalEpisodes = null,
+                        coverImage = node.coverImage?.large ?: node.coverImage?.medium,
+                        format = node.format,
+                        isCurrentSeason = false
+                    )
+                )
+            }
+
+            for (node in others) {
+                if (seasons.none { it.animeId == node.id }) {
+                    val nodeTitle = node.title?.english ?: node.title?.romaji ?: "Season $sNum"
+                    seasons.add(
+                        AnimeSeasonInfo(
+                            seasonNumber = sNum++,
+                            title = nodeTitle,
+                            animeId = node.id,
+                            totalEpisodes = null,
+                            coverImage = node.coverImage?.large ?: node.coverImage?.medium,
+                            format = node.format,
+                            isCurrentSeason = false
+                        )
+                    )
+                }
+            }
+        }
+
+        if (seasons.isEmpty()) {
+            seasons.add(
+                AnimeSeasonInfo(
+                    seasonNumber = 1,
+                    title = anime.getResolvedTitle(_titleLanguagePreference.value),
+                    animeId = anime.id,
+                    idMal = anime.idMal,
+                    totalEpisodes = anime.totalEpisodes,
+                    coverImage = anime.coverImage,
+                    bannerImage = anime.bannerImage,
+                    format = anime.format,
+                    isCurrentSeason = true
+                )
+            )
+        }
+
+        return seasons
     }
 
     // Unified Video Catalog

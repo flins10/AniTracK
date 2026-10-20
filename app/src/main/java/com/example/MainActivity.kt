@@ -541,22 +541,25 @@ class MainActivity : ComponentActivity() {
                                             animeId = animeId,
                                             viewModel = viewModel,
                                             onBack = { navController.popBackStack() },
-                                            onOpenPlayer = { id, ep -> navController.navigate("player/$id/$ep") }
+                                            onOpenPlayer = { id, ep, season -> navController.navigate("player/$id/$ep?seasonNumber=$season") }
                                         )
                                     }
 
                                     composable(
-                                        route = "player/{animeId}/{episodeNumber}",
+                                        route = "player/{animeId}/{episodeNumber}?seasonNumber={seasonNumber}",
                                         arguments = listOf(
                                             navArgument("animeId") { type = NavType.IntType },
-                                            navArgument("episodeNumber") { type = NavType.IntType }
+                                            navArgument("episodeNumber") { type = NavType.IntType },
+                                            navArgument("seasonNumber") { type = NavType.IntType; defaultValue = 1 }
                                         )
                                     ) { backStackEntry ->
                                         val animeId = backStackEntry.arguments?.getInt("animeId") ?: 0
                                         val episodeNumber = backStackEntry.arguments?.getInt("episodeNumber") ?: 1
+                                        val seasonNumber = backStackEntry.arguments?.getInt("seasonNumber") ?: 1
                                         StreamingPlayerScreen(
                                             animeId = animeId,
                                             initialEpisode = episodeNumber,
+                                            initialSeason = seasonNumber,
                                             viewModel = viewModel,
                                             onBack = { navController.popBackStack() }
                                         )
