@@ -84,7 +84,8 @@ data class ArchiveDocItem(
     @FlexibleString val mediatype: String? = null,
     @FlexibleString val subject: String? = null,
     @FlexibleString val licenseurl: String? = null,
-    @FlexibleString val publicdate: String? = null
+    @FlexibleString val publicdate: String? = null,
+    @FlexibleString val item_size: String? = null
 )
 
 data class ArchiveMetadataResponse(
@@ -127,7 +128,7 @@ interface InternetArchiveApiService {
     @GET("advancedsearch.php")
     suspend fun searchArchive(
         @Query("q") query: String,
-        @Query("fl[]") fields: List<String> = listOf("identifier", "title", "description", "creator", "year", "mediatype", "subject", "licenseurl", "publicdate"),
+        @Query("fl[]") fields: List<String> = listOf("identifier", "title", "description", "creator", "year", "mediatype", "subject", "licenseurl", "publicdate", "item_size"),
         @Query("rows") rows: Int = 20,
         @Query("page") page: Int = 1,
         @Query("output") output: String = "json"
@@ -152,8 +153,8 @@ interface InternetArchiveApiService {
             }
 
             val client = OkHttpClient.Builder()
-                .connectTimeout(25, TimeUnit.SECONDS)
-                .readTimeout(25, TimeUnit.SECONDS)
+                .connectTimeout(8, TimeUnit.SECONDS)
+                .readTimeout(8, TimeUnit.SECONDS)
                 .addInterceptor(logging)
                 .build()
 
@@ -170,8 +171,10 @@ interface InternetArchiveApiService {
         }
 
         fun getDirectDownloadUrl(identifier: String, filename: String): String {
-            val encodedName = URLEncoder.encode(filename, "UTF-8").replace("+", "%20")
-            return "https://archive.org/download/$identifier/$encodedName"
+            val encodedPath = filename.split("/").joinToString("/") { segment ->
+                URLEncoder.encode(segment, "UTF-8").replace("+", "%20")
+            }
+            return "https://archive.org/download/$identifier/$encodedPath"
         }
     }
 }

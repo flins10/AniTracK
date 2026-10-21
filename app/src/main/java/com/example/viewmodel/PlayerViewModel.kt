@@ -49,6 +49,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.Locale
 
@@ -106,8 +107,8 @@ class PlayerViewModel @JvmOverloads constructor(
     val exoPlayer: ExoPlayer by lazy {
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setUserAgent("AniTrackPlayer/1.0 (Linux; Android; Media3 ExoPlayer)")
-            .setConnectTimeoutMs(20_000)
-            .setReadTimeoutMs(20_000)
+            .setConnectTimeoutMs(10_000)
+            .setReadTimeoutMs(12_000)
             .setAllowCrossProtocolRedirects(true)
 
         val mediaSourceFactory = DefaultMediaSourceFactory(application)
@@ -115,10 +116,10 @@ class PlayerViewModel @JvmOverloads constructor(
 
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                /* minBufferMs = */ 15_000,
-                /* maxBufferMs = */ 60_000,
-                /* bufferForPlaybackMs = */ 2_500,
-                /* bufferForPlaybackAfterRebufferMs = */ 5_000
+                /* minBufferMs = */ 12_000,
+                /* maxBufferMs = */ 50_000,
+                /* bufferForPlaybackMs = */ 1_200,
+                /* bufferForPlaybackAfterRebufferMs = */ 2_500
             )
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
@@ -394,7 +395,15 @@ class PlayerViewModel @JvmOverloads constructor(
                 _currentEpisode.value = targetEp
                 _currentSeasonNumber.value = detectedSeason
 
-                when (val matchResult = archiveRepository.findMatchesForAnime(anime, targetEp, detectedSeason)) {
+                val matchResult = withTimeoutOrNull(8_500L) {
+                    archiveRepository.findMatchesForAnime(anime, targetEp, detectedSeason)
+                } ?: ArchiveAnimeMatchResult.NoMatch(
+                    reason = "Can't find Episode $targetEp on Internet Archive.",
+                    queriedTitles = listOfNotNull(anime.displayTitle),
+                    requestedEpisode = targetEp
+                )
+
+                when (matchResult) {
                     is ArchiveAnimeMatchResult.Success -> {
                         _activeCandidates.value = matchResult.allCandidates
                         val best = matchResult.bestMatch
@@ -495,6 +504,7 @@ class PlayerViewModel @JvmOverloads constructor(
                 streamUrl.contains(".m3u8", ignoreCase = true) -> MimeTypes.APPLICATION_M3U8
                 streamUrl.contains(".mpd", ignoreCase = true) -> MimeTypes.APPLICATION_MPD
                 streamUrl.contains(".webm", ignoreCase = true) -> MimeTypes.VIDEO_WEBM
+                streamUrl.contains(".mkv", ignoreCase = true) -> MimeTypes.VIDEO_MATROSKA
                 else -> MimeTypes.VIDEO_MP4
             }
 
@@ -521,6 +531,7 @@ class PlayerViewModel @JvmOverloads constructor(
 
             exoPlayer.setMediaItem(mediaItem)
             exoPlayer.prepare()
+            exoPlayer.playWhenReady = true
 
             if (resumePositionMs > 5000L) {
                 exoPlayer.seekTo(resumePositionMs)
@@ -1152,7 +1163,14 @@ class PlayerViewModel @JvmOverloads constructor(
                     titleEnglish = customTitle.trim(),
                     titleRomaji = customTitle.trim()
                 )
-                when (val matchResult = archiveRepository.findMatchesForAnime(syntheticAnime, ep)) {
+                val matchResult = withTimeoutOrNull(8_500L) {
+                    archiveRepository.findMatchesForAnime(syntheticAnime, ep)
+                } ?: ArchiveAnimeMatchResult.NoMatch(
+                    reason = "Can't find \"$customTitle\" on Internet Archive.",
+                    queriedTitles = listOf(customTitle),
+                    requestedEpisode = ep
+                )
+                when (matchResult) {
                     is ArchiveAnimeMatchResult.Success -> {
                         _activeCandidates.value = matchResult.allCandidates
                         val best = matchResult.bestMatch

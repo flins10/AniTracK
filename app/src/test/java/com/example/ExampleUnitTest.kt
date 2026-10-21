@@ -111,4 +111,47 @@ class ExampleUnitTest {
     assertEquals(titleForCard, titleForSearch)
     assertEquals(titleForCard, titleForWishlist)
   }
+
+  @Test
+  fun testSeasonClassifier_AccuratelyClassifiesEpisodesWithoutMixing() {
+    val seasons = listOf(
+      com.example.data.repository.AnimeSeasonInfo(
+        seasonNumber = 1,
+        title = "Attack on Titan Season 1",
+        animeId = 16498,
+        totalEpisodes = 25,
+        startEpisode = 1
+      ),
+      com.example.data.repository.AnimeSeasonInfo(
+        seasonNumber = 2,
+        title = "Attack on Titan Season 2",
+        animeId = 25777,
+        totalEpisodes = 12,
+        startEpisode = 26
+      ),
+      com.example.data.repository.AnimeSeasonInfo(
+        seasonNumber = 3,
+        title = "Attack on Titan Season 3",
+        animeId = 38524,
+        totalEpisodes = 22,
+        startEpisode = 38
+      )
+    )
+
+    // Episode 15 -> Season 1, Ep 15
+    val (s1, ep1) = com.example.data.repository.SeasonClassifier.classifyEpisode(15, seasons)
+    assertEquals(1, s1?.seasonNumber)
+    assertEquals(15, ep1)
+
+    // Episode 28 -> Season 2, Ep 3 (28 - 26 + 1 = 3)
+    val (s2, ep2) = com.example.data.repository.SeasonClassifier.classifyEpisode(28, seasons)
+    assertEquals(2, s2?.seasonNumber)
+    assertEquals(3, ep2)
+
+    // Episode 45 -> Season 3, Ep 8 (45 - 38 + 1 = 8)
+    val (s3, ep3) = com.example.data.repository.SeasonClassifier.classifyEpisode(45, seasons)
+    assertEquals(3, s3?.seasonNumber)
+    assertEquals(8, ep3)
+  }
 }
+

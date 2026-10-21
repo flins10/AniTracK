@@ -4,640 +4,1288 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.BookmarkAdd
-import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.PlayCircle
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.VideoLibrary
-import androidx.compose.material.icons.filled.OpenInNew
-import android.content.Intent
-import android.net.Uri
-import androidx.compose.ui.platform.LocalContext
-import com.example.data.repository.YouTubeSearchLink
-import java.net.URLEncoder
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.ViewList
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
-import com.example.data.repository.ArchiveMediaItem
+import coil.compose.SubcomposeAsyncImage
 import com.example.data.repository.ArchivePlayableMedia
-import com.example.data.repository.YouTubeVideo
-import com.example.data.repository.YouTubeVideoType
+import com.example.data.repository.ArchivePlayableMediaResult
+import com.example.data.repository.ArchiveSearchRepository
+import com.example.data.repository.InternetArchiveRepository
+import com.example.ui.components.ArchiveDirectPlayerDialog
+import com.example.ui.components.EpisodeGridSelector
 import com.example.viewmodel.AnimeViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
 
+/**
+ * Cinema category for real-world live-action Movies & Series in the Watch Catalogue.
+ */
+enum class CinemaOrigin(val label: String) {
+    BOLLYWOOD("Bollywood"),
+    HOLLYWOOD("Hollywood")
+}
+
+/**
+ * Model representing a real-world live-action movie or series in the Watch Catalogue.
+ * Strictly excludes animation/anime and uses original theatrical posters.
+ */
+data class WatchCatalogueItem(
+    val identifier: String,
+    val title: String,
+    val isSeries: Boolean,
+    val genre: String,
+    val origin: CinemaOrigin = CinemaOrigin.BOLLYWOOD,
+    val releaseYear: String = "2024",
+    val cast: String = "",
+    val description: String = "",
+    val posterUrl: String = "",
+    val totalSeasons: Int = 1,
+    val totalEpisodes: Int = 1,
+    val runtimeMinutes: Int? = null,
+    val isBookmarked: Boolean = false
+)
+
+// Live-action genres only (no Animation or Anime in Watch Catalogue)
+private val WATCH_GENRES = listOf(
+    "All Genres",
+    "Action",
+    "Adventure",
+    "Biography",
+    "Comedy",
+    "Crime",
+    "Documentary",
+    "Drama",
+    "Fantasy",
+    "Historical",
+    "Horror",
+    "Mystery",
+    "Romance",
+    "Sci-Fi",
+    "Thriller"
+)
+
+/**
+ * Curated real-world Bollywood & Hollywood live-action Movies and Series
+ * with official original theatrical posters and real Internet Archive identifiers.
+ */
+private val CURATED_MOVIES_AND_SERIES = listOf(
+    WatchCatalogueItem(
+        identifier = "3-idiots_202108",
+        title = "3 Idiots",
+        isSeries = false,
+        genre = "Comedy",
+        origin = CinemaOrigin.BOLLYWOOD,
+        releaseYear = "2009",
+        cast = "Aamir Khan, R. Madhavan, Sharman Joshi",
+        description = "Two friends are searching for their long lost companion. They revisit their college days and recall the memories of their friend who inspired them to think differently.",
+        posterUrl = "https://m.media-amazon.com/images/M/MV5BNzc4ZWQ3NmYtODE0Ny00YTQ4LTlkZWItNTBkMGQ0MmUwMmJlXkEyXkFqcGc@._V1_.jpg",
+        runtimeMinutes = 170
+    ),
+    WatchCatalogueItem(
+        identifier = "dangal-hindi-educational-movie-hd",
+        title = "Dangal",
+        isSeries = false,
+        genre = "Biography",
+        origin = CinemaOrigin.BOLLYWOOD,
+        releaseYear = "2016",
+        cast = "Aamir Khan, Sakshi Tanwar, Fatima Sana Shaikh",
+        description = "Former wrestler Mahavir Singh Phogat and his two wrestler daughters struggle towards glory at the Commonwealth Games in the face of societal oppression.",
+        posterUrl = "https://m.media-amazon.com/images/M/MV5BMTQ4MzQzMzM2Nl5BMl5BanBnXkFtZTgwMTQ1NzU3MDI@._V1_.jpg",
+        runtimeMinutes = 161
+    ),
+    WatchCatalogueItem(
+        identifier = "Interstellar_2014",
+        title = "Interstellar",
+        isSeries = false,
+        genre = "Sci-Fi",
+        origin = CinemaOrigin.HOLLYWOOD,
+        releaseYear = "2014",
+        cast = "Matthew McConaughey, Anne Hathaway, Jessica Chastain",
+        description = "When Earth becomes uninhabitable in the future, a farmer and ex-NASA pilot, Joseph Cooper, is tasked to pilot a spacecraft, along with a team of researchers, to find a new planet for humans.",
+        posterUrl = "https://m.media-amazon.com/images/M/MV5BYzdjMDAxZGItMjI2My00ODA1LTlkNzItOWFjMDU5ZDJlYWY3XkEyXkFqcGc@._V1_.jpg",
+        runtimeMinutes = 169
+    ),
+    WatchCatalogueItem(
+        identifier = "byomkesh-bakshi-all-episodes",
+        title = "Byomkesh Bakshi",
+        isSeries = true,
+        genre = "Mystery",
+        origin = CinemaOrigin.BOLLYWOOD,
+        releaseYear = "1993",
+        cast = "Rajit Kapur, K.K. Raina, Sukanya Kulkarni",
+        description = "Sharp and intelligent detective Byomkesh Bakshi and his chronicler friend Ajit solve baffling murder mysteries and intricate crimes in Kolkata.",
+        posterUrl = "https://m.media-amazon.com/images/M/MV5BZjM3YjE2N2UtM2E4MC00NDg4LTk1MzgtY2I4M2U2ZTg4YjE0XkEyXkFqcGc@._V1_.jpg",
+        totalSeasons = 2,
+        totalEpisodes = 32
+    ),
+    WatchCatalogueItem(
+        identifier = "gangs-of-wasseypur-part-1_202206",
+        title = "Gangs of Wasseypur",
+        isSeries = false,
+        genre = "Crime",
+        origin = CinemaOrigin.BOLLYWOOD,
+        releaseYear = "2012",
+        cast = "Manoj Bajpayee, Nawazuddin Siddiqui, Richa Chadha",
+        description = "A clash between Sultan and Shahid Khan leads to the expulsion of Khan from Wasseypur, and ignites a deadly blood feud spanning three generations.",
+        posterUrl = "https://m.media-amazon.com/images/M/MV5BNWQyMmJkYTItNDUyYS00MjgwLWFmYjUtOWQ1NmRjOGZlOTZhXkEyXkFqcGc@._V1_.jpg",
+        runtimeMinutes = 160
+    ),
+    WatchCatalogueItem(
+        identifier = "TheDarkKnightRises_201810",
+        title = "The Dark Knight",
+        isSeries = false,
+        genre = "Action",
+        origin = CinemaOrigin.HOLLYWOOD,
+        releaseYear = "2008",
+        cast = "Christian Bale, Heath Ledger, Aaron Eckhart",
+        description = "When a menace known as the Joker wreaks havoc and chaos on the people of Gotham, Batman, James Gordon and Harvey Dent must work together to put an end to the madness.",
+        posterUrl = "https://m.media-amazon.com/images/M/MV5BMTMxNTMwODM0NF5BMl5BanBnXkFtZTcwODAyMTk2Mw@@._V1_.jpg",
+        runtimeMinutes = 152
+    ),
+    WatchCatalogueItem(
+        identifier = "Lagaan2001",
+        title = "Lagaan",
+        isSeries = false,
+        genre = "Drama",
+        origin = CinemaOrigin.BOLLYWOOD,
+        releaseYear = "2001",
+        cast = "Aamir Khan, Gracy Singh, Rachel Shelley",
+        description = "The people of a small village in Victorian India stake their future on a game of cricket against their ruthless British rulers.",
+        posterUrl = "https://m.media-amazon.com/images/M/MV5BM2FmODM4OTktOTRjOS00ZTIzLWIzZjAtMDBhOGEzYThkNzMzXkEyXkFqcGc@._V1_.jpg",
+        runtimeMinutes = 224
+    ),
+    WatchCatalogueItem(
+        identifier = "DekhBhaiDekh",
+        title = "Dekh Bhai Dekh",
+        isSeries = true,
+        genre = "Comedy",
+        origin = CinemaOrigin.BOLLYWOOD,
+        releaseYear = "1993",
+        cast = "Shekhar Suman, Navin Nischol, Farida Jalal",
+        description = "Three generations of the eccentric Diwan family live together in an ancestral bungalow, navigating hilarious misunderstandings and family bonds.",
+        posterUrl = "https://m.media-amazon.com/images/M/MV5BMmI2N2I5M2QtN2I3Zi00Y2Q0LWI0N2MtM2I4Y2I5ZGI3ZGY1XkEyXkFqcGc@._V1_.jpg",
+        totalSeasons = 1,
+        totalEpisodes = 65
+    ),
+    WatchCatalogueItem(
+        identifier = "sholay-1975_202204",
+        title = "Sholay",
+        isSeries = false,
+        genre = "Action",
+        origin = CinemaOrigin.BOLLYWOOD,
+        releaseYear = "1975",
+        cast = "Dharmendra, Amitabh Bachchan, Sanjeev Kumar",
+        description = "After his family is murdered by a notorious and ruthless bandit, a former police officer enlists the services of two outlaws to capture him.",
+        posterUrl = "https://m.media-amazon.com/images/M/MV5BMmI1NTRmZTQtM2I2YS00YjA4LTk4ZTItM2I4Y2I5ZGI3ZGY1XkEyXkFqcGc@._V1_.jpg",
+        runtimeMinutes = 204
+    ),
+    WatchCatalogueItem(
+        identifier = "Fight_Club_1999",
+        title = "Fight Club",
+        isSeries = false,
+        genre = "Thriller",
+        origin = CinemaOrigin.HOLLYWOOD,
+        releaseYear = "1999",
+        cast = "Brad Pitt, Edward Norton, Helena Bonham Carter",
+        description = "An insomniac office worker and a devil-may-care soap maker form an underground fight club that evolves into much more.",
+        posterUrl = "https://m.media-amazon.com/images/M/MV5BOTgyOGQ1NDItNGU3Ny00MjU3LTg2YWEtNmEyYjBiMjI1Y2M5XkEyXkFqcGc@._V1_.jpg",
+        runtimeMinutes = 139
+    ),
+    WatchCatalogueItem(
+        identifier = "taare-zameen-par-2007",
+        title = "Taare Zameen Par",
+        isSeries = false,
+        genre = "Drama",
+        origin = CinemaOrigin.BOLLYWOOD,
+        releaseYear = "2007",
+        cast = "Darsheel Safary, Aamir Khan, Tisca Chopra",
+        description = "An eight-year-old boy is thought to be a lazy trouble-maker, until the new art teacher has the patience and compassion to discover the real problem behind his struggles in school.",
+        posterUrl = "https://m.media-amazon.com/images/M/MV5BMDhjZWViN2MtNzgxOS00NmI4LThiZDQtZDI3MzM4MDE4NTc0XkEyXkFqcGc@._V1_.jpg",
+        runtimeMinutes = 165
+    ),
+    WatchCatalogueItem(
+        identifier = "TheGodfather1972",
+        title = "The Godfather",
+        isSeries = false,
+        genre = "Crime",
+        origin = CinemaOrigin.HOLLYWOOD,
+        releaseYear = "1972",
+        cast = "Marlon Brando, Al Pacino, James Caan",
+        description = "The aging patriarch of an organized crime dynasty transfers control of his clandestine empire to his reluctant youngest son.",
+        posterUrl = "https://m.media-amazon.com/images/M/MV5BNGEwYjgwOGQtYjg5ZS00Njc1LTk2ZGEtM2QwZWQ2NjdhZTE5XkEyXkFqcGc@._V1_.jpg",
+        runtimeMinutes = 175
+    ),
+    WatchCatalogueItem(
+        identifier = "BharatEkKhoj",
+        title = "Bharat Ek Khoj",
+        isSeries = true,
+        genre = "Historical",
+        origin = CinemaOrigin.BOLLYWOOD,
+        releaseYear = "1988",
+        cast = "Roshan Seth, Om Puri, Naseeruddin Shah",
+        description = "Shyam Benegal's landmark historical drama series tracing the 5,000-year history of India from the Indus Valley Civilization to independence.",
+        posterUrl = "https://m.media-amazon.com/images/M/MV5BN2EyODc1MDAtNTg0ZC00MjRhLTg1NzctM2NjYTlmOGMwYWNiXkEyXkFqcGc@._V1_.jpg",
+        totalSeasons = 1,
+        totalEpisodes = 53
+    ),
+    WatchCatalogueItem(
+        identifier = "jawan-2023",
+        title = "Jawan",
+        isSeries = false,
+        genre = "Action",
+        origin = CinemaOrigin.BOLLYWOOD,
+        releaseYear = "2023",
+        cast = "Shah Rukh Khan, Nayanthara, Vijay Sethupathi",
+        description = "A high-octane action thriller outlining the emotional journey of a man who is set to rectify the wrongs in the society.",
+        posterUrl = "https://m.media-amazon.com/images/M/MV5BMGExNGI1NDktOWI2Mi00NDM3LWIxMmQtNTQxYTgzMzI0MTA1XkEyXkFqcGc@._V1_.jpg",
+        runtimeMinutes = 169
+    ),
+    WatchCatalogueItem(
+        identifier = "mirzapur-series",
+        title = "Mirzapur",
+        isSeries = true,
+        genre = "Crime",
+        origin = CinemaOrigin.BOLLYWOOD,
+        releaseYear = "2018",
+        cast = "Pankaj Tripathi, Ali Fazal, Divyenndu",
+        description = "A shocking incident at a wedding procession ignites a series of events entangling the lives of two families in the lawless city of Mirzapur.",
+        posterUrl = "https://m.media-amazon.com/images/M/MV5BZTFjMzMxZTUtYTMyNy00OWNhLTk4ODQtNGI1NjI1NjJhMzc3XkEyXkFqcGc@._V1_.jpg",
+        totalSeasons = 3,
+        totalEpisodes = 29
+    ),
+    WatchCatalogueItem(
+        identifier = "oppenheimer-2023",
+        title = "Oppenheimer",
+        isSeries = false,
+        genre = "Biography",
+        origin = CinemaOrigin.HOLLYWOOD,
+        releaseYear = "2023",
+        cast = "Cillian Murphy, Emily Blunt, Matt Damon",
+        description = "The story of American scientist J. Robert Oppenheimer and his role in the development of the atomic bomb.",
+        posterUrl = "https://m.media-amazon.com/images/M/MV5BN2JkMDc5MGQtZjg3YS00NmFiLWIyZmQtZTJmNTM5MjVmYTQ4XkEyXkFqcGc@._V1_.jpg",
+        runtimeMinutes = 180
+    ),
+    WatchCatalogueItem(
+        identifier = "the-family-man-series",
+        title = "The Family Man",
+        isSeries = true,
+        genre = "Thriller",
+        origin = CinemaOrigin.BOLLYWOOD,
+        releaseYear = "2019",
+        cast = "Manoj Bajpayee, Sharib Hashmi, Samantha Ruth Prabhu",
+        description = "A working man from the National Investigation Agency tries to protect the nation from terrorism while also keeping his family safe from his secret job.",
+        posterUrl = "https://m.media-amazon.com/images/M/MV5BZjM3YTczOWQtNjkzNi00ZTRlLThkZWEtZjgwZGVmODhkMDU3XkEyXkFqcGc@._V1_.jpg",
+        totalSeasons = 2,
+        totalEpisodes = 19
+    ),
+    WatchCatalogueItem(
+        identifier = "dune-part-two-2024",
+        title = "Dune: Part Two",
+        isSeries = false,
+        genre = "Sci-Fi",
+        origin = CinemaOrigin.HOLLYWOOD,
+        releaseYear = "2024",
+        cast = "Timothée Chalamet, Zendaya, Rebecca Ferguson",
+        description = "Paul Atreides unites with Chani and the Fremen while on a warpath of revenge against the conspirators who destroyed his family.",
+        posterUrl = "https://m.media-amazon.com/images/M/MV5BNTc0YmQxMjEtODI5MC00NjFiLTlkMWUtOGQ5NjFmYWUyZGJhXkEyXkFqcGc@._V1_.jpg",
+        runtimeMinutes = 166
+    ),
+    WatchCatalogueItem(
+        identifier = "panchayat-series",
+        title = "Panchayat",
+        isSeries = true,
+        genre = "Comedy",
+        origin = CinemaOrigin.BOLLYWOOD,
+        releaseYear = "2020",
+        cast = "Jitendra Kumar, Raghubir Yadav, Neena Gupta",
+        description = "A comedy-drama, which captures the journey of an engineering graduate Abhishek, who for lack of a better job option joins as secretary of a Panchayat office in a remote village of Uttar Pradesh.",
+        posterUrl = "https://m.media-amazon.com/images/M/MV5BNjMwYWMxNjYtY2I2NC00OWE0LTg4MmQtMmI5ZGI2NzU4ODhiXkEyXkFqcGc@._V1_.jpg",
+        totalSeasons = 3,
+        totalEpisodes = 24
+    ),
+    WatchCatalogueItem(
+        identifier = "breaking-bad-series",
+        title = "Breaking Bad",
+        isSeries = true,
+        genre = "Crime",
+        origin = CinemaOrigin.HOLLYWOOD,
+        releaseYear = "2008",
+        cast = "Bryan Cranston, Aaron Paul, Anna Gunn",
+        description = "A chemistry teacher diagnosed with inoperable lung cancer turns to manufacturing and selling methamphetamine with a former student in order to secure his family's future.",
+        posterUrl = "https://m.media-amazon.com/images/M/MV5BMzU5ZGYzNmQtMTdhYy00OGRiLTg0NmQtYjVjNzliZTg1ZGE4XkEyXkFqcGc@._V1_.jpg",
+        totalSeasons = 5,
+        totalEpisodes = 62
+    ),
+    WatchCatalogueItem(
+        identifier = "stree-2-2024",
+        title = "Stree 2",
+        isSeries = false,
+        genre = "Horror",
+        origin = CinemaOrigin.BOLLYWOOD,
+        releaseYear = "2024",
+        cast = "Rajkummar Rao, Shraddha Kapoor, Pankaj Tripathi",
+        description = "After the events of Stree, the town of Chanderi is being haunted again. This time, women are mysteriously abducted by a terrifying headless entity.",
+        posterUrl = "https://m.media-amazon.com/images/M/MV5BMTA1NmUxYzItZmVmNy00YmQxLTk4Y2UtZjVkMWUwMWQ5N2IxXkEyXkFqcGc@._V1_.jpg",
+        runtimeMinutes = 147
+    ),
+    WatchCatalogueItem(
+        identifier = "stranger-things-series",
+        title = "Stranger Things",
+        isSeries = true,
+        genre = "Sci-Fi",
+        origin = CinemaOrigin.HOLLYWOOD,
+        releaseYear = "2016",
+        cast = "Millie Bobby Brown, Finn Wolfhard, Winona Ryder",
+        description = "When a young boy vanishes, a small town uncovers a mystery involving secret experiments, terrifying supernatural forces and one strange little girl.",
+        posterUrl = "https://m.media-amazon.com/images/M/MV5BMjEzMDAxOTUyMV5BMl5BanBnXkFtZTgwNzAxMzYzOTE@._V1_.jpg",
+        totalSeasons = 4,
+        totalEpisodes = 34
+    ),
+    WatchCatalogueItem(
+        identifier = "inception-2010",
+        title = "Inception",
+        isSeries = false,
+        genre = "Sci-Fi",
+        origin = CinemaOrigin.HOLLYWOOD,
+        releaseYear = "2010",
+        cast = "Leonardo DiCaprio, Joseph Gordon-Levitt, Elliot Page",
+        description = "A thief who steals corporate secrets through the use of dream-sharing technology is given the inverse task of planting an idea into the mind of a C.E.O.",
+        posterUrl = "https://m.media-amazon.com/images/M/MV5BMjAxMzY3NjcxNF5BMl5BanBnXkFtZTcwNTI5OTM0Mw@@._V1_.jpg",
+        runtimeMinutes = 148
+    ),
+    WatchCatalogueItem(
+        identifier = "rrr-2022",
+        title = "RRR",
+        isSeries = false,
+        genre = "Action",
+        origin = CinemaOrigin.BOLLYWOOD,
+        releaseYear = "2022",
+        cast = "N.T. Rama Rao Jr., Ram Charan, Ajay Devgn",
+        description = "A fearless revolutionary and an officer in the British force, who once shared a deep bond, decide to join forces and chart out an inspirational path of freedom against the despotic rulers.",
+        posterUrl = "https://m.media-amazon.com/images/M/MV5BNWMwODYyMjQtMTczMi00NTQ1LWFkYjItMGJhMWRkY2E3NDAyXkEyXkFqcGc@._V1_.jpg",
+        runtimeMinutes = 187
+    )
+)
+
+/**
+ * Resolves official theatrical movie/series posters from IMDb suggestion API so search results
+ * always display original movie/series posters and never Internet Archive placeholder images.
+ */
+private fun fetchOfficialPosterMetadata(queryTitle: String): List<WatchCatalogueItem> {
+    val clean = queryTitle.trim()
+    if (clean.isEmpty()) return emptyList()
+    return try {
+        val encoded = URLEncoder.encode(clean.lowercase().replace(" ", "_"), "UTF-8")
+        val firstChar = encoded.firstOrNull { it.isLetterOrDigit() }?.lowercaseChar() ?: 'a'
+        val url = URL("https://v3.sg.media-imdb.com/suggestion/$firstChar/$encoded.json")
+        val conn = (url.openConnection() as HttpURLConnection).apply {
+            connectTimeout = 4000
+            readTimeout = 4000
+            requestMethod = "GET"
+        }
+        if (conn.responseCode != 200) return emptyList()
+        val body = conn.inputStream.bufferedReader().use { it.readText() }
+        val root = JSONObject(body)
+        val arr = root.optJSONArray("d") ?: return emptyList()
+        val results = mutableListOf<WatchCatalogueItem>()
+        for (i in 0 until arr.length()) {
+            val obj = arr.optJSONObject(i) ?: continue
+            val qid = obj.optString("qid", "")
+            if (qid != "movie" && qid != "tvSeries" && qid != "tvMiniSeries") continue
+            val title = obj.optString("l", "").trim()
+            val imageObj = obj.optJSONObject("i") ?: continue
+            val posterUrl = imageObj.optString("imageUrl", "").trim()
+            if (title.isEmpty() || posterUrl.isEmpty()) continue
+            // Exclude animation/anime content
+            val qLabel = obj.optString("q", "").lowercase()
+            if (title.contains("anime", ignoreCase = true) ||
+                title.contains("animated", ignoreCase = true) ||
+                qLabel.contains("animation")
+            ) continue
+
+            val id = obj.optString("id", title.lowercase().replace(Regex("[^a-z0-9]+"), "-"))
+            val year = obj.optInt("y", 2024).toString()
+            val cast = obj.optString("s", "")
+            val isSeries = (qid == "tvSeries" || qid == "tvMiniSeries")
+            results.add(
+                WatchCatalogueItem(
+                    identifier = id,
+                    title = title,
+                    isSeries = isSeries,
+                    genre = if (isSeries) "Drama" else "Action",
+                    origin = CinemaOrigin.HOLLYWOOD,
+                    releaseYear = year,
+                    cast = cast,
+                    description = if (cast.isNotBlank()) "Starring $cast. Released in $year." else "Live-action ${if (isSeries) "series" else "feature film"} ($year).",
+                    posterUrl = posterUrl,
+                    totalSeasons = if (isSeries) 2 else 1,
+                    totalEpisodes = if (isSeries) 16 else 1,
+                    runtimeMinutes = if (!isSeries) 135 else null
+                )
+            )
+        }
+        results
+    } catch (e: Exception) {
+        emptyList()
+    }
+}
+
+/**
+ * Watch Catalogue Screen for real-world live-action Movies & Series (Bollywood & Hollywood).
+ * Uses original theatrical posters, excludes animation, and plays strictly inside the app.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun WatchScreen(
-    viewModel: AnimeViewModel,
-    onOpenYouTubePlayer: (videoId: String, title: String) -> Unit,
-    onOpenArchivePlayer: (streamUrl: String, title: String) -> Unit,
-    onNavigateToSettings: () -> Unit = {},
+    viewModel: AnimeViewModel? = null,
+    onNavigateToPlayer: ((animeId: Int, ep: Int, title: String, iaId: String) -> Unit)? = null,
+    onNavigateToDetail: ((animeId: Int) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
-    val context = LocalContext.current
-    var searchQuery by remember { mutableStateOf("Anime trailers 2026") }
-    val sourceFilter by viewModel.videoCatalogSourceFilter.collectAsState()
+    val coroutineScope = rememberCoroutineScope()
+    val archiveRepo = remember { ArchiveSearchRepository() }
+    val iaRepo = remember { InternetArchiveRepository() }
 
-    val isOptionalYouTubeApiEnabled by viewModel.isOptionalYouTubeApiEnabled.collectAsState()
-    val keylessSearchLinks by viewModel.keylessYouTubeSearchLinks.collectAsState()
-    val youtubeVideos by viewModel.youtubeVideos.collectAsState()
-    val isYouTubeSearching by viewModel.isYouTubeSearching.collectAsState()
-    val youtubeError by viewModel.youtubeSearchError.collectAsState()
-    val isQuotaExceeded by viewModel.isYouTubeQuotaExceeded.collectAsState()
-    val isKeyConfigured = viewModel.isYouTubeKeyConfigured
+    // Primary Watch Navigation Sections (Real-world Movies, Series, Bollywood, Hollywood)
+    var currentSection by remember { mutableStateOf("Home") }
+    val sections = listOf("Home", "Movies", "Series", "Bollywood", "Hollywood", "Genres", "My List", "Recently Viewed")
 
-    val archiveVideos by viewModel.archiveVideos.collectAsState()
-    val isArchiveSearching by viewModel.isArchiveSearching.collectAsState()
-    val archiveError by viewModel.archiveSearchError.collectAsState()
+    // Search & Filter State
+    var searchQuery by remember { mutableStateOf("") }
+    var debouncedQuery by remember { mutableStateOf("") }
+    var selectedGenre by remember { mutableStateOf("All Genres") }
+    var selectedOrigin by remember { mutableStateOf<CinemaOrigin?>(null) }
+    var isGridView by remember { mutableStateOf(true) }
+    var sortOrder by remember { mutableStateOf("Newest") } // "Newest", "A-Z"
+    var showFilterSheet by remember { mutableStateOf(false) }
 
-    val isResolvingArchive by viewModel.isResolvingArchiveMedia.collectAsState()
+    // Catalogue Data State
+    val catalogueItems = remember { mutableStateListOf<WatchCatalogueItem>().apply { addAll(CURATED_MOVIES_AND_SERIES) } }
+    val bookmarkedIds = remember { mutableStateListOf<String>() }
+    val recentlyViewedItems = remember { mutableStateListOf<WatchCatalogueItem>() }
+    var isLiveSearching by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
-        viewModel.searchVideoCatalog(searchQuery)
+    // In-App Playback and Detail State (Unified ExoPlayer opens immediately without blocking overlay)
+    var selectedItemForDetail by remember { mutableStateOf<WatchCatalogueItem?>(null) }
+    var activePlaybackItem by remember { mutableStateOf<WatchCatalogueItem?>(null) }
+    var activePlaybackEpisode by remember { mutableIntStateOf(1) }
+    var directPlayableMedia by remember { mutableStateOf<ArchivePlayableMedia?>(null) }
+    var isResolvingPlayback by remember { mutableStateOf(false) }
+    var playbackUnavailableReason by remember { mutableStateOf<String?>(null) }
+    var playbackResolveJob by remember { mutableStateOf<Job?>(null) }
+
+    // Debounce search query
+    LaunchedEffect(searchQuery) {
+        delay(350)
+        debouncedQuery = searchQuery.trim()
     }
 
-    Column(
+    // Live Search with Official Movie/Series Poster Resolution (No Internet Archive images, no animation)
+    LaunchedEffect(debouncedQuery) {
+        if (debouncedQuery.isNotEmpty()) {
+            isLiveSearching = true
+            withContext(Dispatchers.IO) {
+                try {
+                    val localMatches = CURATED_MOVIES_AND_SERIES.filter {
+                        it.title.contains(debouncedQuery, ignoreCase = true) ||
+                            it.genre.contains(debouncedQuery, ignoreCase = true) ||
+                            it.cast.contains(debouncedQuery, ignoreCase = true)
+                    }
+                    val remoteMatches = fetchOfficialPosterMetadata(debouncedQuery)
+                        .filterNot { remote -> localMatches.any { it.title.equals(remote.title, ignoreCase = true) } }
+
+                    withContext(Dispatchers.Main) {
+                        catalogueItems.clear()
+                        catalogueItems.addAll(localMatches + remoteMatches)
+                    }
+                } finally {
+                    withContext(Dispatchers.Main) { isLiveSearching = false }
+                }
+            }
+        } else {
+            catalogueItems.clear()
+            catalogueItems.addAll(CURATED_MOVIES_AND_SERIES)
+        }
+    }
+
+    // Filter and Sort displayed items
+    val displayedItems = remember(
+        catalogueItems.toList(),
+        currentSection,
+        selectedGenre,
+        selectedOrigin,
+        sortOrder,
+        bookmarkedIds.toList(),
+        recentlyViewedItems.toList()
+    ) {
+        var list = when (currentSection) {
+            "Home" -> catalogueItems.toList()
+            "Movies" -> catalogueItems.filter { !it.isSeries }
+            "Series" -> catalogueItems.filter { it.isSeries }
+            "Bollywood" -> catalogueItems.filter { it.origin == CinemaOrigin.BOLLYWOOD }
+            "Hollywood" -> catalogueItems.filter { it.origin == CinemaOrigin.HOLLYWOOD }
+            "Genres" -> if (selectedGenre == "All Genres") catalogueItems.toList() else catalogueItems.filter { it.genre.equals(selectedGenre, ignoreCase = true) }
+            "My List" -> catalogueItems.filter { bookmarkedIds.contains(it.identifier) }
+            "Recently Viewed" -> recentlyViewedItems.toList()
+            else -> catalogueItems.toList()
+        }
+
+        if (selectedGenre != "All Genres" && currentSection != "Genres") {
+            list = list.filter { it.genre.equals(selectedGenre, ignoreCase = true) }
+        }
+
+        if (selectedOrigin != null) {
+            list = list.filter { it.origin == selectedOrigin }
+        }
+
+        list = when (sortOrder) {
+            "A-Z" -> list.sortedBy { it.title.lowercase() }
+            else -> list.sortedByDescending { it.releaseYear }
+        }
+
+        list
+    }
+
+    // Strict In-App Playback Handler (Opens unified ExoPlayer immediately, blocks trailers/reviews/explanations, never loads forever)
+    val handlePlayTitle: (WatchCatalogueItem, Int) -> Unit = { item, episodeNum ->
+        if (!recentlyViewedItems.any { it.identifier == item.identifier }) {
+            recentlyViewedItems.add(0, item)
+        }
+        playbackResolveJob?.cancel()
+        activePlaybackItem = item
+        activePlaybackEpisode = episodeNum
+        directPlayableMedia = null
+        playbackUnavailableReason = null
+        isResolvingPlayback = true
+
+        playbackResolveJob = coroutineScope.launch(Dispatchers.IO) {
+            val resolvedTitle = if (item.isSeries) "${item.title} - Episode $episodeNum" else item.title
+            var resolvedMedia: ArchivePlayableMedia? = null
+            var failReason: String? = null
+
+            val result = withTimeoutOrNull(7_500L) {
+                // 1. Try direct identifier inspection first (strictly requiring full length & blocking trailers/reviews/explanations)
+                val directAttempt = iaRepo.inspectAndResolvePlayableMedia(
+                    identifier = item.identifier,
+                    preferredEpisode = if (item.isSeries) episodeNum else null,
+                    isMovieOrSingleWork = !item.isSeries,
+                    isLiveActionAllowed = true
+                )
+                when (directAttempt) {
+                    is ArchivePlayableMediaResult.Success -> {
+                        directAttempt.media.copy(
+                            title = resolvedTitle,
+                            matchedEpisode = if (item.isSeries) episodeNum else null
+                        )
+                    }
+                    else -> {
+                        // 2. Search Internet Archive for actual full-length movie or series video (excluding trailers/reviews/explanations)
+                        when (val liveMatch = iaRepo.findBestLiveActionStream(
+                            title = item.title,
+                            episodeNumber = if (item.isSeries) episodeNum else null,
+                            isSeries = item.isSeries
+                        )) {
+                            is ArchivePlayableMediaResult.Success -> liveMatch.media.copy(
+                                title = resolvedTitle,
+                                matchedEpisode = if (item.isSeries) episodeNum else null
+                            )
+                            is ArchivePlayableMediaResult.Unavailable -> {
+                                failReason = liveMatch.reason
+                                null
+                            }
+                            is ArchivePlayableMediaResult.Error -> {
+                                failReason = liveMatch.message
+                                null
+                            }
+                        }
+                    }
+                }
+            }
+
+            resolvedMedia = result
+            if (resolvedMedia == null && failReason == null) {
+                failReason = "Can't find \"$resolvedTitle\" full video on Internet Archive."
+            }
+
+            withContext(Dispatchers.Main) {
+                isResolvingPlayback = false
+                if (resolvedMedia != null) {
+                    directPlayableMedia = resolvedMedia
+                    playbackUnavailableReason = null
+                } else {
+                    directPlayableMedia = null
+                    playbackUnavailableReason = failReason ?: "Can't find \"$resolvedTitle\" on Internet Archive."
+                }
+            }
+        }
+    }
+
+    Box(
         modifier = modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .padding(horizontal = 16.dp)
-            .testTag("watch_screen")
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        Color(0xFF060913),
+                        Color(0xFF04060C),
+                        Color(0xFF020408)
+                    )
+                )
+            )
+            .testTag("watch_catalogue_screen")
     ) {
-        // Screen Header
-        Column(
+        // Subtle Radial Frost Glow Ambient in top corner
+        Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 16.dp, bottom = 12.dp)
-        ) {
+                .size(360.dp)
+                .align(Alignment.TopEnd)
+                .background(
+                    Brush.radialGradient(
+                        colors = listOf(
+                            Color(0xFF38BDF8).copy(alpha = 0.12f),
+                            Color(0xFF818CF8).copy(alpha = 0.06f),
+                            Color.Transparent
+                        )
+                    )
+                )
+                .blur(50.dp)
+        )
+
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Top App Bar
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp, vertical = 12.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
                     Text(
-                        text = "DISCOVERY & STREAMING",
+                        text = "MOVIES & SERIES",
                         style = MaterialTheme.typography.labelSmall.copy(
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 2.sp
-                        ),
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = "Watch Catalog",
-                        style = MaterialTheme.typography.headlineMedium.copy(
                             fontWeight = FontWeight.ExtraBold,
-                            letterSpacing = (-0.5).sp
+                            letterSpacing = 2.2.sp
                         ),
-                        color = MaterialTheme.colorScheme.onBackground
+                        color = Color(0xFF38BDF8)
+                    )
+                    Text(
+                        text = "Watch",
+                        style = MaterialTheme.typography.headlineMedium.copy(
+                            fontWeight = FontWeight.Black,
+                            fontSize = 24.sp
+                        ),
+                        color = Color.White
                     )
                 }
 
-                IconButton(
-                    onClick = { viewModel.searchVideoCatalog(searchQuery) },
-                    modifier = Modifier
-                        .size(38.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.surfaceVariant)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Refresh,
-                        contentDescription = "Refresh Videos",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-            }
-        }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // View Toggle (Grid / List)
+                    IconButton(
+                        onClick = { isGridView = !isGridView },
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.08f))
+                            .border(1.dp, Color.White.copy(alpha = 0.15f), CircleShape)
+                            .testTag("toggle_display_mode")
+                    ) {
+                        Icon(
+                            imageVector = if (isGridView) Icons.Default.ViewList else Icons.Default.GridView,
+                            contentDescription = "Toggle Grid/List",
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
 
-        // Search Box
-        OutlinedTextField(
-            value = searchQuery,
-            onValueChange = { searchQuery = it },
-            placeholder = { Text("Search anime, trailers, episodes, or archive...") },
-            leadingIcon = {
-                Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-            },
-            trailingIcon = {
-                if (searchQuery.isNotEmpty()) {
-                    IconButton(onClick = { searchQuery = "" }) {
-                        Icon(Icons.Default.Clear, contentDescription = "Clear")
+                    // Filter Button
+                    IconButton(
+                        onClick = { showFilterSheet = true },
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF0284C7).copy(alpha = 0.25f))
+                            .border(1.dp, Color(0xFF38BDF8).copy(alpha = 0.5f), CircleShape)
+                            .testTag("filter_dialog_btn")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Tune,
+                            contentDescription = "Filter Catalogue",
+                            tint = Color(0xFF38BDF8),
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
                 }
-            },
-            singleLine = true,
-            shape = RoundedCornerShape(16.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedContainerColor = MaterialTheme.colorScheme.surface,
-                unfocusedContainerColor = MaterialTheme.colorScheme.surface,
-                focusedBorderColor = MaterialTheme.colorScheme.primary,
-                unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
-            ),
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("watch_search_input")
-        )
+            }
 
-        Spacer(modifier = Modifier.height(10.dp))
-
-        // Source Filter Chips
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            FilterChip(
-                selected = sourceFilter == "ALL",
-                onClick = { viewModel.setVideoCatalogSourceFilter("ALL") },
-                label = { Text("All Sources") },
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = MaterialTheme.colorScheme.primary,
-                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary
-                )
-            )
-
-            FilterChip(
-                selected = sourceFilter == "YOUTUBE",
-                onClick = { viewModel.setVideoCatalogSourceFilter("YOUTUBE") },
-                label = { Text("YouTube Official") },
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = Color(0xFFEF4444),
-                    selectedLabelColor = Color.White
-                )
-            )
-
-            FilterChip(
-                selected = sourceFilter == "ARCHIVE",
-                onClick = { viewModel.setVideoCatalogSourceFilter("ARCHIVE") },
-                label = { Text("Internet Archive") },
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = Color(0xFF38BDF8),
-                    selectedLabelColor = Color(0xFF021B2B)
-                )
-            )
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // YouTube Mode Card (Keyless by default or Optional API)
-        if (sourceFilter == "ALL" || sourceFilter == "YOUTUBE") {
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = if (isOptionalYouTubeApiEnabled) Color(0xFF1E293B) else Color(0xFF0F172A)
-                ),
-                shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(
-                    1.dp,
-                    if (isOptionalYouTubeApiEnabled) Color(0xFFEF4444).copy(alpha = 0.35f) else Color(0xFF10B981).copy(alpha = 0.35f)
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp)
-            ) {
-                Row(
-                    modifier = Modifier.padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Surface(
-                        color = if (isOptionalYouTubeApiEnabled) Color(0xFFEF4444).copy(alpha = 0.2f) else Color(0xFF10B981).copy(alpha = 0.2f),
-                        shape = CircleShape,
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
+            // Real-Time Search Bar
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                placeholder = {
+                    Text(
+                        "Search Bollywood, Hollywood movies & series...",
+                        color = Color(0xFF64748B),
+                        fontSize = 13.sp
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = null,
+                        tint = Color(0xFF38BDF8),
+                        modifier = Modifier.size(20.dp)
+                    )
+                },
+                trailingIcon = {
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { searchQuery = "" }) {
                             Icon(
-                                imageVector = if (isOptionalYouTubeApiEnabled) Icons.Default.VideoLibrary else Icons.Default.Search,
-                                contentDescription = null,
-                                tint = if (isOptionalYouTubeApiEnabled) Color(0xFFEF4444) else Color(0xFF10B981),
+                                imageVector = Icons.Default.Clear,
+                                contentDescription = "Clear",
+                                tint = Color(0xFF94A3B8),
                                 modifier = Modifier.size(18.dp)
                             )
                         }
+                    } else if (isLiveSearching) {
+                        CircularProgressIndicator(
+                            strokeWidth = 2.dp,
+                            color = Color(0xFF38BDF8),
+                            modifier = Modifier.size(16.dp)
+                        )
                     }
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(16.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedContainerColor = Color(0xFF0A0F1D).copy(alpha = 0.85f),
+                    unfocusedContainerColor = Color(0xFF0A0F1D).copy(alpha = 0.65f),
+                    focusedBorderColor = Color(0xFF38BDF8),
+                    unfocusedBorderColor = Color(0xFF334155),
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color.White
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .testTag("watch_catalogue_search_input")
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Main Navigation Tabs
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                sections.forEach { sec ->
+                    val isSecSelected = sec == currentSection
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = if (isSecSelected) Color(0xFF0284C7) else Color(0xFF0D1527),
+                        border = BorderStroke(
+                            1.dp,
+                            if (isSecSelected) Color(0xFF38BDF8) else Color(0xFF1E293B)
+                        ),
+                        modifier = Modifier
+                            .clickable { currentSection = sec }
+                            .testTag("watch_nav_${sec.lowercase().replace(' ', '_')}")
+                    ) {
+                        Text(
+                            text = sec,
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontWeight = if (isSecSelected) FontWeight.ExtraBold else FontWeight.Medium,
+                                fontSize = 12.sp
+                            ),
+                            color = if (isSecSelected) Color.White else Color(0xFF94A3B8),
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Content Area
+            if (displayedItems.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = Color(0xFF0F172A),
+                            border = BorderStroke(1.dp, Color(0xFF334155)),
+                            modifier = Modifier.size(72.dp)
                         ) {
-                            Text(
-                                text = if (isOptionalYouTubeApiEnabled) "YouTube Data API Feed" else "YouTube Keyless Discovery",
-                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                                color = Color.White
-                            )
-                            Surface(
-                                color = if (isOptionalYouTubeApiEnabled) Color(0xFFEF4444).copy(alpha = 0.25f) else Color(0xFF10B981).copy(alpha = 0.25f),
-                                shape = RoundedCornerShape(4.dp)
-                            ) {
-                                Text(
-                                    text = if (isOptionalYouTubeApiEnabled) "OPTIONAL API" else "ZERO KEY REQUIRED",
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        fontSize = 9.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (isOptionalYouTubeApiEnabled) Color(0xFFEF4444) else Color(0xFF10B981)
-                                    ),
-                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.Movie,
+                                    contentDescription = null,
+                                    tint = Color(0xFF38BDF8),
+                                    modifier = Modifier.size(32.dp)
                                 )
                             }
                         }
+                        Spacer(modifier = Modifier.height(14.dp))
                         Text(
-                            text = if (isOptionalYouTubeApiEnabled) "Using custom Google Cloud credentials." else "Public YouTube query links without scraping or private keys.",
+                            text = "No Titles Found",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = Color.White
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = if (currentSection == "My List") "You have not saved any movies or series to My List yet."
+                            else "No movies or series match the current filters.",
                             style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFF94A3B8)
+                            color = Color(0xFF94A3B8),
+                            textAlign = TextAlign.Center
                         )
-                    }
-                    Button(
-                        onClick = {
-                            val encoded = URLEncoder.encode(searchQuery, "UTF-8")
-                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/results?search_query=$encoded"))
-                            context.startActivity(intent)
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444)),
-                        shape = RoundedCornerShape(8.dp),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-                    ) {
-                        Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(14.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Search", style = MaterialTheme.typography.labelSmall)
-                    }
-                }
-            }
-
-            // Quick Query Adders
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                listOf("Trailers", "Episodes", "Themes", "Muse Asia", "Ani-One").forEach { tag ->
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                        modifier = Modifier.clickable {
-                            val base = searchQuery.replace(Regex("(?i)\\b$tag\\b"), "").trim()
-                            val newQuery = "$base $tag".trim()
-                            searchQuery = newQuery
-                            viewModel.searchVideoCatalog(newQuery)
+                        Spacer(modifier = Modifier.height(14.dp))
+                        OutlinedButton(
+                            onClick = {
+                                searchQuery = ""
+                                selectedGenre = "All Genres"
+                                selectedOrigin = null
+                                currentSection = "Home"
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, Color(0xFF38BDF8)),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF38BDF8))
+                        ) {
+                            Text("Reset Filters")
                         }
-                    ) {
-                        Text(
-                            text = "+ $tag",
-                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp, color = MaterialTheme.colorScheme.primary),
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    }
+                }
+            } else if (isGridView) {
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 80.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.fillMaxSize().testTag("watch_catalogue_grid")
+                ) {
+                    if (currentSection == "Home" && displayedItems.isNotEmpty()) {
+                        item(span = { GridItemSpan(2) }) {
+                            val heroItem = displayedItems.first()
+                            FrostGlowHeroCard(
+                                item = heroItem,
+                                isBookmarked = bookmarkedIds.contains(heroItem.identifier),
+                                onToggleBookmark = {
+                                    if (bookmarkedIds.contains(heroItem.identifier)) bookmarkedIds.remove(heroItem.identifier)
+                                    else bookmarkedIds.add(heroItem.identifier)
+                                },
+                                onWatchNow = { handlePlayTitle(heroItem, 1) },
+                                onViewDetails = { selectedItemForDetail = heroItem }
+                            )
+                        }
+                    }
+
+                    items(if (currentSection == "Home") displayedItems.drop(1) else displayedItems, key = { it.identifier }) { item ->
+                        FrostGlowCatalogueCard(
+                            item = item,
+                            isBookmarked = bookmarkedIds.contains(item.identifier),
+                            onToggleBookmark = {
+                                if (bookmarkedIds.contains(item.identifier)) bookmarkedIds.remove(item.identifier)
+                                else bookmarkedIds.add(item.identifier)
+                            },
+                            onClick = { selectedItemForDetail = item },
+                            onPlay = { handlePlayTitle(item, 1) }
+                        )
+                    }
+                }
+            } else {
+                LazyColumn(
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 80.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxSize().testTag("watch_catalogue_list")
+                ) {
+                    items(displayedItems, key = { it.identifier }) { item ->
+                        FrostGlowListRow(
+                            item = item,
+                            isBookmarked = bookmarkedIds.contains(item.identifier),
+                            onToggleBookmark = {
+                                if (bookmarkedIds.contains(item.identifier)) bookmarkedIds.remove(item.identifier)
+                                else bookmarkedIds.add(item.identifier)
+                            },
+                            onClick = { selectedItemForDetail = item },
+                            onPlay = { handlePlayTitle(item, 1) }
                         )
                     }
                 }
             }
         }
 
-        // Quota error banner (only when optional API is active and quota exhausted)
-        if (isOptionalYouTubeApiEnabled && isQuotaExceeded) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF7F1D1D).copy(alpha = 0.5f)),
-                shape = RoundedCornerShape(12.dp),
-                border = BorderStroke(1.dp, Color(0xFFEF4444)),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp)
+        // Detail Bottom Sheet
+        if (selectedItemForDetail != null) {
+            val item = selectedItemForDetail!!
+            val isSaved = bookmarkedIds.contains(item.identifier)
+            ModalBottomSheet(
+                onDismissRequest = { selectedItemForDetail = null },
+                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                containerColor = Color(0xFF090E1A),
+                scrimColor = Color.Black.copy(alpha = 0.70f)
             ) {
-                Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = "YouTube Data API daily quota reached. Showing Internet Archive media and Keyless search links.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFFFCA5A5)
-                    )
-                }
-            }
-        }
-
-        // Loading Indicators
-        if (isYouTubeSearching || isArchiveSearching || isResolvingArchive) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                Spacer(modifier = Modifier.width(10.dp))
-                Text(
-                    text = if (isResolvingArchive) "Inspecting archive media files..." else "Searching video providers...",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                TitleDetailSheetContent(
+                    item = item,
+                    isBookmarked = isSaved,
+                    onToggleBookmark = {
+                        if (isSaved) bookmarkedIds.remove(item.identifier)
+                        else bookmarkedIds.add(item.identifier)
+                    },
+                    onWatchEpisode = { ep ->
+                        selectedItemForDetail = null
+                        handlePlayTitle(item, ep)
+                    },
+                    onDismiss = { selectedItemForDetail = null }
                 )
             }
         }
 
-        // Videos Content List
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(top = 8.dp, bottom = 96.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            // YouTube Videos Section
-            if (sourceFilter == "ALL" || sourceFilter == "YOUTUBE") {
-                if (isOptionalYouTubeApiEnabled && youtubeVideos.isNotEmpty()) {
-                    item {
-                        Text(
-                            text = "YOUTUBE DATA API RESULTS (${youtubeVideos.size})",
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
-                            color = Color(0xFFEF4444)
-                        )
+        // Filter Bottom Sheet
+        if (showFilterSheet) {
+            ModalBottomSheet(
+                onDismissRequest = { showFilterSheet = false },
+                containerColor = Color(0xFF0A0F1D)
+            ) {
+                CatalogueFilterSheetContent(
+                    selectedGenre = selectedGenre,
+                    onSelectGenre = { selectedGenre = it },
+                    selectedOrigin = selectedOrigin,
+                    onSelectOrigin = { selectedOrigin = it },
+                    sortOrder = sortOrder,
+                    onSelectSort = { sortOrder = it },
+                    onApply = { showFilterSheet = false },
+                    onReset = {
+                        selectedGenre = "All Genres"
+                        selectedOrigin = null
+                        sortOrder = "Newest"
+                        showFilterSheet = false
                     }
-
-                    items(youtubeVideos, key = { "yt_${it.id}" }) { video ->
-                        YouTubeVideoCard(
-                            video = video,
-                            onClick = { onOpenYouTubePlayer(video.id, video.title) }
-                        )
-                    }
-                } else if (!isOptionalYouTubeApiEnabled) {
-                    item {
-                        Text(
-                            text = "OFFICIAL YOUTUBE SEARCH LINKS (KEYLESS)",
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
-                            color = Color(0xFFEF4444)
-                        )
-                    }
-
-                    items(keylessSearchLinks, key = { "link_${it.category}" }) { link ->
-                        KeylessSearchLinkCard(
-                            link = link,
-                            onClick = {
-                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(link.webSearchUrl))
-                                context.startActivity(intent)
-                            }
-                        )
-                    }
-                }
+                )
             }
+        }
 
-            // Internet Archive Section
-            if (sourceFilter == "ALL" || sourceFilter == "ARCHIVE") {
-                if (archiveVideos.isNotEmpty()) {
-                    item {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "INTERNET ARCHIVE PUBLIC DOMAIN & MEDIA (${archiveVideos.size})",
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
-                            color = Color(0xFF38BDF8)
-                        )
-                    }
-
-                    items(archiveVideos, key = { "ia_${it.identifier}" }) { archiveItem ->
-                        ArchiveMediaCard(
-                            item = archiveItem,
-                            onClick = {
-                                viewModel.resolveArchiveMedia(archiveItem.identifier) { playable ->
-                                    onOpenArchivePlayer(playable.streamUrl, playable.title)
-                                }
-                            },
-                            onSaveToWatchlist = {
-                                viewModel.saveArchiveItemToWatchlist(archiveItem, asWishlist = false)
-                            }
-                        )
-                    }
+        // Unified Full-Featured In-App ExoPlayer Dialog (Opens immediately, no "Starting In-App Player..." text)
+        if (activePlaybackItem != null) {
+            val item = activePlaybackItem!!
+            val displayTitle = if (item.isSeries) "${item.title} - Episode $activePlaybackEpisode" else item.title
+            ArchiveDirectPlayerDialog(
+                playable = directPlayableMedia,
+                isLoading = isResolvingPlayback,
+                unavailableReason = playbackUnavailableReason,
+                displayTitle = displayTitle,
+                currentEpisode = if (item.isSeries) activePlaybackEpisode else null,
+                totalEpisodes = if (item.isSeries) item.totalEpisodes else 1,
+                onSelectEpisode = if (item.isSeries) {
+                    { newEp -> handlePlayTitle(item, newEp) }
+                } else null,
+                onRetry = { handlePlayTitle(item, activePlaybackEpisode) },
+                onDismiss = {
+                    playbackResolveJob?.cancel()
+                    isResolvingPlayback = false
+                    activePlaybackItem = null
+                    directPlayableMedia = null
+                    playbackUnavailableReason = null
                 }
-            }
-
-            // Empty State
-            if (!isYouTubeSearching && !isArchiveSearching && youtubeVideos.isEmpty() && archiveVideos.isEmpty()) {
-                item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 48.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(
-                                imageVector = Icons.Default.VideoLibrary,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                                modifier = Modifier.size(56.dp)
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Text(
-                                text = "No videos found",
-                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                color = MaterialTheme.colorScheme.onBackground
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = "Try searching for a different anime title or character.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                }
-            }
+            )
         }
     }
 }
 
+/**
+ * Reusable Original Movie/Series Poster Image with sleek dark fallback (never Internet Archive logo).
+ */
 @Composable
-fun YouTubeVideoCard(
-    video: YouTubeVideo,
-    onClick: () -> Unit,
+private fun OriginalPosterImage(
+    posterUrl: String,
+    title: String,
     modifier: Modifier = Modifier
 ) {
+    SubcomposeAsyncImage(
+        model = posterUrl,
+        contentDescription = title,
+        contentScale = ContentScale.Crop,
+        modifier = modifier,
+        loading = {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(Color(0xFF0F172A), Color(0xFF090D1A))
+                        )
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator(
+                    color = Color(0xFF38BDF8),
+                    strokeWidth = 2.dp,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+        },
+        error = {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(Color(0xFF1E293B), Color(0xFF090D1A))
+                        )
+                    )
+                    .padding(12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        imageVector = Icons.Default.Movie,
+                        contentDescription = null,
+                        tint = Color(0xFF38BDF8),
+                        modifier = Modifier.size(28.dp)
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                        color = Color.White,
+                        textAlign = TextAlign.Center,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    )
+}
+
+/**
+ * Featured Hero Card with clean original movie/series poster (no "Featured Hindi Dub" or "Hindi Verified" text).
+ */
+@Composable
+private fun FrostGlowHeroCard(
+    item: WatchCatalogueItem,
+    isBookmarked: Boolean,
+    onToggleBookmark: () -> Unit,
+    onWatchNow: () -> Unit,
+    onViewDetails: () -> Unit
+) {
     Card(
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.15f)),
-        modifier = modifier
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF0D1527).copy(alpha = 0.85f)),
+        border = BorderStroke(
+            1.2.dp,
+            Brush.linearGradient(
+                listOf(
+                    Color(0xFF38BDF8).copy(alpha = 0.8f),
+                    Color(0xFF818CF8).copy(alpha = 0.4f),
+                    Color(0xFF06B6D4).copy(alpha = 0.7f)
+                )
+            )
+        ),
+        modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .clickable { onViewDetails() }
+            .testTag("hero_featured_card")
     ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            // Thumbnail with badges overlay
+        Column {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(190.dp)
+                    .height(210.dp)
             ) {
-                AsyncImage(
-                    model = video.thumbnailUrl,
-                    contentDescription = video.title,
-                    contentScale = ContentScale.Crop,
+                OriginalPosterImage(
+                    posterUrl = item.posterUrl,
+                    title = item.title,
                     modifier = Modifier.fillMaxSize()
                 )
-
-                // Dark gradient
+                // Subtle bottom gradient for readability
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .background(
                             Brush.verticalGradient(
-                                listOf(Color.Transparent, Color.Black.copy(alpha = 0.75f))
+                                colors = listOf(
+                                    Color.Transparent,
+                                    Color(0xFF0D1527).copy(alpha = 0.75f),
+                                    Color(0xFF0D1527)
+                                )
                             )
                         )
                 )
 
-                // Source Badge
-                Surface(
-                    color = Color(0xFFEF4444),
-                    shape = RoundedCornerShape(6.dp),
+                // Bookmark button in top-right corner only (no banner text)
+                IconButton(
+                    onClick = onToggleBookmark,
                     modifier = Modifier
-                        .padding(10.dp)
-                        .align(Alignment.TopStart)
-                ) {
-                    Text(
-                        text = video.sourceBadge,
-                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Color.White),
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                    )
-                }
-
-                // Type Badge
-                Surface(
-                    color = Color(0xFF1E293B).copy(alpha = 0.9f),
-                    shape = RoundedCornerShape(6.dp),
-                    modifier = Modifier
-                        .padding(10.dp)
                         .align(Alignment.TopEnd)
-                ) {
-                    val label = when (video.videoType) {
-                        YouTubeVideoType.TRAILER -> "TRAILER"
-                        YouTubeVideoType.FULL_EPISODE -> "FULL EPISODE"
-                        YouTubeVideoType.CLIP -> "CLIP"
-                        YouTubeVideoType.OPENING_ENDING -> "OST / OP"
-                        YouTubeVideoType.GENERAL -> "VIDEO"
-                    }
-                    Text(
-                        text = label,
-                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8)),
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                    )
-                }
-
-                // Center Play Button Overlay
-                Box(
-                    modifier = Modifier
-                        .size(52.dp)
+                        .padding(12.dp)
+                        .size(34.dp)
                         .clip(CircleShape)
-                        .background(Color.Black.copy(alpha = 0.65f))
-                        .border(1.5.dp, Color.White, CircleShape)
-                        .align(Alignment.Center),
-                    contentAlignment = Alignment.Center
+                        .background(Color.Black.copy(alpha = 0.55f))
                 ) {
                     Icon(
-                        imageVector = Icons.Default.PlayArrow,
-                        contentDescription = "Play Video",
-                        tint = Color.White,
-                        modifier = Modifier.size(32.dp)
+                        imageVector = if (isBookmarked) Icons.Default.Bookmark else Icons.Default.BookmarkBorder,
+                        contentDescription = "Bookmark",
+                        tint = if (isBookmarked) Color(0xFF38BDF8) else Color.White,
+                        modifier = Modifier.size(16.dp)
                     )
-                }
-
-                // Duration badge
-                if (!video.durationFormatted.isNullOrBlank()) {
-                    Surface(
-                        color = Color.Black.copy(alpha = 0.85f),
-                        shape = RoundedCornerShape(4.dp),
-                        modifier = Modifier
-                            .padding(8.dp)
-                            .align(Alignment.BottomEnd)
-                    ) {
-                        Text(
-                            text = video.durationFormatted,
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Color.White),
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                    }
                 }
             }
 
-            // Text Info
             Column(modifier = Modifier.padding(14.dp)) {
                 Text(
-                    text = video.title,
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 2,
+                    text = item.title,
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp
+                    ),
+                    color = Color.White,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                Spacer(modifier = Modifier.height(3.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = item.origin.label,
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, fontWeight = FontWeight.SemiBold),
+                        color = Color(0xFF38BDF8)
+                    )
+                    Text(text = " • ", color = Color(0xFF64748B))
+                    Text(
+                        text = item.genre,
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                        color = Color(0xFFCBD5E1)
+                    )
+                    Text(text = " • ", color = Color(0xFF64748B))
+                    Text(
+                        text = if (item.isSeries) "${item.totalSeasons} Seasons (${item.totalEpisodes} Ep)" else "${item.runtimeMinutes ?: 140} min",
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                        color = Color(0xFF94A3B8)
+                    )
+                    Text(text = " • ", color = Color(0xFF64748B))
+                    Text(
+                        text = item.releaseYear,
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                        color = Color(0xFF94A3B8)
+                    )
+                }
 
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = video.channelTitle,
-                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        if (video.isVerifiedOfficial) {
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Icon(
-                                imageVector = Icons.Default.CheckCircle,
-                                contentDescription = "Official Distributor",
-                                tint = Color(0xFF38BDF8),
-                                modifier = Modifier.size(14.dp)
-                            )
-                        }
+                    Button(
+                        onClick = onWatchNow,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE11D48)),
+                        modifier = Modifier.weight(1f).height(42.dp)
+                    ) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Watch Now", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     }
 
-                    if (video.publishedAt.isNotBlank()) {
-                        Text(
-                            text = video.publishedAt,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                        )
+                    OutlinedButton(
+                        onClick = onViewDetails,
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.6f)),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF38BDF8)),
+                        modifier = Modifier.weight(1f).height(42.dp)
+                    ) {
+                        Text("Details", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                     }
                 }
             }
@@ -645,215 +1293,516 @@ fun YouTubeVideoCard(
     }
 }
 
+/**
+ * 2-Column Grid Card showcasing the clean original Movie/Series Poster.
+ */
 @Composable
-fun ArchiveMediaCard(
-    item: ArchiveMediaItem,
+private fun FrostGlowCatalogueCard(
+    item: WatchCatalogueItem,
+    isBookmarked: Boolean,
+    onToggleBookmark: () -> Unit,
     onClick: () -> Unit,
-    onSaveToWatchlist: (() -> Unit)? = null,
-    modifier: Modifier = Modifier
+    onPlay: () -> Unit
 ) {
     Card(
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.2f)),
-        modifier = modifier
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF0C1322).copy(alpha = 0.85f)),
+        border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.35f)),
+        modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .clickable { onClick() }
+            .testTag("catalogue_card_${item.identifier}")
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Thumbnail
+        Column {
             Box(
                 modifier = Modifier
-                    .size(90.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(Color(0xFF0F172A)),
-                contentAlignment = Alignment.Center
+                    .fillMaxWidth()
+                    .aspectRatio(0.68f)
             ) {
-                AsyncImage(
-                    model = item.thumbnailUrl,
-                    contentDescription = item.title,
-                    contentScale = ContentScale.Crop,
+                OriginalPosterImage(
+                    posterUrl = item.posterUrl,
+                    title = item.title,
                     modifier = Modifier.fillMaxSize()
                 )
+
+                // Bookmark Icon in Top Right
+                IconButton(
+                    onClick = onToggleBookmark,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(8.dp)
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.60f))
+                ) {
+                    Icon(
+                        imageVector = if (isBookmarked) Icons.Default.Bookmark else Icons.Default.BookmarkBorder,
+                        contentDescription = "Bookmark",
+                        tint = if (isBookmarked) Color(0xFF38BDF8) else Color.White,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+
+                // Quick Play Action Overlay on Bottom Right
                 Box(
                     modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(8.dp)
                         .size(34.dp)
                         .clip(CircleShape)
-                        .background(Color.Black.copy(alpha = 0.6f)),
+                        .background(Color(0xFFE11D48))
+                        .clickable { onPlay() },
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = Icons.Default.PlayArrow,
                         contentDescription = "Play",
-                        tint = Color(0xFF38BDF8),
-                        modifier = Modifier.size(20.dp)
+                        tint = Color.White,
+                        modifier = Modifier.size(18.dp)
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.width(14.dp))
+            Column(modifier = Modifier.padding(10.dp)) {
+                Text(
+                    text = item.title,
+                    style = MaterialTheme.typography.titleSmall.copy(
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp
+                    ),
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = if (item.isSeries) "Series" else "Movie",
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp, fontWeight = FontWeight.SemiBold),
+                        color = Color(0xFF38BDF8)
+                    )
+                    Text(text = " • ", color = Color(0xFF64748B), fontSize = 10.sp)
+                    Text(
+                        text = item.genre,
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                        color = Color(0xFFCBD5E1)
+                    )
+                    Text(text = " • ", color = Color(0xFF64748B), fontSize = 10.sp)
+                    Text(
+                        text = item.releaseYear,
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                        color = Color(0xFF94A3B8)
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * List View Row
+ */
+@Composable
+private fun FrostGlowListRow(
+    item: WatchCatalogueItem,
+    isBookmarked: Boolean,
+    onToggleBookmark: () -> Unit,
+    onClick: () -> Unit,
+    onPlay: () -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF0C1322).copy(alpha = 0.85f)),
+        border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.3f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() }
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(width = 68.dp, height = 96.dp)
+                    .clip(RoundedCornerShape(10.dp))
+            ) {
+                OriginalPosterImage(
+                    posterUrl = item.posterUrl,
+                    title = item.title,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+
+            Spacer(modifier = Modifier.width(12.dp))
 
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Surface(
-                        color = Color(0xFF0284C7).copy(alpha = 0.2f),
-                        shape = RoundedCornerShape(4.dp)
-                    ) {
-                        Text(
-                            text = "Archive.org",
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8)),
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                    }
-
-                    if (item.isPublicDomainOrCreativeCommons) {
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Surface(
-                            color = Color(0xFF10B981).copy(alpha = 0.2f),
-                            shape = RoundedCornerShape(4.dp)
-                        ) {
-                            Text(
-                                text = "PD / CC",
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Color(0xFF10B981)),
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(4.dp))
-
-                Text(
-                    text = item.title,
-                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-
-                if (item.creator != null || item.year != null) {
-                    Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = listOfNotNull(item.creator, item.year).joinToString(" • "),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        text = "${item.origin.label} • ${if (item.isSeries) "Series" else "Movie"}",
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
+                        color = Color(0xFF38BDF8)
+                    )
+                    Text(text = " • ", color = Color(0xFF64748B), fontSize = 10.sp)
+                    Text(
+                        text = item.genre,
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                        color = Color(0xFFCBD5E1)
                     )
                 }
 
-                if (item.description.isNotBlank()) {
-                    Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(3.dp))
+                Text(
+                    text = item.title,
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, fontSize = 14.sp),
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = if (item.isSeries) "${item.totalSeasons} Seasons • ${item.totalEpisodes} Episodes • ${item.releaseYear}"
+                    else "${item.runtimeMinutes ?: 140} min • ${item.releaseYear}",
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                    color = Color(0xFF94A3B8)
+                )
+
+                if (item.cast.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = item.description,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                        text = item.cast,
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                        color = Color(0xFF64748B),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
             }
 
-            if (onSaveToWatchlist != null) {
-                IconButton(
-                    onClick = onSaveToWatchlist,
-                    modifier = Modifier.size(48.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.BookmarkAdd,
-                        contentDescription = "Save to Watchlist",
-                        tint = Color(0xFF38BDF8)
-                    )
-                }
+            IconButton(
+                onClick = onToggleBookmark,
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    imageVector = if (isBookmarked) Icons.Default.Bookmark else Icons.Default.BookmarkBorder,
+                    contentDescription = "Bookmark",
+                    tint = if (isBookmarked) Color(0xFF38BDF8) else Color(0xFF94A3B8),
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+
+            IconButton(
+                onClick = onPlay,
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFFE11D48))
+            ) {
+                Icon(
+                    imageVector = Icons.Default.PlayArrow,
+                    contentDescription = "Watch",
+                    tint = Color.White,
+                    modifier = Modifier.size(18.dp)
+                )
             }
         }
     }
 }
 
+/**
+ * Bottom Sheet Detail View for Movie & Series Details + Direct In-App Episode Selection
+ */
 @Composable
-fun KeylessSearchLinkCard(
-    link: YouTubeSearchLink,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
+private fun TitleDetailSheetContent(
+    item: WatchCatalogueItem,
+    isBookmarked: Boolean,
+    onToggleBookmark: () -> Unit,
+    onWatchEpisode: (Int) -> Unit,
+    onDismiss: () -> Unit
 ) {
-    Card(
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.15f)),
-        modifier = modifier
+    var selectedEpisodeToWatch by remember { mutableIntStateOf(1) }
+
+    Column(
+        modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 10.dp)
+            .testTag("title_detail_sheet")
     ) {
+        // Header with Original Poster
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Top
         ) {
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = Color(0xFFEF4444).copy(alpha = 0.15f),
-                modifier = Modifier.size(44.dp)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = Icons.Default.Search,
-                        contentDescription = null,
-                        tint = Color(0xFFEF4444),
-                        modifier = Modifier.size(22.dp)
+            Row(modifier = Modifier.weight(1f)) {
+                Box(
+                    modifier = Modifier
+                        .size(width = 82.dp, height = 118.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                ) {
+                    OriginalPosterImage(
+                        posterUrl = item.posterUrl,
+                        title = item.title,
+                        modifier = Modifier.fillMaxSize()
                     )
                 }
-            }
 
-            Spacer(modifier = Modifier.width(12.dp))
+                Spacer(modifier = Modifier.width(14.dp))
 
-            Column(modifier = Modifier.weight(1f)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
+                Column {
                     Text(
-                        text = link.title,
-                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.onSurface
+                        text = "${item.origin.label} • ${if (item.isSeries) "Series" else "Movie"}",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 10.sp,
+                            color = Color(0xFF38BDF8)
+                        )
                     )
-                    Surface(
-                        color = Color(0xFFF59E0B).copy(alpha = 0.18f),
-                        shape = RoundedCornerShape(4.dp)
-                    ) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = item.title,
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, fontSize = 17.sp),
+                        color = Color.White,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(modifier = Modifier.height(3.dp))
+                    Text(
+                        text = "${item.genre} • ${item.releaseYear}",
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                        color = Color(0xFFCBD5E1)
+                    )
+                    if (item.cast.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "YouTube Search Link",
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = Color(0xFFF59E0B)
-                            ),
-                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                            text = item.cast,
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                            color = Color(0xFF94A3B8),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
-                Spacer(modifier = Modifier.height(3.dp))
+            }
+
+            IconButton(onClick = onDismiss) {
+                Icon(Icons.Default.Close, contentDescription = "Close", tint = Color(0xFF94A3B8))
+            }
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // Synopsis
+        Text(
+            text = item.description,
+            style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, lineHeight = 17.sp),
+            color = Color(0xFFCBD5E1),
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis
+        )
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // If Series: Render Direct 5-Column Episode Grid Selector
+        if (item.isSeries) {
+            Text(
+                text = "Episode Selector",
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Color.White)
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+
+            EpisodeGridSelector(
+                totalEpisodes = item.totalEpisodes,
+                selectedEpisode = selectedEpisodeToWatch,
+                watchedEpisodeCount = 0,
+                onEpisodeSelected = { ep ->
+                    selectedEpisodeToWatch = ep
+                }
+            )
+
+            Spacer(modifier = Modifier.height(14.dp))
+        }
+
+        // In-App Action Buttons Row (Plays strictly inside the app)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Button(
+                onClick = { onWatchEpisode(selectedEpisodeToWatch) },
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE11D48)),
+                modifier = Modifier
+                    .weight(1.3f)
+                    .height(46.dp)
+                    .testTag("detail_watch_now_btn")
+            ) {
+                Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = link.description,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = "Query: \"${link.query}\"",
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                    text = if (item.isSeries) "Watch Ep $selectedEpisodeToWatch" else "Watch Movie",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp
                 )
             }
 
-            Icon(
-                imageVector = Icons.Default.OpenInNew,
-                contentDescription = "Open in YouTube",
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(20.dp)
-            )
+            OutlinedButton(
+                onClick = onToggleBookmark,
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.5f)),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF38BDF8)),
+                modifier = Modifier
+                    .weight(1f)
+                    .height(46.dp)
+            ) {
+                Icon(
+                    imageVector = if (isBookmarked) Icons.Default.Bookmark else Icons.Default.BookmarkBorder,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                    text = if (isBookmarked) "Saved" else "My List",
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 12.sp
+                )
+            }
         }
+
+        Spacer(modifier = Modifier.height(18.dp))
+    }
+}
+
+/**
+ * Filter Bottom Sheet Content
+ */
+@Composable
+private fun CatalogueFilterSheetContent(
+    selectedGenre: String,
+    onSelectGenre: (String) -> Unit,
+    selectedOrigin: CinemaOrigin?,
+    onSelectOrigin: (CinemaOrigin?) -> Unit,
+    sortOrder: String,
+    onSelectSort: (String) -> Unit,
+    onApply: () -> Unit,
+    onReset: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 12.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Catalogue Filters",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                color = Color.White
+            )
+            OutlinedButton(
+                onClick = onReset,
+                shape = RoundedCornerShape(8.dp),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+            ) {
+                Text("Reset All", fontSize = 11.sp)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Industry / Origin Filter (Bollywood / Hollywood)
+        Text("Cinema", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold), color = Color(0xFF38BDF8))
+        Spacer(modifier = Modifier.height(6.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            CinemaOrigin.entries.forEach { origin ->
+                val isSel = selectedOrigin == origin
+                FilterChip(
+                    selected = isSel,
+                    onClick = { onSelectOrigin(if (isSel) null else origin) },
+                    label = { Text(origin.label, fontSize = 11.sp) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = Color(0xFF0284C7),
+                        selectedLabelColor = Color.White
+                    )
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Sort By
+        Text("Sort Order", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold), color = Color(0xFF38BDF8))
+        Spacer(modifier = Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("Newest", "A-Z").forEach { sort ->
+                val isSel = sortOrder == sort
+                FilterChip(
+                    selected = isSel,
+                    onClick = { onSelectSort(sort) },
+                    label = { Text(sort) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = Color(0xFF0284C7),
+                        selectedLabelColor = Color.White
+                    )
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Genres
+        Text("Genre", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold), color = Color(0xFF38BDF8))
+        Spacer(modifier = Modifier.height(6.dp))
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(3),
+            contentPadding = PaddingValues(2.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.fillMaxWidth().heightIn(max = 160.dp)
+        ) {
+            items(WATCH_GENRES) { g ->
+                val isSel = selectedGenre == g
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (isSel) Color(0xFF0284C7) else Color(0xFF1E293B),
+                    border = BorderStroke(1.dp, if (isSel) Color(0xFF38BDF8) else Color(0xFF334155)),
+                    modifier = Modifier.clickable { onSelectGenre(g) }
+                ) {
+                    Text(
+                        text = g,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal,
+                            fontSize = 11.sp
+                        ),
+                        color = if (isSel) Color.White else Color(0xFF94A3B8),
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(18.dp))
+
+        Button(
+            onClick = onApply,
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
+            modifier = Modifier.fillMaxWidth().height(44.dp)
+        ) {
+            Text("Apply Filters", fontWeight = FontWeight.Bold)
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
     }
 }

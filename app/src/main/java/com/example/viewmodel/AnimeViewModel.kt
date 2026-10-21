@@ -602,64 +602,85 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             val others = seasonNodes.filter { it.first !in listOf("PREQUEL", "SEQUEL") }.map { it.second }
 
             var sNum = 1
+            var cumulativeStart = 1
             for (node in prequels) {
                 val nodeTitle = node.title?.english ?: node.title?.romaji ?: "Season $sNum"
+                val epCount = node.episodes
                 seasons.add(
                     AnimeSeasonInfo(
                         seasonNumber = sNum++,
                         title = nodeTitle,
                         animeId = node.id,
-                        totalEpisodes = null,
+                        totalEpisodes = epCount,
+                        startEpisode = cumulativeStart,
                         coverImage = node.coverImage?.large ?: node.coverImage?.medium,
                         format = node.format,
                         isCurrentSeason = false
                     )
                 )
+                if (epCount != null && epCount > 0) {
+                    cumulativeStart += epCount
+                }
             }
 
+            val currentSeasonEpisodes = anime.totalEpisodes
             seasons.add(
                 AnimeSeasonInfo(
                     seasonNumber = sNum++,
                     title = anime.getResolvedTitle(_titleLanguagePreference.value),
                     animeId = anime.id,
                     idMal = anime.idMal,
-                    totalEpisodes = anime.totalEpisodes,
+                    totalEpisodes = currentSeasonEpisodes,
+                    startEpisode = cumulativeStart,
                     coverImage = anime.coverImage,
                     bannerImage = anime.bannerImage,
                     format = anime.format,
                     isCurrentSeason = true
                 )
             )
+            if (currentSeasonEpisodes != null && currentSeasonEpisodes > 0) {
+                cumulativeStart += currentSeasonEpisodes
+            }
 
             for (node in sequels) {
                 val nodeTitle = node.title?.english ?: node.title?.romaji ?: "Season $sNum"
+                val epCount = node.episodes
                 seasons.add(
                     AnimeSeasonInfo(
                         seasonNumber = sNum++,
                         title = nodeTitle,
                         animeId = node.id,
-                        totalEpisodes = null,
+                        totalEpisodes = epCount,
+                        startEpisode = cumulativeStart,
                         coverImage = node.coverImage?.large ?: node.coverImage?.medium,
                         format = node.format,
                         isCurrentSeason = false
                     )
                 )
+                if (epCount != null && epCount > 0) {
+                    cumulativeStart += epCount
+                }
             }
 
             for (node in others) {
                 if (seasons.none { it.animeId == node.id }) {
                     val nodeTitle = node.title?.english ?: node.title?.romaji ?: "Season $sNum"
+                    val epCount = node.episodes
                     seasons.add(
                         AnimeSeasonInfo(
                             seasonNumber = sNum++,
                             title = nodeTitle,
                             animeId = node.id,
-                            totalEpisodes = null,
+                            totalEpisodes = epCount,
+                            startEpisode = cumulativeStart,
                             coverImage = node.coverImage?.large ?: node.coverImage?.medium,
                             format = node.format,
                             isCurrentSeason = false
                         )
                     )
+                    if (epCount != null && epCount > 0) {
+                        cumulativeStart += epCount
+                    }
                 }
             }
         }

@@ -62,6 +62,8 @@ import com.example.data.repository.YouTubeVideo
 import com.example.data.repository.YouTubeVideoType
 import com.example.ui.components.ArchiveDirectPlayerDialog
 import com.example.ui.components.EmbeddedYouTubePlayerDialog
+import com.example.ui.components.EpisodeGridSelector
+import com.example.ui.components.EpisodeGridSelectorDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.FilterChip
@@ -464,11 +466,11 @@ fun AnimeDetailScreen(
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF38BDF8)),
                             modifier = Modifier
                                 .height(52.dp)
-                                .testTag("detail_custom_episode_button")
+                                .testTag("detail_episode_button")
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Edit,
-                                contentDescription = "Select Custom Episode",
+                                contentDescription = "Select Episode",
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
@@ -481,10 +483,8 @@ fun AnimeDetailScreen(
 
                     Spacer(modifier = Modifier.height(14.dp))
 
-                    // 100-EPISODE CONTAINER BOX & RANGE SELECTOR TABS
+                    // 5-COLUMN EPISODE SELECTOR & RANGE TABS
                     val totalAnimeEpisodes = (selectedSeason?.totalEpisodes ?: anime.totalEpisodes ?: maxOf(anime.getAiredEpisodeCount(), selectedEpisodeToWatch, 12)).coerceAtLeast(1)
-                    val batchSize = 100
-                    val totalBatches = ((totalAnimeEpisodes + batchSize - 1) / batchSize).coerceAtLeast(1)
 
                     Card(
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -494,7 +494,6 @@ fun AnimeDetailScreen(
                             .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f), RoundedCornerShape(24.dp))
                     ) {
                         Column(modifier = Modifier.padding(16.dp)) {
-                            // Header Row
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -522,137 +521,27 @@ fun AnimeDetailScreen(
 
                             Spacer(modifier = Modifier.height(12.dp))
 
-                            // 100-Episode Range Selector Tabs (1-100, 101-200, 201-300...)
-                            Text(
-                                text = "EPISODE RANGE SELECTOR",
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(modifier = Modifier.height(6.dp))
-
-                            LazyRow(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                items(totalBatches) { batchIdx ->
-                                    val startEp = (batchIdx * batchSize) + 1
-                                    val rawEnd = (batchIdx + 1) * batchSize
-                                    val endEp = if (rawEnd < totalAnimeEpisodes) rawEnd else totalAnimeEpisodes
-                                    val isSelectedBatch = (batchIdx == selectedRangeBatchIndex)
-
-                                    Surface(
-                                        shape = RoundedCornerShape(12.dp),
-                                        color = if (isSelectedBatch) Color(0xFF0284C7) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                                        border = androidx.compose.foundation.BorderStroke(
-                                            1.dp,
-                                            if (isSelectedBatch) Color(0xFF38BDF8) else MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
-                                        ),
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(12.dp))
-                                            .clickable {
-                                                selectedRangeBatchIndex = batchIdx
-                                            }
-                                            .testTag("batch_range_$batchIdx")
-                                    ) {
-                                        Text(
-                                            text = "$startEp - $endEp",
-                                            style = MaterialTheme.typography.labelMedium.copy(
-                                                fontWeight = FontWeight.Bold,
-                                                color = if (isSelectedBatch) Color.White else MaterialTheme.colorScheme.onSurface
-                                            ),
-                                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
-                                        )
-                                    }
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(14.dp))
-
-                            // 100-EPISODE CONTAINER BOX
-                            val activeStartEp = (selectedRangeBatchIndex * batchSize) + 1
-                            val activeRawEnd = (selectedRangeBatchIndex + 1) * batchSize
-                            val activeEndEp = if (activeRawEnd < totalAnimeEpisodes) activeRawEnd else totalAnimeEpisodes
-                            val current100Episodes = (activeStartEp..activeEndEp).toList()
-
-                            Surface(
-                                shape = RoundedCornerShape(18.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.25f)),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(modifier = Modifier.padding(14.dp)) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(
-                                            text = "EPISODES $activeStartEp TO $activeEndEp",
-                                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.ExtraBold),
-                                            color = Color.White
-                                        )
-                                        val watchedCountInRange = current100Episodes.count { it <= anime.watchedEpisodeCount }
-                                        Text(
-                                            text = "Watched $watchedCountInRange / ${current100Episodes.size}",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = Color(0xFF00B894)
-                                        )
-                                    }
-
-                                    Spacer(modifier = Modifier.height(10.dp))
-
-                                    // Episode Chips Row inside 100-Episode Box
-                                    LazyRow(
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        items(current100Episodes) { epNum ->
-                                            val isSelectedEp = epNum == selectedEpisodeToWatch
-                                            val isAlreadyWatched = epNum <= anime.watchedEpisodeCount
-                                            Surface(
-                                                shape = RoundedCornerShape(14.dp),
-                                                color = when {
-                                                    isSelectedEp -> Color(0xFF0284C7)
-                                                    isAlreadyWatched -> Color(0xFF00B894).copy(alpha = 0.25f)
-                                                    else -> MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)
-                                                },
-                                                border = androidx.compose.foundation.BorderStroke(
-                                                    1.dp,
-                                                    if (isSelectedEp) Color(0xFF38BDF8) else MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
-                                                ),
-                                                modifier = Modifier
-                                                    .clip(RoundedCornerShape(14.dp))
-                                                    .clickable {
-                                                        selectedEpisodeToWatch = epNum
-                                                    }
-                                                    .testTag("episode_box_chip_$epNum")
-                                            ) {
-                                                Row(
-                                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                                                    verticalAlignment = Alignment.CenterVertically
-                                                ) {
-                                                    Text(
-                                                        text = "Ep $epNum",
-                                                        style = MaterialTheme.typography.labelMedium.copy(
-                                                            fontWeight = FontWeight.Bold,
-                                                            color = if (isSelectedEp) Color.White else MaterialTheme.colorScheme.onSurface
-                                                        )
-                                                    )
-                                                    if (isAlreadyWatched) {
-                                                        Spacer(modifier = Modifier.width(4.dp))
-                                                        Icon(
-                                                            imageVector = Icons.Default.CheckCircle,
-                                                            contentDescription = "Watched",
-                                                            tint = Color(0xFF00B894),
-                                                            modifier = Modifier.size(14.dp)
-                                                        )
-                                                    }
-                                                }
-                                            }
+                            EpisodeGridSelector(
+                                totalEpisodes = totalAnimeEpisodes,
+                                selectedEpisode = selectedEpisodeToWatch,
+                                watchedEpisodeCount = anime.watchedEpisodeCount,
+                                onEpisodeSelected = { epNum ->
+                                    selectedEpisodeToWatch = epNum
+                                    onOpenPlayer(anime.id, epNum, selectedSeason?.seasonNumber ?: 1)
+                                },
+                                seasons = activeSeasons,
+                                selectedSeasonNumber = selectedSeason?.seasonNumber ?: 1,
+                                onSeasonSelected = { seasonNum ->
+                                    val matched = activeSeasons.firstOrNull { it.seasonNumber == seasonNum }
+                                    if (matched != null) {
+                                        viewModel.selectDetailSeason(matched)
+                                        if (matched.animeId != anime.id) {
+                                            viewModel.selectAnimeDetail(matched.animeId)
                                         }
+                                        selectedEpisodeToWatch = 1
                                     }
                                 }
-                            }
+                            )
                         }
                     }
 
@@ -1030,7 +919,7 @@ fun AnimeDetailScreen(
                             ) {
                                 Column {
                                     Text(
-                                        text = "CUSTOM EPISODE WATCHED TRACKER",
+                                        text = "EPISODE TRACKER & SELECTOR",
                                         style = MaterialTheme.typography.labelSmall.copy(
                                             fontWeight = FontWeight.Bold,
                                             letterSpacing = 1.sp
@@ -1094,7 +983,7 @@ fun AnimeDetailScreen(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(12.dp))
                                         .clickable { showCustomWatchedInputDialog = true }
-                                        .testTag("detail_custom_watched_pill")
+                                        .testTag("detail_watched_pill")
                                 ) {
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
@@ -1110,7 +999,7 @@ fun AnimeDetailScreen(
                                         Spacer(modifier = Modifier.width(6.dp))
                                         Icon(
                                             imageVector = Icons.Default.Edit,
-                                            contentDescription = "Set custom watched episode",
+                                            contentDescription = "Set watched episode",
                                             tint = MaterialTheme.colorScheme.primary,
                                             modifier = Modifier.size(15.dp)
                                         )
@@ -1141,7 +1030,7 @@ fun AnimeDetailScreen(
                             Spacer(modifier = Modifier.height(12.dp))
                             Button(
                                 onClick = { onOpenPlayer(anime.id, selectedEpisodeToWatch, selectedSeason?.seasonNumber ?: 1) },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE11D48)),
                                 shape = RoundedCornerShape(16.dp),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
@@ -1152,7 +1041,7 @@ fun AnimeDetailScreen(
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = "Watch",
+                                    text = "Watch Ep $selectedEpisodeToWatch Now",
                                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = Color.White)
                                 )
                             }
@@ -1170,6 +1059,36 @@ fun AnimeDetailScreen(
                                     trackColor = MaterialTheme.colorScheme.surfaceVariant
                                 )
                             }
+
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = "Direct Episode Selection",
+                                style = MaterialTheme.typography.titleSmall.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            EpisodeGridSelector(
+                                totalEpisodes = totalEp,
+                                selectedEpisode = selectedEpisodeToWatch,
+                                watchedEpisodeCount = watchedCount,
+                                onEpisodeSelected = { ep ->
+                                    selectedEpisodeToWatch = ep
+                                    onOpenPlayer(anime.id, ep, selectedSeason?.seasonNumber ?: 1)
+                                },
+                                seasons = activeSeasons,
+                                selectedSeasonNumber = selectedSeason?.seasonNumber ?: 1,
+                                onSeasonSelected = { seasonNum ->
+                                    val matched = activeSeasons.firstOrNull { it.seasonNumber == seasonNum }
+                                    if (matched != null) {
+                                        viewModel.selectDetailSeason(matched)
+                                        if (matched.animeId != anime.id) {
+                                            viewModel.selectAnimeDetail(matched.animeId)
+                                        }
+                                    }
+                                }
+                            )
                         }
                     }
 
@@ -1499,7 +1418,7 @@ fun AnimeDetailScreen(
                     }
 
                     // ========================================================
-                    // SECTION: OFFICIAL YOUTUBE TRAILERS & VIDEO DISCOVERY
+                    // SECTION: INTERNET ARCHIVE FULL EPISODE & MOVIE STREAMS
                     // ========================================================
                     Spacer(modifier = Modifier.height(20.dp))
                     Card(
@@ -1509,7 +1428,7 @@ fun AnimeDetailScreen(
                             .fillMaxWidth()
                             .border(
                                 1.dp,
-                                MaterialTheme.colorScheme.outline.copy(alpha = 0.25f),
+                                Color(0xFF38BDF8).copy(alpha = 0.3f),
                                 RoundedCornerShape(28.dp)
                             )
                     ) {
@@ -1521,409 +1440,39 @@ fun AnimeDetailScreen(
                             ) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Surface(
-                                        color = Color(0xFFEF4444),
+                                        color = Color(0xFF0284C7).copy(alpha = 0.25f),
                                         shape = RoundedCornerShape(4.dp)
                                     ) {
                                         Text(
-                                            text = "YOUTUBE",
-                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Color.White),
+                                            text = "ARCHIVE.ORG",
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8)),
                                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                         )
                                     }
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        text = "DISCOVERY & TRAILERS",
+                                        text = "FULL EPISODE & MOVIE STREAMS",
                                         style = MaterialTheme.typography.labelSmall.copy(
                                             fontWeight = FontWeight.Bold,
                                             letterSpacing = 1.sp
                                         ),
-                                        color = MaterialTheme.colorScheme.primary
+                                        color = Color(0xFF38BDF8)
                                     )
                                 }
-                                Surface(
-                                    color = if (isOptionalYouTubeApiEnabled) Color(0xFFEF4444).copy(alpha = 0.15f) else Color(0xFF10B981).copy(alpha = 0.15f),
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Text(
-                                        text = if (isOptionalYouTubeApiEnabled) "API FEED" else "KEYLESS MODE",
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 10.sp,
-                                            color = if (isOptionalYouTubeApiEnabled) Color(0xFFEF4444) else Color(0xFF10B981)
-                                        ),
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                if (isArchiveSearching || isResolvingArchive) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = Color(0xFF38BDF8)
                                     )
                                 }
                             }
 
-                            Spacer(modifier = Modifier.height(14.dp))
+                            Spacer(modifier = Modifier.height(12.dp))
 
-                            // 1. AniList Verified Trailer (if catalog provides YouTube trailer)
-                            aniListVerifiedTrailer?.let { trailer ->
-                                Surface(
-                                    shape = RoundedCornerShape(16.dp),
-                                    color = Color(0xFF0F172A),
-                                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.4f)),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable {
-                                            activeYouTubeVideo = Pair(trailer.id, trailer.title)
-                                        }
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(12.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(width = 96.dp, height = 60.dp)
-                                                .clip(RoundedCornerShape(10.dp))
-                                                .background(Color.Black),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            AsyncImage(
-                                                model = trailer.thumbnailUrl,
-                                                contentDescription = trailer.title,
-                                                contentScale = ContentScale.Crop,
-                                                modifier = Modifier.fillMaxSize()
-                                            )
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(28.dp)
-                                                    .clip(CircleShape)
-                                                    .background(Color(0xFFEF4444).copy(alpha = 0.9f)),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.PlayArrow,
-                                                    contentDescription = "Play Trailer",
-                                                    tint = Color.White,
-                                                    modifier = Modifier.size(18.dp)
-                                                )
-                                            }
-                                        }
-
-                                        Spacer(modifier = Modifier.width(12.dp))
-
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Surface(
-                                                color = Color(0xFF10B981).copy(alpha = 0.2f),
-                                                shape = RoundedCornerShape(4.dp)
-                                            ) {
-                                                Text(
-                                                    text = "AniList Verified Trailer",
-                                                    style = MaterialTheme.typography.labelSmall.copy(
-                                                        fontSize = 10.sp,
-                                                        fontWeight = FontWeight.Bold,
-                                                        color = Color(0xFF10B981)
-                                                    ),
-                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                                )
-                                            }
-                                            Spacer(modifier = Modifier.height(4.dp))
-                                            Text(
-                                                text = trailer.title,
-                                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                                                maxLines = 2,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            Text(
-                                                text = "Direct embedded playback • Keyless",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    }
-                                }
-
-                                Spacer(modifier = Modifier.height(14.dp))
-                            }
-
-                            // 2. Official YouTube Keyless Search Links
-                            Text(
-                                text = "SEARCH ON OFFICIAL YOUTUBE (KEYLESS)",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    letterSpacing = 0.5.sp
-                                ),
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = "Opens official YouTube results derived from this anime title (zero API key needed):",
-                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                keylessYouTubeSearchLinks.forEach { searchLink ->
-                                    Surface(
-                                        shape = RoundedCornerShape(12.dp),
-                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-                                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.15f)),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable {
-                                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(searchLink.webSearchUrl))
-                                                context.startActivity(intent)
-                                            }
-                                    ) {
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(10.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Surface(
-                                                shape = RoundedCornerShape(6.dp),
-                                                color = Color(0xFFEF4444).copy(alpha = 0.15f),
-                                                modifier = Modifier.size(36.dp)
-                                            ) {
-                                                Box(contentAlignment = Alignment.Center) {
-                                                    Icon(
-                                                        imageVector = Icons.Default.Search,
-                                                        contentDescription = null,
-                                                        tint = Color(0xFFEF4444),
-                                                        modifier = Modifier.size(18.dp)
-                                                    )
-                                                }
-                                            }
-
-                                            Spacer(modifier = Modifier.width(10.dp))
-
-                                            Column(modifier = Modifier.weight(1f)) {
-                                                Row(
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                                ) {
-                                                    Text(
-                                                        text = searchLink.title,
-                                                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
-                                                        color = MaterialTheme.colorScheme.onSurface
-                                                    )
-                                                    Surface(
-                                                        color = Color(0xFFF59E0B).copy(alpha = 0.18f),
-                                                        shape = RoundedCornerShape(3.dp)
-                                                    ) {
-                                                        Text(
-                                                            text = "YouTube Search Link",
-                                                            style = MaterialTheme.typography.labelSmall.copy(
-                                                                fontSize = 9.sp,
-                                                                fontWeight = FontWeight.SemiBold,
-                                                                color = Color(0xFFF59E0B)
-                                                            ),
-                                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                                        )
-                                                    }
-                                                }
-                                                Spacer(modifier = Modifier.height(2.dp))
-                                                Text(
-                                                    text = searchLink.description,
-                                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                            }
-
-                                            Icon(
-                                                imageVector = Icons.Default.OpenInNew,
-                                                contentDescription = "Open in YouTube",
-                                                tint = MaterialTheme.colorScheme.primary,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-
-                            // 3. Optional YouTube Data API results (when explicitly enabled)
-                            if (isOptionalYouTubeApiEnabled) {
-                                Spacer(modifier = Modifier.height(14.dp))
-                                if (isYouTubeQuotaExceeded) {
-                                    Surface(
-                                        color = Color(0xFFF59E0B).copy(alpha = 0.15f),
-                                        shape = RoundedCornerShape(12.dp),
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Text(
-                                            text = "YouTube Data API daily quota reached. Use the official YouTube search links above.",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = Color(0xFFF59E0B),
-                                            modifier = Modifier.padding(12.dp)
-                                        )
-                                    }
-                                } else if (youtubeVideos.isNotEmpty()) {
-                                    Text(
-                                        text = "YOUTUBE DATA API RESULTS",
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            fontWeight = FontWeight.Bold,
-                                            letterSpacing = 0.5.sp
-                                        ),
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                        youtubeVideos.take(4).forEach { video ->
-                                            Surface(
-                                                shape = RoundedCornerShape(14.dp),
-                                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                                                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.15f)),
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .clickable {
-                                                        activeYouTubeVideo = Pair(video.id, video.title)
-                                                    }
-                                            ) {
-                                                Row(
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .padding(10.dp),
-                                                    verticalAlignment = Alignment.CenterVertically
-                                                ) {
-                                                    Box(
-                                                        modifier = Modifier
-                                                            .size(width = 90.dp, height = 56.dp)
-                                                            .clip(RoundedCornerShape(8.dp))
-                                                            .background(Color.Black)
-                                                    ) {
-                                                        AsyncImage(
-                                                            model = video.thumbnailUrl,
-                                                            contentDescription = video.title,
-                                                            contentScale = ContentScale.Crop,
-                                                            modifier = Modifier.fillMaxSize()
-                                                        )
-                                                        Box(
-                                                            modifier = Modifier
-                                                                .size(24.dp)
-                                                                .clip(CircleShape)
-                                                                .background(Color.Black.copy(alpha = 0.6f))
-                                                                .align(Alignment.Center),
-                                                            contentAlignment = Alignment.Center
-                                                        ) {
-                                                            Icon(
-                                                                imageVector = Icons.Default.PlayArrow,
-                                                                contentDescription = "Play",
-                                                                tint = Color.White,
-                                                                modifier = Modifier.size(16.dp)
-                                                            )
-                                                        }
-                                                        if (!video.durationFormatted.isNullOrBlank()) {
-                                                            Surface(
-                                                                color = Color.Black.copy(alpha = 0.8f),
-                                                                shape = RoundedCornerShape(2.dp),
-                                                                modifier = Modifier
-                                                                    .padding(3.dp)
-                                                                    .align(Alignment.BottomEnd)
-                                                            ) {
-                                                                Text(
-                                                                    text = video.durationFormatted,
-                                                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, color = Color.White),
-                                                                    modifier = Modifier.padding(horizontal = 3.dp)
-                                                                )
-                                                            }
-                                                        }
-                                                    }
-
-                                                    Spacer(modifier = Modifier.width(10.dp))
-
-                                                    Column(modifier = Modifier.weight(1f)) {
-                                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                                            Surface(
-                                                                color = Color(0xFFEF4444).copy(alpha = 0.2f),
-                                                                shape = RoundedCornerShape(3.dp)
-                                                            ) {
-                                                                Text(
-                                                                    text = "YouTube Data API Result",
-                                                                    style = MaterialTheme.typography.labelSmall.copy(
-                                                                        fontSize = 9.sp,
-                                                                        fontWeight = FontWeight.Bold,
-                                                                        color = Color(0xFFEF4444)
-                                                                    ),
-                                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                                                )
-                                                            }
-                                                        }
-                                                        Spacer(modifier = Modifier.height(2.dp))
-                                                        Text(
-                                                            text = video.title,
-                                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                                                            maxLines = 2,
-                                                            overflow = TextOverflow.Ellipsis
-                                                        )
-                                                        Spacer(modifier = Modifier.height(2.dp))
-                                                        Text(
-                                                            text = video.channelTitle,
-                                                            style = MaterialTheme.typography.labelSmall,
-                                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                        )
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // ========================================================
-                    // SECTION: INTERNET ARCHIVE PUBLIC DOMAIN & DIRECT MEDIA
-                    // ========================================================
-                    if (archiveVideos.isNotEmpty() || isArchiveSearching) {
-                        Spacer(modifier = Modifier.height(20.dp))
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                            shape = RoundedCornerShape(28.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .border(
-                                    1.dp,
-                                    Color(0xFF38BDF8).copy(alpha = 0.3f),
-                                    RoundedCornerShape(28.dp)
-                                )
-                        ) {
-                            Column(modifier = Modifier.padding(18.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Surface(
-                                            color = Color(0xFF0284C7).copy(alpha = 0.25f),
-                                            shape = RoundedCornerShape(4.dp)
-                                        ) {
-                                            Text(
-                                                text = "ARCHIVE.ORG",
-                                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8)),
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                            )
-                                        }
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text(
-                                            text = "DIRECT PLAYABLE ARCHIVE",
-                                            style = MaterialTheme.typography.labelSmall.copy(
-                                                fontWeight = FontWeight.Bold,
-                                                letterSpacing = 1.sp
-                                            ),
-                                            color = Color(0xFF38BDF8)
-                                        )
-                                    }
-                                    if (isArchiveSearching || isResolvingArchive) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(16.dp),
-                                            strokeWidth = 2.dp,
-                                            color = Color(0xFF38BDF8)
-                                        )
-                                    }
-                                }
-
-                                Spacer(modifier = Modifier.height(12.dp))
-
+                            if (archiveVideos.isNotEmpty()) {
                                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    archiveVideos.take(3).forEach { archiveItem ->
+                                    archiveVideos.take(4).forEach { archiveItem ->
                                         Surface(
                                             shape = RoundedCornerShape(14.dp),
                                             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
@@ -1974,7 +1523,7 @@ fun AnimeDetailScreen(
                                                     )
                                                     Spacer(modifier = Modifier.height(2.dp))
                                                     Text(
-                                                        text = listOfNotNull(archiveItem.creator, archiveItem.year).joinToString(" • "),
+                                                        text = listOfNotNull(archiveItem.creator, archiveItem.year).joinToString(" • ").ifBlank { "Full video stream on Internet Archive" },
                                                         style = MaterialTheme.typography.labelSmall,
                                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                                     )
@@ -1983,6 +1532,12 @@ fun AnimeDetailScreen(
                                         }
                                     }
                                 }
+                            } else if (!isArchiveSearching) {
+                                Text(
+                                    text = "Tap 'Watch Episode' above to stream directly in the unified ExoPlayer, or 'Can't find' will be displayed if unavailable on Internet Archive.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
                     }
@@ -1993,17 +1548,11 @@ fun AnimeDetailScreen(
         // ========================================================
         // PLAYBACK & INTERACTION DIALOGS
         // ========================================================
-        activeYouTubeVideo?.let { (vid, title) ->
-            EmbeddedYouTubePlayerDialog(
-                videoId = vid,
-                title = title,
-                onDismiss = { activeYouTubeVideo = null }
-            )
-        }
-
         activeArchiveMedia?.let { playable ->
             ArchiveDirectPlayerDialog(
                 playable = playable,
+                isLoading = isResolvingArchive,
+                unavailableReason = null,
                 onDismiss = { activeArchiveMedia = null },
                 onConfirmWatched = {
                     viewModel.confirmEpisodeCompletion(anime.id, anime.watchedEpisodeCount + 1)
@@ -2125,195 +1674,63 @@ fun AnimeDetailScreen(
 
         if (showCustomEpisodeSelectDialog) {
             val totalEpDialog = (selectedSeason?.totalEpisodes ?: anime.totalEpisodes ?: maxOf(anime.getAiredEpisodeCount(), selectedEpisodeToWatch, 12)).coerceAtLeast(1)
-            val batchSizeDialog = 100
-            val totalBatchesDialog = ((totalEpDialog + batchSizeDialog - 1) / batchSizeDialog).coerceAtLeast(1)
-            var dialogBatchIdx by remember { mutableIntStateOf(selectedRangeBatchIndex.coerceIn(0, totalBatchesDialog - 1)) }
-            var tempSelectedEp by remember { mutableIntStateOf(selectedEpisodeToWatch) }
-
-            AlertDialog(
+            EpisodeGridSelectorDialog(
+                animeTitle = resolvedTitle,
+                totalEpisodes = totalEpDialog,
+                currentEpisode = selectedEpisodeToWatch,
+                watchedEpisodeCount = anime.watchedEpisodeCount,
                 onDismissRequest = { showCustomEpisodeSelectDialog = false },
-                shape = RoundedCornerShape(24.dp),
-                containerColor = Color(0xFF090E1A),
-                title = {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Episode Selector",
-                            style = TextStyle(fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                        )
-                        Text(
-                            text = "Selected: Ep $tempSelectedEp",
-                            style = TextStyle(fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
-                        )
-                    }
+                onWatchEpisode = { ep ->
+                    selectedEpisodeToWatch = ep
+                    showCustomEpisodeSelectDialog = false
+                    onOpenPlayer(anime.id, ep, selectedSeason?.seasonNumber ?: 1)
                 },
-                text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text(
-                            text = "Select Episode Range (100 episodes per box):",
-                            color = Color(0xFF94A3B8),
-                            fontSize = 12.sp
-                        )
-
-                        // 100-Episode Range Selector Tabs
-                        LazyRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            items(totalBatchesDialog) { bIdx ->
-                                val sEp = (bIdx * batchSizeDialog) + 1
-                                val rEnd = (bIdx + 1) * batchSizeDialog
-                                val eEp = if (rEnd < totalEpDialog) rEnd else totalEpDialog
-                                val isSel = (bIdx == dialogBatchIdx)
-
-                                Surface(
-                                    shape = RoundedCornerShape(10.dp),
-                                    color = if (isSel) Color(0xFF0284C7) else Color(0xFF1E293B),
-                                    border = androidx.compose.foundation.BorderStroke(1.dp, if (isSel) Color(0xFF38BDF8) else Color.White.copy(alpha = 0.1f)),
-                                    modifier = Modifier.clickable { dialogBatchIdx = bIdx }
-                                ) {
-                                    Text(
-                                        text = "$sEp - $eEp",
-                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                        color = if (isSel) Color.White else Color(0xFF94A3B8),
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                                    )
-                                }
-                            }
-                        }
-
-                        // 100-Episode Box Container
-                        val startDialogEp = (dialogBatchIdx * batchSizeDialog) + 1
-                        val rawEndDialog = (dialogBatchIdx + 1) * batchSizeDialog
-                        val endDialogEp = if (rawEndDialog < totalEpDialog) rawEndDialog else totalEpDialog
-                        val dialogEpisodesList = (startDialogEp..endDialogEp).toList()
-
-                        Surface(
-                            shape = RoundedCornerShape(14.dp),
-                            color = Color(0xFF131C2E),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.3f)),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(160.dp)
-                        ) {
-                            LazyRow(
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(10.dp)
-                            ) {
-                                items(dialogEpisodesList) { epNum ->
-                                    val isCur = (epNum == tempSelectedEp)
-                                    val isW = epNum <= anime.watchedEpisodeCount
-                                    Surface(
-                                        shape = RoundedCornerShape(10.dp),
-                                        color = when {
-                                            isCur -> Color(0xFF0284C7)
-                                            isW -> Color(0xFF00B894).copy(alpha = 0.25f)
-                                            else -> Color(0xFF1E293B)
-                                        },
-                                        border = androidx.compose.foundation.BorderStroke(1.dp, if (isCur) Color(0xFF38BDF8) else Color.White.copy(alpha = 0.1f)),
-                                        modifier = Modifier.clickable { tempSelectedEp = epNum }
-                                    ) {
-                                        Text(
-                                            text = "Ep $epNum",
-                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                            color = if (isCur) Color.White else Color(0xFFCBD5E1),
-                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
+                onSetWatchedCount = { ep ->
+                    selectedEpisodeToWatch = ep
+                    viewModel.updateWatchedEpisodeCount(anime.id, ep)
+                    showCustomEpisodeSelectDialog = false
                 },
-                confirmButton = {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(
-                            onClick = {
-                                selectedEpisodeToWatch = tempSelectedEp
-                                selectedRangeBatchIndex = dialogBatchIdx
-                                showCustomEpisodeSelectDialog = false
-                            }
-                        ) {
-                            Text("Select", color = Color(0xFF38BDF8))
+                seasons = activeSeasons,
+                selectedSeasonNumber = selectedSeason?.seasonNumber ?: 1,
+                onSeasonSelected = { sNum ->
+                    val matched = activeSeasons.firstOrNull { it.seasonNumber == sNum }
+                    if (matched != null) {
+                        viewModel.selectDetailSeason(matched)
+                        if (matched.animeId != anime.id) {
+                            viewModel.selectAnimeDetail(matched.animeId)
                         }
-                        Button(
-                            onClick = {
-                                selectedEpisodeToWatch = tempSelectedEp
-                                selectedRangeBatchIndex = dialogBatchIdx
-                                showCustomEpisodeSelectDialog = false
-                                onOpenPlayer(anime.id, tempSelectedEp, selectedSeason?.seasonNumber ?: 1)
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
-                        ) {
-                            Text("Watch", color = Color.White, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showCustomEpisodeSelectDialog = false }) {
-                        Text("Cancel", color = Color(0xFF94A3B8))
                     }
                 }
             )
         }
 
         if (showCustomWatchedInputDialog) {
-            var customWatchedInput by remember { mutableStateOf(anime.watchedEpisodeCount.toString()) }
-            AlertDialog(
+            val totalEpDialog = (selectedSeason?.totalEpisodes ?: anime.totalEpisodes ?: maxOf(anime.getAiredEpisodeCount(), selectedEpisodeToWatch, 12)).coerceAtLeast(1)
+            EpisodeGridSelectorDialog(
+                animeTitle = resolvedTitle,
+                totalEpisodes = totalEpDialog,
+                currentEpisode = anime.watchedEpisodeCount.coerceAtLeast(1),
+                watchedEpisodeCount = anime.watchedEpisodeCount,
                 onDismissRequest = { showCustomWatchedInputDialog = false },
-                shape = RoundedCornerShape(24.dp),
-                containerColor = Color(0xFF090E1A),
-                title = {
-                    Text(
-                        text = "Set Watched Episode Count",
-                        style = TextStyle(fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                    )
+                onWatchEpisode = { ep ->
+                    viewModel.updateWatchedEpisodeCount(anime.id, ep)
+                    selectedEpisodeToWatch = ep
+                    showCustomWatchedInputDialog = false
+                    onOpenPlayer(anime.id, ep, selectedSeason?.seasonNumber ?: 1)
                 },
-                text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text(
-                            text = "Enter the episode number you have watched up to:",
-                            color = Color(0xFF94A3B8),
-                            fontSize = 13.sp
-                        )
-                        OutlinedTextField(
-                            value = customWatchedInput,
-                            onValueChange = { customWatchedInput = it.filter { ch -> ch.isDigit() } },
-                            singleLine = true,
-                            placeholder = { Text("Watched episodes (e.g. 0, 5, 24)", color = Color(0xFF64748B)) },
-                            shape = RoundedCornerShape(12.dp),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color.White,
-                                focusedBorderColor = Color(0xFF38BDF8),
-                                unfocusedBorderColor = Color(0xFF334155)
-                            ),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
+                onSetWatchedCount = { ep ->
+                    viewModel.updateWatchedEpisodeCount(anime.id, ep)
+                    showCustomWatchedInputDialog = false
                 },
-                confirmButton = {
-                    Button(
-                        onClick = {
-                            val newCount = customWatchedInput.toIntOrNull()?.coerceAtLeast(0)
-                            if (newCount != null) {
-                                viewModel.updateWatchedEpisodeCount(anime.id, newCount)
-                            }
-                            showCustomWatchedInputDialog = false
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF38BDF8))
-                    ) {
-                        Text("Save", color = Color.Black, fontWeight = FontWeight.Bold)
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showCustomWatchedInputDialog = false }) {
-                        Text("Cancel", color = Color(0xFF94A3B8))
+                seasons = activeSeasons,
+                selectedSeasonNumber = selectedSeason?.seasonNumber ?: 1,
+                onSeasonSelected = { sNum ->
+                    val matched = activeSeasons.firstOrNull { it.seasonNumber == sNum }
+                    if (matched != null) {
+                        viewModel.selectDetailSeason(matched)
+                        if (matched.animeId != anime.id) {
+                            viewModel.selectAnimeDetail(matched.animeId)
+                        }
                     }
                 }
             )

@@ -22,29 +22,45 @@ import java.util.Locale
 class VideoMatchService {
 
     companion object {
-        // Minimum duration for a full episode (9 minutes = 540 seconds) so short clips/reactions never play
+        // Minimum duration for a full episode (9 minutes = 540 seconds) so short clips/reactions/trailers never play
         const val MIN_EPISODE_DURATION_SECONDS = 540f
-        // Maximum duration for a standard TV episode (34 minutes = 2040 seconds) so long reaction videos (35-90m)
-        // and live-action movies (80-150m) never match a regular TV episode
+        // Minimum duration for a full feature movie (35 minutes = 2100 seconds) so trailers/reviews/explanations never play
+        const val MIN_MOVIE_DURATION_SECONDS = 2100f
+        // Maximum duration for a standard TV anime episode (34 minutes = 2040 seconds)
         const val MAX_STANDARD_EPISODE_DURATION_SECONDS = 2040f
         // Maximum duration for Episode 1 (55 minutes = 3300 seconds) to allow double-length TV premieres
         const val MAX_PREMIERE_EPISODE_DURATION_SECONDS = 3300f
+        // Maximum duration for a live-action TV series episode (95 minutes = 5700 seconds)
+        const val MAX_LIVE_ACTION_SERIES_EPISODE_SECONDS = 5700f
         // Canonical TV anime episode duration window (19m to 27.5m = 1140s..1650s)
         const val CANONICAL_EPISODE_MIN_SECONDS = 1140f
         const val CANONICAL_EPISODE_MAX_SECONDS = 1650f
 
         // Minimum file size for a full episode when duration metadata is missing (15 MB)
         const val MIN_EPISODE_FILE_SIZE_BYTES = 15_000_000L
+        // Minimum file size for a full movie (45 MB) so short trailers/reviews/explanations never pass
+        const val MIN_MOVIE_FILE_SIZE_BYTES = 45_000_000L
 
         private val STOP_WORDS = setOf(
             "the", "and", "for", "with", "from", "into", "unto", "upon",
             "animation", "animated", "anime", "series", "season", "episode", "episodes",
             "sub", "dub", "eng", "english", "subbed", "dubbed", "uncensored",
-            "complete", "collection", "batch", "full", "tv", "ova", "ona", "hd", "1080p", "720p", "480p"
+            "complete", "collection", "batch", "full", "tv", "ova", "ona", "hd", "1080p", "720p", "480p",
+            "movie", "film", "hindi", "bollywood", "hollywood"
         )
 
-        // Keywords that identify non-anime-episode content: reactions, live-action, stage plays, dramas, AMVs, clips, trailers, etc.
-        private val EXCLUDED_CONTENT_KEYWORDS = listOf(
+        // Universal blocked keywords: trailers, teasers, reviews, explanations, breakdowns, reactions, recaps, promos, clips, etc.
+        private val UNIVERSAL_EXCLUDED_KEYWORDS = listOf(
+            // Trailers / Teasers / Promos / Previews
+            "trailer", "trailers", "official trailer", "teaser", "teasers", "promo", "promotional",
+            "preview", "pv", "cm", "tv spot", "commercial", "bumper", "sneak peek", "first look",
+            // Reviews / Explanations / Breakdowns / Recaps / Video Essays
+            "review", "reviews", "movie review", "film review", "series review", "episode review",
+            "explained", "explanation", "ending explained", "story explained", "plot explained",
+            "breakdown", "analysis", "video essay", "recap", "summary", "full story", "in minutes",
+            "spoiler", "spoilers", " spoiler review", "non spoiler", "theory", "theories",
+            "top 10", "ranking", "tier list", "everything wrong with", "honest trailer",
+            "pitch meeting", "facts you didnt know", "easter eggs", "hidden details",
             // Reaction / Commentary / Watchalong / Streamer content
             "reaction", "reactions", "reacts", "reacting", "reactor", "reactors", "react",
             "first time watching", "watching for the first time", "blind reaction", "full reaction",
@@ -54,29 +70,32 @@ class VideoMatchService {
             "youtuber", "vtuber", "facecam", "reaction cam", "timer sync",
             "rttv", "yaaboyroshi", "semblance of sanity", "carlie and ange", "strayblitz",
             "heatah", "nicholas light", "alana", "sofy", "fandub", "fan dub",
-            // Live-Action / Stage Play / Drama / Cosplay / Real-Life Adaptations
+            // Behind the scenes / Interviews / Clips / Shorts / Edits / Audio / Gameplay
+            "cast interview", "interview", "behind the scenes", "making of", "featurette",
+            "bloopers", "outtakes", "deleted scenes", "screen test", "live show", "concert",
+            "amv", "mad", "opening", "ending", "creditless", "ncop", "nced", "ost", "soundtrack",
+            "theme song", "music video", "fan animation", "fanmade", "fan made", "fan edit",
+            "fan film", "fanfilm", "tribute", "parody", "spoof", "abridged", "podcast",
+            "discussion", "thoughts on", "gameplay", "walkthrough", "playthrough", "cutscene",
+            "cutscenes", "short clip", "clip", "clips", "best moments", "funny moments",
+            "highlights", "compilation", "tiktok", "shorts", "reels", "speedpaint", "drawing",
+            "unboxing", "figure review", "cover song", "vocal cover", "guitar cover",
+            "piano cover", "drum cover", "remix", "nightcore", "8d audio", "vhs rip promo",
+            "toonami", "adult swim"
+        )
+
+        // Additional exclusions strictly for Anime (preventing live-action adaptations / cosplay from matching anime)
+        private val ANIME_ONLY_EXCLUDED_KEYWORDS = listOf(
             "live action", "liveaction", "stage play", "stageplay", "stage musical",
             "2 5d", "tv drama", "jdrama", "j drama", "dorama", "cosplay",
-            "netflix adaptation", "netflix live", "netflix series", "warner bros live",
-            "hollywood adaptation", "fan film", "fanfilm", "real life", "in real life", "irl",
-            "tokusatsu", "super sentai", "kamen rider", "cast interview", "behind the scenes",
-            "making of", "bloopers", "outtakes", "screen test", "live show", "concert",
-            // Clips / Edits / Reviews / Promos / Gameplay
-            "amv", "mad", "trailer", "preview", "teaser", "promo", "pv", "cm",
-            "opening", "ending", "creditless", "ncop", "nced", "ost", "soundtrack",
-            "theme song", "music video", "fan animation", "fanmade", "fan made", "parody",
-            "abridged", "review", "explained", "analysis", "breakdown", "podcast",
-            "discussion", "thoughts on", "interview", "gameplay", "walkthrough",
-            "playthrough", "cutscene", "cutscenes", "short clip", "best moments",
-            "funny moments", "highlights", "compilation", "tiktok", "shorts", "reels",
-            "speedpaint", "drawing", "unboxing", "figure review", "cover song", "vocal cover",
-            "guitar cover", "piano cover", "drum cover", "remix", "nightcore", "8d audio",
-            "vhs rip promo", "commercial", "bumper", "toonami", "adult swim"
+            "netflix adaptation", "netflix live", "warner bros live",
+            "hollywood adaptation", "real life", "in real life", "irl",
+            "tokusatsu", "super sentai", "kamen rider"
         )
     }
 
     /**
-     * Determines whether a candidate item is a verified exact match for the target anime
+     * Determines whether a candidate item is a verified exact match for the target anime/movie/series
      * and requested episode, inspects its files deeply, and builds a candidate match record.
      */
     fun evaluateCandidate(
@@ -84,7 +103,8 @@ class VideoMatchService {
         metadata: ArchiveMetadataResponse,
         anime: AnimeEntity,
         requestedEpisode: Int?,
-        seasonNumber: Int? = null
+        seasonNumber: Int? = null,
+        isLiveActionAllowed: Boolean = false
     ): ArchiveCandidateMatch? {
         val targetTitles = extractSearchTitles(anime)
         val docTitle = doc.title?.takeIf { it.isNotBlank() }
@@ -95,8 +115,8 @@ class VideoMatchService {
         val docCreator = doc.creator ?: metadata.metadata?.creator.orEmpty()
         val identifier = doc.identifier
 
-        // 1. Reject reaction videos, live action, stage plays, dramas, AMVs, trailers, reviews, etc.
-        if (containsExcludedKeywords(docTitle, docSubject, identifier, docDesc, docCreator)) {
+        // 1. Reject trailers, reviews, explanations, reactions, clips, etc.
+        if (containsExcludedKeywords(docTitle, docSubject, identifier, docDesc, docCreator, isLiveActionAllowed)) {
             return null
         }
 
@@ -104,13 +124,14 @@ class VideoMatchService {
         val files = metadata.files.orEmpty()
         val isMovieFormat = anime.format.equals("MOVIE", ignoreCase = true)
         val totalEpisodes = anime.totalEpisodes ?: 0
-        val isSingleEpisodeWork = isMovieFormat || totalEpisodes == 1
+        val isSingleEpisodeWork = isMovieFormat || (totalEpisodes == 1 && (requestedEpisode == null || requestedEpisode <= 1))
 
         val compatibleFiles = filterCompatibleVideoFiles(
             files = files,
-            requireFullEpisodeLength = (requestedEpisode != null && !isMovieFormat),
+            requireFullEpisodeLength = true,
             requestedEpisode = requestedEpisode,
-            isMovieOrSingleWork = isSingleEpisodeWork
+            isMovieOrSingleWork = isSingleEpisodeWork,
+            isLiveActionAllowed = isLiveActionAllowed
         )
         if (compatibleFiles.isEmpty()) {
             return null
@@ -121,12 +142,17 @@ class VideoMatchService {
             calculateStrictTitleSimilarity(file.title ?: file.name, file.name, targetTitles)
         } ?: 0f
 
-        val effectiveTitleScore = maxOf(itemTitleScore, bestFileTitleScore)
+        val isDirectKnownIdentifier = anime.archiveIdentifier?.equals(identifier, ignoreCase = true) == true
+        val effectiveTitleScore = if (isDirectKnownIdentifier) {
+            maxOf(itemTitleScore, bestFileTitleScore, 0.90f)
+        } else {
+            maxOf(itemTitleScore, bestFileTitleScore)
+        }
         if (effectiveTitleScore < 0.65f) {
             return null
         }
 
-        // 3. Check season alignment if the target anime specifies a season
+        // 3. Check season alignment if the target specifies a season
         val targetSeason = seasonNumber ?: extractSeasonNumber(targetTitles)
         if (targetSeason != null && targetSeason > 1) {
             val docSeason = extractSeasonNumber(listOf(docTitle, identifier))
@@ -147,7 +173,7 @@ class VideoMatchService {
                 identifier = identifier,
                 requestedEpisode = requestedEpisode,
                 targetTitles = targetTitles,
-                itemTitleScore = itemTitleScore,
+                itemTitleScore = effectiveTitleScore,
                 seasonNumber = targetSeason
             ) ?: return null
 
@@ -155,20 +181,21 @@ class VideoMatchService {
             detectedEp = requestedEpisode
             isEpisodeSpecific = true
         } else {
-            bestFile = selectBestFileForEpisode(compatibleFiles, requestedEpisode) ?: compatibleFiles.first()
+            bestFile = selectBestFileForEpisode(compatibleFiles, null) ?: compatibleFiles.first()
             detectedEp = detectEpisodeNumber(bestFile.name) ?: detectEpisodeNumber(docTitle) ?: requestedEpisode
             isEpisodeSpecific = true
         }
 
-        // Double check that the chosen file itself is not a reaction/live-action/trailer/short clip
-        if (containsExcludedKeywords(bestFile.name, bestFile.title.orEmpty(), "")) {
+        // Double check that the chosen file itself is not a trailer/review/explanation/reaction/short clip
+        if (containsExcludedKeywords(bestFile.name, bestFile.title.orEmpty(), "", isLiveActionAllowed = isLiveActionAllowed)) {
             return null
         }
         if (!isValidEpisodeDurationAndSize(
                 file = bestFile,
-                requireFullLength = !isMovieFormat,
+                requireFullLength = true,
                 requestedEpisode = requestedEpisode,
-                isMovieOrSingleWork = isSingleEpisodeWork
+                isMovieOrSingleWork = isSingleEpisodeWork,
+                isLiveActionAllowed = isLiveActionAllowed
             )
         ) {
             return null
@@ -176,7 +203,7 @@ class VideoMatchService {
 
         // Give a strong score bonus if the file duration is within the canonical 19-27.5 min TV anime episode window
         val fileDurationSecs = parseDurationSeconds(bestFile.length)
-        val canonicalDurationBonus = if (!isSingleEpisodeWork && fileDurationSecs != null &&
+        val canonicalDurationBonus = if (!isSingleEpisodeWork && !isLiveActionAllowed && fileDurationSecs != null &&
             fileDurationSecs in CANONICAL_EPISODE_MIN_SECONDS..CANONICAL_EPISODE_MAX_SECONDS
         ) {
             0.12f
@@ -194,9 +221,9 @@ class VideoMatchService {
         val sizeBytes = bestFile.size?.toLongOrNull()
         val durationFormatted = formatSeconds(fileDurationSecs)
         val streamUrl = InternetArchiveApiService.getDirectDownloadUrl(doc.identifier, bestFile.name)
-        val qualityOptions = extractQualityOptions(doc.identifier, compatibleFiles, requestedEpisode)
+        val qualityOptions = extractQualityOptions(doc.identifier, compatibleFiles, if (isSingleEpisodeWork) null else requestedEpisode)
         val subtitleRepository = SubtitleRepository()
-        val subtitleTracks = subtitleRepository.extractArchiveSubtitles(doc.identifier, files, requestedEpisode)
+        val subtitleTracks = subtitleRepository.extractArchiveSubtitles(doc.identifier, files, if (isSingleEpisodeWork) null else requestedEpisode)
 
         return ArchiveCandidateMatch(
             identifier = doc.identifier,
@@ -222,25 +249,32 @@ class VideoMatchService {
 
     /**
      * Checks whether title, subject, identifier, description, or creator contains keywords indicating
-     * reaction videos, commentary, live-action adaptations, stage plays, dramas, cosplay, trailers, AMVs, or short clips.
-     * Normalizes underscores, hyphens, dots, and camelCase first so filenames like
-     * `One_Piece_Live_Action_01.mp4` or `NarutoReactionEp1.mp4` are always caught.
+     * trailers, reviews, explanations, breakdowns, reactions, commentary, clips, or promos.
      */
     fun containsExcludedKeywords(
         title: String,
         subject: String = "",
         identifier: String = "",
         description: String = "",
-        creator: String = ""
+        creator: String = "",
+        isLiveActionAllowed: Boolean = false
     ): Boolean {
         val rawCombined = "$title $subject $identifier $creator ${description.take(600)}"
         val normalized = normalizeForKeywordCheck(rawCombined)
         if (normalized.isBlank()) return false
 
-        for (keyword in EXCLUDED_CONTENT_KEYWORDS) {
+        for (keyword in UNIVERSAL_EXCLUDED_KEYWORDS) {
             val regex = Regex("""\b${Regex.escape(keyword)}\b""")
             if (regex.containsMatchIn(normalized)) {
                 return true
+            }
+        }
+        if (!isLiveActionAllowed) {
+            for (keyword in ANIME_ONLY_EXCLUDED_KEYWORDS) {
+                val regex = Regex("""\b${Regex.escape(keyword)}\b""")
+                if (regex.containsMatchIn(normalized)) {
+                    return true
+                }
             }
         }
         return false
@@ -256,46 +290,54 @@ class VideoMatchService {
     }
 
     /**
-     * Validates that a file is a genuine episode (not a 2-3 minute clip AND not a 40-180 minute
-     * long reaction video or live-action feature movie when a TV episode is requested).
+     * Validates that a file is a genuine full-length episode or full-length movie
+     * (never a 1-20 minute trailer, review, explanation video, or clip).
      */
     fun isValidEpisodeDurationAndSize(
         file: ArchiveFileItem,
         requireFullLength: Boolean = true,
         requestedEpisode: Int? = null,
-        isMovieOrSingleWork: Boolean = false
+        isMovieOrSingleWork: Boolean = false,
+        isLiveActionAllowed: Boolean = false
     ): Boolean {
         val durationSecs = parseDurationSeconds(file.length)
         val sizeBytes = file.size?.toLongOrNull()
 
         if (!requireFullLength) {
-            return (sizeBytes == null || sizeBytes > 2_000_000L)
+            return (sizeBytes == null || sizeBytes > 15_000_000L)
         }
 
         if (durationSecs != null && durationSecs > 0f) {
-            // 1. Reject short clips, openings, endings, trailers, and short reactions (< 9 minutes)
-            if (durationSecs < MIN_EPISODE_DURATION_SECONDS) {
-                return false
-            }
-
-            // 2. For multi-episode TV series, reject overly long videos (> 34 min for Ep 2+, > 55 min for Ep 1)
-            // which are long uncut reaction streams, commentary VODs, or live-action movies.
-            if (!isMovieOrSingleWork && requestedEpisode != null && requestedEpisode > 0) {
-                val maxAllowedSecs = if (requestedEpisode == 1) {
-                    MAX_PREMIERE_EPISODE_DURATION_SECONDS
-                } else {
-                    MAX_STANDARD_EPISODE_DURATION_SECONDS
-                }
-                if (durationSecs > maxAllowedSecs) {
+            if (isMovieOrSingleWork) {
+                // Full-length movie must be at least 35 minutes (blocks all trailers, reviews, explanations, clips)
+                if (durationSecs < MIN_MOVIE_DURATION_SECONDS) {
                     return false
+                }
+            } else {
+                // 1. Reject short clips, openings, endings, trailers, reviews, explanations (< 9 minutes)
+                if (durationSecs < MIN_EPISODE_DURATION_SECONDS) {
+                    return false
+                }
+
+                // 2. Upper bound check for TV series episodes
+                if (requestedEpisode != null && requestedEpisode > 0) {
+                    val maxAllowedSecs = when {
+                        isLiveActionAllowed -> MAX_LIVE_ACTION_SERIES_EPISODE_SECONDS
+                        requestedEpisode == 1 -> MAX_PREMIERE_EPISODE_DURATION_SECONDS
+                        else -> MAX_STANDARD_EPISODE_DURATION_SECONDS
+                    }
+                    if (durationSecs > maxAllowedSecs) {
+                        return false
+                    }
                 }
             }
         }
 
-        // If file size is known (and not an HLS manifest .m3u8), require at least 15 MB for a full episode
+        // File size check (blocks small trailers/reviews/clips when duration metadata is absent)
         val isHls = file.name.endsWith(".m3u8", ignoreCase = true)
         if (!isHls && sizeBytes != null && sizeBytes > 0L) {
-            if (sizeBytes < MIN_EPISODE_FILE_SIZE_BYTES) {
+            val minRequiredBytes = if (isMovieOrSingleWork) MIN_MOVIE_FILE_SIZE_BYTES else MIN_EPISODE_FILE_SIZE_BYTES
+            if (sizeBytes < minRequiredBytes) {
                 return false
             }
         }
@@ -383,7 +425,8 @@ class VideoMatchService {
         files: List<ArchiveFileItem>,
         requireFullEpisodeLength: Boolean = true,
         requestedEpisode: Int? = null,
-        isMovieOrSingleWork: Boolean = false
+        isMovieOrSingleWork: Boolean = false,
+        isLiveActionAllowed: Boolean = false
     ): List<ArchiveFileItem> {
         return files.filter { file ->
             val name = file.name.lowercase(Locale.ROOT)
@@ -400,7 +443,7 @@ class VideoMatchService {
 
             if (isExcludedExtension) return@filter false
 
-            if (containsExcludedKeywords(file.name, file.title.orEmpty(), "")) {
+            if (containsExcludedKeywords(file.name, file.title.orEmpty(), "", isLiveActionAllowed = isLiveActionAllowed)) {
                 return@filter false
             }
 
@@ -414,7 +457,8 @@ class VideoMatchService {
                 file = file,
                 requireFullLength = requireFullEpisodeLength,
                 requestedEpisode = requestedEpisode,
-                isMovieOrSingleWork = isMovieOrSingleWork
+                isMovieOrSingleWork = isMovieOrSingleWork,
+                isLiveActionAllowed = isLiveActionAllowed
             )
         }
     }
@@ -435,14 +479,30 @@ class VideoMatchService {
         if (files.isEmpty()) return null
 
         val targetSeason = seasonNumber ?: extractSeasonNumber(targetTitles)
+
+        // Strict season check: If Archive Item declares a conflicting season, never match files from it
+        if (targetSeason != null) {
+            val itemSeason = detectSeasonNumber(docTitle) ?: detectSeasonNumber(identifier)
+            if (itemSeason != null && itemSeason != targetSeason) {
+                return null
+            }
+        }
+
         var candidateFiles = files
         if (targetSeason != null) {
-            val seasonMatched = files.filter { file ->
+            // Prioritize files explicitly stamped with the requested season (e.g. S02E01)
+            val strictSeasonFiles = files.filter { file ->
                 val fSeason = detectSeasonNumber(file.name) ?: detectSeasonNumber(file.title.orEmpty())
-                fSeason == null || fSeason == targetSeason
+                fSeason == targetSeason
             }
-            if (seasonMatched.isNotEmpty()) {
-                candidateFiles = seasonMatched
+            if (strictSeasonFiles.isNotEmpty()) {
+                candidateFiles = strictSeasonFiles
+            } else {
+                // Otherwise only accept files that do NOT declare a conflicting season number
+                candidateFiles = files.filter { file ->
+                    val fSeason = detectSeasonNumber(file.name) ?: detectSeasonNumber(file.title.orEmpty())
+                    fSeason == null
+                }
             }
         }
 

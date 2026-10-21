@@ -686,58 +686,27 @@ fun AnimeCard(
     }
 
     if (showCustomEpisodeDialog) {
-        var customEpText by remember { mutableStateOf(watchedCount.toString()) }
-        AlertDialog(
+        val effectiveTotal = (anime.totalEpisodes ?: anime.latestAvailableEpisode).coerceAtLeast(1)
+        val nextEpToWatch = if (watchedCount < effectiveTotal) watchedCount + 1 else watchedCount.coerceAtLeast(1)
+        EpisodeGridSelectorDialog(
+            animeTitle = displayPrimary,
+            totalEpisodes = effectiveTotal,
+            currentEpisode = nextEpToWatch,
+            watchedEpisodeCount = watchedCount,
             onDismissRequest = { showCustomEpisodeDialog = false },
-            shape = RoundedCornerShape(22.dp),
-            containerColor = Color(0xFF090E1A),
-            title = {
-                Text(
-                    text = "Custom Episode Selection",
-                    style = TextStyle(fontSize = 17.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                )
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        text = "Enter custom episode number for '${displayPrimary}':",
-                        color = Color(0xFF94A3B8),
-                        fontSize = 13.sp
-                    )
-                    OutlinedTextField(
-                        value = customEpText,
-                        onValueChange = { customEpText = it.filter { ch -> ch.isDigit() } },
-                        singleLine = true,
-                        shape = RoundedCornerShape(12.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
-                            focusedBorderColor = Color(0xFF38BDF8),
-                            unfocusedBorderColor = Color(0xFF334155)
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    )
+            onWatchEpisode = { ep ->
+                if (onCustomEpisodeChange != null) onCustomEpisodeChange(ep)
+                if (onWatchClick != null) {
+                    onWatchClick()
+                } else {
+                    onClick()
                 }
+                showCustomEpisodeDialog = false
             },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val parsed = customEpText.toIntOrNull()?.coerceAtLeast(0)
-                        if (parsed != null) {
-                            if (onCustomEpisodeChange != null) onCustomEpisodeChange(parsed)
-                            else onWatchedToggle(parsed > 0)
-                        }
-                        showCustomEpisodeDialog = false
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
-                ) {
-                    Text("Save", color = Color.White, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showCustomEpisodeDialog = false }) {
-                    Text("Cancel", color = Color(0xFF94A3B8))
-                }
+            onSetWatchedCount = { ep ->
+                if (onCustomEpisodeChange != null) onCustomEpisodeChange(ep)
+                else onWatchedToggle(ep > 0)
+                showCustomEpisodeDialog = false
             }
         )
     }

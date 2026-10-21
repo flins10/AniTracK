@@ -21,14 +21,17 @@ class ArchiveSearchRepository(
     private val searchCache = LruCache<String, List<ArchiveDocItem>>(80)
     private val metadataCache = LruCache<String, ArchiveMetadataResponse>(120)
 
+    private val matchService = VideoMatchService()
+
     /**
-     * Executes an advanced search on Internet Archive for animation / video items.
+     * Executes an advanced search on Internet Archive for full-length video items,
+     * automatically blocking trailers, reviews, explanations, reactions, clips, and small files.
      */
     suspend fun searchArchive(
         query: String,
         page: Int = 1,
         rows: Int = 20,
-        maxRetries: Int = 2
+        maxRetries: Int = 1
     ): Result<List<ArchiveDocItem>> = withContext(Dispatchers.IO) {
         val cleanQuery = query.trim()
         if (cleanQuery.isBlank()) {
@@ -53,12 +56,25 @@ class ArchiveSearchRepository(
                 )
 
                 if (response.isSuccessful) {
-                    val docs = response.body()?.response?.docs.orEmpty()
-                    searchCache.put(cacheKey, docs)
-                    return@withContext Result.success(docs)
+                    val rawDocs = response.body()?.response?.docs.orEmpty()
+                    val filteredDocs = rawDocs.filter { doc ->
+                        val isBlockedKeyword = matchService.containsExcludedKeywords(
+                            title = doc.title.orEmpty(),
+                            subject = doc.subject.orEmpty(),
+                            identifier = doc.identifier,
+                            description = doc.description.orEmpty(),
+                            creator = doc.creator.orEmpty(),
+                            isLiveActionAllowed = true
+                        )
+                        val itemBytes = doc.item_size?.toLongOrNull()
+                        val isTooSmall = itemBytes != null && itemBytes < VideoMatchService.MIN_EPISODE_FILE_SIZE_BYTES
+                        !isBlockedKeyword && !isTooSmall
+                    }
+                    searchCache.put(cacheKey, filteredDocs)
+                    return@withContext Result.success(filteredDocs)
                 } else if (response.code() in 500..599 && attempt < maxRetries) {
                     attempt++
-                    delay(300L * attempt)
+                    delay(180L * attempt)
                 } else {
                     return@withContext Result.failure(
                         Exception("Internet Archive search failed with HTTP ${response.code()}: ${response.message()}")
@@ -68,7 +84,7 @@ class ArchiveSearchRepository(
                 lastException = e
                 attempt++
                 if (attempt <= maxRetries) {
-                    delay(300L * attempt)
+                    delay(180L * attempt)
                 }
             }
         }

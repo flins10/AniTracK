@@ -20,13 +20,13 @@ data class ApkValidationResult(
 object ApkUpdateValidator {
 
     fun validateUpdateApk(context: Context, apkFile: File): ApkValidationResult {
-        if (!apkFile.exists()) {
-            return ApkValidationResult(false, "APK file does not exist", "FILE_NOT_FOUND")
+        if (!apkFile.exists() || apkFile.length() == 0L) {
+            return ApkValidationResult(false, "APK file does not exist or is empty", "INVALID_FILE")
         }
 
         val pm = context.packageManager
         val archiveInfo: PackageInfo = pm.getPackageArchiveInfo(apkFile.absolutePath, PackageManager.GET_ACTIVITIES)
-            ?: return ApkValidationResult(false, "Invalid APK package structure", "INVALID_APK")
+            ?: return ApkValidationResult(false, "Invalid APK package structure", "CORRUPT_APK")
 
         if (archiveInfo.packageName != context.packageName) {
             return ApkValidationResult(

@@ -19,10 +19,16 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.Tracks
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
@@ -89,6 +95,7 @@ import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.filled.ZoomOut
+import com.example.ui.components.EpisodeGridSelectorDialog
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -635,7 +642,7 @@ fun StreamingPlayerScreen(
                                             modifier = Modifier.clickable { showJumpDialog = true }
                                         ) {
                                             Text(
-                                                text = "Ep $currentEpisode${if (totalEpisodes > 1) " / $totalEpisodes" else ""} (S$currentSeasonNumber) • Custom",
+                                                text = "Ep $currentEpisode${if (totalEpisodes > 1) " / $totalEpisodes" else ""} (S$currentSeasonNumber)",
                                                 style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                                                 color = Color.White,
                                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
@@ -701,7 +708,7 @@ fun StreamingPlayerScreen(
                                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                                             modifier = Modifier.height(30.dp)
                                         ) {
-                                            Text("Custom Ep...", fontSize = 11.sp, color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold)
+                                            Text("Select Ep...", fontSize = 11.sp, color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold)
                                         }
                                     }
                                 }
@@ -1026,118 +1033,29 @@ fun StreamingPlayerScreen(
             )
         }
 
-        // Custom Episode Selection Dialog (100-Episode Range Selector)
+        // Direct Episode Selection Dialog (5-Column Grid matching reference design)
         if (showJumpDialog) {
             val totalEpPlayer = maxOf(totalEpisodes, currentEpisode, 1)
-            val batchSizePlayer = 100
-            val totalBatchesPlayer = ((totalEpPlayer + batchSizePlayer - 1) / batchSizePlayer).coerceAtLeast(1)
-            var playerBatchIdx by remember { mutableIntStateOf(((currentEpisode - 1) / batchSizePlayer).coerceIn(0, totalBatchesPlayer - 1)) }
-            var selectedPlayerEp by remember { mutableIntStateOf(currentEpisode) }
-
-            AlertDialog(
+            EpisodeGridSelectorDialog(
+                animeTitle = anime?.displayTitle ?: "Episode Selection",
+                totalEpisodes = totalEpPlayer,
+                currentEpisode = currentEpisode,
+                watchedEpisodeCount = anime?.watchedEpisodeCount ?: (currentEpisode - 1).coerceAtLeast(0),
                 onDismissRequest = { showJumpDialog = false },
-                containerColor = Color(0xFF0F172A),
-                titleContentColor = Color.White,
-                title = {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Select Episode", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Color.White))
-                        Text("Selected: Ep $selectedPlayerEp", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8)))
-                    }
+                onWatchEpisode = { ep ->
+                    playerViewModel.loadEpisode(
+                        animeId = animeId,
+                        episodeNumber = ep,
+                        seasonNumber = currentSeasonNumber,
+                        fallbackAnime = anime ?: fallbackAnime
+                    )
+                    showJumpDialog = false
                 },
-                text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text(
-                            text = "Select Episode Range (100 episodes per box):",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFF94A3B8)
-                        )
-
-                        // 100-Episode Range Selector Tabs
-                        LazyRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            items(totalBatchesPlayer) { bIdx ->
-                                val sEp = (bIdx * batchSizePlayer) + 1
-                                val rEnd = (bIdx + 1) * batchSizePlayer
-                                val eEp = if (rEnd < totalEpPlayer) rEnd else totalEpPlayer
-                                val isSel = (bIdx == playerBatchIdx)
-
-                                Surface(
-                                    shape = RoundedCornerShape(10.dp),
-                                    color = if (isSel) Color(0xFF0284C7) else Color(0xFF1E293B),
-                                    border = BorderStroke(1.dp, if (isSel) Color(0xFF38BDF8) else Color.White.copy(alpha = 0.1f)),
-                                    modifier = Modifier.clickable { playerBatchIdx = bIdx }
-                                ) {
-                                    Text(
-                                        text = "$sEp - $eEp",
-                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                        color = if (isSel) Color.White else Color(0xFF94A3B8),
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                                    )
-                                }
-                            }
-                        }
-
-                        // 100-Episode Box Container
-                        val startPEp = (playerBatchIdx * batchSizePlayer) + 1
-                        val rawPEnd = (playerBatchIdx + 1) * batchSizePlayer
-                        val endPEp = if (rawPEnd < totalEpPlayer) rawPEnd else totalEpPlayer
-                        val pEpisodesList = (startPEp..endPEp).toList()
-
-                        Surface(
-                            shape = RoundedCornerShape(14.dp),
-                            color = Color(0xFF131C2E),
-                            border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.3f)),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(150.dp)
-                        ) {
-                            LazyRow(
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(10.dp)
-                            ) {
-                                items(pEpisodesList) { epNum ->
-                                    val isCur = (epNum == selectedPlayerEp)
-                                    Surface(
-                                        shape = RoundedCornerShape(10.dp),
-                                        color = if (isCur) Color(0xFF0284C7) else Color(0xFF1E293B),
-                                        border = BorderStroke(1.dp, if (isCur) Color(0xFF38BDF8) else Color.White.copy(alpha = 0.1f)),
-                                        modifier = Modifier.clickable { selectedPlayerEp = epNum }
-                                    ) {
-                                        Text(
-                                            text = "Ep $epNum",
-                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                            color = if (isCur) Color.White else Color(0xFFCBD5E1),
-                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
+                onSetWatchedCount = { ep ->
+                    anime?.let { currentAnime ->
+                        viewModel?.updateWatchedEpisodeCount(currentAnime.id, ep)
                     }
-                },
-                confirmButton = {
-                    Button(
-                        onClick = {
-                            playerViewModel.loadEpisode(animeId = animeId, episodeNumber = selectedPlayerEp, seasonNumber = currentSeasonNumber, fallbackAnime = anime ?: fallbackAnime)
-                            showJumpDialog = false
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
-                    ) {
-                        Text("Watch", color = Color.White, fontWeight = FontWeight.Bold)
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showJumpDialog = false }) {
-                        Text("Cancel", color = Color(0xFF94A3B8))
-                    }
+                    showJumpDialog = false
                 }
             )
         }
@@ -1392,30 +1310,40 @@ fun VideoPlayerSurfaceContainer(
                 Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = Color(0xFF38BDF8), modifier = Modifier.size(40.dp))
                 Spacer(modifier = Modifier.height(10.dp))
                 Text(
-                    text = "Episode ${noMatchState.requestedEpisode ?: currentEpisode} Unavailable",
+                    text = "Can't Find Episode ${noMatchState.requestedEpisode ?: currentEpisode}",
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                     color = Color.White
                 )
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
-                    text = noMatchState.reason.ifBlank { "No exact full-length episode match was found. Try searching an alternate title below or selecting another episode." },
+                    text = noMatchState.reason.ifBlank { "Can't find a full-length video for this episode on the Internet Archive." },
                     style = MaterialTheme.typography.bodySmall,
                     color = Color(0xFF94A3B8),
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center
                 )
                 Spacer(modifier = Modifier.height(14.dp))
-                Button(
-                    onClick = {
-                        anime?.let {
-                            playerViewModel.loadEpisode(animeId = it.id, episodeNumber = currentEpisode, seasonNumber = playerViewModel.currentSeasonNumber.value, fallbackAnime = it)
-                        } ?: playerViewModel.retryPlayback()
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Icon(Icons.Default.Refresh, contentDescription = "Retry", modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Retry")
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(
+                        onClick = {
+                            anime?.let {
+                                playerViewModel.loadEpisode(animeId = it.id, episodeNumber = currentEpisode, seasonNumber = playerViewModel.currentSeasonNumber.value, fallbackAnime = it)
+                            } ?: playerViewModel.retryPlayback()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Retry", modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Retry")
+                    }
+                    OutlinedButton(
+                        onClick = onBack,
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, Color(0xFF38BDF8)),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)
+                    ) {
+                        Text("Close")
+                    }
                 }
             }
         }
@@ -1796,7 +1724,17 @@ private fun formatMinSec(millis: Long): String {
 }
 
 /**
- * Standalone ExoPlayerVideoView for direct Internet Archive dialogs with speed ruler and buffered seek bar.
+ * Unified Full-Featured Pro ExoPlayer View used by both Anime and Movie/Series players.
+ * Supports:
+ * - Fast buffering & cross-protocol redirect support for Internet Archive streams
+ * - Automatic fallback across candidate files & bounded buffering timeout ("Can't find" error state)
+ * - Play/Pause, Rewind (-10s), Fast-Forward (+10s), Previous/Next Episode navigation
+ * - Double-tap left (-10s) / right (+10s) seek with ripple indicator
+ * - Vertical swipe on left (Brightness) and right (Volume) with live HUD
+ * - Interactive BufferedSeekBar with scrubbing preview & Remaining Time toggle
+ * - Playback Speed selector (0.5x - 2.0x), Aspect Ratio / Resize mode (Fit, Fill, Zoom)
+ * - Audio & Subtitle (CC) track selector, Stream Quality/Source file switcher
+ * - Skip Intro (+85s), Screen Lock mode, Picture-in-Picture (PiP), and Fullscreen/Landscape toggle
  */
 @OptIn(UnstableApi::class)
 @kotlin.OptIn(ExperimentalMaterial3Api::class)
@@ -1804,57 +1742,169 @@ private fun formatMinSec(millis: Long): String {
 fun ExoPlayerVideoView(
     mediaUrl: String,
     modifier: Modifier = Modifier,
+    title: String = "",
+    subtitleBadge: String? = null,
+    fallbackUrls: List<String> = emptyList(),
+    streamLabels: List<Pair<String, String>> = emptyList(),
     initialPositionMs: Long = 0L,
     onPositionUpdate: ((Long) -> Unit)? = null,
     onPlaybackCompleted: (() -> Unit)? = null,
     onFullscreenToggle: (() -> Unit)? = null,
     isFullscreenMode: Boolean = false,
+    onPreviousEpisode: (() -> Unit)? = null,
+    onNextEpisode: (() -> Unit)? = null,
+    onOpenEpisodeSelector: (() -> Unit)? = null,
     onTryFallback: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
+    val view = LocalView.current
+
+    val allCandidateUrls = remember(mediaUrl, fallbackUrls) {
+        (listOf(mediaUrl) + fallbackUrls).map { it.trim() }.filter { it.isNotBlank() }.distinct()
+    }
+    var currentUrlIndex by remember(mediaUrl) { mutableIntStateOf(0) }
+    val activeStreamUrl = allCandidateUrls.getOrElse(currentUrlIndex) { mediaUrl }
+
     var isPlaying by remember { mutableStateOf(false) }
     var isBuffering by remember { mutableStateOf(true) }
     var playbackError by remember { mutableStateOf<String?>(null) }
     var currentPosition by remember { mutableLongStateOf(0L) }
     var bufferedPosition by remember { mutableLongStateOf(0L) }
     var duration by remember { mutableLongStateOf(0L) }
+    var showRemainingTime by remember { mutableStateOf(false) }
+
     var showControls by remember { mutableStateOf(true) }
+    var isTouchLocked by remember { mutableStateOf(false) }
     var isMuted by remember { mutableStateOf(false) }
+    var isLooping by remember { mutableStateOf(false) }
     var playbackSpeed by remember { mutableFloatStateOf(1.0f) }
+    var resizeMode by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
+    var zoomScale by remember { mutableFloatStateOf(1.0f) }
+    var panOffsetX by remember { mutableFloatStateOf(0f) }
+    var panOffsetY by remember { mutableFloatStateOf(0f) }
+
     var showSpeedSheet by remember { mutableStateOf(false) }
+    var showAspectRatioSheet by remember { mutableStateOf(false) }
+    var showTracksSheet by remember { mutableStateOf(false) }
+    var showQualitySheet by remember { mutableStateOf(false) }
+
+    var doubleTapSeekDir by remember { mutableIntStateOf(0) }
+    var doubleTapSeekAmount by remember { mutableIntStateOf(0) }
+    var gestureHudText by remember { mutableStateOf<String?>(null) }
+    var playerVolume by remember { mutableFloatStateOf(1.0f) }
+    var screenBrightness by remember { mutableFloatStateOf(0.75f) }
+
+    var availableAudioTracks by remember { mutableStateOf<List<Pair<String, TrackSelectionOverride?>>>(emptyList()) }
+    var selectedAudioLabel by remember { mutableStateOf("Default Audio") }
+    var availableSubtitleTracks by remember { mutableStateOf<List<Pair<String, TrackSelectionOverride?>>>(emptyList()) }
+    var isSubtitlesOff by remember { mutableStateOf(false) }
+    var videoResolutionBadge by remember { mutableStateOf("HD") }
+
     var userInteractionToken by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var retryTrigger by remember { mutableIntStateOf(0) }
+
+    DisposableEffect(view) {
+        val prevKeepScreenOn = view.keepScreenOn
+        view.keepScreenOn = true
+        onDispose {
+            view.keepScreenOn = prevKeepScreenOn
+        }
+    }
 
     val trackSelector = remember { DefaultTrackSelector(context) }
 
     val exoPlayer = remember(context, trackSelector) {
+        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
+            .setUserAgent("AniTrackPlayer/1.0 (Linux; Android; Media3 ExoPlayer)")
+            .setConnectTimeoutMs(10_000)
+            .setReadTimeoutMs(12_000)
+            .setAllowCrossProtocolRedirects(true)
+
         val mediaSourceFactory = DefaultMediaSourceFactory(context)
+            .setDataSourceFactory(httpDataSourceFactory)
+
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                /* minBufferMs = */ 12_000,
+                /* maxBufferMs = */ 50_000,
+                /* bufferForPlaybackMs = */ 1_200,
+                /* bufferForPlaybackAfterRebufferMs = */ 2_500
+            )
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
+
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+            .build()
+
         ExoPlayer.Builder(context)
             .setMediaSourceFactory(mediaSourceFactory)
             .setTrackSelector(trackSelector)
+            .setLoadControl(loadControl)
+            .setAudioAttributes(audioAttributes, true)
+            .setHandleAudioBecomingNoisy(true)
             .build().apply {
                 playWhenReady = true
             }
     }
 
-    LaunchedEffect(mediaUrl, retryTrigger) {
+    LaunchedEffect(activeStreamUrl, retryTrigger) {
+        if (activeStreamUrl.isBlank()) {
+            isBuffering = false
+            playbackError = "Can't find video on Internet Archive."
+            return@LaunchedEffect
+        }
         playbackError = null
         isBuffering = true
         val mimeType = when {
-            mediaUrl.contains(".m3u8") -> MimeTypes.APPLICATION_M3U8
-            mediaUrl.contains(".mpd") -> MimeTypes.APPLICATION_MPD
+            activeStreamUrl.contains(".m3u8", ignoreCase = true) -> MimeTypes.APPLICATION_M3U8
+            activeStreamUrl.contains(".mpd", ignoreCase = true) -> MimeTypes.APPLICATION_MPD
+            activeStreamUrl.contains(".webm", ignoreCase = true) -> MimeTypes.VIDEO_WEBM
+            activeStreamUrl.contains(".mkv", ignoreCase = true) -> MimeTypes.VIDEO_MATROSKA
             else -> MimeTypes.VIDEO_MP4
         }
         val mediaItem = MediaItem.Builder()
-            .setUri(mediaUrl)
+            .setUri(activeStreamUrl)
             .setMimeType(mimeType)
             .build()
         exoPlayer.setMediaItem(mediaItem)
         exoPlayer.prepare()
-        if (initialPositionMs > 5000L) {
+        exoPlayer.playWhenReady = true
+        if (initialPositionMs > 5000L && currentPosition == 0L) {
             exoPlayer.seekTo(initialPositionMs)
         }
         exoPlayer.setPlaybackSpeed(playbackSpeed)
+    }
+
+    // Watchdog so buffering never hangs forever if an archive server node is unresponsive
+    LaunchedEffect(activeStreamUrl, retryTrigger, isBuffering) {
+        if (isBuffering && playbackError == null) {
+            delay(11_000L)
+            if (isBuffering && exoPlayer.playbackState != Player.STATE_READY) {
+                if (currentUrlIndex + 1 < allCandidateUrls.size) {
+                    currentUrlIndex += 1
+                } else {
+                    isBuffering = false
+                    playbackError = "Can't find a responsive video stream on Internet Archive."
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(doubleTapSeekDir, doubleTapSeekAmount) {
+        if (doubleTapSeekDir != 0) {
+            delay(650)
+            doubleTapSeekDir = 0
+            doubleTapSeekAmount = 0
+        }
+    }
+
+    LaunchedEffect(gestureHudText) {
+        if (gestureHudText != null) {
+            delay(900)
+            gestureHudText = null
+        }
     }
 
     DisposableEffect(exoPlayer) {
@@ -1875,6 +1925,15 @@ fun ExoPlayerVideoView(
                         if (exoPlayer.duration > 0) {
                             duration = exoPlayer.duration
                         }
+                        val vHeight = exoPlayer.videoSize.height
+                        if (vHeight > 0) {
+                            videoResolutionBadge = when {
+                                vHeight >= 1080 -> "1080p FHD"
+                                vHeight >= 720 -> "720p HD"
+                                vHeight >= 480 -> "480p SD"
+                                else -> "${vHeight}p"
+                            }
+                        }
                     }
                     Player.STATE_ENDED -> {
                         isBuffering = false
@@ -1888,10 +1947,44 @@ fun ExoPlayerVideoView(
                 }
             }
 
+            override fun onTracksChanged(tracks: Tracks) {
+                val audioList = mutableListOf<Pair<String, TrackSelectionOverride?>>()
+                val subList = mutableListOf<Pair<String, TrackSelectionOverride?>>()
+                for (group in tracks.groups) {
+                    if (group.type == C.TRACK_TYPE_AUDIO) {
+                        for (i in 0 until group.length) {
+                            val fmt = group.getTrackFormat(i)
+                            val lang = fmt.language?.let { Locale(it).displayLanguage }?.takeIf { it.isNotBlank() } ?: "Audio Track ${i + 1}"
+                            val label = listOfNotNull(lang, fmt.label).distinct().joinToString(" • ")
+                            val override = TrackSelectionOverride(group.mediaTrackGroup, i)
+                            audioList.add(label to override)
+                            if (group.isTrackSelected(i)) {
+                                selectedAudioLabel = label
+                            }
+                        }
+                    } else if (group.type == C.TRACK_TYPE_TEXT) {
+                        for (i in 0 until group.length) {
+                            val fmt = group.getTrackFormat(i)
+                            val lang = fmt.language?.let { Locale(it).displayLanguage }?.takeIf { it.isNotBlank() } ?: "Subtitles ${i + 1}"
+                            val label = listOfNotNull(lang, fmt.label).distinct().joinToString(" • ")
+                            val override = TrackSelectionOverride(group.mediaTrackGroup, i)
+                            subList.add(label to override)
+                        }
+                    }
+                }
+                availableAudioTracks = audioList
+                availableSubtitleTracks = subList
+            }
+
             override fun onPlayerError(error: PlaybackException) {
-                isBuffering = false
-                isPlaying = false
-                playbackError = error.localizedMessage ?: "Playback error encountered (${error.errorCodeName})"
+                if (currentUrlIndex + 1 < allCandidateUrls.size) {
+                    currentUrlIndex += 1
+                } else {
+                    isBuffering = false
+                    isPlaying = false
+                    playbackError = "Can't find playable video stream (${error.errorCodeName})."
+                    onTryFallback?.invoke()
+                }
             }
         }
 
@@ -1906,7 +1999,7 @@ fun ExoPlayerVideoView(
 
     LaunchedEffect(exoPlayer, isPlaying) {
         while (true) {
-            if (exoPlayer.playbackState == Player.STATE_READY) {
+            if (exoPlayer.playbackState == Player.STATE_READY || exoPlayer.isPlaying) {
                 val pos = exoPlayer.currentPosition.coerceAtLeast(0L)
                 currentPosition = pos
                 bufferedPosition = exoPlayer.bufferedPosition.coerceAtLeast(0L)
@@ -1919,19 +2012,64 @@ fun ExoPlayerVideoView(
         }
     }
 
-    LaunchedEffect(showControls, isPlaying, userInteractionToken) {
-        if (showControls && isPlaying) {
-            delay(4000)
+    LaunchedEffect(showControls, isPlaying, userInteractionToken, isTouchLocked) {
+        if (showControls && isPlaying && !isTouchLocked) {
+            delay(3800)
             showControls = false
         }
     }
 
-    Box(
+    BoxWithConstraints(
         modifier = modifier
             .background(Color.Black)
-            .clickable {
-                showControls = !showControls
-                userInteractionToken = System.currentTimeMillis()
+            .pointerInput(isTouchLocked) {
+                detectTapGestures(
+                    onTap = {
+                        userInteractionToken = System.currentTimeMillis()
+                        showControls = !showControls
+                    },
+                    onDoubleTap = { offset ->
+                        if (isTouchLocked) return@detectTapGestures
+                        userInteractionToken = System.currentTimeMillis()
+                        val widthPx = size.width.toFloat().coerceAtLeast(1f)
+                        when {
+                            offset.x < widthPx * 0.35f -> {
+                                val target = (exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L)
+                                exoPlayer.seekTo(target)
+                                currentPosition = target
+                                doubleTapSeekDir = -1
+                                doubleTapSeekAmount += 10
+                            }
+                            offset.x > widthPx * 0.65f -> {
+                                val maxDur = if (exoPlayer.duration > 0) exoPlayer.duration else Long.MAX_VALUE
+                                val target = (exoPlayer.currentPosition + 10_000L).coerceAtMost(maxDur)
+                                exoPlayer.seekTo(target)
+                                currentPosition = target
+                                doubleTapSeekDir = 1
+                                doubleTapSeekAmount += 10
+                            }
+                            else -> {
+                                if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+                            }
+                        }
+                    }
+                )
+            }
+            .pointerInput(isTouchLocked) {
+                if (!isTouchLocked) {
+                    detectTransformGestures { _, pan, zoom, _ ->
+                        if (zoom != 1f) {
+                            zoomScale = (zoomScale * zoom).coerceIn(1.0f, 3.0f)
+                            if (zoomScale == 1.0f) {
+                                panOffsetX = 0f
+                                panOffsetY = 0f
+                            }
+                        } else if (zoomScale > 1.02f) {
+                            panOffsetX = (panOffsetX + pan.x).coerceIn(-500f, 500f)
+                            panOffsetY = (panOffsetY + pan.y).coerceIn(-300f, 300f)
+                        }
+                    }
+                }
             },
         contentAlignment = Alignment.Center
     ) {
@@ -1941,17 +2079,89 @@ fun ExoPlayerVideoView(
                     player = exoPlayer
                     useController = false
                     setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
-                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    this.resizeMode = resizeMode
                 }
             },
             update = { playerView ->
                 playerView.player = exoPlayer
+                playerView.resizeMode = resizeMode
             },
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer(
+                    scaleX = zoomScale,
+                    scaleY = zoomScale,
+                    translationX = panOffsetX,
+                    translationY = panOffsetY
+                )
         )
 
+        // Double-Tap Seek Ripple Feedback
+        if (doubleTapSeekDir != 0) {
+            Box(
+                modifier = Modifier
+                    .align(if (doubleTapSeekDir < 0) Alignment.CenterStart else Alignment.CenterEnd)
+                    .padding(horizontal = 36.dp)
+            ) {
+                DoubleTapSeekBubble(
+                    isForward = doubleTapSeekDir > 0,
+                    seconds = doubleTapSeekAmount,
+                    visible = true
+                )
+            }
+        }
+
+        // Volume / Brightness HUD
+        if (gestureHudText != null) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = Color.Black.copy(alpha = 0.78f),
+                border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.6f)),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 56.dp)
+            ) {
+                Text(
+                    text = gestureHudText!!,
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                )
+            }
+        }
+
+        // Screen Touch Lock Pill when locked
+        if (isTouchLocked && showControls) {
+            Surface(
+                shape = RoundedCornerShape(24.dp),
+                color = Color.Black.copy(alpha = 0.8f),
+                border = BorderStroke(1.dp, Color(0xFF38BDF8)),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 28.dp)
+                    .clickable {
+                        isTouchLocked = false
+                        userInteractionToken = System.currentTimeMillis()
+                    }
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp)
+                ) {
+                    Icon(Icons.Default.Lock, contentDescription = "Unlock", tint = Color(0xFF38BDF8), modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Controls Locked • Tap to Unlock",
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                }
+            }
+        }
+
+        // Full Player Controls Overlay
         AnimatedVisibility(
-            visible = showControls && playbackError == null,
+            visible = showControls && playbackError == null && !isTouchLocked,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.fillMaxSize()
@@ -1961,37 +2171,167 @@ fun ExoPlayerVideoView(
                     .fillMaxSize()
                     .background(Color.Black.copy(alpha = 0.45f))
             ) {
-                // Top Right: Speed Selector Button
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = Color.Black.copy(alpha = 0.7f),
-                    border = BorderStroke(1.dp, Color(0xFF38BDF8)),
+                // Top Control Bar: Title, Resolution Badge, Audio/Subtitles, Quality, Speed, Lock
+                Row(
                     modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(12.dp)
-                        .clickable { showSpeedSheet = true }
+                        .fillMaxWidth()
+                        .align(Alignment.TopCenter)
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(Color.Black.copy(alpha = 0.85f), Color.Transparent)
+                            )
+                        )
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = String.format(Locale.ROOT, "%.1f×", playbackSpeed),
-                        color = Color(0xFF38BDF8),
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        if (title.isNotBlank()) {
+                            Text(
+                                text = title,
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                color = Color.White,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = Color(0xFF0284C7).copy(alpha = 0.3f)
+                            ) {
+                                Text(
+                                    text = videoResolutionBadge,
+                                    color = Color(0xFF38BDF8),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                            if (!subtitleBadge.isNullOrBlank()) {
+                                Text(
+                                    text = subtitleBadge,
+                                    color = Color(0xFF94A3B8),
+                                    fontSize = 11.sp,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Audio & Subtitles Button
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color.Black.copy(alpha = 0.7f),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.25f)),
+                            modifier = Modifier.clickable {
+                                userInteractionToken = System.currentTimeMillis()
+                                showTracksSheet = true
+                            }
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                            ) {
+                                Icon(Icons.Default.Subtitles, contentDescription = "Audio & Subtitles", tint = Color.White, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Audio/CC", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+
+                        // Quality / Source Selector (if multiple streams exist)
+                        if (allCandidateUrls.size > 1 || streamLabels.size > 1) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Color.Black.copy(alpha = 0.7f),
+                                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.25f)),
+                                modifier = Modifier.clickable {
+                                    userInteractionToken = System.currentTimeMillis()
+                                    showQualitySheet = true
+                                }
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                                ) {
+                                    Icon(Icons.Default.HighQuality, contentDescription = "Quality", tint = Color(0xFF38BDF8), modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Source ${currentUrlIndex + 1}/${allCandidateUrls.size}", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+                        }
+
+                        // Speed Selector Button
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color.Black.copy(alpha = 0.7f),
+                            border = BorderStroke(1.dp, Color(0xFF38BDF8)),
+                            modifier = Modifier.clickable {
+                                userInteractionToken = System.currentTimeMillis()
+                                showSpeedSheet = true
+                            }
+                        ) {
+                            Text(
+                                text = String.format(Locale.ROOT, "%.1f×", playbackSpeed),
+                                color = Color(0xFF38BDF8),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                            )
+                        }
+
+                        // Lock Controls Button
+                        IconButton(
+                            onClick = {
+                                isTouchLocked = true
+                                showControls = true
+                            },
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.65f))
+                        ) {
+                            Icon(Icons.Default.LockOpen, contentDescription = "Lock Controls", tint = Color.White, modifier = Modifier.size(16.dp))
+                        }
+                    }
                 }
 
-                // Center Play/Pause & Seek
+                // Center Transport Controls: Prev Ep, Rewind -10s, Play/Pause, FastForward +10s, Next Ep
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(24.dp),
+                    horizontalArrangement = Arrangement.spacedBy(18.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.align(Alignment.Center)
                 ) {
+                    if (onPreviousEpisode != null) {
+                        IconButton(
+                            onClick = {
+                                userInteractionToken = System.currentTimeMillis()
+                                onPreviousEpisode()
+                            },
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.65f))
+                        ) {
+                            Icon(Icons.Default.SkipPrevious, contentDescription = "Previous Episode", tint = Color.White)
+                        }
+                    }
+
                     IconButton(
                         onClick = {
                             userInteractionToken = System.currentTimeMillis()
-                            val target = (exoPlayer.currentPosition - 10000).coerceAtLeast(0L)
+                            val target = (exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L)
                             exoPlayer.seekTo(target)
                             currentPosition = target
+                            doubleTapSeekDir = -1
+                            doubleTapSeekAmount = 10
                         },
                         modifier = Modifier
                             .size(48.dp)
@@ -2030,9 +2370,11 @@ fun ExoPlayerVideoView(
                         onClick = {
                             userInteractionToken = System.currentTimeMillis()
                             val maxDur = if (exoPlayer.duration > 0) exoPlayer.duration else Long.MAX_VALUE
-                            val target = (exoPlayer.currentPosition + 10000).coerceAtMost(maxDur)
+                            val target = (exoPlayer.currentPosition + 10_000L).coerceAtMost(maxDur)
                             exoPlayer.seekTo(target)
                             currentPosition = target
+                            doubleTapSeekDir = 1
+                            doubleTapSeekAmount = 10
                         },
                         modifier = Modifier
                             .size(48.dp)
@@ -2041,17 +2383,148 @@ fun ExoPlayerVideoView(
                     ) {
                         Icon(Icons.Default.FastForward, contentDescription = "+10s", tint = Color.White)
                     }
+
+                    if (onNextEpisode != null) {
+                        IconButton(
+                            onClick = {
+                                userInteractionToken = System.currentTimeMillis()
+                                onNextEpisode()
+                            },
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.65f))
+                        ) {
+                            Icon(Icons.Default.SkipNext, contentDescription = "Next Episode", tint = Color.White)
+                        }
+                    }
                 }
 
-                // Bottom Overlay Bar
+                // Bottom Overlay Bar: Quick Pills + SeekBar + Time & Utility Icons
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .align(Alignment.BottomCenter)
-                        .background(Color.Black.copy(alpha = 0.85f))
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(Color.Transparent, Color.Black.copy(alpha = 0.9f))
+                            )
+                        )
                         .navigationBarsPadding()
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
                 ) {
+                    // Quick Action Row: Skip Intro (+85s), Aspect Ratio, Episode Selector, Reset Zoom
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            // +85s Skip Intro Pill
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = Color(0xFF0284C7).copy(alpha = 0.85f),
+                                border = BorderStroke(1.dp, Color(0xFF38BDF8)),
+                                modifier = Modifier.clickable {
+                                    userInteractionToken = System.currentTimeMillis()
+                                    val maxDur = if (exoPlayer.duration > 0) exoPlayer.duration else Long.MAX_VALUE
+                                    val target = (exoPlayer.currentPosition + 85_000L).coerceAtMost(maxDur)
+                                    exoPlayer.seekTo(target)
+                                    currentPosition = target
+                                }
+                            ) {
+                                Text(
+                                    text = "+85s Skip",
+                                    color = Color.White,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                )
+                            }
+
+                            // Aspect Ratio / Resize Mode Pill
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = Color.White.copy(alpha = 0.14f),
+                                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.25f)),
+                                modifier = Modifier.clickable {
+                                    userInteractionToken = System.currentTimeMillis()
+                                    resizeMode = when (resizeMode) {
+                                        AspectRatioFrameLayout.RESIZE_MODE_FIT -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                                        AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+                                        else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                    }
+                                    val modeName = when (resizeMode) {
+                                        AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> "Crop / Zoom"
+                                        AspectRatioFrameLayout.RESIZE_MODE_FILL -> "Stretch Fill"
+                                        else -> "Fit Screen"
+                                    }
+                                    gestureHudText = "Aspect: $modeName"
+                                }
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                ) {
+                                    Icon(Icons.Default.AspectRatio, contentDescription = null, tint = Color.White, modifier = Modifier.size(13.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = when (resizeMode) {
+                                            AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> "Zoom"
+                                            AspectRatioFrameLayout.RESIZE_MODE_FILL -> "Fill"
+                                            else -> "Fit"
+                                        },
+                                        color = Color.White,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+
+                            if (zoomScale > 1.02f) {
+                                Surface(
+                                    shape = RoundedCornerShape(16.dp),
+                                    color = Color.White.copy(alpha = 0.18f),
+                                    modifier = Modifier.clickable {
+                                        zoomScale = 1.0f
+                                        panOffsetX = 0f
+                                        panOffsetY = 0f
+                                    }
+                                ) {
+                                    Text(
+                                        text = "Reset ${String.format(Locale.ROOT, "%.1f×", zoomScale)}",
+                                        color = Color(0xFF38BDF8),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        if (onOpenEpisodeSelector != null) {
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = Color(0xFF0F172A).copy(alpha = 0.9f),
+                                border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.6f)),
+                                modifier = Modifier.clickable {
+                                    userInteractionToken = System.currentTimeMillis()
+                                    onOpenEpisodeSelector()
+                                }
+                            ) {
+                                Text(
+                                    text = "Episodes",
+                                    color = Color(0xFF38BDF8),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
                     BufferedSeekBar(
                         currentPositionMs = currentPosition,
                         bufferedPositionMs = bufferedPosition,
@@ -2068,20 +2541,47 @@ fun ExoPlayerVideoView(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
+                        val rightTimeText = if (showRemainingTime && duration > currentPosition) {
+                            "-${formatMinSec(duration - currentPosition)}"
+                        } else {
+                            formatMinSec(duration)
+                        }
                         Text(
-                            text = "${formatMinSec(currentPosition)} / ${formatMinSec(duration)}",
+                            text = "${formatMinSec(currentPosition)} / $rightTimeText",
                             style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                            color = Color.White
+                            color = Color.White,
+                            modifier = Modifier.clickable {
+                                showRemainingTime = !showRemainingTime
+                            }
                         )
 
                         Row(verticalAlignment = Alignment.CenterVertically) {
+                            // Loop / Repeat Button
+                            IconButton(
+                                onClick = {
+                                    isLooping = !isLooping
+                                    exoPlayer.repeatMode = if (isLooping) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+                                    gestureHudText = if (isLooping) "Loop: On" else "Loop: Off"
+                                    userInteractionToken = System.currentTimeMillis()
+                                },
+                                modifier = Modifier.size(34.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Replay,
+                                    contentDescription = "Loop",
+                                    tint = if (isLooping) Color(0xFF38BDF8) else Color.White.copy(alpha = 0.75f),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+
+                            // Volume / Mute Button
                             IconButton(
                                 onClick = {
                                     isMuted = !isMuted
-                                    exoPlayer.volume = if (isMuted) 0f else 1f
+                                    exoPlayer.volume = if (isMuted) 0f else playerVolume
                                     userInteractionToken = System.currentTimeMillis()
                                 },
-                                modifier = Modifier.size(36.dp)
+                                modifier = Modifier.size(34.dp)
                             ) {
                                 Icon(
                                     imageVector = if (isMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
@@ -2091,21 +2591,45 @@ fun ExoPlayerVideoView(
                                 )
                             }
 
-                            if (onFullscreenToggle != null) {
-                                IconButton(
-                                    onClick = {
-                                        userInteractionToken = System.currentTimeMillis()
+                            // PiP Button
+                            IconButton(
+                                onClick = {
+                                    enterPipMode(context)
+                                },
+                                modifier = Modifier.size(34.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.PictureInPicture,
+                                    contentDescription = "Picture in Picture",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+
+                            // Rotate / Fullscreen Toggle
+                            IconButton(
+                                onClick = {
+                                    userInteractionToken = System.currentTimeMillis()
+                                    if (onFullscreenToggle != null) {
                                         onFullscreenToggle()
-                                    },
-                                    modifier = Modifier.size(36.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = if (isFullscreenMode) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
-                                        contentDescription = "Fullscreen",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
+                                    } else {
+                                        context.findActivity()?.let { act ->
+                                            act.requestedOrientation = if (act.requestedOrientation == ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE) {
+                                                ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                                            } else {
+                                                ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                                            }
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.size(34.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (isFullscreenMode) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                                    contentDescription = "Fullscreen",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
                             }
                         }
                     }
@@ -2113,10 +2637,80 @@ fun ExoPlayerVideoView(
             }
         }
 
+        // Fast Buffering Indicator
         if (isBuffering && playbackError == null) {
-            CircularProgressIndicator(color = Color(0xFF38BDF8))
+            CircularProgressIndicator(
+                color = Color(0xFF38BDF8),
+                strokeWidth = 3.dp,
+                modifier = Modifier.size(42.dp)
+            )
         }
 
+        // Clear "Can't Find" / Playback Error State (Never stays black or spins forever)
+        if (playbackError != null) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFF090E1A).copy(alpha = 0.96f))
+                    .padding(24.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ErrorOutline,
+                    contentDescription = null,
+                    tint = Color(0xFF38BDF8),
+                    modifier = Modifier.size(42.dp)
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = "Can't Find Playable Video",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = playbackError ?: "Can't find this video on the Internet Archive.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF94A3B8),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(
+                        onClick = {
+                            playbackError = null
+                            currentUrlIndex = 0
+                            retryTrigger += 1
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Retry", modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Retry")
+                    }
+                    if (allCandidateUrls.size > 1) {
+                        OutlinedButton(
+                            onClick = {
+                                playbackError = null
+                                currentUrlIndex = (currentUrlIndex + 1) % allCandidateUrls.size
+                                retryTrigger += 1
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, Color(0xFF38BDF8)),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)
+                        ) {
+                            Icon(Icons.Default.SwapHoriz, contentDescription = "Next Source", modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Try Alternate Stream")
+                        }
+                    }
+                }
+            }
+        }
+
+        // Speed Selection Sheet
         if (showSpeedSheet) {
             ModalBottomSheet(
                 onDismissRequest = { showSpeedSheet = false },
@@ -2131,6 +2725,169 @@ fun ExoPlayerVideoView(
                             exoPlayer.setPlaybackSpeed(speed)
                         }
                     )
+                    Spacer(modifier = Modifier.height(20.dp))
+                }
+            }
+        }
+
+        // Audio & Subtitle Track Sheet
+        if (showTracksSheet) {
+            ModalBottomSheet(
+                onDismissRequest = { showTracksSheet = false },
+                sheetState = rememberModalBottomSheetState(),
+                containerColor = Color(0xFF0F172A)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 12.dp)
+                ) {
+                    Text(
+                        text = "Audio & Subtitles",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = Color.White
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "AUDIO TRACKS",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = Color(0xFF38BDF8)
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    if (availableAudioTracks.isEmpty()) {
+                        Text("Original Audio Track (Active)", color = Color.White, fontSize = 13.sp)
+                    } else {
+                        availableAudioTracks.forEach { (label, override) ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        if (override != null) {
+                                            trackSelector.parameters = trackSelector.parameters
+                                                .buildUpon()
+                                                .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+                                                .addOverride(override)
+                                                .build()
+                                            selectedAudioLabel = label
+                                        }
+                                        showTracksSheet = false
+                                    }
+                                    .padding(vertical = 8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(label, color = Color.White, fontSize = 13.sp)
+                                if (label == selectedAudioLabel) {
+                                    Icon(Icons.Default.Check, contentDescription = null, tint = Color(0xFF38BDF8), modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Text(
+                        text = "SUBTITLES / CAPTIONS",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = Color(0xFF38BDF8)
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                isSubtitlesOff = true
+                                trackSelector.parameters = trackSelector.parameters
+                                    .buildUpon()
+                                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                                    .build()
+                                showTracksSheet = false
+                            }
+                            .padding(vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Off", color = Color.White, fontSize = 13.sp)
+                        if (isSubtitlesOff || availableSubtitleTracks.isEmpty()) {
+                            Icon(Icons.Default.Check, contentDescription = null, tint = Color(0xFF38BDF8), modifier = Modifier.size(18.dp))
+                        }
+                    }
+                    availableSubtitleTracks.forEach { (label, override) ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    isSubtitlesOff = false
+                                    if (override != null) {
+                                        trackSelector.parameters = trackSelector.parameters
+                                            .buildUpon()
+                                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                                            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                                            .addOverride(override)
+                                            .build()
+                                    }
+                                    showTracksSheet = false
+                                }
+                                .padding(vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(label, color = Color.White, fontSize = 13.sp)
+                            if (!isSubtitlesOff) {
+                                Icon(Icons.Default.Check, contentDescription = null, tint = Color(0xFF38BDF8), modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(20.dp))
+                }
+            }
+        }
+
+        // Stream Source / Quality Selection Sheet
+        if (showQualitySheet) {
+            ModalBottomSheet(
+                onDismissRequest = { showQualitySheet = false },
+                sheetState = rememberModalBottomSheetState(),
+                containerColor = Color(0xFF0F172A)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 12.dp)
+                ) {
+                    Text(
+                        text = "Video Stream Source",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = Color.White
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    allCandidateUrls.forEachIndexed { idx, url ->
+                        val label = streamLabels.getOrNull(idx)?.first
+                            ?: url.substringAfterLast('/').let { android.net.Uri.decode(it) }.ifBlank { "Stream Source ${idx + 1}" }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    currentUrlIndex = idx
+                                    showQualitySheet = false
+                                }
+                                .padding(vertical = 10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = label,
+                                color = if (idx == currentUrlIndex) Color(0xFF38BDF8) else Color.White,
+                                fontSize = 13.sp,
+                                fontWeight = if (idx == currentUrlIndex) FontWeight.Bold else FontWeight.Normal,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (idx == currentUrlIndex) {
+                                Icon(Icons.Default.Check, contentDescription = null, tint = Color(0xFF38BDF8), modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
                     Spacer(modifier = Modifier.height(20.dp))
                 }
             }

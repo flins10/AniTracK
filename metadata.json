@@ -1,6 +1,8 @@
 {
   "name": "AniTrAk",
-  "description": "Weekly schedule tracker for currently airing anime with watch tracking, AniList search, and notifications.",
+  "description": "Anime tracker, schedule, and Frost Glow streaming catalogue",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

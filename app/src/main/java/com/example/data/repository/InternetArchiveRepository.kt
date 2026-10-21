@@ -11,6 +11,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
 
 data class ArchiveMediaItem(
@@ -113,9 +114,13 @@ class InternetArchiveRepository(
     private val metadataCache = LruCache<String, ArchiveMetadataResponse>(120)
 
     companion object {
-        // Search-level negative query filter to block reaction videos, live action, dramas, stage plays, AMVs, trailers, and reviews
+        // Search-level negative query filter for Anime (blocks trailers, reviews, explanations, reactions, clips, live action)
         private const val SEARCH_EXCLUSION_CLAUSE =
-            "NOT title:(reaction OR reacts OR reacting OR patreon OR commentary OR watchalong OR \"live action\" OR liveaction OR \"stage play\" OR drama OR jdrama OR cosplay OR trailer OR preview OR teaser OR amv OR review OR opening OR ending OR gameplay OR parody OR abridged)"
+            "NOT title:(trailer OR teaser OR review OR reviews OR explained OR explanation OR breakdown OR analysis OR recap OR summary OR reaction OR reacts OR reacting OR patreon OR commentary OR watchalong OR \"live action\" OR liveaction OR \"stage play\" OR cosplay OR promo OR preview OR amv OR opening OR ending OR gameplay OR parody OR abridged OR interview OR clip)"
+
+        // Search-level negative query filter for Live-Action Movies & Series (blocks trailers, reviews, explanations, reactions, clips, animation)
+        private const val LIVE_ACTION_SEARCH_EXCLUSION_CLAUSE =
+            "NOT title:(trailer OR teaser OR review OR reviews OR explained OR explanation OR breakdown OR analysis OR recap OR summary OR reaction OR reacts OR reacting OR commentary OR watchalong OR promo OR preview OR amv OR gameplay OR parody OR spoof OR interview OR clip OR shorts)"
     }
 
     suspend fun searchAnimeArchive(
@@ -133,23 +138,27 @@ class InternetArchiveRepository(
         }
 
         try {
-            val query = "(title:(\"$cleanTitle\") OR identifier:(\"${cleanTitle.replace(" ", "_")}\") OR description:(\"$cleanTitle\")) AND (mediatype:(movies) OR mediatype:(animation)) AND $SEARCH_EXCLUSION_CLAUSE"
-            val response = apiService.searchArchive(
-                query = query,
-                rows = rows,
-                page = page
-            )
+            val query = "(title:(\"$cleanTitle\") OR identifier:(\"${cleanTitle.replace(" ", "_")}\")) AND (mediatype:(movies) OR mediatype:(animation)) AND $SEARCH_EXCLUSION_CLAUSE"
+            val response = withTimeoutOrNull(4500L) {
+                apiService.searchArchive(
+                    query = query,
+                    rows = rows,
+                    page = page
+                )
+            } ?: return@withContext ArchiveSearchResultState.Empty
 
             if (response.isSuccessful) {
                 val body = response.body()
                 val docs = body?.response?.docs.orEmpty().filterNot { doc ->
-                    matchService.containsExcludedKeywords(
-                        title = doc.title.orEmpty(),
-                        subject = doc.subject.orEmpty(),
-                        identifier = doc.identifier,
-                        description = doc.description.orEmpty(),
-                        creator = doc.creator.orEmpty()
-                    )
+                    val size = doc.item_size?.toLongOrNull()
+                    (size != null && size in 1 until 15_000_000L) ||
+                        matchService.containsExcludedKeywords(
+                            title = doc.title.orEmpty(),
+                            subject = doc.subject.orEmpty(),
+                            identifier = doc.identifier,
+                            description = doc.description.orEmpty(),
+                            creator = doc.creator.orEmpty()
+                        )
                 }
                 val total = docs.size
 
@@ -194,7 +203,10 @@ class InternetArchiveRepository(
         if (cached != null) return@withContext cached
 
         try {
-            val response = apiService.getItemMetadata(identifier)
+            val response = withTimeoutOrNull(4500L) {
+                apiService.getItemMetadata(identifier)
+            } ?: return@withContext null
+
             if (response.isSuccessful) {
                 val body = response.body()
                 if (body != null) {
@@ -209,37 +221,107 @@ class InternetArchiveRepository(
         }
     }
 
+    suspend fun findBestLiveActionStream(
+        title: String,
+        episodeNumber: Int? = null,
+        isSeries: Boolean = false
+    ): ArchivePlayableMediaResult = withContext(Dispatchers.IO) {
+        val syntheticEntity = AnimeEntity(
+            id = title.hashCode(),
+            titleRomaji = title,
+            titleEnglish = title,
+            coverImage = "",
+            format = if (isSeries) "TV" else "MOVIE",
+            status = "FINISHED",
+            totalEpisodes = if (isSeries) 24 else 1,
+            airingDayOfWeek = 1
+        )
+        when (val matchResult = findMatchesForAnime(
+            anime = syntheticEntity,
+            episodeNumber = if (isSeries) episodeNumber else null,
+            seasonNumber = 1,
+            isLiveActionAllowed = true
+        )) {
+            is ArchiveAnimeMatchResult.Success -> {
+                val best = matchResult.bestMatch
+                ArchivePlayableMediaResult.Success(
+                    ArchivePlayableMedia(
+                        identifier = best.identifier,
+                        title = best.title,
+                        streamUrl = best.streamUrl,
+                        fileName = best.bestPlayableFile.name,
+                        format = best.bestPlayableFile.format ?: "MP4",
+                        sizeBytes = best.fileSizeBytes,
+                        durationSeconds = null,
+                        licenseUrl = best.licenseUrl,
+                        description = best.description,
+                        creator = best.creator,
+                        matchedEpisode = best.matchedEpisode ?: episodeNumber,
+                        allCompatibleFiles = best.compatibleFiles
+                    )
+                )
+            }
+            is ArchiveAnimeMatchResult.NoMatch -> ArchivePlayableMediaResult.Unavailable(matchResult.reason)
+            is ArchiveAnimeMatchResult.Error -> ArchivePlayableMediaResult.Error(matchResult.message)
+        }
+    }
+
     suspend fun inspectAndResolvePlayableMedia(
         identifier: String,
-        preferredEpisode: Int? = null
+        preferredEpisode: Int? = null,
+        isMovie: Boolean = (preferredEpisode == null),
+        isMovieOrSingleWork: Boolean = isMovie,
+        isLiveActionAllowed: Boolean = false
     ): ArchivePlayableMediaResult = withContext(Dispatchers.IO) {
         try {
             val metaResponse = getItemMetadata(identifier)
-                ?: return@withContext ArchivePlayableMediaResult.Error("Could not retrieve metadata for archive item $identifier")
+                ?: return@withContext ArchivePlayableMediaResult.Error("Can't find video metadata for $identifier")
 
             val files = metaResponse.files.orEmpty()
             val meta = metaResponse.metadata
 
             if (files.isEmpty()) {
-                return@withContext ArchivePlayableMediaResult.Unavailable("Archive item '$identifier' does not contain any downloadable files.")
+                return@withContext ArchivePlayableMediaResult.Unavailable("Can't find playable video files in '$identifier'.")
             }
 
-            val compatibleFiles = filterCompatibleVideoFiles(files, requireFullEpisodeLength = (preferredEpisode != null))
+            // Strictly block trailer, review, explanation, reaction, and promo items
+            if (matchService.containsExcludedKeywords(
+                    title = meta?.title.orEmpty(),
+                    subject = meta?.subject.orEmpty(),
+                    identifier = identifier,
+                    description = meta?.description.orEmpty(),
+                    creator = meta?.creator.orEmpty(),
+                    isLiveActionAllowed = isLiveActionAllowed
+                )
+            ) {
+                return@withContext ArchivePlayableMediaResult.Unavailable("Blocked trailer, review, or explanation video.")
+            }
+
+            val compatibleFiles = matchService.filterCompatibleVideoFiles(
+                files = files,
+                requireFullEpisodeLength = true,
+                requestedEpisode = preferredEpisode,
+                isMovieOrSingleWork = isMovie,
+                isLiveActionAllowed = isLiveActionAllowed
+            )
             if (compatibleFiles.isEmpty()) {
-                val availableFormats = files.mapNotNull { it.format }.distinct().take(5).joinToString(", ")
                 return@withContext ArchivePlayableMediaResult.Unavailable(
-                    "No full-length compatible playback formats (MP4, MKV, WebM, HLS) found in '$identifier'. Available formats: $availableFormats"
+                    "Can't find full-length video in '$identifier'."
                 )
             }
 
             // Pick the exact file matching preferredEpisode if specified; do not fall back to random file if preferredEpisode was requested
-            val bestFile = if (preferredEpisode != null && preferredEpisode > 0) {
+            val bestFile = if (!isMovie && preferredEpisode != null && preferredEpisode > 0) {
                 selectBestFileForEpisode(compatibleFiles, preferredEpisode)
-                    ?: return@withContext ArchivePlayableMediaResult.Unavailable(
-                        "Episode $preferredEpisode was not found in '$identifier'."
-                    )
+                    ?: if (compatibleFiles.size == 1 && detectEpisodeNumber(compatibleFiles.first().name) == null) {
+                        compatibleFiles.first()
+                    } else {
+                        return@withContext ArchivePlayableMediaResult.Unavailable(
+                            "Can't find Episode $preferredEpisode in '$identifier'."
+                        )
+                    }
             } else {
-                compatibleFiles.first()
+                selectBestFileForEpisode(compatibleFiles, null) ?: compatibleFiles.first()
             }
 
             val streamUrl = InternetArchiveApiService.getDirectDownloadUrl(identifier, bestFile.name)
@@ -266,30 +348,33 @@ class InternetArchiveRepository(
 
             ArchivePlayableMediaResult.Success(playable)
         } catch (e: Exception) {
-            ArchivePlayableMediaResult.Error("Error resolving archive stream: ${e.localizedMessage ?: "Unknown error"}")
+            ArchivePlayableMediaResult.Error("Can't find stream: ${e.localizedMessage ?: "Unknown error"}")
         }
     }
 
     /**
-     * Deep-searches Internet Archive across all title variants (English, Romaji, Native, Pinyin),
-     * inspects up to 24 candidate items and their internal file lists in parallel,
-     * and strictly returns ONLY verified full-episode matches for the exact selected anime and episode.
-     * Never plays random 2-3 minute clips, reactions, or live action videos.
+     * Fast, verified search on Internet Archive across title variants (Anime or Live-Action Movie/Series).
+     * Strictly blocks trailers, reviews, explanations, reactions, and short clips.
+     * Completes within a bounded timeout so it never hangs or loads forever.
      */
     suspend fun findMatchesForAnime(
         anime: AnimeEntity,
         episodeNumber: Int? = null,
-        seasonNumber: Int? = null
+        seasonNumber: Int? = null,
+        isLiveActionAllowed: Boolean = false
     ): ArchiveAnimeMatchResult = withContext(Dispatchers.IO) {
         val titlesToTry = matchService.extractSearchTitles(anime)
 
         if (titlesToTry.isEmpty()) {
             return@withContext ArchiveAnimeMatchResult.NoMatch(
-                reason = "Anime has no valid titles to search.",
+                reason = "Can't find video on Internet Archive.",
                 queriedTitles = emptyList(),
                 requestedEpisode = episodeNumber
             )
         }
+
+        val isMovieFormat = anime.format.equals("MOVIE", ignoreCase = true) || (anime.totalEpisodes == 1 && (episodeNumber == null || episodeNumber <= 1))
+        val minItemSizeBytes = if (isMovieFormat) VideoMatchService.MIN_MOVIE_FILE_SIZE_BYTES else VideoMatchService.MIN_EPISODE_FILE_SIZE_BYTES
 
         val extractedSeasonFromTitle = matchService.extractSeasonNumber(titlesToTry)
         val activeSeason = if (seasonNumber != null && seasonNumber > 1) {
@@ -299,69 +384,81 @@ class InternetArchiveRepository(
         }
         val seasonPadded = String.format(Locale.ROOT, "%02d", activeSeason)
 
-        val candidateDocs = LinkedHashMap<String, ArchiveDocItem>()
-
-        // 0. If anime already has a known archiveIdentifier, inspect it first
-        anime.archiveIdentifier?.takeIf { it.isNotBlank() }?.let { knownId ->
-            candidateDocs[knownId] = ArchiveDocItem(
-                identifier = knownId,
-                title = anime.displayTitle
-            )
-        }
-
-        val epPadded = if (episodeNumber != null && episodeNumber > 0) {
-            String.format(Locale.ROOT, "%02d", episodeNumber)
-        } else null
-
-        // Build deep search queries in parallel for maximum speed and coverage
-        val searchQueries = mutableListOf<String>()
-        for (rawTitle in titlesToTry.take(4)) {
-            val clean = cleanTitleForSearch(rawTitle)
-            if (clean.isBlank()) continue
-            val slug = clean.lowercase(Locale.ROOT).replace(" ", "_")
-            val dashSlug = clean.lowercase(Locale.ROOT).replace(" ", "-")
-
-            if (episodeNumber != null && episodeNumber > 0) {
-                // Tier 1: Exact Episode & Season Queries
-                searchQueries.add(
-                    "(title:(\"$clean\") OR identifier:($slug* OR $dashSlug*)) AND (title:(\"S${seasonPadded}E$epPadded\" OR \"S${activeSeason}E$epPadded\" OR \"Season $activeSeason Episode $episodeNumber\" OR \"Season $activeSeason Ep $episodeNumber\" OR \"Season $seasonPadded Ep $epPadded\" OR \"Episode $episodeNumber\" OR \"Episode $epPadded\" OR \"Ep $episodeNumber\" OR \"Ep $epPadded\" OR \"E$epPadded\")) AND (mediatype:(movies) OR mediatype:(animation)) AND $SEARCH_EXCLUSION_CLAUSE"
+        // 0. FAST PATH: If item already has a known archiveIdentifier, inspect it immediately first!
+        val knownId = anime.archiveIdentifier?.trim()?.takeIf { it.isNotBlank() }
+        if (knownId != null) {
+            val fastMeta = getItemMetadata(knownId)
+            if (fastMeta != null) {
+                val fastDoc = ArchiveDocItem(
+                    identifier = knownId,
+                    title = fastMeta.metadata?.title ?: anime.displayTitle
                 )
-                if (activeSeason > 1) {
-                    searchQueries.add(
-                        "(title:(\"$clean Season $activeSeason\") OR title:(\"$clean ${activeSeason}nd Season\") OR title:(\"$clean ${activeSeason}rd Season\") OR title:(\"$clean ${activeSeason}th Season\")) AND (title:(\"Episode $episodeNumber\" OR \"Ep $episodeNumber\" OR \"E$epPadded\" OR \"$epPadded\")) AND (mediatype:(movies) OR mediatype:(animation)) AND $SEARCH_EXCLUSION_CLAUSE"
+                val directMatch = matchService.evaluateCandidate(
+                    doc = fastDoc,
+                    metadata = fastMeta,
+                    anime = anime,
+                    requestedEpisode = if (isMovieFormat) null else episodeNumber,
+                    seasonNumber = activeSeason,
+                    isLiveActionAllowed = isLiveActionAllowed
+                )
+                if (directMatch != null) {
+                    return@withContext ArchiveAnimeMatchResult.Success(
+                        bestMatch = directMatch,
+                        allCandidates = listOf(directMatch),
+                        animeTitle = anime.displayTitle,
+                        requestedEpisode = episodeNumber
                     )
                 }
             }
+        }
 
-            // Tier 2: Full Series / Complete Batch Archive Collections
-            if (activeSeason > 1) {
+        val candidateDocs = LinkedHashMap<String, ArchiveDocItem>()
+        val epPadded = if (!isMovieFormat && episodeNumber != null && episodeNumber > 0) {
+            String.format(Locale.ROOT, "%02d", episodeNumber)
+        } else null
+
+        val exclusionClause = if (isLiveActionAllowed) LIVE_ACTION_SEARCH_EXCLUSION_CLAUSE else SEARCH_EXCLUSION_CLAUSE
+        val mediaTypeClause = if (isLiveActionAllowed) "mediatype:(movies)" else "(mediatype:(movies) OR mediatype:(animation))"
+
+        // Build targeted search queries (fast, no slow prefix wildcards)
+        val searchQueries = mutableListOf<String>()
+        for (rawTitle in titlesToTry.take(2)) {
+            val clean = cleanTitleForSearch(rawTitle)
+            if (clean.isBlank()) continue
+
+            if (!isMovieFormat && episodeNumber != null && episodeNumber > 0) {
                 searchQueries.add(
-                    "(title:(\"$clean Season $activeSeason\") OR title:(\"$clean ${activeSeason}nd Season\") OR title:(\"$clean ${activeSeason}rd Season\") OR title:(\"$clean ${activeSeason}th Season\") OR identifier:(${slug}_season_${activeSeason}* OR ${slug}_s${activeSeason}*)) AND (mediatype:(movies) OR mediatype:(animation)) AND $SEARCH_EXCLUSION_CLAUSE"
+                    "title:(\"$clean\") AND title:(\"S${seasonPadded}E$epPadded\" OR \"Episode $episodeNumber\" OR \"Episode $epPadded\" OR \"Ep $episodeNumber\" OR \"Ep $epPadded\") AND $mediaTypeClause AND $exclusionClause"
                 )
             }
             searchQueries.add(
-                "(title:(\"$clean\") OR identifier:($slug* OR $dashSlug*) OR subject:(\"$clean\")) AND (mediatype:(movies) OR mediatype:(animation)) AND $SEARCH_EXCLUSION_CLAUSE"
+                "title:(\"$clean\") AND $mediaTypeClause AND $exclusionClause"
             )
         }
 
-        // Execute deep search queries concurrently
+        // Execute search queries concurrently with a strict 4.5s timeout
         coroutineScope {
-            searchQueries.distinct().take(8).map { query ->
+            searchQueries.distinct().take(4).map { query ->
                 async {
                     try {
-                        val res = apiService.searchArchive(query = query, rows = 25)
-                        res.body()?.response?.docs.orEmpty()
+                        val res = withTimeoutOrNull(4500L) {
+                            apiService.searchArchive(query = query, rows = 15)
+                        }
+                        res?.body()?.response?.docs.orEmpty()
                     } catch (e: Exception) {
                         emptyList()
                     }
                 }
             }.awaitAll().flatten().forEach { doc ->
-                if (!matchService.containsExcludedKeywords(
+                val itemSize = doc.item_size?.toLongOrNull()
+                val isLargeEnough = (itemSize == null || itemSize >= minItemSizeBytes)
+                if (isLargeEnough && !matchService.containsExcludedKeywords(
                         title = doc.title.orEmpty(),
                         subject = doc.subject.orEmpty(),
                         identifier = doc.identifier,
                         description = doc.description.orEmpty(),
-                        creator = doc.creator.orEmpty()
+                        creator = doc.creator.orEmpty(),
+                        isLiveActionAllowed = isLiveActionAllowed
                     )
                 ) {
                     candidateDocs.putIfAbsent(doc.identifier, doc)
@@ -371,66 +468,64 @@ class InternetArchiveRepository(
 
         if (candidateDocs.isEmpty()) {
             return@withContext ArchiveAnimeMatchResult.NoMatch(
-                reason = "No matching video found for ${anime.displayTitle}${if (episodeNumber != null) " Season $activeSeason Episode $episodeNumber" else ""}.",
+                reason = "Can't find \"${anime.displayTitle}\" on Internet Archive.",
                 queriedTitles = titlesToTry,
                 requestedEpisode = episodeNumber
             )
         }
 
-        // Pre-sort candidate docs by title similarity to target titles so the most relevant collections are inspected first
+        // Pre-sort candidate docs by title similarity and file size
         val rankedDocs = candidateDocs.values.sortedByDescending { doc ->
             val baseSim = matchService.calculateStrictTitleSimilarity(
                 docTitle = doc.title ?: doc.identifier,
                 identifier = doc.identifier,
                 targetTitles = titlesToTry
             )
-            val epBonus = if (episodeNumber != null && matchService.detectEpisodeNumber(doc.title ?: doc.identifier) == episodeNumber) {
+            val epBonus = if (!isMovieFormat && episodeNumber != null && matchService.detectEpisodeNumber(doc.title ?: doc.identifier) == episodeNumber) {
                 0.25f
             } else 0f
             baseSim + epBonus
         }.filter { doc ->
-            // Only inspect items that have a plausible title or identifier connection to the anime
             matchService.calculateStrictTitleSimilarity(
                 docTitle = doc.title ?: doc.identifier,
                 identifier = doc.identifier,
                 targetTitles = titlesToTry
-            ) >= 0.50f
+            ) >= 0.55f
         }
 
         if (rankedDocs.isEmpty()) {
             return@withContext ArchiveAnimeMatchResult.NoMatch(
-                reason = "No exact title match found for \"${anime.displayTitle}\".",
+                reason = "Can't find \"${anime.displayTitle}\" on Internet Archive.",
                 queriedTitles = titlesToTry,
                 requestedEpisode = episodeNumber
             )
         }
 
-        // Inspect up to 20 candidate items in parallel to check their internal file manifests for the exact episode
+        // Inspect top 8 candidate items in parallel with fast timeout
         val inspectedCandidates = coroutineScope {
-            rankedDocs.take(20).map { doc ->
+            rankedDocs.take(8).map { doc ->
                 async {
                     val metadata = getItemMetadata(doc.identifier) ?: return@async null
                     matchService.evaluateCandidate(
                         doc = doc,
                         metadata = metadata,
                         anime = anime,
-                        requestedEpisode = episodeNumber,
-                        seasonNumber = activeSeason
+                        requestedEpisode = if (isMovieFormat) null else episodeNumber,
+                        seasonNumber = activeSeason,
+                        isLiveActionAllowed = isLiveActionAllowed
                     )
                 }
             }.awaitAll().filterNotNull()
         }
 
         if (inspectedCandidates.isEmpty()) {
-            val epText = if (episodeNumber != null) "Episode $episodeNumber" else "full video"
             return@withContext ArchiveAnimeMatchResult.NoMatch(
-                reason = "No verified full-length anime video for $epText was found.",
+                reason = "Can't find full video for \"${anime.displayTitle}\" on Internet Archive.",
                 queriedTitles = titlesToTry,
                 requestedEpisode = episodeNumber
             )
         }
 
-        // Sort verified candidates by match score and episode specificity
         val sortedCandidates = inspectedCandidates.sortedWith(
             compareByDescending<ArchiveCandidateMatch> { it.isEpisodeSpecific }
                 .thenByDescending { it.matchScore }

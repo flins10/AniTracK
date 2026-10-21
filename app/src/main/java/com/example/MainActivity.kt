@@ -43,11 +43,13 @@ import androidx.compose.material.icons.filled.EventRepeat
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tv
+import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.EventRepeat
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Tv
+import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationRail
@@ -94,6 +96,7 @@ import com.example.ui.screens.ScheduleScreen
 import com.example.ui.screens.SearchScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.StreamingPlayerScreen
+import com.example.ui.screens.WatchScreen
 import com.example.ui.screens.WishlistScreen
 import com.example.ui.theme.WeeklyAnimePlannerTheme
 import com.example.viewmodel.AnimeViewModel
@@ -107,6 +110,7 @@ enum class NavigationItem(
     val unselectedIcon: ImageVector
 ) {
     Schedule("schedule", "Planner", Icons.Filled.Tv, Icons.Outlined.Tv),
+    Watch("watch", "Watch", Icons.Filled.VideoLibrary, Icons.Outlined.VideoLibrary),
     Search("search", "Discover", Icons.Filled.Search, Icons.Outlined.Search),
     Wishlist("wishlist", "Watchlist", Icons.Filled.Bookmark, Icons.Outlined.BookmarkBorder),
     Settings("settings", "Settings", Icons.Filled.Settings, Icons.Outlined.Settings)
@@ -485,6 +489,26 @@ class MainActivity : ComponentActivity() {
                                             },
                                             onBarsVisibilityChange = { isBarsVisible = it },
                                             onOpenPlayer = { id, ep -> navController.navigate("player/$id/$ep") }
+                                        )
+                                    }
+
+                                    composable(NavigationItem.Watch.route) {
+                                        WatchScreen(
+                                            viewModel = viewModel,
+                                            onNavigateToPlayer = { animeId, ep, title, iaId ->
+                                                if (animeId > 0) {
+                                                    navController.navigate("player/$animeId/$ep")
+                                                } else {
+                                                    viewModel.selectAnimeDetail(0)
+                                                    navController.navigate("player/0/$ep")
+                                                }
+                                            },
+                                            onNavigateToDetail = { animeId ->
+                                                if (animeId > 0) {
+                                                    viewModel.selectAnimeDetail(animeId)
+                                                    navController.navigate("detail/$animeId")
+                                                }
+                                            }
                                         )
                                     }
 
