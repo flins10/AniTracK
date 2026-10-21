@@ -32,18 +32,92 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        continue-on-error: true
 
-      - name: Ensure Android SDK Licenses & Platform 36
+      - name: Configure Android SDK, Licenses & Platform 36
         run: |
-          SDK_ROOT="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
-          mkdir -p "$SDK_ROOT/licenses"
-          printf "\n24333f8a63b6825ea9c5514f83c2829b004d1fee\n8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e\n" >> "$SDK_ROOT/licenses/android-sdk-license"
-          printf "\n84831b9409646a918e30573bab4c9c91346d8abd\n" >> "$SDK_ROOT/licenses/android-sdk-preview-license"
-
-          if command -v sdkmanager >/dev/null 2>&1; then
-            yes | sdkmanager --licenses > /dev/null 2>&1 || true
-            sdkmanager "platforms;android-36" "platforms;android-35" "build-tools;36.0.0" "platform-tools" || true
+          set -e
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [ ! -d "$SDK_ROOT" ]; then
+            SDK_ROOT="$HOME/android-sdk"
           fi
+          mkdir -p "$SDK_ROOT/licenses" "$SDK_ROOT/platforms" "$SDK_ROOT/build-tools"
+
+          export ANDROID_HOME="$SDK_ROOT"
+          export ANDROID_SDK_ROOT="$SDK_ROOT"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
+
+          # Write local.properties on the CI runner so AGP always finds the exact SDK path
+          echo "sdk.dir=$SDK_ROOT" > local.properties
+
+          # Locate sdkmanager or bootstrap commandlinetools if missing
+          SDKMANAGER=""
+          for candidate in \
+            "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
+            "$SDK_ROOT/cmdline-tools/bin/sdkmanager" \
+            "$SDK_ROOT/tools/bin/sdkmanager" \
+            "$(command -v sdkmanager 2>/dev/null || true)"; do
+            if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+              SDKMANAGER="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$SDKMANAGER" ]; then
+            FOUND_SM=$(find "$SDK_ROOT" -name "sdkmanager" -type f -executable 2>/dev/null | head -n 1 || true)
+            if [ -n "$FOUND_SM" ]; then
+              SDKMANAGER="$FOUND_SM"
+            fi
+          fi
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "Downloading Android Command Line Tools..."
+            CMDLINE_ZIP="/tmp/commandlinetools.zip"
+            curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -o "$CMDLINE_ZIP"
+            mkdir -p "$SDK_ROOT/cmdline-tools"
+            unzip -q -o "$CMDLINE_ZIP" -d "$SDK_ROOT/cmdline-tools"
+            rm -rf "$SDK_ROOT/cmdline-tools/latest"
+            mv "$SDK_ROOT/cmdline-tools/cmdline-tools" "$SDK_ROOT/cmdline-tools/latest"
+            rm -f "$CMDLINE_ZIP"
+            SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          fi
+
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+          echo "Using sdkmanager: $SDKMANAGER (SDK_ROOT=$SDK_ROOT)"
+
+          write_licenses() {
+            printf "8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e\n24333f8a63b6825ea9c5514f83c2829b004d1fee\n859f317696f67ef3d7f30a50a5560e7834b43903\n" > "$SDK_ROOT/licenses/android-sdk-license"
+            printf "84831b9409646a918e30573bab4c9c91346d8abd\n504667f4c0de7af1a06de9f4b1727b84351f2910\n" > "$SDK_ROOT/licenses/android-sdk-preview-license"
+            printf "859f317696f67ef3d7f30a50a5560e7834b43903\n" > "$SDK_ROOT/licenses/android-sdk-arm-dbt-license"
+            printf "601085b94cd77f0b54ff86406957099ebe79c4d6\n" > "$SDK_ROOT/licenses/android-googletv-license"
+            printf "ceff83576aac4f7f37cb98fe189e9fb3c49d3b81\n" > "$SDK_ROOT/licenses/android-googlexr-license"
+            printf "33b6a2b64607f11b759f320ef9dff4ae5c47d97a\nd975f751698a77b662f1254ddbeed3901e976f5a\n" > "$SDK_ROOT/licenses/google-gdk-license"
+            printf "d975f751698a77b662f1254ddbeed3901e976f5a\n" > "$SDK_ROOT/licenses/intel-android-extra-license"
+            printf "e9acab5b5fbb560a72cfaecce8946896ff6aab9d\n" > "$SDK_ROOT/licenses/mips-android-sysimage-license"
+          }
+
+          write_licenses
+          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null 2>&1 || true
+
+          # Install required SDK packages individually with automatic license acceptance
+          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" "platform-tools" >/dev/null 2>&1 || true
+
+          if [ ! -d "$SDK_ROOT/platforms/android-36" ]; then
+            yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" "platforms;android-36" || \
+            yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --channel=3 "platforms;android-36" || true
+          fi
+
+          if [ ! -d "$SDK_ROOT/build-tools/36.0.0" ]; then
+            yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" "build-tools;36.0.0" || \
+            yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --channel=3 "build-tools;36.0.0" || \
+            yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" "build-tools;35.0.0" || true
+          fi
+
+          write_licenses
+          echo "Installed platforms: $(ls -1 "$SDK_ROOT/platforms" 2>/dev/null | tr '\n' ' ')"
+          echo "Installed build-tools: $(ls -1 "$SDK_ROOT/build-tools" 2>/dev/null | tr '\n' ' ')"
 
       - name: Setup Gradle with Build Cache
         uses: gradle/actions/setup-gradle@v4
@@ -79,17 +153,22 @@ jobs:
           fi
 
       - name: Build Debug APK
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
         run: |
           if command -v gradle >/dev/null 2>&1; then
             gradle assembleDebug \
               -PversionCode="${VERSION_CODE}" \
               -PversionName="${VERSION_NAME}" \
+              -Pandroid.builder.sdkDownload=true \
               --build-cache --parallel --stacktrace
           elif [ -f "./gradlew" ]; then
             chmod +x ./gradlew
             ./gradlew assembleDebug \
               -PversionCode="${VERSION_CODE}" \
               -PversionName="${VERSION_NAME}" \
+              -Pandroid.builder.sdkDownload=true \
               --build-cache --parallel --stacktrace
           else
             echo "ERROR: Neither gradle nor gradlew found on PATH"
