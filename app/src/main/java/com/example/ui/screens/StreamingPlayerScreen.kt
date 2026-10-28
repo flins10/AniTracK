@@ -7,6 +7,8 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
+import android.media.AudioManager
+import android.net.Uri
 import android.os.Build
 import android.util.Rational
 import android.view.HapticFeedbackConstants
@@ -18,7 +20,12 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -27,6 +34,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
@@ -42,6 +50,10 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -95,7 +107,14 @@ import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.filled.ZoomOut
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.VideoFile
 import com.example.ui.components.EpisodeGridSelectorDialog
+import com.example.ui.components.MxGestureType
+import com.example.ui.components.MxPlayerGestureHud
+import com.example.ui.components.RecentLocalVideosSheet
+import com.example.ui.components.UpNextEpisodeBanner
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -231,6 +250,12 @@ fun StreamingPlayerScreen(
     val activeCandidates by playerViewModel.activeCandidates.collectAsState()
     val activeCandidate by playerViewModel.activeCandidate.collectAsState()
     val userMessage by playerViewModel.userMessage.collectAsState()
+    val isLocalVideoMode by playerViewModel.isLocalVideoMode.collectAsState()
+    val localVideoTitle by playerViewModel.localVideoTitle.collectAsState()
+    val recentLocalVideos by playerViewModel.recentLocalVideos.collectAsState()
+    val isAudioOnlyMode by playerViewModel.isAudioOnlyMode.collectAsState()
+
+    val lifecycleOwner = LocalLifecycleOwner.current
 
     // Screen UI State
     var isFullscreen by remember { mutableStateOf(false) }
@@ -243,13 +268,42 @@ fun StreamingPlayerScreen(
     var showTracksSheet by remember { mutableStateOf(false) }
     var showAspectRatioSheet by remember { mutableStateOf(false) }
     var showCandidatesSheet by remember { mutableStateOf(false) }
+    var showLocalVideosSheet by remember { mutableStateOf(false) }
     var showJumpDialog by remember { mutableStateOf(false) }
     var showCompletionDialog by remember { mutableStateOf(false) }
     var customSearchQuery by remember { mutableStateOf("") }
 
+    // System file picker for opening local device videos (MP4, MKV, WebM, HLS, DASH)
+    val localVideoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            playerViewModel.loadLocalVideo(uri)
+            showLocalVideosSheet = false
+        }
+    }
+
     // Double-tap Seek Animation State
     var showDoubleTapLeft by remember { mutableStateOf(false) }
     var showDoubleTapRight by remember { mutableStateOf(false) }
+
+    // Lifecycle Handling: Pause cleanly when backgrounded unless in PiP or Audio-Only mode
+    DisposableEffect(lifecycleOwner, activity, isAudioOnlyMode) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) {
+                val inPip = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    activity?.isInPictureInPictureMode == true
+                } else false
+                if (!inPip && !isAudioOnlyMode) {
+                    playerViewModel.pause()
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     // Screen Awake Window Flag Handling
     DisposableEffect(isScreenAwake) {
@@ -430,30 +484,68 @@ fun StreamingPlayerScreen(
                             .padding(horizontal = 12.dp)
                     ) {
                         Text(
-                            text = anime?.displayTitle ?: "Streaming Player",
+                            text = if (isLocalVideoMode) (localVideoTitle ?: "Local Device Video") else (anime?.displayTitle ?: "Streaming Player"),
                             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                             color = Color.White,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                         Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (!isLocalVideoMode) {
+                                Surface(
+                                    color = Color(0xFF0284C7).copy(alpha = 0.25f),
+                                    shape = RoundedCornerShape(4.dp)
+                                ) {
+                                    Text(
+                                        text = "ANIKOTO API",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = Color(0xFF38BDF8)
+                                        ),
+                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(6.dp))
+                            }
                             Text(
-                                text = "Episode $currentEpisode${if (totalEpisodes > 1) " / $totalEpisodes" else ""}",
+                                text = if (isLocalVideoMode) "Local Device Storage" else "Episode $currentEpisode${if (totalEpisodes > 1) " / $totalEpisodes" else ""}",
                                 style = MaterialTheme.typography.labelSmall.copy(color = Color(0xFF38BDF8), fontWeight = FontWeight.SemiBold)
                             )
                         }
                     }
 
-                    // Custom Episode Selector Button
-                    OutlinedButton(
-                        onClick = { showJumpDialog = true },
-                        shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.5f)),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                        modifier = Modifier.testTag("player_custom_episode_button")
-                    ) {
-                        Text("Ep $currentEpisode ▾", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        // Open Local Device Video Button
+                        OutlinedButton(
+                            onClick = {
+                                playerViewModel.refreshRecentLocalVideos()
+                                showLocalVideosSheet = true
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.5f)),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                            modifier = Modifier.testTag("open_local_video_button")
+                        ) {
+                            Icon(Icons.Default.FolderOpen, contentDescription = "Open Local Video", tint = Color(0xFF38BDF8), modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Local", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
+                        }
+
+                        if (!isLocalVideoMode) {
+                            // Episode Selector Button
+                            OutlinedButton(
+                                onClick = { showJumpDialog = true },
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.5f)),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                modifier = Modifier.testTag("player_custom_episode_button")
+                            ) {
+                                Text("Ep $currentEpisode ▾", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
+                            }
+                        }
                     }
                 }
 
@@ -748,7 +840,7 @@ fun StreamingPlayerScreen(
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Text(
-                                            text = "AVAILABLE STREAMS (${activeCandidates.size})",
+                                            text = "ANIKOTO API STREAMS (${activeCandidates.size})",
                                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Color(0xFF94A3B8))
                                         )
                                         TextButton(onClick = { showCandidatesSheet = true }) {
@@ -887,7 +979,7 @@ fun StreamingPlayerScreen(
             }
         }
 
-        // Speed Ruler Bottom Sheet
+        // Speed Ruler & Skip Interval Bottom Sheet
         if (showSpeedSheet) {
             ModalBottomSheet(
                 onDismissRequest = { showSpeedSheet = false },
@@ -905,6 +997,43 @@ fun StreamingPlayerScreen(
                             playerViewModel.setPlaybackSpeed(speed)
                         }
                     )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "SKIP / SEEK INTERVAL",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            color = Color(0xFF94A3B8),
+                            fontWeight = FontWeight.Bold
+                        )
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        listOf(5, 10, 15, 30).forEach { sec ->
+                            val isSelected = (seekIncrement == sec)
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (isSelected) Color(0xFF0284C7) else Color(0xFF1E293B),
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (isSelected) Color(0xFF38BDF8) else Color.White.copy(alpha = 0.1f)
+                                ),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable { playerViewModel.setSeekIncrement(sec) }
+                            ) {
+                                Text(
+                                    text = "${sec}s",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                    modifier = Modifier.padding(vertical = 8.dp)
+                                )
+                            }
+                        }
+                    }
                     Spacer(modifier = Modifier.height(20.dp))
                 }
             }
@@ -920,7 +1049,7 @@ fun StreamingPlayerScreen(
             )
         }
 
-        // Tracks Bottom Sheet (Audio & Subtitles & Sync)
+        // Tracks Bottom Sheet (Audio & Subtitles & Sync & Audio-Only Mode)
         if (showTracksSheet) {
             AudioSubtitleTracksSheet(
                 audioTracks = audioTracks,
@@ -933,7 +1062,9 @@ fun StreamingPlayerScreen(
                 onSubtitleStyleChanged = { playerViewModel.updateSubtitleStyle(it) },
                 onLoadLocalSubtitle = { playerViewModel.loadLocalSubtitle(it) },
                 onLoadSubtitleUrl = { playerViewModel.loadSubtitleFromUrl(it) },
-                onDismiss = { showTracksSheet = false }
+                onDismiss = { showTracksSheet = false },
+                isAudioOnlyMode = isAudioOnlyMode,
+                onToggleAudioOnlyMode = { playerViewModel.setAudioOnlyMode(it) }
             )
         }
 
@@ -945,6 +1076,26 @@ fun StreamingPlayerScreen(
                 zoomScale = zoomScale,
                 onResetZoom = { playerViewModel.resetZoom() },
                 onDismiss = { showAspectRatioSheet = false }
+            )
+        }
+
+        // Recent Local Device Videos Sheet
+        if (showLocalVideosSheet) {
+            RecentLocalVideosSheet(
+                recentVideos = recentLocalVideos,
+                onOpenLocalFilePicker = {
+                    localVideoPickerLauncher.launch(
+                        arrayOf("video/*", "application/x-mpegURL", "application/dash+xml")
+                    )
+                },
+                onSelectRecentVideo = { item ->
+                    playerViewModel.loadLocalVideo(Uri.parse(item.uriString), item.displayName)
+                    showLocalVideosSheet = false
+                },
+                onRemoveRecentVideo = { uriStr ->
+                    playerViewModel.removeLocalVideoFromHistory(uriStr)
+                },
+                onDismiss = { showLocalVideosSheet = false }
             )
         }
 
@@ -1087,6 +1238,9 @@ fun VideoPlayerSurfaceContainer(
     onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val activity = remember(context) { context.findActivity() }
+    val audioManager = remember(context) { context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager }
     val view = LocalView.current
     val uiState by playerViewModel.uiState.collectAsState()
     val anime by playerViewModel.currentAnime.collectAsState()
@@ -1105,26 +1259,92 @@ fun VideoPlayerSurfaceContainer(
     val isTouchLocked by playerViewModel.isTouchLocked.collectAsState()
     val subtitleStyle by playerViewModel.subtitleStyle.collectAsState()
     val seekIncrement by playerViewModel.seekIncrementSeconds.collectAsState()
+    val isLocalVideoMode by playerViewModel.isLocalVideoMode.collectAsState()
+    val localVideoTitle by playerViewModel.localVideoTitle.collectAsState()
+    val isAudioOnlyMode by playerViewModel.isAudioOnlyMode.collectAsState()
 
     var isMuted by remember { mutableStateOf(false) }
+    var showRemainingTime by remember { mutableStateOf(false) }
+    var dismissedUpNextForEp by remember(currentEpisode) { mutableStateOf(false) }
+
+    // MX Player Gesture HUD State
+    var activeGestureType by remember { mutableStateOf(MxGestureType.NONE) }
+    var brightnessFraction by remember {
+        val currentWinBrightness = activity?.window?.attributes?.screenBrightness ?: -1f
+        mutableFloatStateOf(if (currentWinBrightness in 0.01f..1.0f) currentWinBrightness else 0.7f)
+    }
+    var volumeFraction by remember {
+        val maxVol = audioManager?.getStreamMaxVolume(AudioManager.STREAM_MUSIC)?.coerceAtLeast(1) ?: 15
+        val curVol = audioManager?.getStreamVolume(AudioManager.STREAM_MUSIC) ?: (maxVol / 2)
+        mutableFloatStateOf((curVol.toFloat() / maxVol.toFloat()).coerceIn(0f, 1f))
+    }
+    var seekPreviewPosMs by remember { mutableLongStateOf(0L) }
+    var seekDeltaMs by remember { mutableLongStateOf(0L) }
+
+    LaunchedEffect(activeGestureType) {
+        if (activeGestureType == MxGestureType.BRIGHTNESS || activeGestureType == MxGestureType.VOLUME) {
+            delay(1100)
+            activeGestureType = MxGestureType.NONE
+        }
+    }
+
+    val totalEpisodes = anime?.totalEpisodes ?: maxOf(anime?.getAiredEpisodeCount() ?: 1, currentEpisode)
 
     BoxWithConstraints(
         modifier = modifier
             .background(Color.Black)
-            .pointerInput(isTouchLocked) {
-                if (isTouchLocked) return@pointerInput
-                detectTransformGestures { _, pan, zoom, _ ->
-                    onUserInteraction()
-                    val newZoom = (zoomScale * zoom).coerceIn(1.0f, 3.0f)
+            .mxPlayerSwipeAndPinchGestures(
+                isTouchLocked = isTouchLocked,
+                onUserInteraction = onUserInteraction,
+                onPinchZoomAndPan = { zoomChange, panX, panY ->
+                    val newZoom = (zoomScale * zoomChange).coerceIn(1.0f, 3.0f)
                     playerViewModel.setZoomScale(newZoom)
                     if (newZoom > 1.05f) {
-                        playerViewModel.setPanOffset(panOffsetX + pan.x, panOffsetY + pan.y)
+                        playerViewModel.setPanOffset(panOffsetX + panX, panOffsetY + panY)
                     } else {
                         playerViewModel.setPanOffset(0f, 0f)
                     }
+                },
+                onBrightnessDelta = { deltaFrac ->
+                    val updated = (brightnessFraction + deltaFrac).coerceIn(0.02f, 1.0f)
+                    brightnessFraction = updated
+                    activeGestureType = MxGestureType.BRIGHTNESS
+                    activity?.window?.let { win ->
+                        val lp = win.attributes
+                        lp.screenBrightness = updated
+                        win.attributes = lp
+                    }
+                },
+                onVolumeDelta = { deltaFrac ->
+                    val updated = (volumeFraction + deltaFrac).coerceIn(0f, 1f)
+                    volumeFraction = updated
+                    activeGestureType = MxGestureType.VOLUME
+                    isMuted = (updated <= 0.01f)
+                    playerViewModel.exoPlayer.volume = updated
+                    audioManager?.let { am ->
+                        val maxVol = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                        val targetStep = kotlin.math.round(updated * maxVol).toInt().coerceIn(0, maxVol)
+                        runCatching { am.setStreamVolume(AudioManager.STREAM_MUSIC, targetStep, 0) }
+                    }
+                },
+                getCurrentPositionMs = { currentPositionMs },
+                getDurationMs = { durationMs },
+                onHorizontalSeekPreview = { previewPos, delta ->
+                    seekPreviewPosMs = previewPos
+                    seekDeltaMs = delta
+                    activeGestureType = MxGestureType.HORIZONTAL_SEEK
+                },
+                onHorizontalSeekCommit = { targetPos ->
+                    playerViewModel.seekTo(targetPos)
+                    activeGestureType = MxGestureType.NONE
+                },
+                onGestureEnded = {
+                    if (activeGestureType == MxGestureType.HORIZONTAL_SEEK) {
+                        activeGestureType = MxGestureType.NONE
+                    }
                 }
-            }
-            .pointerInput(isTouchLocked) {
+            )
+            .pointerInput(isTouchLocked, seekIncrement, zoomScale) {
                 detectTapGestures(
                     onTap = { onToggleControls() },
                     onDoubleTap = { offset ->
@@ -1140,11 +1360,11 @@ fun VideoPlayerSurfaceContainer(
                             playerViewModel.seekBy(seekIncrement)
                             onShowDoubleTapRight()
                         } else {
-                            // Center Double Tap: Zoom Toggle
+                            // Center Double Tap: Play/Pause or Zoom Reset
                             if (zoomScale > 1.05f) {
                                 playerViewModel.resetZoom()
                             } else {
-                                playerViewModel.setZoomScale(1.5f)
+                                playerViewModel.togglePlayPause()
                             }
                         }
                     }
@@ -1163,14 +1383,21 @@ fun VideoPlayerSurfaceContainer(
                     subtitleView?.apply {
                         setApplyEmbeddedStyles(false)
                         setApplyEmbeddedFontSizes(false)
+                        setBottomPaddingFraction(subtitleStyle.bottomPaddingFraction)
                         setFractionalTextSize(SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * (subtitleStyle.fontSizeSp / 18f))
+                        val edgeConst = when (subtitleStyle.edgeType) {
+                            0 -> CaptionStyleCompat.EDGE_TYPE_NONE
+                            2 -> CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW
+                            3 -> CaptionStyleCompat.EDGE_TYPE_RAISED
+                            else -> CaptionStyleCompat.EDGE_TYPE_OUTLINE
+                        }
                         setStyle(
                             CaptionStyleCompat(
                                 subtitleStyle.textColor.toInt(),
                                 subtitleStyle.backgroundColor.toInt(),
                                 android.graphics.Color.TRANSPARENT,
-                                CaptionStyleCompat.EDGE_TYPE_OUTLINE,
-                                android.graphics.Color.BLACK,
+                                edgeConst,
+                                subtitleStyle.outlineColor.toInt(),
                                 null
                             )
                         )
@@ -1181,14 +1408,21 @@ fun VideoPlayerSurfaceContainer(
                 playerView.player = playerViewModel.exoPlayer
                 playerView.resizeMode = resizeMode
                 playerView.subtitleView?.apply {
+                    setBottomPaddingFraction(subtitleStyle.bottomPaddingFraction)
                     setFractionalTextSize(SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * (subtitleStyle.fontSizeSp / 18f))
+                    val edgeConst = when (subtitleStyle.edgeType) {
+                        0 -> CaptionStyleCompat.EDGE_TYPE_NONE
+                        2 -> CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW
+                        3 -> CaptionStyleCompat.EDGE_TYPE_RAISED
+                        else -> CaptionStyleCompat.EDGE_TYPE_OUTLINE
+                    }
                     setStyle(
                         CaptionStyleCompat(
                             subtitleStyle.textColor.toInt(),
                             subtitleStyle.backgroundColor.toInt(),
                             android.graphics.Color.TRANSPARENT,
-                            CaptionStyleCompat.EDGE_TYPE_OUTLINE,
-                            android.graphics.Color.BLACK,
+                            edgeConst,
+                            subtitleStyle.outlineColor.toInt(),
                             null
                         )
                     )
@@ -1202,6 +1436,71 @@ fun VideoPlayerSurfaceContainer(
                     translationX = panOffsetX
                     translationY = panOffsetY
                 }
+        )
+
+        // Audio-Only Mode Overlay
+        if (isAudioOnlyMode) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFF070C18)),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(24.dp)
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = Color(0xFF0284C7).copy(alpha = 0.22f),
+                        border = BorderStroke(1.5.dp, Color(0xFF38BDF8)),
+                        modifier = Modifier.size(64.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.Headphones,
+                                contentDescription = "Audio-Only Mode",
+                                tint = Color(0xFF38BDF8),
+                                modifier = Modifier.size(32.dp)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = "Audio-Only Playback Active",
+                        style = MaterialTheme.typography.titleSmall.copy(
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
+                    )
+                    Text(
+                        text = if (isLocalVideoMode) (localVideoTitle ?: "Local Video") else "${anime?.displayTitle ?: "Anime"} • Ep $currentEpisode",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFF94A3B8),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedButton(
+                        onClick = { playerViewModel.setAudioOnlyMode(false) },
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, Color(0xFF38BDF8)),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)
+                    ) {
+                        Text("Restore Video", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        // MX Player Gesture HUD (Brightness / Volume / Horizontal Seek Scrub)
+        MxPlayerGestureHud(
+            gestureType = activeGestureType,
+            fractionValue = if (activeGestureType == MxGestureType.BRIGHTNESS) brightnessFraction else volumeFraction,
+            seekPreviewPositionMs = seekPreviewPosMs,
+            seekDeltaMs = seekDeltaMs,
+            durationMs = durationMs,
+            modifier = Modifier.align(Alignment.Center)
         )
 
         // Floating Reset Zoom Button if Zoomed In
@@ -1227,7 +1526,7 @@ fun VideoPlayerSurfaceContainer(
         }
 
         // Quick Skip Intro Button (+85s)
-        val showSkipIntro = (currentPositionMs in 1000L..120_000L) && showControls && !isTouchLocked
+        val showSkipIntro = !isLocalVideoMode && (currentPositionMs in 1000L..120_000L) && showControls && !isTouchLocked
         if (showSkipIntro) {
             Surface(
                 shape = RoundedCornerShape(20.dp),
@@ -1253,6 +1552,30 @@ fun VideoPlayerSurfaceContainer(
                 }
             }
         }
+
+        // Near-End "Up Next: Episode X" Prompt Banner
+        val remainingMs = (durationMs - currentPositionMs).coerceAtLeast(0L)
+        val showUpNextBanner = !isLocalVideoMode &&
+                durationMs > 60_000L &&
+                remainingMs in 1_000L..45_000L &&
+                currentEpisode < totalEpisodes &&
+                !dismissedUpNextForEp &&
+                !isTouchLocked
+
+        UpNextEpisodeBanner(
+            visible = showUpNextBanner,
+            nextEpisodeNumber = currentEpisode + 1,
+            remainingSeconds = remainingMs / 1000L,
+            onPlayNextNow = {
+                playerViewModel.nextEpisode(totalEpisodes)
+            },
+            onDismiss = {
+                dismissedUpNextForEp = true
+            },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 16.dp, bottom = 82.dp)
+        )
 
         // Touch Lock Indicator / Unlock Button
         if (isTouchLocked) {
@@ -1449,14 +1772,14 @@ fun VideoPlayerSurfaceContainer(
                         Spacer(modifier = Modifier.width(10.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "${anime?.displayTitle ?: "Anime"} • Ep $currentEpisode",
+                                text = if (isLocalVideoMode) (localVideoTitle ?: "Local Device Video") else "${anime?.displayTitle ?: "Anime"} • Ep $currentEpisode",
                                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                                 color = Color.White,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                text = "Episode $currentEpisode",
+                                text = if (isLocalVideoMode) "Local Device Storage" else "Episode $currentEpisode",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = Color(0xFF38BDF8)
                             )
@@ -1635,10 +1958,18 @@ fun VideoPlayerSurfaceContainer(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
+                        val rightTimeLabel = if (showRemainingTime && durationMs > currentPositionMs) {
+                            "-${formatMinSec(durationMs - currentPositionMs)}"
+                        } else {
+                            formatMinSec(durationMs)
+                        }
                         Text(
-                            text = "${formatMinSec(currentPositionMs)} / ${formatMinSec(durationMs)}",
+                            text = "${formatMinSec(currentPositionMs)} / $rightTimeLabel",
                             style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                            color = Color.White
+                            color = Color.White,
+                            modifier = Modifier.clickable {
+                                showRemainingTime = !showRemainingTime
+                            }
                         )
 
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1724,6 +2055,119 @@ private fun formatMinSec(millis: Long): String {
 }
 
 /**
+ * Conflict-free MX Player touch gesture detector supporting:
+ * - Single-finger left-side vertical swipe -> Screen Brightness adjustment
+ * - Single-finger right-side vertical swipe -> Media Volume adjustment
+ * - Single-finger horizontal swipe -> Smooth timestamp scrubbing preview + seek on release
+ * - Two-finger pinch & pan -> Video zoom & pan
+ * Automatically ignores touches starting inside top/bottom system bar / seekbar exclusion zones
+ * or when [isTouchLocked] is true.
+ */
+private fun Modifier.mxPlayerSwipeAndPinchGestures(
+    isTouchLocked: Boolean,
+    onUserInteraction: () -> Unit,
+    onPinchZoomAndPan: (zoomChange: Float, panX: Float, panY: Float) -> Unit,
+    onBrightnessDelta: (deltaFraction: Float) -> Unit,
+    onVolumeDelta: (deltaFraction: Float) -> Unit,
+    getCurrentPositionMs: () -> Long,
+    getDurationMs: () -> Long,
+    onHorizontalSeekPreview: (previewPosMs: Long, deltaMs: Long) -> Unit,
+    onHorizontalSeekCommit: (targetPosMs: Long) -> Unit,
+    onGestureEnded: () -> Unit
+): Modifier = this.pointerInput(isTouchLocked) {
+    if (isTouchLocked) return@pointerInput
+    val topExclusionPx = 48.dp.toPx()
+    val bottomExclusionPx = 72.dp.toPx()
+    val edgeExclusionPx = 20.dp.toPx()
+    val slop = viewConfiguration.touchSlop * 1.2f
+
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        val widthPx = size.width.toFloat().coerceAtLeast(1f)
+        val heightPx = size.height.toFloat().coerceAtLeast(1f)
+
+        // Exclude top action bar, bottom seekbar, and system edge back-gestures
+        if (down.position.y < topExclusionPx ||
+            down.position.y > (heightPx - bottomExclusionPx) ||
+            down.position.x < edgeExclusionPx ||
+            down.position.x > (widthPx - edgeExclusionPx)
+        ) {
+            return@awaitEachGesture
+        }
+
+        var gestureMode = 0 // 0=none, 2=pinch, 11=brightness, 12=volume, 13=horizontal_seek
+        var totalDx = 0f
+        var totalDy = 0f
+        var seekStartPosMs = 0L
+        var seekTargetPosMs = 0L
+
+        do {
+            val event = awaitPointerEvent()
+            val pressedChanges = event.changes.filter { it.pressed }
+
+            if (pressedChanges.size >= 2) {
+                gestureMode = 2
+                val zoomChange = event.calculateZoom()
+                val panChange = event.calculatePan()
+                if (zoomChange != 1f || panChange.x != 0f || panChange.y != 0f) {
+                    onUserInteraction()
+                    onPinchZoomAndPan(zoomChange, panChange.x, panChange.y)
+                    event.changes.forEach { it.consume() }
+                }
+            } else if (pressedChanges.size == 1 && gestureMode != 2) {
+                val change = pressedChanges.first()
+                val dx = change.position.x - change.previousPosition.x
+                val dy = change.position.y - change.previousPosition.y
+                totalDx += dx
+                totalDy += dy
+
+                if (gestureMode == 0) {
+                    val dist = kotlin.math.hypot(totalDx, totalDy)
+                    if (dist > slop) {
+                        onUserInteraction()
+                        if (kotlin.math.abs(totalDy) > kotlin.math.abs(totalDx) * 1.15f) {
+                            gestureMode = if (down.position.x < widthPx * 0.5f) 11 else 12
+                        } else if (kotlin.math.abs(totalDx) > kotlin.math.abs(totalDy) * 1.15f) {
+                            gestureMode = 13
+                            seekStartPosMs = getCurrentPositionMs()
+                            seekTargetPosMs = seekStartPosMs
+                        }
+                    }
+                }
+
+                when (gestureMode) {
+                    11 -> {
+                        val deltaFrac = -dy / (heightPx * 0.65f)
+                        onBrightnessDelta(deltaFrac)
+                        change.consume()
+                    }
+                    12 -> {
+                        val deltaFrac = -dy / (heightPx * 0.65f)
+                        onVolumeDelta(deltaFrac)
+                        change.consume()
+                    }
+                    13 -> {
+                        val dur = getDurationMs()
+                        val fullSpanMs = if (dur > 0L) minOf(dur, 180_000L).coerceAtLeast(30_000L) else 90_000L
+                        val deltaMs = ((totalDx / widthPx) * fullSpanMs).toLong()
+                        val maxDur = if (dur > 0L) dur else Long.MAX_VALUE
+                        seekTargetPosMs = (seekStartPosMs + deltaMs).coerceIn(0L, maxDur)
+                        onHorizontalSeekPreview(seekTargetPosMs, seekTargetPosMs - seekStartPosMs)
+                        change.consume()
+                    }
+                }
+            }
+        } while (event.changes.any { it.pressed })
+
+        if (gestureMode == 13) {
+            onHorizontalSeekCommit(seekTargetPosMs)
+        } else if (gestureMode != 0) {
+            onGestureEnded()
+        }
+    }
+}
+
+/**
  * Unified Full-Featured Pro ExoPlayer View used by both Anime and Movie/Series players.
  * Supports:
  * - Fast buffering & cross-protocol redirect support for Internet Archive streams
@@ -1791,8 +2235,13 @@ fun ExoPlayerVideoView(
     var doubleTapSeekDir by remember { mutableIntStateOf(0) }
     var doubleTapSeekAmount by remember { mutableIntStateOf(0) }
     var gestureHudText by remember { mutableStateOf<String?>(null) }
+    var activeGestureType by remember { mutableStateOf(MxGestureType.NONE) }
+    var gestureSeekTargetMs by remember { mutableLongStateOf(0L) }
+    var gestureSeekDeltaMs by remember { mutableLongStateOf(0L) }
     var playerVolume by remember { mutableFloatStateOf(1.0f) }
     var screenBrightness by remember { mutableFloatStateOf(0.75f) }
+    val audioManager = remember(context) { context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager }
+    val lifecycleOwner = LocalLifecycleOwner.current
 
     var availableAudioTracks by remember { mutableStateOf<List<Pair<String, TrackSelectionOverride?>>>(emptyList()) }
     var selectedAudioLabel by remember { mutableStateOf("Default Audio") }
@@ -1820,8 +2269,9 @@ fun ExoPlayerVideoView(
             .setReadTimeoutMs(12_000)
             .setAllowCrossProtocolRedirects(true)
 
+        val defaultDataSourceFactory = DefaultDataSource.Factory(context, httpDataSourceFactory)
         val mediaSourceFactory = DefaultMediaSourceFactory(context)
-            .setDataSourceFactory(httpDataSourceFactory)
+            .setDataSourceFactory(defaultDataSourceFactory)
 
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
@@ -1849,6 +2299,24 @@ fun ExoPlayerVideoView(
             }
     }
 
+    DisposableEffect(lifecycleOwner, exoPlayer) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) {
+                val activity = context.findActivity()
+                val inPip = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    activity?.isInPictureInPictureMode == true
+                } else false
+                if (!inPip) {
+                    exoPlayer.pause()
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
     LaunchedEffect(activeStreamUrl, retryTrigger) {
         if (activeStreamUrl.isBlank()) {
             isBuffering = false
@@ -1857,18 +2325,12 @@ fun ExoPlayerVideoView(
         }
         playbackError = null
         isBuffering = true
-        val mimeType = when {
-            activeStreamUrl.contains(".m3u8", ignoreCase = true) -> MimeTypes.APPLICATION_M3U8
-            activeStreamUrl.contains(".mpd", ignoreCase = true) -> MimeTypes.APPLICATION_MPD
-            activeStreamUrl.contains(".webm", ignoreCase = true) -> MimeTypes.VIDEO_WEBM
-            activeStreamUrl.contains(".mkv", ignoreCase = true) -> MimeTypes.VIDEO_MATROSKA
-            else -> MimeTypes.VIDEO_MP4
+        val mimeType = PlayerViewModel.resolveMediaMimeType(activeStreamUrl)
+        val mediaItemBuilder = MediaItem.Builder().setUri(activeStreamUrl)
+        if (mimeType != null) {
+            mediaItemBuilder.setMimeType(mimeType)
         }
-        val mediaItem = MediaItem.Builder()
-            .setUri(activeStreamUrl)
-            .setMimeType(mimeType)
-            .build()
-        exoPlayer.setMediaItem(mediaItem)
+        exoPlayer.setMediaItem(mediaItemBuilder.build())
         exoPlayer.prepare()
         exoPlayer.playWhenReady = true
         if (initialPositionMs > 5000L && currentPosition == 0L) {
@@ -1879,7 +2341,8 @@ fun ExoPlayerVideoView(
 
     // Watchdog so buffering never hangs forever if an archive server node is unresponsive
     LaunchedEffect(activeStreamUrl, retryTrigger, isBuffering) {
-        if (isBuffering && playbackError == null) {
+        val isLocalUri = activeStreamUrl.startsWith("content://") || activeStreamUrl.startsWith("file://")
+        if (!isLocalUri && isBuffering && playbackError == null) {
             delay(11_000L)
             if (isBuffering && exoPlayer.playbackState != Player.STATE_READY) {
                 if (currentUrlIndex + 1 < allCandidateUrls.size) {
@@ -1982,7 +2445,8 @@ fun ExoPlayerVideoView(
                 } else {
                     isBuffering = false
                     isPlaying = false
-                    playbackError = "Can't find playable video stream (${error.errorCodeName})."
+                    val isLocal = activeStreamUrl.startsWith("content://") || activeStreamUrl.startsWith("file://")
+                    playbackError = PlayerViewModel.mapPlaybackErrorToUserMessage(error, isLocal)
                     onTryFallback?.invoke()
                 }
             }
@@ -2055,22 +2519,62 @@ fun ExoPlayerVideoView(
                     }
                 )
             }
-            .pointerInput(isTouchLocked) {
-                if (!isTouchLocked) {
-                    detectTransformGestures { _, pan, zoom, _ ->
-                        if (zoom != 1f) {
-                            zoomScale = (zoomScale * zoom).coerceIn(1.0f, 3.0f)
-                            if (zoomScale == 1.0f) {
-                                panOffsetX = 0f
-                                panOffsetY = 0f
-                            }
-                        } else if (zoomScale > 1.02f) {
-                            panOffsetX = (panOffsetX + pan.x).coerceIn(-500f, 500f)
-                            panOffsetY = (panOffsetY + pan.y).coerceIn(-300f, 300f)
+            .mxPlayerSwipeAndPinchGestures(
+                isTouchLocked = isTouchLocked,
+                onUserInteraction = {
+                    userInteractionToken = System.currentTimeMillis()
+                },
+                onPinchZoomAndPan = { zoomChange, panX, panY ->
+                    if (zoomChange != 1f) {
+                        zoomScale = (zoomScale * zoomChange).coerceIn(1.0f, 3.0f)
+                        if (zoomScale == 1.0f) {
+                            panOffsetX = 0f
+                            panOffsetY = 0f
                         }
+                    } else if (zoomScale > 1.02f) {
+                        panOffsetX = (panOffsetX + panX).coerceIn(-500f, 500f)
+                        panOffsetY = (panOffsetY + panY).coerceIn(-300f, 300f)
                     }
+                },
+                onBrightnessDelta = { delta ->
+                    activeGestureType = MxGestureType.BRIGHTNESS
+                    val nextB = (screenBrightness + delta).coerceIn(0.05f, 1.0f)
+                    screenBrightness = nextB
+                    val activity = context.findActivity()
+                    activity?.window?.let { win ->
+                        val lp = win.attributes
+                        lp.screenBrightness = nextB
+                        win.attributes = lp
+                    }
+                },
+                onVolumeDelta = { delta ->
+                    activeGestureType = MxGestureType.VOLUME
+                    val nextV = (playerVolume + delta).coerceIn(0.0f, 1.0f)
+                    playerVolume = nextV
+                    isMuted = nextV <= 0.01f
+                    exoPlayer.volume = nextV
+                    audioManager?.let { am ->
+                        val maxVol = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                        val targetIndex = (nextV * maxVol + 0.5f).toInt().coerceIn(0, maxVol)
+                        am.setStreamVolume(AudioManager.STREAM_MUSIC, targetIndex, 0)
+                    }
+                },
+                getCurrentPositionMs = { currentPosition },
+                getDurationMs = { duration },
+                onHorizontalSeekPreview = { targetMs, deltaMs ->
+                    activeGestureType = MxGestureType.HORIZONTAL_SEEK
+                    gestureSeekTargetMs = targetMs
+                    gestureSeekDeltaMs = deltaMs
+                },
+                onHorizontalSeekCommit = { targetMs ->
+                    exoPlayer.seekTo(targetMs)
+                    currentPosition = targetMs
+                    activeGestureType = MxGestureType.NONE
+                },
+                onGestureEnded = {
+                    activeGestureType = MxGestureType.NONE
                 }
-            },
+            ),
         contentAlignment = Alignment.Center
     ) {
         AndroidView(
@@ -2110,6 +2614,20 @@ fun ExoPlayerVideoView(
                 )
             }
         }
+
+        // MX Player Brightness / Volume / Horizontal Seek Scrub HUD
+        MxPlayerGestureHud(
+            gestureType = activeGestureType,
+            fractionValue = when (activeGestureType) {
+                MxGestureType.BRIGHTNESS -> screenBrightness
+                MxGestureType.VOLUME -> if (isMuted) 0f else playerVolume
+                else -> 0f
+            },
+            seekPreviewPositionMs = gestureSeekTargetMs,
+            seekDeltaMs = gestureSeekDeltaMs,
+            durationMs = duration,
+            modifier = Modifier.align(Alignment.Center)
+        )
 
         // Volume / Brightness HUD
         if (gestureHudText != null) {

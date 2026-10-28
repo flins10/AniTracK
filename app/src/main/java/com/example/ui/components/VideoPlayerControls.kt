@@ -46,12 +46,23 @@ import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.SubtitlesOff
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.filled.ZoomOut
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.VideoFile
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -453,7 +464,9 @@ fun AudioSubtitleTracksSheet(
     onSubtitleStyleChanged: (SubtitleStyleConfig) -> Unit,
     onLoadLocalSubtitle: (Uri) -> Unit,
     onLoadSubtitleUrl: (String) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    isAudioOnlyMode: Boolean = false,
+    onToggleAudioOnlyMode: ((Boolean) -> Unit)? = null
 ) {
     var selectedTab by remember { mutableIntStateOf(0) } // 0: Subtitles, 1: Audio, 2: Subtitle Settings
     var showUrlInput by remember { mutableStateOf(false) }
@@ -645,11 +658,64 @@ fun AudioSubtitleTracksSheet(
                     }
                 }
                 1 -> {
-                    // Audio Tracks List
+                    // Audio Tracks List & Audio-Only Mode Toggle
                     LazyColumn(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth().height(280.dp)
+                        modifier = Modifier.fillMaxWidth().height(300.dp)
                     ) {
+                        if (onToggleAudioOnlyMode != null) {
+                            item {
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = if (isAudioOnlyMode) Color(0xFF0284C7).copy(alpha = 0.28f) else Color(0xFF1E293B),
+                                    border = BorderStroke(1.dp, if (isAudioOnlyMode) Color(0xFF38BDF8) else Color.White.copy(alpha = 0.1f)),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .clickable { onToggleAudioOnlyMode(!isAudioOnlyMode) }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Headphones,
+                                                contentDescription = null,
+                                                tint = if (isAudioOnlyMode) Color(0xFF38BDF8) else Color(0xFF94A3B8)
+                                            )
+                                            Spacer(modifier = Modifier.width(12.dp))
+                                            Column {
+                                                Text(
+                                                    text = "Audio-Only Mode",
+                                                    color = Color.White,
+                                                    fontWeight = FontWeight.Bold,
+                                                    style = MaterialTheme.typography.bodyMedium
+                                                )
+                                                Text(
+                                                    text = "Listen with video hidden & keep playing in background",
+                                                    color = Color(0xFF94A3B8),
+                                                    style = MaterialTheme.typography.labelSmall
+                                                )
+                                            }
+                                        }
+                                        Switch(
+                                            checked = isAudioOnlyMode,
+                                            onCheckedChange = { onToggleAudioOnlyMode(it) },
+                                            colors = SwitchDefaults.colors(
+                                                checkedThumbColor = Color.White,
+                                                checkedTrackColor = Color(0xFF0284C7)
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
                         if (audioTracks.isEmpty()) {
                             item {
                                 Surface(
@@ -696,7 +762,7 @@ fun AudioSubtitleTracksSheet(
                     }
                 }
                 2 -> {
-                    // Subtitle Styling & Timing Offset Sync
+                    // Subtitle Styling, Screen Position & Timing Offset Sync
                     Column(
                         modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
                     ) {
@@ -712,16 +778,16 @@ fun AudioSubtitleTracksSheet(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
-                                text = "${subtitleStyle.offsetMs} ms",
+                                text = "${if (subtitleStyle.offsetMs > 0) "+" else ""}${subtitleStyle.offsetMs} ms",
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
                             )
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 OutlinedButton(
-                                    onClick = { onSubtitleStyleChanged(subtitleStyle.copy(offsetMs = subtitleStyle.offsetMs - 500)) },
+                                    onClick = { onSubtitleStyleChanged(subtitleStyle.copy(offsetMs = (subtitleStyle.offsetMs - 500).coerceIn(-15000L, 15000L))) },
                                     contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp)
                                 ) { Text("-500ms", fontSize = 11.sp, color = Color.White) }
                                 OutlinedButton(
-                                    onClick = { onSubtitleStyleChanged(subtitleStyle.copy(offsetMs = subtitleStyle.offsetMs - 100)) },
+                                    onClick = { onSubtitleStyleChanged(subtitleStyle.copy(offsetMs = (subtitleStyle.offsetMs - 100).coerceIn(-15000L, 15000L))) },
                                     contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp)
                                 ) { Text("-100ms", fontSize = 11.sp, color = Color.White) }
                                 OutlinedButton(
@@ -729,17 +795,17 @@ fun AudioSubtitleTracksSheet(
                                     contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp)
                                 ) { Text("0ms", fontSize = 11.sp, color = Color(0xFF38BDF8)) }
                                 OutlinedButton(
-                                    onClick = { onSubtitleStyleChanged(subtitleStyle.copy(offsetMs = subtitleStyle.offsetMs + 100)) },
+                                    onClick = { onSubtitleStyleChanged(subtitleStyle.copy(offsetMs = (subtitleStyle.offsetMs + 100).coerceIn(-15000L, 15000L))) },
                                     contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp)
                                 ) { Text("+100ms", fontSize = 11.sp, color = Color.White) }
                                 OutlinedButton(
-                                    onClick = { onSubtitleStyleChanged(subtitleStyle.copy(offsetMs = subtitleStyle.offsetMs + 500)) },
+                                    onClick = { onSubtitleStyleChanged(subtitleStyle.copy(offsetMs = (subtitleStyle.offsetMs + 500).coerceIn(-15000L, 15000L))) },
                                     contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp)
                                 ) { Text("+500ms", fontSize = 11.sp, color = Color.White) }
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(16.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
 
                         // Font Size Selector
                         Text(
@@ -779,7 +845,92 @@ fun AudioSubtitleTracksSheet(
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(16.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Screen Position (Bottom Padding)
+                        Text(
+                            text = "SCREEN POSITION",
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Color(0xFF94A3B8))
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf(
+                                0.03f to "Bottom",
+                                0.08f to "Normal",
+                                0.15f to "Raised",
+                                0.22f to "High"
+                            ).forEach { (paddingFrac, label) ->
+                                val isSelected = kotlin.math.abs(subtitleStyle.bottomPaddingFraction - paddingFrac) < 0.015f
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (isSelected) Color(0xFF0284C7).copy(alpha = 0.35f) else Color(0xFF1E293B),
+                                    border = BorderStroke(1.dp, if (isSelected) Color(0xFF38BDF8) else Color.White.copy(alpha = 0.1f)),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable { onSubtitleStyleChanged(subtitleStyle.copy(bottomPaddingFraction = paddingFrac)) }
+                                ) {
+                                    Text(
+                                        text = label,
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                            color = if (isSelected) Color(0xFF38BDF8) else Color.White
+                                        ),
+                                        modifier = Modifier.padding(vertical = 8.dp),
+                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Background & Outline Style Selector
+                        Text(
+                            text = "OUTLINE & BACKGROUND",
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Color(0xFF94A3B8))
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf(
+                                Triple(0x00000000L, 1, "Outline Only"),
+                                Triple(0x88000000L, 1, "Semi-Dark"),
+                                Triple(0xDD000000L, 1, "Solid Box"),
+                                Triple(0x44000000L, 2, "Drop Shadow")
+                            ).forEach { (bgHex, edgeType, label) ->
+                                val isSelected = subtitleStyle.backgroundColor == bgHex && subtitleStyle.edgeType == edgeType
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (isSelected) Color(0xFF0284C7).copy(alpha = 0.35f) else Color(0xFF1E293B),
+                                    border = BorderStroke(1.dp, if (isSelected) Color(0xFF38BDF8) else Color.White.copy(alpha = 0.1f)),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable {
+                                            onSubtitleStyleChanged(
+                                                subtitleStyle.copy(backgroundColor = bgHex, edgeType = edgeType)
+                                            )
+                                        }
+                                ) {
+                                    Text(
+                                        text = label,
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                            color = if (isSelected) Color(0xFF38BDF8) else Color.White
+                                        ),
+                                        modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp),
+                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                        maxLines = 1
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
 
                         // Text Color Selector
                         Text(
@@ -818,3 +969,410 @@ fun AudioSubtitleTracksSheet(
         }
     }
 }
+
+enum class MxGestureType {
+    NONE,
+    BRIGHTNESS,
+    VOLUME,
+    HORIZONTAL_SEEK
+}
+
+/**
+ * MX Player-style visual HUD overlay for left-side Brightness swipe, right-side Volume swipe,
+ * and horizontal Seek scrubbing preview.
+ */
+@Composable
+fun MxPlayerGestureHud(
+    gestureType: MxGestureType,
+    fractionValue: Float, // 0f..1f for brightness/volume
+    seekPreviewPositionMs: Long = 0L,
+    seekDeltaMs: Long = 0L,
+    durationMs: Long = 0L,
+    modifier: Modifier = Modifier
+) {
+    AnimatedVisibility(
+        visible = gestureType != MxGestureType.NONE,
+        enter = fadeIn() + scaleIn(initialScale = 0.92f),
+        exit = fadeOut() + scaleOut(targetScale = 0.92f),
+        modifier = modifier
+    ) {
+        when (gestureType) {
+            MxGestureType.BRIGHTNESS, MxGestureType.VOLUME -> {
+                val isBrightness = gestureType == MxGestureType.BRIGHTNESS
+                val pct = (fractionValue.coerceIn(0f, 1f) * 100).toInt()
+                val accentColor = if (isBrightness) Color(0xFFFACC15) else Color(0xFF38BDF8)
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = Color(0xDD0F172A),
+                    border = BorderStroke(1.dp, accentColor.copy(alpha = 0.55f))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(
+                            imageVector = when {
+                                isBrightness -> Icons.Default.WbSunny
+                                pct == 0 -> Icons.Default.VolumeOff
+                                else -> Icons.Default.VolumeUp
+                            },
+                            contentDescription = if (isBrightness) "Brightness" else "Volume",
+                            tint = accentColor,
+                            modifier = Modifier.size(26.dp)
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = if (isBrightness) "Brightness" else "Volume",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                color = Color(0xFF94A3B8),
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        // Horizontal progress bar inside the compact pill
+                        Box(
+                            modifier = Modifier
+                                .width(120.dp)
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp))
+                                .background(Color.White.copy(alpha = 0.2f))
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth(fractionValue.coerceIn(0f, 1f))
+                                    .height(6.dp)
+                                    .clip(RoundedCornerShape(3.dp))
+                                    .background(accentColor)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "$pct%",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                color = Color.White,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                        )
+                    }
+                }
+            }
+            MxGestureType.HORIZONTAL_SEEK -> {
+                val deltaSec = seekDeltaMs / 1000L
+                val sign = if (deltaSec >= 0) "+" else "-"
+                val absSec = kotlin.math.abs(deltaSec)
+                val deltaText = String.format(java.util.Locale.US, "%s%02d:%02d", sign, absSec / 60, absSec % 60)
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = Color(0xDD0F172A),
+                    border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.6f))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 22.dp, vertical = 14.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = if (seekDeltaMs >= 0) Icons.Default.FastForward else Icons.Default.FastRewind,
+                                contentDescription = null,
+                                tint = Color(0xFF38BDF8),
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "[ $deltaText ]",
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    color = Color(0xFF38BDF8),
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = if (durationMs > 0L) {
+                                "${formatTimeMs(seekPreviewPositionMs)} / ${formatTimeMs(durationMs)}"
+                            } else {
+                                formatTimeMs(seekPreviewPositionMs)
+                            },
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold
+                            )
+                        )
+                    }
+                }
+            }
+            MxGestureType.NONE -> {}
+        }
+    }
+}
+
+/**
+ * Floating "Up Next: Episode X" prompt shown when an episode is near completion.
+ */
+@Composable
+fun UpNextEpisodeBanner(
+    visible: Boolean,
+    nextEpisodeNumber: Int,
+    remainingSeconds: Long,
+    onPlayNextNow: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn() + scaleIn(initialScale = 0.92f),
+        exit = fadeOut() + scaleOut(targetScale = 0.92f),
+        modifier = modifier
+    ) {
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = Color(0xEE0F172A),
+            border = BorderStroke(1.5.dp, Color(0xFF38BDF8).copy(alpha = 0.7f))
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Column {
+                    Text(
+                        text = "UP NEXT IN ${remainingSeconds.coerceAtLeast(1L)}s",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            color = Color(0xFF38BDF8),
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    )
+                    Text(
+                        text = "Episode $nextEpisodeNumber",
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
+                    )
+                }
+                Button(
+                    onClick = onPlayNextNow,
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Icon(Icons.Default.SkipNext, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Play Now", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "Dismiss Up Next",
+                        tint = Color(0xFF94A3B8),
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Modal Bottom Sheet for browsing and resuming Recently Played Local Device Videos
+ * or opening a new local video file via Android's system file picker.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun RecentLocalVideosSheet(
+    recentVideos: List<com.example.data.repository.PlaybackRepository.LocalVideoHistoryItem>,
+    onOpenLocalFilePicker: () -> Unit,
+    onSelectRecentVideo: (com.example.data.repository.PlaybackRepository.LocalVideoHistoryItem) -> Unit,
+    onRemoveRecentVideo: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(),
+        containerColor = Color(0xFF0F172A)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.VideoFile,
+                        contentDescription = null,
+                        tint = Color(0xFF38BDF8),
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column {
+                        Text(
+                            text = "Local Device Videos",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        )
+                        Text(
+                            text = "Play MP4, MKV, WebM, HLS (.m3u8) & DASH (.mpd) offline",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF94A3B8)
+                        )
+                    }
+                }
+                Button(
+                    onClick = onOpenLocalFilePicker,
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
+                ) {
+                    Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Browse Device", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            if (recentVideos.isEmpty()) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFF1E293B),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "No recently played local videos yet.",
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                color = Color.White,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Tap 'Browse Device' above to pick any video file from your phone or SD card.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF94A3B8),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                    }
+                }
+            } else {
+                Text(
+                    text = "RECENTLY PLAYED ON DEVICE",
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        color = Color(0xFF94A3B8),
+                        fontWeight = FontWeight.Bold
+                    )
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth().height(260.dp)
+                ) {
+                    items(recentVideos, key = { it.uriString }) { item ->
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color(0xFF1E293B),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable { onSelectRecentVideo(item) }
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = Color(0xFF0284C7).copy(alpha = 0.25f),
+                                        modifier = Modifier.size(38.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                imageVector = Icons.Default.PlayArrow,
+                                                contentDescription = null,
+                                                tint = Color(0xFF38BDF8)
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = item.displayName,
+                                            style = MaterialTheme.typography.bodyMedium.copy(
+                                                color = Color.White,
+                                                fontWeight = FontWeight.Bold
+                                            ),
+                                            maxLines = 1
+                                        )
+                                        val progressLabel = buildString {
+                                            if (item.lastPositionMs > 3000L) {
+                                                append("Resume at ${formatTimeMs(item.lastPositionMs)}")
+                                                if (item.durationMs > 0L) {
+                                                    append(" / ${formatTimeMs(item.durationMs)}")
+                                                }
+                                            } else if (item.durationMs > 0L) {
+                                                append("Duration: ${formatTimeMs(item.durationMs)}")
+                                            } else {
+                                                append("Local Video File")
+                                            }
+                                        }
+                                        Text(
+                                            text = progressLabel,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = Color(0xFF38BDF8)
+                                        )
+                                    }
+                                }
+                                IconButton(
+                                    onClick = { onRemoveRecentVideo(item.uriString) },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Delete,
+                                        contentDescription = "Remove from history",
+                                        tint = Color(0xFF94A3B8),
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+        }
+    }
+}
+
+private fun formatTimeMs(millis: Long): String {
+    if (millis <= 0L) return "00:00"
+    val totalSeconds = millis / 1000L
+    val hours = totalSeconds / 3600L
+    val minutes = (totalSeconds % 3600L) / 60L
+    val seconds = totalSeconds % 60L
+    return if (hours > 0L) {
+        String.format(java.util.Locale.US, "%d:%02d:%02d", hours, minutes, seconds)
+    } else {
+        String.format(java.util.Locale.US, "%02d:%02d", minutes, seconds)
+    }
+}
+
+

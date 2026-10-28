@@ -13,9 +13,12 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import android.content.Intent
+import android.provider.OpenableColumns
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
@@ -26,6 +29,8 @@ import com.example.data.local.AnimeEntity
 import com.example.data.local.AppDatabase
 import com.example.data.remote.ArchiveFileItem
 import com.example.data.remote.InternetArchiveApiService
+import com.example.data.repository.AniKotoRepository
+import com.example.data.repository.AniKotoResult
 import com.example.data.repository.AnimeRepository
 import com.example.data.repository.ArchiveAnimeMatchResult
 import com.example.data.repository.ArchiveCandidateMatch
@@ -92,6 +97,7 @@ class PlayerViewModel @JvmOverloads constructor(
         playbackPreferenceDao = AppDatabase.getInstance(application).playbackPreferenceDao()
     ),
     private val archiveRepository: InternetArchiveRepository = InternetArchiveRepository(),
+    private val aniKotoRepository: AniKotoRepository = AniKotoRepository(),
     private val playbackRepository: PlaybackRepository = PlaybackRepository(
         context = application,
         playbackPreferenceDao = AppDatabase.getInstance(application).playbackPreferenceDao()
@@ -111,8 +117,10 @@ class PlayerViewModel @JvmOverloads constructor(
             .setReadTimeoutMs(12_000)
             .setAllowCrossProtocolRedirects(true)
 
+        val dataSourceFactory = DefaultDataSource.Factory(application, httpDataSourceFactory)
+
         val mediaSourceFactory = DefaultMediaSourceFactory(application)
-            .setDataSourceFactory(httpDataSourceFactory)
+            .setDataSourceFactory(dataSourceFactory)
 
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
@@ -239,9 +247,28 @@ class PlayerViewModel @JvmOverloads constructor(
     private val _userMessage = MutableStateFlow<String?>(null)
     val userMessage: StateFlow<String?> = _userMessage.asStateFlow()
 
+    // Local Video Playback & Audio-Only Mode States
+    private val _isLocalVideoMode = MutableStateFlow(false)
+    val isLocalVideoMode: StateFlow<Boolean> = _isLocalVideoMode.asStateFlow()
+
+    private val _localVideoTitle = MutableStateFlow<String?>(null)
+    val localVideoTitle: StateFlow<String?> = _localVideoTitle.asStateFlow()
+
+    private val _localVideoUri = MutableStateFlow<String?>(null)
+    val localVideoUri: StateFlow<String?> = _localVideoUri.asStateFlow()
+
+    private val _recentLocalVideos = MutableStateFlow<List<PlaybackRepository.LocalVideoHistoryItem>>(
+        playbackRepository.getRecentLocalVideos()
+    )
+    val recentLocalVideos: StateFlow<List<PlaybackRepository.LocalVideoHistoryItem>> = _recentLocalVideos.asStateFlow()
+
+    private val _isAudioOnlyMode = MutableStateFlow(false)
+    val isAudioOnlyMode: StateFlow<Boolean> = _isAudioOnlyMode.asStateFlow()
+
     private var progressTrackingJob: Job? = null
     private var externalSubtitlesJob: Job? = null
     private var lastLoadedMediaUri: String? = null
+    private var lastExplicitMimeType: String? = null
     private var activeExternalSubtitleId: String? = null
     private val failedCandidateIds = mutableSetOf<String>()
 
@@ -265,12 +292,10 @@ class PlayerViewModel @JvmOverloads constructor(
                     Player.STATE_READY -> {
                         val durMs = exoPlayer.duration
                         val anime = _currentAnime.value
-                        val isMovie = anime?.format.equals("MOVIE", ignoreCase = true) || (anime?.totalEpisodes == 1)
                         val ep = _currentEpisode.value
-                        val maxAllowedMs = if (ep == 1) 3_300_000L else 2_040_000L
-                        // Runtime verification: reject short clips (< 9 min) AND overly long reaction streams / live-action movies (> 34 min for Ep 2+, > 55 min for Ep 1)
-                        if (durMs > 0L && !isMovie && (durMs < 540_000L || durMs > maxAllowedMs)) {
-                            Log.w(TAG, "Rejected non-episode runtime (${durMs / 1000}s) — switching to verified stream")
+                        // Runtime verification: reject short clips/trailers (< 9 minutes) for online streams
+                        if (!_isLocalVideoMode.value && durMs in 1L until 540_000L) {
+                            Log.w(TAG, "Rejected short clip runtime (${durMs / 1000}s) — switching to verified stream")
                             exoPlayer.pause()
                             if (!tryFallbackFile() && !tryNextCandidate()) {
                                 _isBuffering.value = false
@@ -286,6 +311,20 @@ class PlayerViewModel @JvmOverloads constructor(
                         _playbackError.value = null
                         if (durMs > 0) {
                             _durationMs.value = durMs
+                            if (_isLocalVideoMode.value) {
+                                val uriStr = _localVideoUri.value
+                                val titleStr = _localVideoTitle.value ?: "Local Video"
+                                if (!uriStr.isNullOrBlank()) {
+                                    playbackRepository.saveLocalVideoProgress(
+                                        uriString = uriStr,
+                                        displayName = titleStr,
+                                        positionMs = exoPlayer.currentPosition.coerceAtLeast(0L),
+                                        durationMs = durMs,
+                                        mimeType = lastExplicitMimeType
+                                    )
+                                    _recentLocalVideos.value = playbackRepository.getRecentLocalVideos()
+                                }
+                            }
                         }
                     }
                     Player.STATE_ENDED -> {
@@ -304,19 +343,13 @@ class PlayerViewModel @JvmOverloads constructor(
                 _isBuffering.value = false
                 _isPlaying.value = false
                 Log.w(TAG, "ExoPlayer error: ${error.errorCodeName} - ${error.message}", error)
-                _playbackError.value = when (error.errorCode) {
-                    PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ->
-                        "Network connection interrupted. Please check your internet connection."
-                    PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ->
-                        "Media stream returned HTTP error. Trying alternate stream..."
-                    PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED ->
-                        "Media container format unreadable by hardware decoder."
-                    else -> error.localizedMessage ?: "Playback encountered an issue (${error.errorCodeName})"
-                }
+                _playbackError.value = mapPlaybackErrorToUserMessage(error, _isLocalVideoMode.value)
 
-                // Attempt automated fallback file or candidate if available
-                if (!tryFallbackFile()) {
-                    tryNextCandidate()
+                if (!_isLocalVideoMode.value) {
+                    // Attempt automated fallback file or candidate if available
+                    if (!tryFallbackFile()) {
+                        tryNextCandidate()
+                    }
                 }
             }
 
@@ -331,6 +364,7 @@ class PlayerViewModel @JvmOverloads constructor(
     private fun startProgressTracking() {
         progressTrackingJob?.cancel()
         progressTrackingJob = viewModelScope.launch(Dispatchers.Main) {
+            var tickCount = 0
             while (isActive) {
                 if (exoPlayer.playbackState == Player.STATE_READY || exoPlayer.isPlaying) {
                     val pos = exoPlayer.currentPosition.coerceAtLeast(0L)
@@ -340,19 +374,35 @@ class PlayerViewModel @JvmOverloads constructor(
                         _durationMs.value = exoPlayer.duration
                     }
 
-                    // Save resume position periodically (every 5 seconds)
-                    val anime = _currentAnime.value
-                    if (anime != null && pos > 5000L) {
-                        playbackRepository.savePositionMs(anime.id, _currentEpisode.value, pos)
-                    }
+                    tickCount++
+                    if (_isLocalVideoMode.value) {
+                        val uriStr = _localVideoUri.value
+                        val titleStr = _localVideoTitle.value ?: "Local Video"
+                        if (!uriStr.isNullOrBlank() && pos > 2000L && tickCount % 8 == 0) {
+                            playbackRepository.saveLocalVideoProgress(
+                                uriString = uriStr,
+                                displayName = titleStr,
+                                positionMs = pos,
+                                durationMs = _durationMs.value,
+                                mimeType = lastExplicitMimeType
+                            )
+                            _recentLocalVideos.value = playbackRepository.getRecentLocalVideos()
+                        }
+                    } else {
+                        // Save anime resume position periodically
+                        val anime = _currentAnime.value
+                        if (anime != null && pos > 5000L && tickCount % 8 == 0) {
+                            playbackRepository.savePositionMs(anime.id, _currentEpisode.value, pos)
+                        }
 
-                    // Automatically register watched episode if played for more than 5 minutes (300,000ms)
-                    if (anime != null && pos >= 300_000L && !hasAutoMarkedWatchedForCurrentEp) {
-                        hasAutoMarkedWatchedForCurrentEp = true
-                        viewModelScope.launch(Dispatchers.IO) {
-                            animeRepository.updateWatchedEpisodeCount(anime.id, _currentEpisode.value)
-                            _currentAnime.value = animeRepository.getAnimeByIdSync(anime.id)
-                                ?: anime.copy(watchedEpisodeCount = maxOf(anime.watchedEpisodeCount, _currentEpisode.value))
+                        // Automatically register watched episode if played for more than 5 minutes (300,000ms)
+                        if (anime != null && pos >= 300_000L && !hasAutoMarkedWatchedForCurrentEp) {
+                            hasAutoMarkedWatchedForCurrentEp = true
+                            viewModelScope.launch(Dispatchers.IO) {
+                                animeRepository.updateWatchedEpisodeCount(anime.id, _currentEpisode.value)
+                                _currentAnime.value = animeRepository.getAnimeByIdSync(anime.id)
+                                    ?: anime.copy(watchedEpisodeCount = maxOf(anime.watchedEpisodeCount, _currentEpisode.value))
+                            }
                         }
                     }
                 }
@@ -366,6 +416,10 @@ class PlayerViewModel @JvmOverloads constructor(
      */
     fun loadEpisode(animeId: Int, episodeNumber: Int, seasonNumber: Int? = null, fallbackAnime: AnimeEntity? = null) {
         val targetEp = episodeNumber.coerceAtLeast(1)
+        _isLocalVideoMode.value = false
+        _localVideoTitle.value = null
+        _localVideoUri.value = null
+        lastExplicitMimeType = null
         _playbackError.value = null
         _isBuffering.value = true
         activeExternalSubtitleId = null
@@ -395,36 +449,28 @@ class PlayerViewModel @JvmOverloads constructor(
                 _currentEpisode.value = targetEp
                 _currentSeasonNumber.value = detectedSeason
 
-                val matchResult = withTimeoutOrNull(8_500L) {
-                    archiveRepository.findMatchesForAnime(anime, targetEp, detectedSeason)
-                } ?: ArchiveAnimeMatchResult.NoMatch(
-                    reason = "Can't find Episode $targetEp on Internet Archive.",
-                    queriedTitles = listOfNotNull(anime.displayTitle),
-                    requestedEpisode = targetEp
-                )
+                // Primary Anime Stream Resolver: AniKotoAPI (`https://anikototvapi.vercel.app/api`)
+                val aniKotoStreamRes = withTimeoutOrNull(18_000L) {
+                    aniKotoRepository.resolveAnimeStream(
+                        anime = anime,
+                        episodeNumber = targetEp,
+                        seasonNumber = detectedSeason,
+                        archiveRepository = archiveRepository
+                    )
+                }
 
-                when (matchResult) {
-                    is ArchiveAnimeMatchResult.Success -> {
-                        _activeCandidates.value = matchResult.allCandidates
-                        val best = matchResult.bestMatch
+                when (aniKotoStreamRes) {
+                    is AniKotoResult.Success -> {
+                        val streamData = aniKotoStreamRes.data
+                        val best = streamData.primaryCandidate
+                        val allCandidates = streamData.allCandidates
+                        val playable = streamData.playableMedia
+
+                        _activeCandidates.value = allCandidates
                         _activeCandidate.value = best
+                        _activePlayableMedia.value = playable
 
                         val resumeMs = playbackRepository.getSavedPositionMs(animeId, targetEp)
-                        val playable = ArchivePlayableMedia(
-                            identifier = best.identifier,
-                            title = best.title,
-                            streamUrl = best.streamUrl,
-                            fileName = best.bestPlayableFile.name,
-                            format = best.bestPlayableFile.format ?: "MP4",
-                            sizeBytes = best.fileSizeBytes,
-                            durationSeconds = null,
-                            licenseUrl = best.licenseUrl,
-                            description = best.description,
-                            creator = best.creator,
-                            matchedEpisode = best.matchedEpisode,
-                            allCompatibleFiles = best.compatibleFiles
-                        )
-                        _activePlayableMedia.value = playable
 
                         // Setup Quality Options & Subtitles
                         _availableQualities.value = best.qualityOptions
@@ -435,7 +481,7 @@ class PlayerViewModel @JvmOverloads constructor(
                         withContext(Dispatchers.Main) {
                             lastLoadedMediaUri = null
                             preparePlayerWithMedia(
-                                streamUrl = best.streamUrl,
+                                streamUrl = playable.streamUrl,
                                 resumePositionMs = resumeMs,
                                 subtitles = best.subtitleTracks
                             )
@@ -443,32 +489,49 @@ class PlayerViewModel @JvmOverloads constructor(
                             _uiState.value = PlayerUiState.Ready(
                                 activeMedia = playable,
                                 activeCandidate = best,
-                                allCandidates = matchResult.allCandidates,
+                                allCandidates = allCandidates,
                                 initialResumeMs = resumeMs
                             )
                         }
 
                         fetchAndAttachExternalSubtitles(anime, targetEp)
                     }
-                    is ArchiveAnimeMatchResult.NoMatch -> {
+                    is AniKotoResult.Empty -> {
                         withContext(Dispatchers.Main) {
                             _isBuffering.value = false
                             _activeCandidates.value = emptyList()
                             _activeCandidate.value = null
                             _activePlayableMedia.value = null
                             _uiState.value = PlayerUiState.NoMatchFound(
-                                reason = matchResult.reason,
-                                queriedTitles = matchResult.queriedTitles,
+                                reason = aniKotoStreamRes.message,
+                                queriedTitles = listOfNotNull(anime.displayTitle),
                                 requestedEpisode = targetEp
                             )
                         }
                     }
-                    is ArchiveAnimeMatchResult.Error -> {
+                    is AniKotoResult.Error -> {
                         withContext(Dispatchers.Main) {
                             _isBuffering.value = false
-                            _uiState.value = PlayerUiState.Error(
-                                message = matchResult.message,
-                                canRetry = true
+                            _activeCandidates.value = emptyList()
+                            _activeCandidate.value = null
+                            _activePlayableMedia.value = null
+                            _uiState.value = PlayerUiState.NoMatchFound(
+                                reason = aniKotoStreamRes.message,
+                                queriedTitles = listOfNotNull(anime.displayTitle),
+                                requestedEpisode = targetEp
+                            )
+                        }
+                    }
+                    null -> {
+                        withContext(Dispatchers.Main) {
+                            _isBuffering.value = false
+                            _activeCandidates.value = emptyList()
+                            _activeCandidate.value = null
+                            _activePlayableMedia.value = null
+                            _uiState.value = PlayerUiState.NoMatchFound(
+                                reason = "Can't find Episode $targetEp on AniKotoAPI.",
+                                queriedTitles = listOfNotNull(anime.displayTitle),
+                                requestedEpisode = targetEp
                             )
                         }
                     }
@@ -489,7 +552,8 @@ class PlayerViewModel @JvmOverloads constructor(
     private fun preparePlayerWithMedia(
         streamUrl: String,
         resumePositionMs: Long,
-        subtitles: List<SubtitleTrackItem>
+        subtitles: List<SubtitleTrackItem>,
+        explicitMimeType: String? = null
     ) {
         try {
             if (lastLoadedMediaUri == streamUrl && exoPlayer.playbackState != Player.STATE_IDLE) {
@@ -497,20 +561,29 @@ class PlayerViewModel @JvmOverloads constructor(
                 return
             }
             lastLoadedMediaUri = streamUrl
+            lastExplicitMimeType = explicitMimeType
             _isBuffering.value = true
             _playbackError.value = null
 
-            val mimeType = when {
-                streamUrl.contains(".m3u8", ignoreCase = true) -> MimeTypes.APPLICATION_M3U8
-                streamUrl.contains(".mpd", ignoreCase = true) -> MimeTypes.APPLICATION_MPD
-                streamUrl.contains(".webm", ignoreCase = true) -> MimeTypes.VIDEO_WEBM
-                streamUrl.contains(".mkv", ignoreCase = true) -> MimeTypes.VIDEO_MATROSKA
-                else -> MimeTypes.VIDEO_MP4
-            }
+            val mimeType = resolveMediaMimeType(streamUrl, explicitMimeType)
+            val currentOffsetMs = _subtitleStyle.value.offsetMs
 
-            // Subtitle configurations
+            // Subtitle configurations (with real timing offset applied to local/cached subtitle files)
             val subtitleConfigs = subtitles.mapNotNull { sub ->
-                val uriString = sub.remoteUrl ?: sub.localFileUri?.let { Uri.fromFile(File(it)).toString() } ?: return@mapNotNull null
+                val uriString = when {
+                    sub.localFileUri != null -> {
+                        val baseFile = File(sub.localFileUri)
+                        val effectiveFile = if (currentOffsetMs != 0L && baseFile.exists()) {
+                            subtitleRepository.applyTimingOffsetToSubtitleFile(baseFile, currentOffsetMs)
+                        } else {
+                            baseFile
+                        }
+                        Uri.fromFile(effectiveFile).toString()
+                    }
+                    sub.remoteUrl != null -> sub.remoteUrl
+                    else -> null
+                } ?: return@mapNotNull null
+
                 MediaItem.SubtitleConfiguration.Builder(Uri.parse(uriString))
                     .setMimeType(when {
                         sub.format.equals("vtt", ignoreCase = true) -> MimeTypes.TEXT_VTT
@@ -523,17 +596,19 @@ class PlayerViewModel @JvmOverloads constructor(
                     .build()
             }
 
-            val mediaItem = MediaItem.Builder()
+            val mediaItemBuilder = MediaItem.Builder()
                 .setUri(streamUrl)
-                .setMimeType(mimeType)
                 .setSubtitleConfigurations(subtitleConfigs)
-                .build()
 
-            exoPlayer.setMediaItem(mediaItem)
+            if (!mimeType.isNullOrBlank()) {
+                mediaItemBuilder.setMimeType(mimeType)
+            }
+
+            exoPlayer.setMediaItem(mediaItemBuilder.build())
             exoPlayer.prepare()
             exoPlayer.playWhenReady = true
 
-            if (resumePositionMs > 5000L) {
+            if (resumePositionMs > 3000L) {
                 exoPlayer.seekTo(resumePositionMs)
             }
 
@@ -904,13 +979,201 @@ class PlayerViewModel @JvmOverloads constructor(
     }
 
     fun updateSubtitleStyle(config: SubtitleStyleConfig) {
+        val previousOffset = _subtitleStyle.value.offsetMs
         _subtitleStyle.value = config
+        if (config.offsetMs != previousOffset && !_isSubtitleOff.value) {
+            val activeSubs = _activeCandidate.value?.subtitleTracks.orEmpty().filter { it.localFileUri != null }
+            val streamUrl = _activePlayableMedia.value?.streamUrl ?: _activeCandidate.value?.streamUrl
+            if (activeSubs.isNotEmpty() && streamUrl != null) {
+                val currentPos = exoPlayer.currentPosition.coerceAtLeast(0L)
+                lastLoadedMediaUri = null
+                preparePlayerWithMedia(
+                    streamUrl = streamUrl,
+                    resumePositionMs = currentPos,
+                    subtitles = activeSubs,
+                    explicitMimeType = lastExplicitMimeType
+                )
+            }
+        }
+    }
+
+    fun setAudioOnlyMode(enabled: Boolean) {
+        _isAudioOnlyMode.value = enabled
+        trackSelector.setParameters(
+            trackSelector.parameters.buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, enabled)
+        )
+        _userMessage.value = if (enabled) "Audio-Only mode enabled" else "Video display restored"
+    }
+
+    /**
+     * Opens and plays a local device video file (`content://` or `file://`) directly in ExoPlayer,
+     * independent of AniKotoAPI and internet connectivity.
+     */
+    fun loadLocalVideo(uri: Uri, customDisplayName: String? = null) {
+        val app = getApplication<Application>()
+        val resolver = app.contentResolver
+
+        // Request persistable read permission if granted by the picker
+        runCatching {
+            resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+
+        // Verify the file is accessible and resolve its display name & MIME type
+        var resolvedName = customDisplayName
+        var resolvedMime = runCatching { resolver.getType(uri) }.getOrNull()
+
+        if (uri.scheme == "content") {
+            val accessible = runCatching {
+                resolver.openFileDescriptor(uri, "r")?.use { true } ?: false
+            }.getOrDefault(false)
+            if (!accessible) {
+                _isBuffering.value = false
+                _playbackError.value = "Local video file is inaccessible or has been moved/deleted from device storage."
+                _uiState.value = PlayerUiState.Error(
+                    message = "Local video file could not be opened. It may have been moved, renamed, or deleted.",
+                    canRetry = false
+                )
+                return
+            }
+            if (resolvedName.isNullOrBlank()) {
+                runCatching {
+                    resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                        if (cursor.moveToFirst()) {
+                            val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                            if (idx >= 0) {
+                                resolvedName = cursor.getString(idx)
+                            }
+                        }
+                    }
+                }
+            }
+        } else if (uri.scheme == "file") {
+            val f = uri.path?.let { File(it) }
+            if (f == null || !f.exists() || !f.canRead()) {
+                _isBuffering.value = false
+                _playbackError.value = "Local video file does not exist or cannot be read."
+                _uiState.value = PlayerUiState.Error(
+                    message = "Local video file not found at ${uri.path}.",
+                    canRetry = false
+                )
+                return
+            }
+            if (resolvedName.isNullOrBlank()) {
+                resolvedName = f.name
+            }
+        }
+
+        val displayName = resolvedName?.takeIf { it.isNotBlank() }
+            ?: uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+            ?: "Local Device Video"
+
+        val uriStr = uri.toString()
+        _isLocalVideoMode.value = true
+        _localVideoUri.value = uriStr
+        _localVideoTitle.value = displayName
+        _playbackError.value = null
+        activeExternalSubtitleId = null
+
+        val savedResumeMs = playbackRepository.getLocalVideoSavedPositionMs(uriStr)
+        val formatLabel = when {
+            displayName.endsWith(".mkv", ignoreCase = true) || resolvedMime?.contains("matroska") == true -> "MKV"
+            displayName.endsWith(".webm", ignoreCase = true) || resolvedMime?.contains("webm") == true -> "WEBM"
+            displayName.endsWith(".m3u8", ignoreCase = true) || resolvedMime?.contains("mpegurl", ignoreCase = true) == true -> "HLS"
+            displayName.endsWith(".mpd", ignoreCase = true) || resolvedMime?.contains("dash", ignoreCase = true) == true -> "DASH"
+            else -> "MP4"
+        }
+
+        val localFileItem = ArchiveFileItem(
+            name = displayName,
+            source = "local_device",
+            format = formatLabel,
+            size = null,
+            length = null,
+            title = displayName
+        )
+
+        val localPlayable = ArchivePlayableMedia(
+            identifier = "local_device_media",
+            title = displayName,
+            streamUrl = uriStr,
+            fileName = displayName,
+            format = formatLabel,
+            sizeBytes = 0L,
+            durationSeconds = null,
+            licenseUrl = null,
+            description = "Playing directly from device storage",
+            creator = "Local Storage",
+            matchedEpisode = null,
+            allCompatibleFiles = listOf(localFileItem)
+        )
+
+        val localCandidate = ArchiveCandidateMatch(
+            identifier = "local_device_media",
+            title = displayName,
+            description = "Local video file on device",
+            creator = "Local Device",
+            year = null,
+            licenseUrl = null,
+            thumbnailUrl = "",
+            matchedEpisode = null,
+            compatibleFiles = listOf(localFileItem),
+            bestPlayableFile = localFileItem,
+            matchScore = 1.0f,
+            matchConfidence = com.example.data.repository.MatchConfidence.HIGH,
+            isEpisodeSpecific = true,
+            durationFormatted = null,
+            fileSizeBytes = 0L,
+            streamUrl = uriStr,
+            qualityOptions = emptyList(),
+            subtitleTracks = emptyList()
+        )
+
+        _activePlayableMedia.value = localPlayable
+        _activeCandidate.value = localCandidate
+        _activeCandidates.value = listOf(localCandidate)
+        _availableQualities.value = emptyList()
+        _activeQuality.value = null
+
+        playbackRepository.saveLocalVideoProgress(
+            uriString = uriStr,
+            displayName = displayName,
+            positionMs = savedResumeMs,
+            durationMs = _durationMs.value,
+            mimeType = resolvedMime
+        )
+        _recentLocalVideos.value = playbackRepository.getRecentLocalVideos()
+
+        lastLoadedMediaUri = null
+        preparePlayerWithMedia(
+            streamUrl = uriStr,
+            resumePositionMs = savedResumeMs,
+            subtitles = emptyList(),
+            explicitMimeType = resolvedMime
+        )
+
+        _uiState.value = PlayerUiState.Ready(
+            activeMedia = localPlayable,
+            activeCandidate = localCandidate,
+            allCandidates = listOf(localCandidate),
+            initialResumeMs = savedResumeMs
+        )
+    }
+
+    fun removeLocalVideoFromHistory(uriString: String) {
+        playbackRepository.removeLocalVideoFromHistory(uriString)
+        _recentLocalVideos.value = playbackRepository.getRecentLocalVideos()
+    }
+
+    fun refreshRecentLocalVideos() {
+        _recentLocalVideos.value = playbackRepository.getRecentLocalVideos()
     }
 
     fun loadLocalSubtitle(uri: Uri) {
         viewModelScope.launch(Dispatchers.IO) {
             val result = subtitleRepository.importLocalSubtitle(getApplication(), uri)
             result.onSuccess { file ->
+                val ext = if (file.name.endsWith(".vtt", ignoreCase = true)) "vtt" else "srt"
                 val track = SubtitleTrackItem(
                     id = "local_${System.currentTimeMillis()}",
                     title = file.name,
@@ -918,7 +1181,7 @@ class PlayerViewModel @JvmOverloads constructor(
                     languageName = "Local Subtitle (${file.name})",
                     source = SubtitleSource.LOCAL_DEVICE,
                     localFileUri = file.absolutePath,
-                    format = "srt"
+                    format = ext
                 )
                 withContext(Dispatchers.Main) {
                     val currentSubs = _activeCandidate.value?.subtitleTracks.orEmpty()
@@ -931,13 +1194,18 @@ class PlayerViewModel @JvmOverloads constructor(
                     val streamUrl = _activePlayableMedia.value?.streamUrl ?: _activeCandidate.value?.streamUrl
                     if (streamUrl != null) {
                         lastLoadedMediaUri = null
-                        preparePlayerWithMedia(streamUrl, currentPos, listOf(track))
+                        preparePlayerWithMedia(
+                            streamUrl = streamUrl,
+                            resumePositionMs = currentPos,
+                            subtitles = listOf(track),
+                            explicitMimeType = lastExplicitMimeType
+                        )
                     }
                     _userMessage.value = "Subtitle loaded!"
                 }
-            }.onFailure {
+            }.onFailure { err ->
                 withContext(Dispatchers.Main) {
-                    _userMessage.value = "Failed to load subtitle file."
+                    _userMessage.value = err.localizedMessage ?: "Failed to load subtitle file."
                 }
             }
         }
@@ -972,7 +1240,12 @@ class PlayerViewModel @JvmOverloads constructor(
                     val streamUrl = _activePlayableMedia.value?.streamUrl ?: _activeCandidate.value?.streamUrl
                     if (streamUrl != null) {
                         lastLoadedMediaUri = null
-                        preparePlayerWithMedia(streamUrl, currentPos, listOf(track))
+                        preparePlayerWithMedia(
+                            streamUrl = streamUrl,
+                            resumePositionMs = currentPos,
+                            subtitles = listOf(track),
+                            explicitMimeType = lastExplicitMimeType
+                        )
                     }
                     _userMessage.value = "Subtitle attached!"
                 }
@@ -1064,11 +1337,26 @@ class PlayerViewModel @JvmOverloads constructor(
         preparePlayerWithMedia(
             streamUrl = currentMedia.streamUrl,
             resumePositionMs = resumeMs,
-            subtitles = _activeCandidate.value?.subtitleTracks.orEmpty()
+            subtitles = _activeCandidate.value?.subtitleTracks.orEmpty(),
+            explicitMimeType = lastExplicitMimeType
         )
     }
 
     private fun handlePlaybackEnded() {
+        if (_isLocalVideoMode.value) {
+            val uriStr = _localVideoUri.value
+            if (!uriStr.isNullOrBlank()) {
+                playbackRepository.saveLocalVideoProgress(
+                    uriString = uriStr,
+                    displayName = _localVideoTitle.value ?: "Local Video",
+                    positionMs = 0L,
+                    durationMs = _durationMs.value,
+                    mimeType = lastExplicitMimeType
+                )
+                _recentLocalVideos.value = playbackRepository.getRecentLocalVideos()
+            }
+            return
+        }
         val anime = _currentAnime.value ?: return
         val ep = _currentEpisode.value
         val total = anime.totalEpisodes ?: (anime.getAiredEpisodeCount().coerceAtLeast(ep))
@@ -1163,64 +1451,68 @@ class PlayerViewModel @JvmOverloads constructor(
                     titleEnglish = customTitle.trim(),
                     titleRomaji = customTitle.trim()
                 )
-                val matchResult = withTimeoutOrNull(8_500L) {
-                    archiveRepository.findMatchesForAnime(syntheticAnime, ep)
-                } ?: ArchiveAnimeMatchResult.NoMatch(
-                    reason = "Can't find \"$customTitle\" on Internet Archive.",
-                    queriedTitles = listOf(customTitle),
-                    requestedEpisode = ep
-                )
-                when (matchResult) {
-                    is ArchiveAnimeMatchResult.Success -> {
-                        _activeCandidates.value = matchResult.allCandidates
-                        val best = matchResult.bestMatch
+                val aniKotoStreamRes = withTimeoutOrNull(10_500L) {
+                    aniKotoRepository.resolveAnimeStream(
+                        anime = syntheticAnime,
+                        episodeNumber = ep,
+                        seasonNumber = _currentSeasonNumber.value,
+                        archiveRepository = archiveRepository
+                    )
+                }
+                when (aniKotoStreamRes) {
+                    is AniKotoResult.Success -> {
+                        val streamData = aniKotoStreamRes.data
+                        val best = streamData.primaryCandidate
+                        val playable = streamData.playableMedia
+
+                        _activeCandidates.value = streamData.allCandidates
                         _activeCandidate.value = best
 
                         val resumeMs = playbackRepository.getSavedPositionMs(anime.id, ep)
-                        val playable = ArchivePlayableMedia(
-                            identifier = best.identifier,
-                            title = best.title,
-                            streamUrl = best.streamUrl,
-                            fileName = best.bestPlayableFile.name,
-                            format = best.bestPlayableFile.format ?: "MP4",
-                            sizeBytes = best.fileSizeBytes,
-                            durationSeconds = null,
-                            licenseUrl = best.licenseUrl,
-                            description = best.description,
-                            creator = best.creator,
-                            matchedEpisode = best.matchedEpisode,
-                            allCompatibleFiles = best.compatibleFiles
-                        )
                         _activePlayableMedia.value = playable
                         _availableQualities.value = best.qualityOptions
                         _activeQuality.value = best.qualityOptions.firstOrNull()
 
                         withContext(Dispatchers.Main) {
                             lastLoadedMediaUri = null
-                            preparePlayerWithMedia(best.streamUrl, resumeMs, best.subtitleTracks)
+                            preparePlayerWithMedia(playable.streamUrl, resumeMs, best.subtitleTracks)
                             _uiState.value = PlayerUiState.Ready(
                                 activeMedia = playable,
                                 activeCandidate = best,
-                                allCandidates = matchResult.allCandidates,
+                                allCandidates = streamData.allCandidates,
                                 initialResumeMs = resumeMs
                             )
                         }
                         fetchAndAttachExternalSubtitles(syntheticAnime, ep)
                     }
-                    is ArchiveAnimeMatchResult.NoMatch -> {
+                    is AniKotoResult.Empty -> {
                         withContext(Dispatchers.Main) {
                             _isBuffering.value = false
                             _uiState.value = PlayerUiState.NoMatchFound(
-                                reason = matchResult.reason,
+                                reason = aniKotoStreamRes.message,
                                 queriedTitles = listOf(customTitle),
                                 requestedEpisode = ep
                             )
                         }
                     }
-                    is ArchiveAnimeMatchResult.Error -> {
+                    is AniKotoResult.Error -> {
                         withContext(Dispatchers.Main) {
                             _isBuffering.value = false
-                            _uiState.value = PlayerUiState.Error(matchResult.message, canRetry = true)
+                            _uiState.value = PlayerUiState.NoMatchFound(
+                                reason = aniKotoStreamRes.message,
+                                queriedTitles = listOf(customTitle),
+                                requestedEpisode = ep
+                            )
+                        }
+                    }
+                    null -> {
+                        withContext(Dispatchers.Main) {
+                            _isBuffering.value = false
+                            _uiState.value = PlayerUiState.NoMatchFound(
+                                reason = "Can't find \"$customTitle\" on AniKotoAPI.",
+                                queriedTitles = listOf(customTitle),
+                                requestedEpisode = ep
+                            )
                         }
                     }
                 }
@@ -1235,6 +1527,67 @@ class PlayerViewModel @JvmOverloads constructor(
 
     fun clearUserMessage() {
         _userMessage.value = null
+    }
+
+    companion object {
+        /**
+         * Resolves the Media3 MIME type for MP4, WebM, MKV, HLS (.m3u8), MPEG-DASH (.mpd),
+         * or local content URIs.
+         */
+        fun resolveMediaMimeType(uriOrUrl: String, explicitMimeType: String? = null): String? {
+            if (!explicitMimeType.isNullOrBlank()) {
+                val lowerMime = explicitMimeType.lowercase(Locale.ROOT)
+                return when {
+                    lowerMime.contains("mpegurl") || lowerMime.contains("m3u8") -> MimeTypes.APPLICATION_M3U8
+                    lowerMime.contains("dash") || lowerMime.contains("mpd") -> MimeTypes.APPLICATION_MPD
+                    lowerMime.contains("webm") -> MimeTypes.VIDEO_WEBM
+                    lowerMime.contains("matroska") || lowerMime.contains("mkv") -> MimeTypes.VIDEO_MATROSKA
+                    lowerMime.contains("mp4") -> MimeTypes.VIDEO_MP4
+                    else -> explicitMimeType
+                }
+            }
+            val cleanPath = uriOrUrl.substringBefore('?').substringBefore('#').lowercase(Locale.ROOT)
+            return when {
+                cleanPath.endsWith(".m3u8") -> MimeTypes.APPLICATION_M3U8
+                cleanPath.endsWith(".mpd") -> MimeTypes.APPLICATION_MPD
+                cleanPath.endsWith(".webm") -> MimeTypes.VIDEO_WEBM
+                cleanPath.endsWith(".mkv") -> MimeTypes.VIDEO_MATROSKA
+                cleanPath.endsWith(".mp4") || cleanPath.endsWith(".m4v") -> MimeTypes.VIDEO_MP4
+                uriOrUrl.startsWith("content://") -> null // Let Media3 ContentDataSource sniff container
+                else -> MimeTypes.VIDEO_MP4
+            }
+        }
+
+        /**
+         * Maps ExoPlayer [PlaybackException] codes into clear, actionable user-facing error descriptions.
+         */
+        fun mapPlaybackErrorToUserMessage(error: PlaybackException, isLocalVideo: Boolean = false): String {
+            return when (error.errorCode) {
+                PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+                PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ->
+                    "Network connection interrupted. Please check your internet connection and tap Retry."
+                PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ->
+                    "Media server returned an HTTP error (${error.errorCodeName}). Trying alternate stream..."
+                PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ->
+                    if (isLocalVideo) "Local video file was not found. It may have been moved or deleted."
+                    else "Requested media file was not found on the server."
+                PlaybackException.ERROR_CODE_IO_NO_PERMISSION ->
+                    "Permission denied while reading the video file. Please re-select the file using 'Open Video'."
+                PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED,
+                PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED ->
+                    "The media container or stream manifest is corrupted or unreadable."
+                PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
+                PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED ->
+                    "Unsupported media container format. Supported formats: MP4, MKV, WebM, HLS (.m3u8), and DASH (.mpd)."
+                PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
+                PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES,
+                PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ->
+                    "Unsupported video/audio codec on this device's hardware decoder (${error.errorCodeName})."
+                PlaybackException.ERROR_CODE_DECODING_FAILED ->
+                    "Hardware decoder encountered a frame decoding error. Tap Retry to resume."
+                else -> error.localizedMessage ?: "Playback encountered an issue (${error.errorCodeName})"
+            }
+        }
     }
 
     override fun onCleared() {

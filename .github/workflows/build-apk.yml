@@ -1,214 +1,229 @@
-name: Build Debug APK
+name: Build and Release Debug APK
 
 on:
   push:
-    branches: [ "**" ]
-    tags: [ "v*" ]
-  pull_request:
-    branches: [ "**" ]
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
   contents: write
 
-env:
-  JAVA_OPTS: "-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8 -Djava.awt.headless=true"
-  GRADLE_OPTS: "-Dorg.gradle.daemon=true -Dorg.gradle.parallel=true -Dorg.gradle.caching=true -Dorg.gradle.configureondemand=true -Djava.awt.headless=true"
-
 jobs:
   build-debug-apk:
-    name: Build & Verify Debug APK
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 21
+      - name: Set up Temurin Java 17
         uses: actions/setup-java@v4
         with:
-          java-version: '21'
           distribution: 'temurin'
+          java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-        continue-on-error: true
-
-      - name: Configure Android SDK, Licenses & Platform 36
+      - name: Verify Java environment
         run: |
           set -e
-          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
-          if [ ! -d "$SDK_ROOT" ]; then
-            SDK_ROOT="$HOME/android-sdk"
+          java -version
+          echo "JAVA_HOME=${JAVA_HOME}"
+          if [ -z "${JAVA_HOME}" ]; then
+            echo "ERROR: JAVA_HOME is not set."
+            exit 1
           fi
-          mkdir -p "$SDK_ROOT/licenses" "$SDK_ROOT/platforms" "$SDK_ROOT/build-tools"
-
-          export ANDROID_HOME="$SDK_ROOT"
-          export ANDROID_SDK_ROOT="$SDK_ROOT"
-          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
-          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
-
-          # Write local.properties on the CI runner so AGP always finds the exact SDK path
-          echo "sdk.dir=$SDK_ROOT" > local.properties
-
-          # Locate sdkmanager or bootstrap commandlinetools if missing
-          SDKMANAGER=""
-          for candidate in \
-            "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
-            "$SDK_ROOT/cmdline-tools/bin/sdkmanager" \
-            "$SDK_ROOT/tools/bin/sdkmanager" \
-            "$(command -v sdkmanager 2>/dev/null || true)"; do
-            if [ -n "$candidate" ] && [ -x "$candidate" ]; then
-              SDKMANAGER="$candidate"
-              break
-            fi
-          done
-
-          if [ -z "$SDKMANAGER" ]; then
-            FOUND_SM=$(find "$SDK_ROOT" -name "sdkmanager" -type f -executable 2>/dev/null | head -n 1 || true)
-            if [ -n "$FOUND_SM" ]; then
-              SDKMANAGER="$FOUND_SM"
-            fi
+          JAVA_VER_OUTPUT=$(java -version 2>&1 | head -n 1)
+          if [ -z "${JAVA_VER_OUTPUT}" ]; then
+            echo "ERROR: Could not detect active Java version."
+            exit 1
+          fi
+          JAVA_MAJOR=$(echo "${JAVA_VER_OUTPUT}" | sed -E 's/.*version "([0-9]+)(\.[0-9]+)*.*".*/\1/')
+          echo "Detected Java major version: ${JAVA_MAJOR}"
+          if ! echo "${JAVA_MAJOR}" | grep -Eq '^[0-9]+$'; then
+            echo "ERROR: Failed to parse numeric Java major version from: ${JAVA_VER_OUTPUT}"
+            exit 1
+          fi
+          if [ "${JAVA_MAJOR}" -lt 17 ]; then
+            echo "ERROR: Active Java version (${JAVA_MAJOR}) is lower than 17."
+            exit 1
           fi
 
-          if [ -z "$SDKMANAGER" ]; then
-            echo "Downloading Android Command Line Tools..."
-            CMDLINE_ZIP="/tmp/commandlinetools.zip"
-            curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -o "$CMDLINE_ZIP"
-            mkdir -p "$SDK_ROOT/cmdline-tools"
-            unzip -q -o "$CMDLINE_ZIP" -d "$SDK_ROOT/cmdline-tools"
-            rm -rf "$SDK_ROOT/cmdline-tools/latest"
-            mv "$SDK_ROOT/cmdline-tools/cmdline-tools" "$SDK_ROOT/cmdline-tools/latest"
-            rm -f "$CMDLINE_ZIP"
-            SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          fi
-
-          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
-          echo "Using sdkmanager: $SDKMANAGER (SDK_ROOT=$SDK_ROOT)"
-
-          write_licenses() {
-            printf "8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e\n24333f8a63b6825ea9c5514f83c2829b004d1fee\n859f317696f67ef3d7f30a50a5560e7834b43903\n" > "$SDK_ROOT/licenses/android-sdk-license"
-            printf "84831b9409646a918e30573bab4c9c91346d8abd\n504667f4c0de7af1a06de9f4b1727b84351f2910\n" > "$SDK_ROOT/licenses/android-sdk-preview-license"
-            printf "859f317696f67ef3d7f30a50a5560e7834b43903\n" > "$SDK_ROOT/licenses/android-sdk-arm-dbt-license"
-            printf "601085b94cd77f0b54ff86406957099ebe79c4d6\n" > "$SDK_ROOT/licenses/android-googletv-license"
-            printf "ceff83576aac4f7f37cb98fe189e9fb3c49d3b81\n" > "$SDK_ROOT/licenses/android-googlexr-license"
-            printf "33b6a2b64607f11b759f320ef9dff4ae5c47d97a\nd975f751698a77b662f1254ddbeed3901e976f5a\n" > "$SDK_ROOT/licenses/google-gdk-license"
-            printf "d975f751698a77b662f1254ddbeed3901e976f5a\n" > "$SDK_ROOT/licenses/intel-android-extra-license"
-            printf "e9acab5b5fbb560a72cfaecce8946896ff6aab9d\n" > "$SDK_ROOT/licenses/mips-android-sysimage-license"
-          }
-
-          write_licenses
-          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null 2>&1 || true
-
-          # Install required SDK packages individually with automatic license acceptance
-          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" "platform-tools" >/dev/null 2>&1 || true
-
-          if [ ! -d "$SDK_ROOT/platforms/android-36" ]; then
-            yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" "platforms;android-36" || \
-            yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --channel=3 "platforms;android-36" || true
-          fi
-
-          if [ ! -d "$SDK_ROOT/build-tools/36.0.0" ]; then
-            yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" "build-tools;36.0.0" || \
-            yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --channel=3 "build-tools;36.0.0" || \
-            yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" "build-tools;35.0.0" || true
-          fi
-
-          write_licenses
-          echo "Installed platforms: $(ls -1 "$SDK_ROOT/platforms" 2>/dev/null | tr '\n' ' ')"
-          echo "Installed build-tools: $(ls -1 "$SDK_ROOT/build-tools" 2>/dev/null | tr '\n' ' ')"
-
-      - name: Setup Gradle with Build Cache
+      - name: Set up Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.3.1'
-          cache-read-only: false
 
-      - name: Compute Monotonic Version
+      - name: Create temporary debug keystore
         run: |
-          RUN_NUM="${GITHUB_RUN_NUMBER:-0}"
-          VERSION_CODE=$(( 2 + RUN_NUM ))
-          VERSION_NAME="2.0.${RUN_NUM}"
-          echo "VERSION_CODE=${VERSION_CODE}" >> "$GITHUB_ENV"
-          echo "VERSION_NAME=${VERSION_NAME}" >> "$GITHUB_ENV"
-          echo "Computed Version: versionName=${VERSION_NAME}, versionCode=${VERSION_CODE}"
-
-      - name: Create Environment Config
-        run: |
-          if [ ! -f ".env" ]; then
-            cp .env.example .env 2>/dev/null || touch .env
+          set -e
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [ -d "${SDK_ROOT}" ]; then
+            mkdir -p "${SDK_ROOT}/licenses"
+            printf "8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e\n24333f8a63b6825ea9c5514f83c2829b004d1fee\n859f317696f67ef3d7f30a50a5560e7834b43903\n" > "${SDK_ROOT}/licenses/android-sdk-license"
+            printf "84831b9409646a918e30573bab4c9c91346d8abd\n504667f4c0de7af1a06de9f4b1727b84351f2910\n" > "${SDK_ROOT}/licenses/android-sdk-preview-license"
+            printf "859f317696f67ef3d7f30a50a5560e7834b43903\n" > "${SDK_ROOT}/licenses/android-sdk-arm-dbt-license"
+          fi
+          if [ ! -f ".env" ] && [ -f ".env.example" ]; then
+            cp .env.example .env
+          elif [ ! -f ".env" ]; then
+            touch .env
+          fi
+          if [ ! -f "./debug.keystore" ]; then
+            "${JAVA_HOME}/bin/keytool" -genkeypair \
+              -v \
+              -keystore ./debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -dname "CN=Android Debug,O=Android,C=US" \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000
+          fi
+          if [ ! -f "./debug.keystore" ]; then
+            echo "ERROR: ./debug.keystore could not be created."
+            exit 1
           fi
 
-      - name: Restore Debug Keystore
+      - name: Build debug APK
         run: |
-          if [ ! -f "debug.keystore" ]; then
-            if [ -f "debug.keystore.base64" ]; then
-              echo "Restoring debug.keystore from debug.keystore.base64..."
-              base64 -d debug.keystore.base64 > debug.keystore
-            else
-              echo "Generating fallback debug.keystore..."
-              keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          gradle :app:assembleDebug --stacktrace --no-daemon
+
+      - name: Verify the APK
+        run: |
+          set -e
+          TARGET_APK="app/build/outputs/apk/debug/app-debug.apk"
+          if [ ! -e "${TARGET_APK}" ]; then
+            echo "ERROR: Expected APK not found at ${TARGET_APK}"
+            if [ -d "app/build/outputs/apk" ]; then
+              echo "Discovered APK paths inside app/build/outputs/apk:"
+              find app/build/outputs/apk -name "*.apk" || true
             fi
-          fi
-
-      - name: Build Debug APK
-        env:
-          ANDROID_HOME: ${{ env.ANDROID_HOME }}
-          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
-        run: |
-          if command -v gradle >/dev/null 2>&1; then
-            gradle assembleDebug \
-              -PversionCode="${VERSION_CODE}" \
-              -PversionName="${VERSION_NAME}" \
-              -Pandroid.builder.sdkDownload=true \
-              --build-cache --parallel --stacktrace
-          elif [ -f "./gradlew" ]; then
-            chmod +x ./gradlew
-            ./gradlew assembleDebug \
-              -PversionCode="${VERSION_CODE}" \
-              -PversionName="${VERSION_NAME}" \
-              -Pandroid.builder.sdkDownload=true \
-              --build-cache --parallel --stacktrace
-          else
-            echo "ERROR: Neither gradle nor gradlew found on PATH"
             exit 1
           fi
-
-      - name: Verify Debug APK Integrity
-        run: |
-          APK_SOURCE="app/build/outputs/apk/debug/app-debug.apk"
-          if [ ! -f "$APK_SOURCE" ]; then
-            echo "ERROR: Expected debug APK not found at $APK_SOURCE"
+          if [ ! -f "${TARGET_APK}" ]; then
+            echo "ERROR: ${TARGET_APK} is not a regular file."
             exit 1
           fi
+          if [ ! -s "${TARGET_APK}" ]; then
+            echo "ERROR: ${TARGET_APK} is empty."
+            exit 1
+          fi
+          case "${TARGET_APK}" in
+            *.apk) ;;
+            *)
+              echo "ERROR: ${TARGET_APK} does not have the .apk extension."
+              exit 1
+              ;;
+          esac
+          if [ "${TARGET_APK}" != "app/build/outputs/apk/debug/app-debug.apk" ]; then
+            echo "ERROR: APK path mismatch: ${TARGET_APK}"
+            exit 1
+          fi
+          echo "Verified APK: ${TARGET_APK}"
 
-          mkdir -p dist
-          ARTIFACT_FILENAME="AniTrAk-v${VERSION_NAME}-b${VERSION_CODE}-debug.apk"
-          cp "$APK_SOURCE" "dist/${ARTIFACT_FILENAME}"
-          cp "$APK_SOURCE" "dist/app-debug.apk"
-          echo "ARTIFACT_FILENAME=${ARTIFACT_FILENAME}" >> "$GITHUB_ENV"
-          echo "ARTIFACT_PATH=dist/${ARTIFACT_FILENAME}" >> "$GITHUB_ENV"
-
-      - name: Upload Debug APK Artifact
+      - name: Upload debug APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AniTrAk-v${{ env.VERSION_NAME }}-b${{ env.VERSION_CODE }}-debug
-          path: dist/*
-          compression-level: 0
+          name: app-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
-      - name: Publish Release on Tag or Push
-        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        continue-on-error: true
-        with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v2.0.{0}', github.run_number) }}
-          name: ${{ format('AniTrAk Debug APK v2.0.{0}', github.run_number) }}
-          draft: false
-          prerelease: false
-          files: dist/*
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Prepare APK release asset
+        id: prepare_asset
+        run: |
+          set -e
+          TEMP_RELEASE_DIR=$(mktemp -d "${RUNNER_TEMP:-/tmp}/apk-release-XXXXXX")
+          RELEASE_ASSET_PATH="${TEMP_RELEASE_DIR}/app-debug.apk"
+          cp "app/build/outputs/apk/debug/app-debug.apk" "${RELEASE_ASSET_PATH}"
+          if [ ! -f "${RELEASE_ASSET_PATH}" ] || [ ! -s "${RELEASE_ASSET_PATH}" ]; then
+            echo "ERROR: Failed to prepare release asset at ${RELEASE_ASSET_PATH}"
+            exit 1
+          fi
+          echo "asset_path=${RELEASE_ASSET_PATH}" >> "${GITHUB_OUTPUT}"
 
+      - name: Publish APK to GitHub Releases
+        id: publish_release
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          gh --version
+          ASSET_PATH="${{ steps.prepare_asset.outputs.asset_path }}"
+          if [ ! -f "${ASSET_PATH}" ]; then
+            echo "ERROR: Prepared APK does not exist at ${ASSET_PATH}"
+            exit 1
+          fi
+          if [ ! -s "${ASSET_PATH}" ]; then
+            echo "ERROR: Prepared APK is empty at ${ASSET_PATH}"
+            exit 1
+          fi
+          ASSET_FILENAME=$(basename "${ASSET_PATH}")
+          case "${ASSET_FILENAME}" in
+            *.apk) ;;
+            *)
+              echo "ERROR: Prepared APK does not end in .apk: ${ASSET_FILENAME}"
+              exit 1
+              ;;
+          esac
+          if [ "${ASSET_FILENAME}" != "app-debug.apk" ]; then
+            echo "ERROR: Release asset filename must be exactly app-debug.apk, got ${ASSET_FILENAME}"
+            exit 1
+          fi
+
+          RELEASE_TAG="debug-apk-build-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+          RELEASE_TITLE="Debug APK Build #${GITHUB_RUN_NUMBER}"
+          NOTES="Automatically generated debug APK built by GitHub Actions.
+
+          - **Built by:** GitHub Actions
+          - **Run Number:** ${GITHUB_RUN_NUMBER}
+          - **Run Attempt:** ${GITHUB_RUN_ATTEMPT}
+          - **Source Commit SHA:** ${GITHUB_SHA}
+          - **Purpose:** Intended for testing only (not a Play Store production release).
+          - **Signing:** Signed only with a temporary debug keystore."
+
+          gh release create "${RELEASE_TAG}" "${ASSET_PATH}" \
+            --title "${RELEASE_TITLE}" \
+            --notes "${NOTES}" \
+            --target "${GITHUB_SHA}" \
+            --latest
+
+      - name: Report APK download result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RELEASE_TAG="debug-apk-build-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+          RELEASE_TITLE="Debug APK Build #${GITHUB_RUN_NUMBER}"
+          DIRECT_URL="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/app-debug.apk"
+
+          if [ "${{ steps.publish_release.outcome }}" = "success" ]; then
+            gh release view "${RELEASE_TAG}"
+            RELEASE_PAGE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
+            echo "Release Tag: ${RELEASE_TAG}"
+            echo "Release Title: ${RELEASE_TITLE}"
+            echo "Release Page URL: ${RELEASE_PAGE_URL}"
+            echo "APK Filename: app-debug.apk"
+            echo "DIRECT APK DOWNLOAD: ${DIRECT_URL}"
+
+            {
+              echo "### DIRECT APK DOWNLOAD"
+              echo "${DIRECT_URL}"
+              echo ""
+              echo "- **Release Tag:** \`${RELEASE_TAG}\`"
+              echo "- **Release Title:** ${RELEASE_TITLE}"
+              echo "- **Release Page:** ${RELEASE_PAGE_URL}"
+              echo "- **APK Filename:** \`app-debug.apk\`"
+              echo "- **Backup Artifact:** The normal GitHub Actions artifact \`app-debug-apk\` remains available as a backup."
+            } >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "WARNING: Publishing APK to GitHub Releases failed."
+            if [ -f "app/build/outputs/apk/debug/app-debug.apk" ]; then
+              echo "The debug APK build succeeded and the GitHub Actions artifact named app-debug-apk remains available."
+            fi
+            {
+              echo "### WARNING: GitHub Release Publishing Failed"
+              echo "The APK build succeeded and the GitHub Actions artifact named \`app-debug-apk\` remains available for download."
+            } >> "${GITHUB_STEP_SUMMARY}"
+          fi

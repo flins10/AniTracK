@@ -55,7 +55,10 @@ data class SubtitleStyleConfig(
     val fontSizeSp: Float = 18f,
     val textColor: Long = 0xFFFFFFFF, // White
     val backgroundColor: Long = 0x88000000, // Semi-transparent black
-    val offsetMs: Long = 0L // Timing offset in ms (-2000ms to +2000ms)
+    val outlineColor: Long = 0xFF000000, // Black outline
+    val edgeType: Int = 1, // 0 = None, 1 = Outline, 2 = Drop Shadow, 3 = Raised
+    val bottomPaddingFraction: Float = 0.08f, // Vertical position (0.02f = bottom, 0.30f = higher)
+    val offsetMs: Long = 0L // Timing offset in ms (-10000ms to +10000ms)
 )
 
 class SubtitleRepository(
@@ -748,18 +751,91 @@ class SubtitleRepository(
     }
 
     /**
-     * Imports a user-selected local .srt, .vtt, or .ass file from Android SAF Uri.
+     * Shifts all SRT / WebVTT timestamps in [rawText] by [offsetMs] milliseconds.
+     * Ensures timestamps never drop below 00:00:00,000.
+     */
+    fun applyTimingOffsetToSubtitleText(rawText: String, offsetMs: Long): String {
+        if (offsetMs == 0L || rawText.isBlank()) return rawText
+        val normalizedInput = if (isAssOrSsaContent(rawText)) convertAssToSrt(rawText) else rawText
+        val timeRangeRegex = Regex(
+            """(\d{1,2}):(\d{2}):(\d{2})([,.])(\d{3})\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})([,.])(\d{3})"""
+        )
+        return timeRangeRegex.replace(normalizedInput) { match ->
+            val h1 = match.groupValues[1].toLongOrNull() ?: 0L
+            val m1 = match.groupValues[2].toLongOrNull() ?: 0L
+            val s1 = match.groupValues[3].toLongOrNull() ?: 0L
+            val sep1 = match.groupValues[4]
+            val ms1 = match.groupValues[5].toLongOrNull() ?: 0L
+
+            val h2 = match.groupValues[6].toLongOrNull() ?: 0L
+            val m2 = match.groupValues[7].toLongOrNull() ?: 0L
+            val s2 = match.groupValues[8].toLongOrNull() ?: 0L
+            val sep2 = match.groupValues[9]
+            val ms2 = match.groupValues[10].toLongOrNull() ?: 0L
+
+            val startMs = (((h1 * 3600L + m1 * 60L + s1) * 1000L) + ms1 + offsetMs).coerceAtLeast(0L)
+            val endMs = (((h2 * 3600L + m2 * 60L + s2) * 1000L) + ms2 + offsetMs).coerceAtLeast(startMs + 100L)
+
+            val formattedStart = formatSrtTimestamp(startMs).let {
+                if (sep1 == ".") it.replace(',', '.') else it
+            }
+            val formattedEnd = formatSrtTimestamp(endMs).let {
+                if (sep2 == ".") it.replace(',', '.') else it
+            }
+            "$formattedStart --> $formattedEnd"
+        }
+    }
+
+    /**
+     * Produces a time-shifted subtitle file from [baseFile] using [offsetMs].
+     */
+    fun applyTimingOffsetToSubtitleFile(baseFile: File, offsetMs: Long): File {
+        if (!baseFile.exists()) return baseFile
+        if (offsetMs == 0L) return baseFile
+        return try {
+            val rawText = baseFile.readText(Charsets.UTF_8)
+            val shiftedText = applyTimingOffsetToSubtitleText(rawText, offsetMs)
+            val ext = if (baseFile.name.endsWith(".vtt", ignoreCase = true)) "vtt" else "srt"
+            val shiftedFile = File(
+                baseFile.parentFile,
+                "${baseFile.nameWithoutExtension}_offset_${offsetMs}.$ext"
+            )
+            shiftedFile.writeText(shiftedText, Charsets.UTF_8)
+            shiftedFile
+        } catch (_: Exception) {
+            baseFile
+        }
+    }
+
+    /**
+     * Imports a user-selected local .srt, .vtt, or .ass/.ssa file from Android SAF Uri.
+     * Validates that the file is a readable text subtitle and normalizes ASS/SSA to SRT.
      */
     suspend fun importLocalSubtitle(context: Context, uri: Uri): Result<File> = withContext(Dispatchers.IO) {
         try {
             val subDir = File(context.cacheDir, "subtitles").apply { if (!exists()) mkdirs() }
-            val targetFile = File(subDir, "imported_${System.currentTimeMillis()}.srt")
 
             val rawBytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                 ?: return@withContext Result.failure(Exception("Could not read chosen subtitle file"))
 
-            val text = stripBomAndDecode(rawBytes)
-            val normalized = if (isAssOrSsaContent(text)) convertAssToSrt(text) else text
+            if (rawBytes.isEmpty()) {
+                return@withContext Result.failure(Exception("The selected subtitle file is empty."))
+            }
+
+            val text = stripBomAndDecode(rawBytes).trim()
+            val isWebVtt = text.startsWith("WEBVTT", ignoreCase = true)
+            val isAss = isAssOrSsaContent(text)
+            val hasTimelineArrow = text.contains("-->")
+
+            if (!isWebVtt && !isAss && !hasTimelineArrow) {
+                return@withContext Result.failure(
+                    Exception("Unsupported or invalid subtitle format. Please select a valid .srt, .vtt, or .ass file.")
+                )
+            }
+
+            val normalized = if (isAss) convertAssToSrt(text) else text
+            val ext = if (isWebVtt && !isAss) "vtt" else "srt"
+            val targetFile = File(subDir, "imported_${System.currentTimeMillis()}.$ext")
 
             FileOutputStream(targetFile).use { output ->
                 output.write(normalized.toByteArray(Charsets.UTF_8))

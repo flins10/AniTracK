@@ -79,13 +79,30 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.content.Intent
+import android.net.Uri
+import android.provider.OpenableColumns
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.ui.platform.LocalContext
 import coil.compose.SubcomposeAsyncImage
+import com.example.data.remote.MovieBoxItem
 import com.example.data.repository.ArchivePlayableMedia
 import com.example.data.repository.ArchivePlayableMediaResult
 import com.example.data.repository.ArchiveSearchRepository
 import com.example.data.repository.InternetArchiveRepository
+import com.example.data.repository.MovieBoxDownloadManager
+import com.example.data.repository.MovieBoxRepository
+import com.example.data.repository.PlaybackRepository
 import com.example.ui.components.ArchiveDirectPlayerDialog
 import com.example.ui.components.EpisodeGridSelector
+import com.example.ui.components.MovieBoxDownloadsSheet
+import com.example.ui.components.RecentLocalVideosSheet
 import com.example.viewmodel.AnimeViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -94,6 +111,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -120,11 +138,44 @@ data class WatchCatalogueItem(
     val cast: String = "",
     val description: String = "",
     val posterUrl: String = "",
+    val backdropUrl: String = "",
+    val rating: String = "8.2",
+    val director: String = "",
+    val movieBoxId: Int = 0,
     val totalSeasons: Int = 1,
     val totalEpisodes: Int = 1,
     val runtimeMinutes: Int? = null,
     val isBookmarked: Boolean = false
 )
+
+private fun MovieBoxItem.toWatchCatalogueItem(): WatchCatalogueItem {
+    val primaryGenre = genreArray.firstOrNull()?.takeIf { it.isNotBlank() }
+        ?: genre.substringBefore(",").trim().ifBlank { "Action" }
+    val resolvedOrigin = if (language.equals("HI", ignoreCase = true) || language.equals("PA", ignoreCase = true)) {
+        CinemaOrigin.BOLLYWOOD
+    } else {
+        CinemaOrigin.HOLLYWOOD
+    }
+    return WatchCatalogueItem(
+        identifier = archiveIdentifier?.takeIf { it.isNotBlank() }
+            ?: cleanTitle.lowercase().replace(Regex("[^a-z0-9]+"), "-"),
+        title = cleanTitle,
+        isSeries = isSeries,
+        genre = primaryGenre,
+        origin = resolvedOrigin,
+        releaseYear = year.ifBlank { "2024" },
+        cast = cast.joinToString(", ") { it.name },
+        description = overview,
+        posterUrl = poster,
+        backdropUrl = backdrop.ifBlank { poster },
+        rating = rating.ifBlank { "8.0" },
+        director = director,
+        movieBoxId = id,
+        totalSeasons = totalSeasons,
+        totalEpisodes = totalEpisodes,
+        runtimeMinutes = runtime
+    )
+}
 
 // Live-action genres only (no Animation or Anime in Watch Catalogue)
 private val WATCH_GENRES = listOf(
@@ -523,9 +574,14 @@ fun WatchScreen(
     onNavigateToDetail: ((animeId: Int) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val archiveRepo = remember { ArchiveSearchRepository() }
     val iaRepo = remember { InternetArchiveRepository() }
+    val movieBoxRepo = remember { MovieBoxRepository(internetArchiveRepository = iaRepo) }
+    val downloadManager = remember(context) { MovieBoxDownloadManager(context) }
+    val downloadsList by downloadManager.downloads.collectAsState()
+    val playbackRepo = remember(context) { PlaybackRepository(context) }
 
     // Primary Watch Navigation Sections (Real-world Movies, Series, Bollywood, Hollywood)
     var currentSection by remember { mutableStateOf("Home") }
@@ -540,11 +596,19 @@ fun WatchScreen(
     var sortOrder by remember { mutableStateOf("Newest") } // "Newest", "A-Z"
     var showFilterSheet by remember { mutableStateOf(false) }
 
-    // Catalogue Data State
+    // Catalogue & MovieBox Pagination Data State
     val catalogueItems = remember { mutableStateListOf<WatchCatalogueItem>().apply { addAll(CURATED_MOVIES_AND_SERIES) } }
     val bookmarkedIds = remember { mutableStateListOf<String>() }
     val recentlyViewedItems = remember { mutableStateListOf<WatchCatalogueItem>() }
     var isLiveSearching by remember { mutableStateOf(false) }
+    var currentPage by remember { mutableIntStateOf(1) }
+    var isLoadingMorePage by remember { mutableStateOf(false) }
+    var canLoadMorePages by remember { mutableStateOf(true) }
+
+    // MovieBox Downloads Sheet State
+    var showDownloadsSheet by remember { mutableStateOf(false) }
+    var downloadStatusBanner by remember { mutableStateOf<String?>(null) }
+    var isPreparingDownload by remember { mutableStateOf(false) }
 
     // In-App Playback and Detail State (Unified ExoPlayer opens immediately without blocking overlay)
     var selectedItemForDetail by remember { mutableStateOf<WatchCatalogueItem?>(null) }
@@ -555,14 +619,67 @@ fun WatchScreen(
     var playbackUnavailableReason by remember { mutableStateOf<String?>(null) }
     var playbackResolveJob by remember { mutableStateOf<Job?>(null) }
 
+    // Local Device Video Playback State
+    var showLocalVideosSheet by remember { mutableStateOf(false) }
+    var recentLocalVideos by remember { mutableStateOf(playbackRepo.getRecentLocalVideos()) }
+    var activeLocalVideoUri by remember { mutableStateOf<String?>(null) }
+    var activeLocalVideoTitle by remember { mutableStateOf("") }
+    var activeLocalInitialPosMs by remember { mutableLongStateOf(0L) }
+
+    val openLocalVideoUri: (Uri, String?) -> Unit = { uri, fallbackTitle ->
+        try {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        } catch (_: Exception) {}
+        var displayName = fallbackTitle
+        if (displayName.isNullOrBlank()) {
+            try {
+                context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (idx >= 0) displayName = cursor.getString(idx)
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+        val resolvedTitle = displayName?.takeIf { it.isNotBlank() }
+            ?: uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+            ?: "Local Video"
+        val uriStr = uri.toString()
+        val savedPos = playbackRepo.getLocalVideoSavedPositionMs(uriStr)
+        playbackRepo.saveLocalVideoProgress(
+            uriString = uriStr,
+            displayName = resolvedTitle,
+            positionMs = savedPos,
+            durationMs = 0L,
+            mimeType = context.contentResolver.getType(uri) ?: "video/*"
+        )
+        recentLocalVideos = playbackRepo.getRecentLocalVideos()
+        activeLocalVideoTitle = resolvedTitle
+        activeLocalInitialPosMs = savedPos
+        activeLocalVideoUri = uriStr
+    }
+
+    val localVideoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            openLocalVideoUri(uri, null)
+        }
+    }
+
     // Debounce search query
     LaunchedEffect(searchQuery) {
         delay(350)
         debouncedQuery = searchQuery.trim()
     }
 
-    // Live Search with Official Movie/Series Poster Resolution (No Internet Archive images, no animation)
-    LaunchedEffect(debouncedQuery) {
+    // Initial & Section-based MovieBox API Discovery + Live Search
+    LaunchedEffect(debouncedQuery, currentSection) {
+        currentPage = 1
+        canLoadMorePages = true
         if (debouncedQuery.isNotEmpty()) {
             isLiveSearching = true
             withContext(Dispatchers.IO) {
@@ -572,20 +689,105 @@ fun WatchScreen(
                             it.genre.contains(debouncedQuery, ignoreCase = true) ||
                             it.cast.contains(debouncedQuery, ignoreCase = true)
                     }
+                    val movieBoxSearch = movieBoxRepo.search(debouncedQuery, page = 1)
+                        .map { it.toWatchCatalogueItem() }
                     val remoteMatches = fetchOfficialPosterMetadata(debouncedQuery)
-                        .filterNot { remote -> localMatches.any { it.title.equals(remote.title, ignoreCase = true) } }
+                    val merged = (localMatches + movieBoxSearch + remoteMatches)
+                        .distinctBy { it.title.lowercase() }
 
                     withContext(Dispatchers.Main) {
                         catalogueItems.clear()
-                        catalogueItems.addAll(localMatches + remoteMatches)
+                        catalogueItems.addAll(merged)
                     }
                 } finally {
                     withContext(Dispatchers.Main) { isLiveSearching = false }
                 }
             }
         } else {
+            val remoteList = withContext(Dispatchers.IO) {
+                val mbItems = when (currentSection) {
+                    "Movies" -> movieBoxRepo.getLatestMovies(page = 1)
+                    "Series" -> movieBoxRepo.getTVSeries(page = 1)
+                    else -> movieBoxRepo.getTrending(page = 1)
+                }.map { it.toWatchCatalogueItem() }
+                (CURATED_MOVIES_AND_SERIES + mbItems).distinctBy { it.title.lowercase() }
+            }
             catalogueItems.clear()
-            catalogueItems.addAll(CURATED_MOVIES_AND_SERIES)
+            catalogueItems.addAll(remoteList)
+        }
+    }
+
+    val handleLoadMorePage: () -> Unit = {
+        if (!isLoadingMorePage && canLoadMorePages) {
+            isLoadingMorePage = true
+            val nextPage = currentPage + 1
+            coroutineScope.launch(Dispatchers.IO) {
+                try {
+                    val moreItems = if (debouncedQuery.isNotEmpty()) {
+                        movieBoxRepo.search(debouncedQuery, page = nextPage)
+                    } else {
+                        when (currentSection) {
+                            "Movies" -> movieBoxRepo.getLatestMovies(page = nextPage)
+                            "Series" -> movieBoxRepo.getTVSeries(page = nextPage)
+                            else -> movieBoxRepo.getTrending(page = nextPage)
+                        }
+                    }.map { it.toWatchCatalogueItem() }
+
+                    withContext(Dispatchers.Main) {
+                        val newUnique = moreItems.filterNot { candidate ->
+                            catalogueItems.any { it.title.equals(candidate.title, ignoreCase = true) }
+                        }
+                        if (newUnique.isNotEmpty()) {
+                            catalogueItems.addAll(newUnique)
+                            currentPage = nextPage
+                        } else {
+                            canLoadMorePages = false
+                        }
+                    }
+                } finally {
+                    withContext(Dispatchers.Main) {
+                        isLoadingMorePage = false
+                    }
+                }
+            }
+        }
+    }
+
+    val handleDownloadItem: (WatchCatalogueItem, Int) -> Unit = { item, episodeNum ->
+        if (!isPreparingDownload) {
+            isPreparingDownload = true
+            downloadStatusBanner = "Verifying authorized download stream for \"${item.title}\"..."
+            showDownloadsSheet = true
+            coroutineScope.launch(Dispatchers.IO) {
+                val streamData = movieBoxRepo.getStreamingUrls(
+                    id = item.movieBoxId,
+                    type = if (item.isSeries) "series" else "movie",
+                    episodeNumber = if (item.isSeries) episodeNum else null,
+                    titleHint = item.title,
+                    archiveIdentifierHint = item.identifier
+                )
+                withContext(Dispatchers.Main) {
+                    isPreparingDownload = false
+                    if (streamData.isVerifiedPlayableMedia && !streamData.downloadUrl.isNullOrBlank()) {
+                        val displayTitle = if (item.isSeries) "${item.title} - Ep $episodeNum" else item.title
+                        val res = downloadManager.startOrResumeDownload(
+                            contentId = item.movieBoxId.takeIf { it > 0 } ?: item.identifier.hashCode(),
+                            episodeNumber = if (item.isSeries) episodeNum else null,
+                            title = displayTitle,
+                            quality = streamData.quality,
+                            downloadUrl = streamData.downloadUrl
+                        )
+                        downloadStatusBanner = res.fold(
+                            onSuccess = { "Download started: ${it.fileName}" },
+                            onFailure = { it.localizedMessage ?: "Download unavailable" }
+                        )
+                    } else {
+                        downloadStatusBanner = streamData.message.ifBlank {
+                            "No authorized downloadable video stream is currently available for \"${item.title}\"."
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -627,7 +829,7 @@ fun WatchScreen(
         list
     }
 
-    // Strict In-App Playback Handler (Opens unified ExoPlayer immediately, blocks trailers/reviews/explanations, never loads forever)
+    // MovieBox In-App Playback Handler (Streams movies & series via MovieBox API inside the unified ExoPlayer)
     val handlePlayTitle: (WatchCatalogueItem, Int) -> Unit = { item, episodeNum ->
         if (!recentlyViewedItems.any { it.identifier == item.identifier }) {
             recentlyViewedItems.add(0, item)
@@ -641,52 +843,19 @@ fun WatchScreen(
 
         playbackResolveJob = coroutineScope.launch(Dispatchers.IO) {
             val resolvedTitle = if (item.isSeries) "${item.title} - Episode $episodeNum" else item.title
-            var resolvedMedia: ArchivePlayableMedia? = null
-            var failReason: String? = null
 
-            val result = withTimeoutOrNull(7_500L) {
-                // 1. Try direct identifier inspection first (strictly requiring full length & blocking trailers/reviews/explanations)
-                val directAttempt = iaRepo.inspectAndResolvePlayableMedia(
-                    identifier = item.identifier,
-                    preferredEpisode = if (item.isSeries) episodeNum else null,
-                    isMovieOrSingleWork = !item.isSeries,
-                    isLiveActionAllowed = true
+            val streamData = withTimeoutOrNull(16_000L) {
+                movieBoxRepo.getStreamingUrls(
+                    id = item.movieBoxId,
+                    type = if (item.isSeries) "series" else "movie",
+                    episodeNumber = if (item.isSeries) episodeNum else null,
+                    titleHint = item.title,
+                    archiveIdentifierHint = item.identifier
                 )
-                when (directAttempt) {
-                    is ArchivePlayableMediaResult.Success -> {
-                        directAttempt.media.copy(
-                            title = resolvedTitle,
-                            matchedEpisode = if (item.isSeries) episodeNum else null
-                        )
-                    }
-                    else -> {
-                        // 2. Search Internet Archive for actual full-length movie or series video (excluding trailers/reviews/explanations)
-                        when (val liveMatch = iaRepo.findBestLiveActionStream(
-                            title = item.title,
-                            episodeNumber = if (item.isSeries) episodeNum else null,
-                            isSeries = item.isSeries
-                        )) {
-                            is ArchivePlayableMediaResult.Success -> liveMatch.media.copy(
-                                title = resolvedTitle,
-                                matchedEpisode = if (item.isSeries) episodeNum else null
-                            )
-                            is ArchivePlayableMediaResult.Unavailable -> {
-                                failReason = liveMatch.reason
-                                null
-                            }
-                            is ArchivePlayableMediaResult.Error -> {
-                                failReason = liveMatch.message
-                                null
-                            }
-                        }
-                    }
-                }
             }
 
-            resolvedMedia = result
-            if (resolvedMedia == null && failReason == null) {
-                failReason = "Can't find \"$resolvedTitle\" full video on Internet Archive."
-            }
+            val resolvedMedia = streamData?.playableMedia?.takeIf { streamData.isVerifiedPlayableMedia }
+            val failReason = streamData?.message ?: "Can't find \"$resolvedTitle\" stream on MovieBox."
 
             withContext(Dispatchers.Main) {
                 isResolvingPlayback = false
@@ -695,7 +864,7 @@ fun WatchScreen(
                     playbackUnavailableReason = null
                 } else {
                     directPlayableMedia = null
-                    playbackUnavailableReason = failReason ?: "Can't find \"$resolvedTitle\" on Internet Archive."
+                    playbackUnavailableReason = failReason
                 }
             }
         }
@@ -760,7 +929,62 @@ fun WatchScreen(
                     )
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Open Local Device Video Button
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = Color(0xFF0284C7).copy(alpha = 0.22f),
+                        border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.6f)),
+                        modifier = Modifier
+                            .clickable {
+                                recentLocalVideos = playbackRepo.getRecentLocalVideos()
+                                showLocalVideosSheet = true
+                            }
+                            .testTag("watch_open_local_video_btn")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.FolderOpen,
+                                contentDescription = "Open Local Video",
+                                tint = Color(0xFF38BDF8),
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Local Video",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                color = Color(0xFF38BDF8)
+                            )
+                        }
+                    }
+
+                    // MovieBox Downloads Manager Button
+                    IconButton(
+                        onClick = {
+                            downloadStatusBanner = null
+                            showDownloadsSheet = true
+                        },
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.08f))
+                            .border(1.dp, Color.White.copy(alpha = 0.15f), CircleShape)
+                            .testTag("watch_downloads_btn")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Download,
+                            contentDescription = "MovieBox Downloads",
+                            tint = if (downloadsList.isNotEmpty()) Color(0xFF10B981) else Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+
                     // View Toggle (Grid / List)
                     IconButton(
                         onClick = { isGridView = !isGridView },
@@ -983,6 +1207,38 @@ fun WatchScreen(
                             onPlay = { handlePlayTitle(item, 1) }
                         )
                     }
+
+                    if (canLoadMorePages && currentSection in listOf("Home", "Movies", "Series")) {
+                        item(span = { GridItemSpan(2) }) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                OutlinedButton(
+                                    onClick = handleLoadMorePage,
+                                    enabled = !isLoadingMorePage,
+                                    shape = RoundedCornerShape(12.dp),
+                                    border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.6f)),
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF38BDF8)),
+                                    modifier = Modifier.testTag("watch_load_more_btn")
+                                ) {
+                                    if (isLoadingMorePage) {
+                                        CircularProgressIndicator(
+                                            color = Color(0xFF38BDF8),
+                                            strokeWidth = 2.dp,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Loading More...")
+                                    } else {
+                                        Text("Load More Titles (Page ${currentPage + 1})", fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             } else {
                 LazyColumn(
@@ -1027,6 +1283,10 @@ fun WatchScreen(
                         selectedItemForDetail = null
                         handlePlayTitle(item, ep)
                     },
+                    onDownloadEpisode = { ep ->
+                        selectedItemForDetail = null
+                        handleDownloadItem(item, ep)
+                    },
                     onDismiss = { selectedItemForDetail = null }
                 )
             }
@@ -1056,7 +1316,7 @@ fun WatchScreen(
             }
         }
 
-        // Unified Full-Featured In-App ExoPlayer Dialog (Opens immediately, no "Starting In-App Player..." text)
+        // Unified Full-Featured In-App MovieBox ExoPlayer Dialog
         if (activePlaybackItem != null) {
             val item = activePlaybackItem!!
             val displayTitle = if (item.isSeries) "${item.title} - Episode $activePlaybackEpisode" else item.title
@@ -1067,6 +1327,7 @@ fun WatchScreen(
                 displayTitle = displayTitle,
                 currentEpisode = if (item.isSeries) activePlaybackEpisode else null,
                 totalEpisodes = if (item.isSeries) item.totalEpisodes else 1,
+                sourceBadgeText = "MOVIEBOX STREAM",
                 onSelectEpisode = if (item.isSeries) {
                     { newEp -> handlePlayTitle(item, newEp) }
                 } else null,
@@ -1078,6 +1339,89 @@ fun WatchScreen(
                     directPlayableMedia = null
                     playbackUnavailableReason = null
                 }
+            )
+        }
+
+        // Local Device Video Player Dialog
+        if (activeLocalVideoUri != null) {
+            val localUriStr = activeLocalVideoUri!!
+            val localPlayable = remember(localUriStr, activeLocalVideoTitle) {
+                ArchivePlayableMedia(
+                    identifier = "local_device_video",
+                    title = activeLocalVideoTitle,
+                    streamUrl = localUriStr,
+                    fileName = activeLocalVideoTitle,
+                    format = "LOCAL FILE",
+                    sizeBytes = 0L,
+                    durationSeconds = null,
+                    licenseUrl = null,
+                    description = "Playing local device video file",
+                    creator = "Local Storage",
+                    matchedEpisode = null,
+                    allCompatibleFiles = emptyList()
+                )
+            }
+            ArchiveDirectPlayerDialog(
+                playable = localPlayable,
+                isLoading = false,
+                unavailableReason = null,
+                displayTitle = activeLocalVideoTitle,
+                currentEpisode = null,
+                totalEpisodes = 1,
+                initialPositionMs = activeLocalInitialPosMs,
+                onPositionUpdate = { posMs ->
+                    playbackRepo.saveLocalVideoProgress(
+                        uriString = localUriStr,
+                        displayName = activeLocalVideoTitle,
+                        positionMs = posMs,
+                        durationMs = 0L
+                    )
+                },
+                onDismiss = {
+                    recentLocalVideos = playbackRepo.getRecentLocalVideos()
+                    activeLocalVideoUri = null
+                }
+            )
+        }
+
+        // Recently Played Local Videos & File Picker Sheet
+        if (showLocalVideosSheet) {
+            RecentLocalVideosSheet(
+                recentVideos = recentLocalVideos,
+                onOpenLocalFilePicker = {
+                    showLocalVideosSheet = false
+                    localVideoPickerLauncher.launch(
+                        arrayOf("video/*", "application/x-mpegURL", "application/dash+xml")
+                    )
+                },
+                onSelectRecentVideo = { item ->
+                    showLocalVideosSheet = false
+                    openLocalVideoUri(Uri.parse(item.uriString), item.displayName)
+                },
+                onRemoveRecentVideo = { uriString ->
+                    playbackRepo.removeLocalVideoFromHistory(uriString)
+                    recentLocalVideos = playbackRepo.getRecentLocalVideos()
+                },
+                onDismiss = { showLocalVideosSheet = false }
+            )
+        }
+
+        // MovieBox Downloads Sheet (Progress, Pause, Resume, Cancel, and Verified Offline Playback)
+        if (showDownloadsSheet) {
+            MovieBoxDownloadsSheet(
+                downloads = downloadsList,
+                statusBannerMessage = downloadStatusBanner,
+                onPauseDownload = { taskId -> downloadManager.pauseDownload(taskId) },
+                onResumeDownload = { taskId -> downloadManager.resumeDownload(taskId) },
+                onCancelDownload = { taskId -> downloadManager.cancelAndRemoveDownload(taskId) },
+                onPlayOffline = { task ->
+                    if (task.isVerifiedPlayableOffline) {
+                        showDownloadsSheet = false
+                        val offlineFileUri = Uri.fromFile(File(task.destinationPath))
+                        openLocalVideoUri(offlineFileUri, task.title)
+                    }
+                },
+                onDismiss = { showDownloadsSheet = false }
             )
         }
     }
@@ -1521,6 +1865,7 @@ private fun TitleDetailSheetContent(
     isBookmarked: Boolean,
     onToggleBookmark: () -> Unit,
     onWatchEpisode: (Int) -> Unit,
+    onDownloadEpisode: ((Int) -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
     var selectedEpisodeToWatch by remember { mutableIntStateOf(1) }
@@ -1553,14 +1898,34 @@ private fun TitleDetailSheetContent(
                 Spacer(modifier = Modifier.width(14.dp))
 
                 Column {
-                    Text(
-                        text = "${item.origin.label} • ${if (item.isSeries) "Series" else "Movie"}",
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 10.sp,
-                            color = Color(0xFF38BDF8)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "${item.origin.label} • ${if (item.isSeries) "Series" else "Movie"}",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 10.sp,
+                                color = Color(0xFF38BDF8)
+                            )
                         )
-                    )
+                        if (item.rating.isNotBlank()) {
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Icon(
+                                imageVector = Icons.Default.Star,
+                                contentDescription = "Rating",
+                                tint = Color(0xFFFACC15),
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Spacer(modifier = Modifier.width(2.dp))
+                            Text(
+                                text = item.rating,
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 10.sp,
+                                    color = Color(0xFFFACC15)
+                                )
+                            )
+                        }
+                    }
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = item.title,
@@ -1626,17 +1991,17 @@ private fun TitleDetailSheetContent(
             Spacer(modifier = Modifier.height(14.dp))
         }
 
-        // In-App Action Buttons Row (Plays strictly inside the app)
+        // In-App Action Buttons Row (Plays strictly inside the app + Download option)
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Button(
                 onClick = { onWatchEpisode(selectedEpisodeToWatch) },
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE11D48)),
                 modifier = Modifier
-                    .weight(1.3f)
+                    .weight(1.25f)
                     .height(46.dp)
                     .testTag("detail_watch_now_btn")
             ) {
@@ -1649,13 +2014,34 @@ private fun TitleDetailSheetContent(
                 )
             }
 
+            if (onDownloadEpisode != null) {
+                OutlinedButton(
+                    onClick = { onDownloadEpisode(selectedEpisodeToWatch) },
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.6f)),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF10B981)),
+                    modifier = Modifier
+                        .weight(0.95f)
+                        .height(46.dp)
+                        .testTag("detail_download_btn")
+                ) {
+                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "Download",
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+
             OutlinedButton(
                 onClick = onToggleBookmark,
                 shape = RoundedCornerShape(12.dp),
                 border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.5f)),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF38BDF8)),
                 modifier = Modifier
-                    .weight(1f)
+                    .weight(0.9f)
                     .height(46.dp)
             ) {
                 Icon(

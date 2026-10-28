@@ -114,13 +114,127 @@ class InternetArchiveRepository(
     private val metadataCache = LruCache<String, ArchiveMetadataResponse>(120)
 
     companion object {
-        // Search-level negative query filter for Anime (blocks trailers, reviews, explanations, reactions, clips, live action)
+        // Search-level negative query filter for Anime (blocks trailers, reviews, explanations, reactions, clips, live action, YouTube/Twitch)
         private const val SEARCH_EXCLUSION_CLAUSE =
-            "NOT title:(trailer OR teaser OR review OR reviews OR explained OR explanation OR breakdown OR analysis OR recap OR summary OR reaction OR reacts OR reacting OR patreon OR commentary OR watchalong OR \"live action\" OR liveaction OR \"stage play\" OR cosplay OR promo OR preview OR amv OR opening OR ending OR gameplay OR parody OR abridged OR interview OR clip)"
+            "NOT collection:(youtubearchive OR twitch) AND NOT title:(trailer OR teaser OR review OR reviews OR explained OR explanation OR breakdown OR analysis OR recap OR reaction OR reacts OR reacting OR patreon OR commentary OR watchalong OR \"live action\" OR liveaction OR \"stage play\" OR cosplay OR promo OR preview OR amv OR gameplay OR parody OR abridged OR interview OR shorts)"
 
-        // Search-level negative query filter for Live-Action Movies & Series (blocks trailers, reviews, explanations, reactions, clips, animation)
+        // Search-level negative query filter for Live-Action Movies & Series (blocks trailers, reviews, explanations, reactions, clips, YouTube/Twitch)
         private const val LIVE_ACTION_SEARCH_EXCLUSION_CLAUSE =
-            "NOT title:(trailer OR teaser OR review OR reviews OR explained OR explanation OR breakdown OR analysis OR recap OR summary OR reaction OR reacts OR reacting OR commentary OR watchalong OR promo OR preview OR amv OR gameplay OR parody OR spoof OR interview OR clip OR shorts)"
+            "NOT collection:(youtubearchive OR twitch) AND NOT title:(trailer OR teaser OR review OR reviews OR explained OR explanation OR breakdown OR analysis OR recap OR reaction OR reacts OR reacting OR commentary OR watchalong OR promo OR preview OR amv OR gameplay OR parody OR spoof OR interview OR shorts)"
+
+        // Verified Internet Archive identifiers for popular Anime, Bollywood, and Hollywood titles
+        private val VERIFIED_TITLE_IDENTIFIERS: Map<String, List<String>> = mapOf(
+            // Anime Series & Movies
+            "naruto" to listOf("naruto-completo", "DevPointNarutoS1203204"),
+            "naruto shippuden" to listOf("naruto-completo", "DevPointNarutoS1203204"),
+            "one piece" to listOf("one-piece-0001-1000-1999-horrible-subs"),
+            "death note" to listOf("death-note-complete-2006-2007"),
+            "bleach" to listOf("bleach-complete"),
+            "hunter x hunter" to listOf("U.U.THunterXHunter2011Ep01-50_720pUPByDarkSniper", "hunter-x-hunter-1999-remastered-v4-0"),
+            "cowboy bebop" to listOf("db-bebop-of-the-cowboys-1080p"),
+            "fullmetal alchemist" to listOf("20230208_20230208_2248"),
+            "fullmetal alchemist brotherhood" to listOf("20230208_20230208_2248"),
+            "dragon ball z" to listOf("dbkai", "dbz-westwood-remaster"),
+            "dragon ball kai" to listOf("dbkai"),
+            "steins gate" to listOf("anime-time-steins-gate"),
+            "chainsaw man" to listOf("chainsaw-man-latino-"),
+            "spy x family" to listOf("ver-spy-x-family-capitulo-8-sub-espanol-latino-en-hd-online-o-anime-lhd"),
+            "berserk" to listOf("berserk-1997_202403"),
+            "neon genesis evangelion" to listOf("evangelion-vhs-rip", "evangelioncastellano"),
+            "evangelion" to listOf("evangelion-vhs-rip", "evangelioncastellano"),
+            "jujutsu kaisen" to listOf("jujutsu-kaisen-the-culling-game-part-1-5-sub-v-2-1080p.mp-4_202601", "jujutsu-kaisen-episode-4-english-sub"),
+            "attack on titan" to listOf("Shingeki_no_Kyojin", "attack-on-titan-1-2-colossal-cut-hd-720p"),
+            "shingeki no kyojin" to listOf("Shingeki_no_Kyojin", "attack-on-titan-1-2-colossal-cut-hd-720p"),
+            "solo leveling" to listOf("solo-leveling_20250830"),
+            "ore dake level up na ken" to listOf("solo-leveling_20250830"),
+            "demon slayer" to listOf("www.-9xflix.com-demon-slayer-kimetsu-no-yaiba-infinity-castle-2025-dual-audio-hi"),
+            "kimetsu no yaiba" to listOf("www.-9xflix.com-demon-slayer-kimetsu-no-yaiba-infinity-castle-2025-dual-audio-hi"),
+            "my hero academia" to listOf("boku-no-hero-academia-temporada-5", "my-hero-academia-heroes-rising-2019"),
+            "boku no hero academia" to listOf("boku-no-hero-academia-temporada-5", "my-hero-academia-heroes-rising-2019"),
+            "sword art online" to listOf("SAOS1AllEps_BD1080pUPByDarkSniper_201501"),
+            "black clover" to listOf("black-clover-3"),
+            "fairy tail" to listOf("fairy-tail-episode-1", "fairy-tail-81-160"),
+            "gintama" to listOf("gintama-2011", "Gintama202AnimePower"),
+            "haikyu" to listOf("haikyuu-s3-dub", "Haikyuu-the-dumpster-battle-english-sub"),
+            "haikyuu" to listOf("haikyuu-s3-dub", "Haikyuu-the-dumpster-battle-english-sub"),
+            "vinland saga" to listOf("db-vinland-saga-s-1-dual-audio-bd-1080p", "vinland-saga-latino_202107"),
+            "cyberpunk edgerunners" to listOf("cyberpunk-edgerunners-e-"),
+            "dandadan" to listOf("dandadan-ep-1"),
+            "yu yu hakusho" to listOf("YuYuHakushoAnimax", "yu-yu-hakusho_202308"),
+            "inuyasha" to listOf("inuyasha-01-100", "inuyasha-101-167"),
+            "trigun" to listOf("trigun-full-serie-completa", "episode-1-4"),
+            "samurai champloo" to listOf("samurai-champloo_202107", "samurai-champloo-espanol"),
+            "serial experiments lain" to listOf("serial-experiments-lain-english", "09-sel-protocol"),
+            "parasyte" to listOf("parasyte.-part.-1.2014.1080p.-blu-ray.x-264.-aac-5.1", "ParasytePart2"),
+            "kiseijuu" to listOf("parasyte.-part.-1.2014.1080p.-blu-ray.x-264.-aac-5.1", "ParasytePart2"),
+            "lupin the third" to listOf("lupin-the-third-part-1"),
+            "future boy conan" to listOf("FutureBoyConan"),
+            "sherlock hound" to listOf("SherlockHound"),
+            "astro boy" to listOf("astro-boy-1963"),
+            // Bollywood Movies
+            "3 idiots" to listOf("3-idiots_202108"),
+            "dangal" to listOf("dangal-hindi-educational-movie-hd"),
+            "lagaan" to listOf("lagaan-2001-dv-drip-charme-leon-silver-rg"),
+            "taare zameen par" to listOf("taare-zameen-par-hindi-educational-movie"),
+            "zindagi na milegi dobara" to listOf("zindagi-na-milegi-dobara-2011-webhd-720-p-hritik-roshan-abhay-deol"),
+            "gangs of wasseypur" to listOf("gangs-of-wasseypur-2012-part-1-hindi-1080p"),
+            "sholay" to listOf("sholay-1975_202402"),
+            "bajrangi bhaijaan" to listOf("bajrangi-bhaijaan-2015_202508"),
+            "kabhi khushi kabhie gham" to listOf("kabhi-khushi-kabhie-gham-2001-dv-drip-x-264-aac-chapters-dr-c"),
+            "dilwale dulhania le jayenge" to listOf("ddlj_202007"),
+            "chak de india" to listOf("chak-de-india"),
+            "munna bhai mbbs" to listOf("munna-bhai-mbbs-2003-xvid-mm-tdbb"),
+            "munna bhai m b b s" to listOf("munna-bhai-mbbs-2003-xvid-mm-tdbb"),
+            "bhool bhulaiyaa 2" to listOf("bhool.-bhulaiyaa.-2.2022.-bolly-4u.org-web-dl-hindi-1080p-1.9-gb"),
+            "drishyam" to listOf("drishyam-2015-1080p-blu-ray-x-264-dd-5.1"),
+            "tumbbad" to listOf("www.-5-movie-rulz.casa-tumbbad-2018-1080p-hq-hdrip-x-265-hevc-dd-5.1-192-kbps-te"),
+            "swades" to listOf("swades-2004-blu-ray-1080p-10bit-hevc-hindi-dd-5.1-h-265-esubs-ronin-swades-2004-"),
+            // Hollywood & International Movies
+            "interstellar" to listOf("interstellar-2014_202409"),
+            "oppenheimer" to listOf("oppenheimer.-2023.1080-p.-bluray.-egydead.-com"),
+            "inception" to listOf("26.10.2001-inception"),
+            "the dark knight rises" to listOf("The.Dark.Knight.Rises.2012.1080pWww.compucalitv.com"),
+            "dark knight rises" to listOf("The.Dark.Knight.Rises.2012.1080pWww.compucalitv.com"),
+            "fight club" to listOf("fight-club_202006"),
+            "the godfather" to listOf("godfather_202312"),
+            "godfather" to listOf("godfather_202312"),
+            "the shawshank redemption" to listOf("The-Shawshank-Redemption_1994_AI_1080p.BluRay.10b.HEVC.DTS-MA.5.1_BLUDUAINE"),
+            "shawshank redemption" to listOf("The-Shawshank-Redemption_1994_AI_1080p.BluRay.10b.HEVC.DTS-MA.5.1_BLUDUAINE"),
+            "deadpool 2" to listOf("deadpool.2.2018.1080p.unratedduallatcinecalidad.to_202002"),
+            "jurassic park" to listOf("jurassic-park_202405"),
+            "memento" to listOf("memento.-2000.1080p.-blu-ray.x-264.-yify"),
+            "django unchained" to listOf("egy-best.-django.-unchained.-2012.-blu-ray.-1080p.x-264"),
+            "inglourious basterds" to listOf("inglourious-basterds-2009_202605"),
+            "parasite" to listOf("parasite-2019_202408"),
+            // Live-Action Series
+            "breaking bad" to listOf("breaking-bad-1"),
+            "stranger things" to listOf("stranger.-things.-s-01.720p.-blu-ray.x-264-galaxy-tv"),
+            "sacred games" to listOf("sacred-games-s02.-hevc"),
+            "mirzapur" to listOf("mirzapur-s-02-e-10-hindi-480p-web-dl"),
+            "sherlock holmes" to listOf("SherlockHolmesGranada"),
+            "the adventures of sherlock holmes" to listOf("SherlockHolmesGranada"),
+            "byomkesh bakshi" to listOf("byomkesh-bakshi-movie-world")
+        )
+
+        fun resolveVerifiedIdentifiersForTitles(titles: List<String>): List<String> {
+            val result = mutableListOf<String>()
+            for (raw in titles) {
+                val norm = raw.lowercase(Locale.ROOT)
+                    .replace(Regex("""(?i)\b(season\s*\d+|2nd season|3rd season|4th season|final season|part\s*\d+|cour\s*\d+)\b.*"""), "")
+                    .replace(Regex("""[^a-z0-9\s]"""), " ")
+                    .replace(Regex("""\s+"""), " ")
+                    .trim()
+                if (norm.isBlank()) continue
+                VERIFIED_TITLE_IDENTIFIERS[norm]?.let { result.addAll(it) }
+                // Also check prefix before colon if any
+                for ((key, ids) in VERIFIED_TITLE_IDENTIFIERS) {
+                    if (norm == key || norm.startsWith("$key ") || key.startsWith("$norm ")) {
+                        result.addAll(ids)
+                    }
+                }
+            }
+            return result.distinct()
+        }
     }
 
     suspend fun searchAnimeArchive(
@@ -139,7 +253,7 @@ class InternetArchiveRepository(
 
         try {
             val query = "(title:(\"$cleanTitle\") OR identifier:(\"${cleanTitle.replace(" ", "_")}\")) AND (mediatype:(movies) OR mediatype:(animation)) AND $SEARCH_EXCLUSION_CLAUSE"
-            val response = withTimeoutOrNull(4500L) {
+            val response = withTimeoutOrNull(6500L) {
                 apiService.searchArchive(
                     query = query,
                     rows = rows,
@@ -203,7 +317,7 @@ class InternetArchiveRepository(
         if (cached != null) return@withContext cached
 
         try {
-            val response = withTimeoutOrNull(4500L) {
+            val response = withTimeoutOrNull(8500L) {
                 apiService.getItemMetadata(identifier)
             } ?: return@withContext null
 
@@ -226,6 +340,7 @@ class InternetArchiveRepository(
         episodeNumber: Int? = null,
         isSeries: Boolean = false
     ): ArchivePlayableMediaResult = withContext(Dispatchers.IO) {
+        val verifiedIds = resolveVerifiedIdentifiersForTitles(listOf(title))
         val syntheticEntity = AnimeEntity(
             id = title.hashCode(),
             titleRomaji = title,
@@ -234,7 +349,8 @@ class InternetArchiveRepository(
             format = if (isSeries) "TV" else "MOVIE",
             status = "FINISHED",
             totalEpisodes = if (isSeries) 24 else 1,
-            airingDayOfWeek = 1
+            airingDayOfWeek = 1,
+            archiveIdentifier = verifiedIds.firstOrNull()
         )
         when (val matchResult = findMatchesForAnime(
             anime = syntheticEntity,
@@ -310,16 +426,30 @@ class InternetArchiveRepository(
                 )
             }
 
-            // Pick the exact file matching preferredEpisode if specified; do not fall back to random file if preferredEpisode was requested
+            // Pick the exact file matching preferredEpisode if specified
             val bestFile = if (!isMovie && preferredEpisode != null && preferredEpisode > 0) {
                 selectBestFileForEpisode(compatibleFiles, preferredEpisode)
-                    ?: if (compatibleFiles.size == 1 && detectEpisodeNumber(compatibleFiles.first().name) == null) {
-                        compatibleFiles.first()
-                    } else {
-                        return@withContext ArchivePlayableMediaResult.Unavailable(
-                            "Can't find Episode $preferredEpisode in '$identifier'."
-                        )
+                    ?: run {
+                        // Support series archives where files are named by episode title rather than numbers
+                        val anyHasEpNumber = compatibleFiles.any { detectEpisodeNumber(it.name) != null }
+                        if (!anyHasEpNumber) {
+                            val grouped = compatibleFiles.groupBy { file ->
+                                file.name
+                                    .replace(Regex("""(?i)\.ia\.(mp4|mkv|webm)$"""), "")
+                                    .replace(Regex("""(?i)\.(mp4|mkv|webm|m3u8)$"""), "")
+                                    .lowercase(Locale.ROOT)
+                            }.entries.sortedBy { it.key }
+                            val index = (preferredEpisode - 1).coerceIn(0, grouped.lastIndex)
+                            selectBestFileForEpisode(grouped[index].value, null)
+                        } else if (compatibleFiles.size == 1) {
+                            compatibleFiles.first()
+                        } else {
+                            null
+                        }
                     }
+                    ?: return@withContext ArchivePlayableMediaResult.Unavailable(
+                        "Can't find Episode $preferredEpisode in '$identifier'."
+                    )
             } else {
                 selectBestFileForEpisode(compatibleFiles, null) ?: compatibleFiles.first()
             }
@@ -384,31 +514,44 @@ class InternetArchiveRepository(
         }
         val seasonPadded = String.format(Locale.ROOT, "%02d", activeSeason)
 
-        // 0. FAST PATH: If item already has a known archiveIdentifier, inspect it immediately first!
-        val knownId = anime.archiveIdentifier?.trim()?.takeIf { it.isNotBlank() }
-        if (knownId != null) {
-            val fastMeta = getItemMetadata(knownId)
-            if (fastMeta != null) {
-                val fastDoc = ArchiveDocItem(
-                    identifier = knownId,
-                    title = fastMeta.metadata?.title ?: anime.displayTitle
+        // 0. FAST PATH: Check explicit archiveIdentifier + verified title identifiers first!
+        val fastPathIds = buildList {
+            anime.archiveIdentifier?.trim()?.takeIf { it.isNotBlank() }?.let { add(it) }
+            addAll(resolveVerifiedIdentifiersForTitles(titlesToTry))
+        }.distinct()
+
+        if (fastPathIds.isNotEmpty()) {
+            val fastMatches = coroutineScope {
+                fastPathIds.map { candidateId ->
+                    async {
+                        val fastMeta = getItemMetadata(candidateId) ?: return@async null
+                        val fastDoc = ArchiveDocItem(
+                            identifier = candidateId,
+                            title = fastMeta.metadata?.title ?: anime.displayTitle
+                        )
+                        matchService.evaluateCandidate(
+                            doc = fastDoc,
+                            metadata = fastMeta,
+                            anime = anime.copy(archiveIdentifier = candidateId),
+                            requestedEpisode = if (isMovieFormat) null else episodeNumber,
+                            seasonNumber = activeSeason,
+                            isLiveActionAllowed = isLiveActionAllowed
+                        )
+                    }
+                }.awaitAll().filterNotNull()
+            }
+            if (fastMatches.isNotEmpty()) {
+                val sortedFast = fastMatches.sortedWith(
+                    compareByDescending<ArchiveCandidateMatch> { it.isEpisodeSpecific }
+                        .thenByDescending { it.matchScore }
+                        .thenByDescending { it.fileSizeBytes ?: 0L }
                 )
-                val directMatch = matchService.evaluateCandidate(
-                    doc = fastDoc,
-                    metadata = fastMeta,
-                    anime = anime,
-                    requestedEpisode = if (isMovieFormat) null else episodeNumber,
-                    seasonNumber = activeSeason,
-                    isLiveActionAllowed = isLiveActionAllowed
+                return@withContext ArchiveAnimeMatchResult.Success(
+                    bestMatch = sortedFast.first(),
+                    allCandidates = sortedFast,
+                    animeTitle = anime.displayTitle,
+                    requestedEpisode = episodeNumber
                 )
-                if (directMatch != null) {
-                    return@withContext ArchiveAnimeMatchResult.Success(
-                        bestMatch = directMatch,
-                        allCandidates = listOf(directMatch),
-                        animeTitle = anime.displayTitle,
-                        requestedEpisode = episodeNumber
-                    )
-                }
             }
         }
 
@@ -420,7 +563,7 @@ class InternetArchiveRepository(
         val exclusionClause = if (isLiveActionAllowed) LIVE_ACTION_SEARCH_EXCLUSION_CLAUSE else SEARCH_EXCLUSION_CLAUSE
         val mediaTypeClause = if (isLiveActionAllowed) "mediatype:(movies)" else "(mediatype:(movies) OR mediatype:(animation))"
 
-        // Build targeted search queries (fast, no slow prefix wildcards)
+        // Build targeted search queries (sorted by downloads desc via InternetArchiveApiService)
         val searchQueries = mutableListOf<String>()
         for (rawTitle in titlesToTry.take(2)) {
             val clean = cleanTitleForSearch(rawTitle)
@@ -436,13 +579,13 @@ class InternetArchiveRepository(
             )
         }
 
-        // Execute search queries concurrently with a strict 4.5s timeout
+        // Execute search queries concurrently with a 7.5s timeout
         coroutineScope {
             searchQueries.distinct().take(4).map { query ->
                 async {
                     try {
-                        val res = withTimeoutOrNull(4500L) {
-                            apiService.searchArchive(query = query, rows = 15)
+                        val res = withTimeoutOrNull(7500L) {
+                            apiService.searchArchive(query = query, rows = 20)
                         }
                         res?.body()?.response?.docs.orEmpty()
                     } catch (e: Exception) {
@@ -501,7 +644,7 @@ class InternetArchiveRepository(
             )
         }
 
-        // Inspect top 8 candidate items in parallel with fast timeout
+        // Inspect top 8 candidate items in parallel
         val inspectedCandidates = coroutineScope {
             rankedDocs.take(8).map { doc ->
                 async {
@@ -561,7 +704,7 @@ class InternetArchiveRepository(
 
     private fun cleanTitleForSearch(title: String): String {
         return title
-            .replace(Regex("(?i)\\b(season|2nd season|3rd season|4th season|part|tv|movie|cour|ova)\\b.*"), "")
+            .replace(Regex("(?i)\\b(season\\s*\\d+|2nd season|3rd season|4th season|final season|part\\s*\\d+|cour\\s*\\d+)\\b.*"), "")
             .replace(Regex("[^a-zA-Z0-9\\s]"), " ")
             .replace(Regex("\\s+"), " ")
             .trim()

@@ -130,6 +130,17 @@ fun SearchScreen(
     val filterState by viewModel.filterState.collectAsState()
     val titlePreference by viewModel.titleLanguagePreference.collectAsState()
 
+    val aniKotoTrending by viewModel.aniKotoTrending.collectAsState()
+    val isAniKotoTrendingLoading by viewModel.isAniKotoTrendingLoading.collectAsState()
+    val aniKotoTrendingError by viewModel.aniKotoTrendingError.collectAsState()
+    val aniKotoSearchResults by viewModel.aniKotoSearchResults.collectAsState()
+    val isAniKotoSearching by viewModel.isAniKotoSearching.collectAsState()
+    val aniKotoSearchError by viewModel.aniKotoSearchError.collectAsState()
+    val selectedAniKotoInfoLink by viewModel.selectedAniKotoInfoLink.collectAsState()
+    val selectedAniKotoInfo by viewModel.selectedAniKotoInfo.collectAsState()
+    val isAniKotoInfoLoading by viewModel.isAniKotoInfoLoading.collectAsState()
+    val aniKotoInfoError by viewModel.aniKotoInfoError.collectAsState()
+
     LaunchedEffect(Unit) {
         viewModel.ensureDiscoverLoaded()
     }
@@ -526,6 +537,24 @@ fun SearchScreen(
                 }
             }
 
+            // Modular AniKotoAPI Live Trending & Search Section
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                com.example.ui.components.AniKotoDiscoverSection(
+                    searchQuery = searchQuery,
+                    trendingItems = aniKotoTrending,
+                    isTrendingLoading = isAniKotoTrendingLoading,
+                    trendingError = aniKotoTrendingError,
+                    searchItems = aniKotoSearchResults,
+                    isSearchLoading = isAniKotoSearching,
+                    searchError = aniKotoSearchError,
+                    onRetryTrending = { viewModel.loadAniKotoTrending(forceRefresh = true) },
+                    onRetrySearch = { viewModel.searchAniKoto(searchQuery) },
+                    onSelectAniKotoItem = { item ->
+                        viewModel.openAniKotoInfoModal(item.rawLink)
+                    }
+                )
+            }
+
             if (isSearching && searchResults.isEmpty()) {
                 item(span = { GridItemSpan(maxLineSpan) }) {
                     Box(
@@ -669,6 +698,30 @@ fun SearchScreen(
                 onDismiss = { showFilterSheet = false }
             )
         }
+    }
+
+    // AniKotoAPI Info & Episode List BottomSheet Modal
+    selectedAniKotoInfoLink?.let { infoLink ->
+        com.example.ui.components.AniKotoAnimeInfoModal(
+            requestedLinkOrSlug = infoLink,
+            detail = selectedAniKotoInfo,
+            isLoading = isAniKotoInfoLoading,
+            errorMessage = aniKotoInfoError,
+            onRetry = { viewModel.openAniKotoInfoModal(infoLink, forceRefresh = true) },
+            onDismiss = { viewModel.dismissAniKotoInfoModal() },
+            onTrackOrWatchInApp = { detail, epNumber ->
+                viewModel.saveAniKotoDetailToTracker(detail) { savedId ->
+                    viewModel.dismissAniKotoInfoModal()
+                    onOpenPlayer(savedId, epNumber.coerceAtLeast(1))
+                }
+            },
+            onViewDetailsInApp = { detail ->
+                viewModel.saveAniKotoDetailToTracker(detail) { savedId ->
+                    viewModel.dismissAniKotoInfoModal()
+                    onSelectAnime(savedId)
+                }
+            }
+        )
     }
 }
 

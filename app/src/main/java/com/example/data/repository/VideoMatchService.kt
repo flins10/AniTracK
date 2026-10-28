@@ -49,16 +49,17 @@ class VideoMatchService {
             "movie", "film", "hindi", "bollywood", "hollywood"
         )
 
-        // Universal blocked keywords: trailers, teasers, reviews, explanations, breakdowns, reactions, recaps, promos, clips, etc.
+        // Universal blocked keywords in titles, identifiers, subjects, and filenames:
+        // trailers, teasers, reviews, explanations, breakdowns, reactions, recaps, promos, clips, extras, etc.
         private val UNIVERSAL_EXCLUDED_KEYWORDS = listOf(
             // Trailers / Teasers / Promos / Previews
             "trailer", "trailers", "official trailer", "teaser", "teasers", "promo", "promotional",
-            "preview", "pv", "cm", "tv spot", "commercial", "bumper", "sneak peek", "first look",
+            "preview", "pv", "tv spot", "commercial", "bumper", "sneak peek", "first look",
             // Reviews / Explanations / Breakdowns / Recaps / Video Essays
             "review", "reviews", "movie review", "film review", "series review", "episode review",
             "explained", "explanation", "ending explained", "story explained", "plot explained",
-            "breakdown", "analysis", "video essay", "recap", "summary", "full story", "in minutes",
-            "spoiler", "spoilers", " spoiler review", "non spoiler", "theory", "theories",
+            "breakdown", "analysis", "video essay", "recap", "in minutes",
+            "spoiler review", "non spoiler", "theory", "theories",
             "top 10", "ranking", "tier list", "everything wrong with", "honest trailer",
             "pitch meeting", "facts you didnt know", "easter eggs", "hidden details",
             // Reaction / Commentary / Watchalong / Streamer content
@@ -69,19 +70,30 @@ class VideoMatchService {
             "twitch", "twitch vod", "livestream", "live stream", "stream archive",
             "youtuber", "vtuber", "facecam", "reaction cam", "timer sync",
             "rttv", "yaaboyroshi", "semblance of sanity", "carlie and ange", "strayblitz",
-            "heatah", "nicholas light", "alana", "sofy", "fandub", "fan dub",
-            // Behind the scenes / Interviews / Clips / Shorts / Edits / Audio / Gameplay
+            "heatah", "nicholas light", "fandub", "fan dub",
+            // Behind the scenes / Interviews / Clips / Shorts / Edits / Audio / Gameplay / Extras
             "cast interview", "interview", "behind the scenes", "making of", "featurette",
             "bloopers", "outtakes", "deleted scenes", "screen test", "live show", "concert",
-            "amv", "mad", "opening", "ending", "creditless", "ncop", "nced", "ost", "soundtrack",
+            "amv", "creditless", "ncop", "nced", "ost", "soundtrack",
             "theme song", "music video", "fan animation", "fanmade", "fan made", "fan edit",
             "fan film", "fanfilm", "tribute", "parody", "spoof", "abridged", "podcast",
-            "discussion", "thoughts on", "gameplay", "walkthrough", "playthrough", "cutscene",
-            "cutscenes", "short clip", "clip", "clips", "best moments", "funny moments",
-            "highlights", "compilation", "tiktok", "shorts", "reels", "speedpaint", "drawing",
+            "discussion", "thoughts on", "gameplay", "walkthrough", "playthrough", "lets play",
+            "cutscene", "cutscenes", "short clip", "clips", "best moments", "funny moments",
+            "highlights", "tiktok", "shorts", "reels", "speedpaint", "drawing",
             "unboxing", "figure review", "cover song", "vocal cover", "guitar cover",
             "piano cover", "drum cover", "remix", "nightcore", "8d audio", "vhs rip promo",
-            "toonami", "adult swim"
+            "extras", "bonus", "special features", "sample", "among us", "vlog", "vlogs",
+            "hentai", "futa", "asmr"
+        )
+
+        // Phrases checked in description text (strictly non-movie phrases so plot summaries aren't falsely flagged)
+        private val DESCRIPTION_EXCLUDED_PHRASES = listOf(
+            "official trailer", "movie review", "film review", "ending explained", "plot explained",
+            "video essay", "first time watching", "watching for the first time", "blind reaction",
+            "full reaction", "uncut reaction", "live reaction", "patreon", "watchalong",
+            "audio commentary", "watch along", "watch party", "twitch vod", "behind the scenes",
+            "deleted scenes", "fan animation", "fan edit", "fan film", "stage play",
+            "walkthrough", "playthrough"
         )
 
         // Additional exclusions strictly for Anime (preventing live-action adaptations / cosplay from matching anime)
@@ -144,7 +156,7 @@ class VideoMatchService {
 
         val isDirectKnownIdentifier = anime.archiveIdentifier?.equals(identifier, ignoreCase = true) == true
         val effectiveTitleScore = if (isDirectKnownIdentifier) {
-            maxOf(itemTitleScore, bestFileTitleScore, 0.90f)
+            maxOf(itemTitleScore, bestFileTitleScore, 0.92f)
         } else {
             maxOf(itemTitleScore, bestFileTitleScore)
         }
@@ -154,7 +166,7 @@ class VideoMatchService {
 
         // 3. Check season alignment if the target specifies a season
         val targetSeason = seasonNumber ?: extractSeasonNumber(targetTitles)
-        if (targetSeason != null && targetSeason > 1) {
+        if (targetSeason != null && targetSeason > 1 && !isDirectKnownIdentifier) {
             val docSeason = extractSeasonNumber(listOf(docTitle, identifier))
             if (docSeason != null && docSeason != targetSeason) {
                 return null
@@ -181,7 +193,7 @@ class VideoMatchService {
             detectedEp = requestedEpisode
             isEpisodeSpecific = true
         } else {
-            bestFile = selectBestFileForEpisode(compatibleFiles, null) ?: compatibleFiles.first()
+            bestFile = selectBestFileForEpisode(compatibleFiles, null, targetTitles) ?: compatibleFiles.first()
             detectedEp = detectEpisodeNumber(bestFile.name) ?: detectEpisodeNumber(docTitle) ?: requestedEpisode
             isEpisodeSpecific = true
         }
@@ -259,21 +271,44 @@ class VideoMatchService {
         creator: String = "",
         isLiveActionAllowed: Boolean = false
     ): Boolean {
-        val rawCombined = "$title $subject $identifier $creator ${description.take(600)}"
-        val normalized = normalizeForKeywordCheck(rawCombined)
-        if (normalized.isBlank()) return false
-
-        for (keyword in UNIVERSAL_EXCLUDED_KEYWORDS) {
-            val regex = Regex("""\b${Regex.escape(keyword)}\b""")
-            if (regex.containsMatchIn(normalized)) {
+        val rawHeader = "$title $subject $identifier $creator"
+        val normalizedHeader = normalizeForKeywordCheck(rawHeader)
+        if (normalizedHeader.isNotBlank()) {
+            // Reject YouTube or Twitch auto-archived clips by identifier prefix
+            val lowerId = identifier.lowercase(Locale.ROOT)
+            if (lowerId.startsWith("youtube-") || lowerId.startsWith("twitch-")) {
                 return true
             }
-        }
-        if (!isLiveActionAllowed) {
-            for (keyword in ANIME_ONLY_EXCLUDED_KEYWORDS) {
+            for (keyword in UNIVERSAL_EXCLUDED_KEYWORDS) {
                 val regex = Regex("""\b${Regex.escape(keyword)}\b""")
-                if (regex.containsMatchIn(normalized)) {
+                if (regex.containsMatchIn(normalizedHeader)) {
                     return true
+                }
+            }
+            if (!isLiveActionAllowed) {
+                for (keyword in ANIME_ONLY_EXCLUDED_KEYWORDS) {
+                    val regex = Regex("""\b${Regex.escape(keyword)}\b""")
+                    if (regex.containsMatchIn(normalizedHeader)) {
+                        return true
+                    }
+                }
+            }
+        }
+
+        if (description.isNotBlank()) {
+            val normalizedDesc = normalizeForKeywordCheck(description.take(400))
+            for (phrase in DESCRIPTION_EXCLUDED_PHRASES) {
+                val regex = Regex("""\b${Regex.escape(phrase)}\b""")
+                if (regex.containsMatchIn(normalizedDesc)) {
+                    return true
+                }
+            }
+            if (!isLiveActionAllowed) {
+                for (keyword in ANIME_ONLY_EXCLUDED_KEYWORDS) {
+                    val regex = Regex("""\b${Regex.escape(keyword)}\b""")
+                    if (regex.containsMatchIn(normalizedDesc)) {
+                        return true
+                    }
                 }
             }
         }
@@ -319,7 +354,7 @@ class VideoMatchService {
                     return false
                 }
 
-                // 2. Upper bound check for TV series episodes
+                // 2. Upper bound check for TV series episodes (allow multi-episode compilations only if live action or premiere)
                 if (requestedEpisode != null && requestedEpisode > 0) {
                     val maxAllowedSecs = when {
                         isLiveActionAllowed -> MAX_LIVE_ACTION_SERIES_EPISODE_SECONDS
@@ -432,6 +467,11 @@ class VideoMatchService {
             val name = file.name.lowercase(Locale.ROOT)
             val format = file.format?.lowercase(Locale.ROOT).orEmpty()
 
+            // Exclude bonus/extras/sample subfolders
+            if (name.contains("/extras/") || name.contains("/bonus/") || name.contains("/samples/") || name.contains("/featurettes/")) {
+                return@filter false
+            }
+
             val isExcludedExtension = name.endsWith(".xml") || name.endsWith(".sqlite") || name.endsWith(".torrent") ||
                     name.endsWith(".txt") || name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".png") ||
                     name.endsWith(".gif") || name.endsWith(".webp") || name.contains("_thumb.") ||
@@ -464,8 +504,7 @@ class VideoMatchService {
     }
 
     /**
-     * Strictly selects a video file that matches `requestedEpisode` and belongs to the target anime.
-     * Never falls back to `files.firstOrNull()` if the episode number or anime title does not match.
+     * Strictly selects a video file that matches `requestedEpisode` and belongs to the target anime/series.
      */
     fun selectExactFileForEpisode(
         files: List<ArchiveFileItem>,
@@ -499,9 +538,12 @@ class VideoMatchService {
                 candidateFiles = strictSeasonFiles
             } else {
                 // Otherwise only accept files that do NOT declare a conflicting season number
-                candidateFiles = files.filter { file ->
+                val nonConflictingSeasonFiles = files.filter { file ->
                     val fSeason = detectSeasonNumber(file.name) ?: detectSeasonNumber(file.title.orEmpty())
-                    fSeason == null
+                    fSeason == null || fSeason == targetSeason
+                }
+                if (nonConflictingSeasonFiles.isNotEmpty()) {
+                    candidateFiles = nonConflictingSeasonFiles
                 }
             }
         }
@@ -514,27 +556,17 @@ class VideoMatchService {
 
         if (matchingFiles.isNotEmpty()) {
             val titleMatchedFiles = matchingFiles.filter { file ->
-                calculateStrictTitleSimilarity(file.title ?: file.name, file.name, targetTitles) >= 0.60f
+                calculateStrictTitleSimilarity(file.title ?: file.name, file.name, targetTitles) >= 0.55f
             }
             if (titleMatchedFiles.isNotEmpty()) {
-                return pickPreferredFormatFile(titleMatchedFiles)
+                return pickPreferredFormatFile(titleMatchedFiles, isSingleEpisodeWork = false)
             }
 
-            // If none of the matching episode files explicitly repeat the anime title in their filename
-            // (e.g., files named "Episode 01.mp4" or "01.mp4"), ONLY accept them if the parent Archive Item
-            // itself strongly matches the target anime title AND the filename doesn't belong to a different title.
-            if (itemTitleScore >= 0.78f) {
-                val genericNamedFiles = matchingFiles.filter { file ->
-                    val significantFileTokens = extractSignificantTokens(
-                        normalizeTitle(file.name.substringBeforeLast('.'))
-                    )
-                    // Either the filename has no title words (just numbers/Episode) or shares tokens with targetTitles
-                    significantFileTokens.isEmpty() ||
-                            calculateStrictTitleSimilarity(file.title ?: file.name, file.name, targetTitles) >= 0.45f
-                }
-                if (genericNamedFiles.isNotEmpty()) {
-                    return pickPreferredFormatFile(genericNamedFiles)
-                }
+            // When the parent Archive Item already matches the anime/series title (itemTitleScore >= 0.70f),
+            // episode files are frequently named by episode number + episode subtitle (e.g. "01 - Angel Attack.mp4")
+            // or release group code (e.g. "HxH99.Remastered.01.v5.0.mkv").
+            if (itemTitleScore >= 0.70f) {
+                return pickPreferredFormatFile(matchingFiles, isSingleEpisodeWork = false)
             }
             return null
         }
@@ -543,13 +575,30 @@ class VideoMatchService {
         // explicitly states the requested episode (e.g. "Naruto Episode 01"), and none of the video files
         // have conflicting episode numbers:
         val itemLevelEp = detectEpisodeNumber(docTitle) ?: detectEpisodeNumber(identifier)
-        if (itemLevelEp == requestedEpisode && itemTitleScore >= 0.75f) {
+        if (itemLevelEp == requestedEpisode && itemTitleScore >= 0.72f) {
             val nonConflictingFiles = candidateFiles.filter { file ->
                 val fEp = detectEpisodeNumber(file.name)
                 fEp == null || fEp == requestedEpisode
             }
             if (nonConflictingFiles.isNotEmpty()) {
-                return pickPreferredFormatFile(nonConflictingFiles)
+                return pickPreferredFormatFile(nonConflictingFiles, isSingleEpisodeWork = false)
+            }
+        }
+
+        // 3. If the Archive item strongly matches the series title (e.g. SherlockHolmesGranada or byomkesh-bakshi-movie-world)
+        // and contains multiple episodes named by episode title rather than numbers:
+        val filesWithDetectedEp = candidateFiles.count {
+            (detectEpisodeNumber(it.name) ?: detectEpisodeNumber(it.title.orEmpty())) != null
+        }
+        if (itemTitleScore >= 0.80f && filesWithDetectedEp == 0 && candidateFiles.size >= 2) {
+            val groupedByStem = candidateFiles.groupBy { file ->
+                file.name
+                    .replace(Regex("""(?i)\.ia\.(mp4|mkv|webm)$"""), "")
+                    .replace(Regex("""(?i)\.(mp4|mkv|webm|m3u8)$"""), "")
+                    .lowercase(Locale.ROOT)
+            }.entries.sortedBy { it.key }
+            if (requestedEpisode - 1 in groupedByStem.indices) {
+                return pickPreferredFormatFile(groupedByStem[requestedEpisode - 1].value, isSingleEpisodeWork = false)
             }
         }
 
@@ -557,12 +606,13 @@ class VideoMatchService {
     }
 
     /**
-     * Picks the best file from compatible files matching an episode number,
-     * prioritizing canonical ~24m episode duration and original/high-bitrate H.264 MP4.
+     * Picks the best file from compatible files matching an episode number or target movie title,
+     * prioritizing canonical ~24m episode duration for TV episodes and high-bitrate H.264 MP4 / MKV for movies.
      */
     fun selectBestFileForEpisode(
         files: List<ArchiveFileItem>,
-        preferredEpisode: Int?
+        preferredEpisode: Int?,
+        targetTitles: List<String> = emptyList()
     ): ArchiveFileItem? {
         if (files.isEmpty()) return null
 
@@ -571,34 +621,61 @@ class VideoMatchService {
                 (detectEpisodeNumber(file.name) ?: detectEpisodeNumber(file.title.orEmpty())) == preferredEpisode
             }
             if (matchingEpisodeFiles.isNotEmpty()) {
-                return pickPreferredFormatFile(matchingEpisodeFiles)
+                return pickPreferredFormatFile(matchingEpisodeFiles, isSingleEpisodeWork = false)
             }
             return null
         }
 
-        return pickPreferredFormatFile(files)
+        // When selecting a movie / single work from an item that may have multiple files,
+        // strongly prefer files whose filename matches targetTitles so multi-movie packs play the exact requested movie!
+        if (targetTitles.isNotEmpty() && files.size > 1) {
+            val scoredFiles = files.map { file ->
+                file to calculateStrictTitleSimilarity(file.title ?: file.name, file.name, targetTitles)
+            }
+            val maxScore = scoredFiles.maxOfOrNull { it.second } ?: 0f
+            if (maxScore >= 0.60f) {
+                val matchingMovieFiles = scoredFiles.filter { it.second >= maxScore - 0.15f }.map { it.first }
+                return pickPreferredFormatFile(matchingMovieFiles, isSingleEpisodeWork = true)
+            }
+        }
+
+        return pickPreferredFormatFile(files, isSingleEpisodeWork = true)
     }
 
-    private fun pickPreferredFormatFile(pool: List<ArchiveFileItem>): ArchiveFileItem? {
+    private fun pickPreferredFormatFile(
+        pool: List<ArchiveFileItem>,
+        isSingleEpisodeWork: Boolean = false
+    ): ArchiveFileItem? {
         if (pool.isEmpty()) return null
 
-        // Prefer files in canonical anime episode duration (19-27.5 mins) if available in pool
-        val canonicalDurationPool = pool.filter { file ->
-            val dur = parseDurationSeconds(file.length)
-            dur != null && dur in CANONICAL_EPISODE_MIN_SECONDS..CANONICAL_EPISODE_MAX_SECONDS
+        // Only prefer canonical 19-27.5m duration when selecting a TV episode (never for feature movies!)
+        val activePool = if (!isSingleEpisodeWork) {
+            val canonicalDurationPool = pool.filter { file ->
+                val dur = parseDurationSeconds(file.length)
+                dur != null && dur in CANONICAL_EPISODE_MIN_SECONDS..CANONICAL_EPISODE_MAX_SECONDS
+            }
+            if (canonicalDurationPool.isNotEmpty()) canonicalDurationPool else pool
+        } else {
+            pool
         }
-        val activePool = if (canonicalDurationPool.isNotEmpty()) canonicalDurationPool else pool
 
-        // 1. High-quality H.264 MP4 (excluding low-res 512Kb MPEG4 derivatives if a better MP4 exists)
+        val maxPoolSize = activePool.maxOfOrNull { it.size?.toLongOrNull() ?: 0L } ?: 0L
+
+        // 1. High-quality H.264 MP4 (excluding low-res 512Kb MPEG4 derivatives, and for movies ensuring it's not a tiny bonus clip)
         val highResMp4 = activePool.filter {
+            val size = it.size?.toLongOrNull() ?: 0L
             it.name.endsWith(".mp4", ignoreCase = true) &&
-                    it.format?.contains("512kb", ignoreCase = true) != true
+                    it.format?.contains("512kb", ignoreCase = true) != true &&
+                    (!isSingleEpisodeWork || maxPoolSize <= 0L || size >= 150_000_000L || size >= (maxPoolSize * 0.25).toLong())
         }.maxByOrNull { it.size?.toLongOrNull() ?: 0L }
         if (highResMp4 != null) return highResMp4
 
-        // 2. Any MP4
-        val anyMp4 = activePool.filter { it.name.endsWith(".mp4", ignoreCase = true) }
-            .maxByOrNull { it.size?.toLongOrNull() ?: 0L }
+        // 2. Any MP4 (if not dwarfed by a main MKV movie file)
+        val anyMp4 = activePool.filter {
+            val size = it.size?.toLongOrNull() ?: 0L
+            it.name.endsWith(".mp4", ignoreCase = true) &&
+                    (!isSingleEpisodeWork || maxPoolSize <= 0L || size >= 100_000_000L || size >= (maxPoolSize * 0.20).toLong())
+        }.maxByOrNull { it.size?.toLongOrNull() ?: 0L }
         if (anyMp4 != null) return anyMp4
 
         // 3. MKV / WebM
@@ -607,7 +684,11 @@ class VideoMatchService {
         }.maxByOrNull { it.size?.toLongOrNull() ?: 0L }
         if (mkvOrWebm != null) return mkvOrWebm
 
-        // 4. HLS
+        // 4. Fallback to any MP4 or HLS
+        val fallbackMp4 = activePool.filter { it.name.endsWith(".mp4", ignoreCase = true) }
+            .maxByOrNull { it.size?.toLongOrNull() ?: 0L }
+        if (fallbackMp4 != null) return fallbackMp4
+
         val hls = activePool.firstOrNull { it.name.endsWith(".m3u8", ignoreCase = true) }
         if (hls != null) return hls
 
@@ -635,31 +716,31 @@ class VideoMatchService {
     }
 
     /**
-     * Detects episode numbers from common anime filename/title patterns:
+     * Detects episode numbers from common anime/series filename/title patterns:
      * - "S01E01", "S1E12", "1x05"
-     * - "Episode 01", "Ep. 2", "Ep 03", "E04"
+     * - "Episode 01", "Ep. 2", "Ep 03", "E04", "Capitulo 1", "Episodio 1"
      * - "第01話", "第1集", "第01集"
-     * - " - 01 ", " - 01v2", "[01]", "(01)", "_01_", " 01.mp4"
+     * - " - 01 ", " - 01v2", "[01]", "(01)", "_01_", ".01.", "01 - Title.mp4", " 01.mp4"
      */
     fun detectEpisodeNumber(text: String): Int? {
         if (text.isBlank()) return null
 
-        // Strip file extension and resolution/codec tags so they are never mistaken for episode numbers
+        // Strip file extension (including .ia.mp4) and resolution/codec tags so they are never mistaken for episode numbers
         val cleaned = text
-            .replace(Regex("""(?i)\.(mp4|mkv|webm|avi|m3u8|ts|mov|flv|ogv)$"""), "")
-            .replace(Regex("""(?i)\b(1080p|720p|480p|360p|2160p|4k|1920x1080|1280x720|854x480|640x480|h\.?264|h\.?265|x264|x265|hevc|av1|aac|flac|10bit|8bit|512kb|mpeg4|bluray|bdrip|webrip|web-dl|dvdrip)\b"""), " ")
+            .replace(Regex("""(?i)(?:\.ia)?\.(mp4|mkv|webm|avi|m3u8|ts|mov|flv|ogv)$"""), "")
+            .replace(Regex("""(?i)\b(1080p|720p|480p|360p|2160p|4k|1920x1080|1280x720|854x480|640x480|h\.?264|h\.?265|x264|x265|hevc|av1|aac|flac|10bit|8bit|512kb|mpeg4|bluray|bdrip|webrip|web-dl|dvdrip|aac2\.0|ddp5\.1|dd5\.1)\b"""), " ")
             .replace(Regex("""\[[0-9A-Fa-f]{8}\]"""), " ") // CRC32 hashes like [A1B2C3D4]
             .replace(Regex("""\b(19\d{2}|20\d{2})\b"""), " ") // Years like 1999, 2024
 
-        // 1. S01E01 or 1x01 format
-        val sxeRegex = Regex("""(?i)(?:s\d{1,2}[._\s-]*e|(?:\b\d{1,2}x))0*(\d{1,4})(?:\b|v\d|_)""")
+        // 1. S01E01 or 1x01 format (including S01.E01 or S02E01)
+        val sxeRegex = Regex("""(?i)(?:s\d{1,2}[._\s-]*e|(?:\b\d{1,2}x))0*(\d{1,4})(?:\b|v\d|_|\.)""")
         sxeRegex.find(cleaned)?.let { match ->
             val num = match.groupValues[1].toIntOrNull()
             if (num != null && num in 1..2000) return num
         }
 
-        // 2. Explicit "Episode 01", "Ep. 01", "Ep 1", "EP01", "E01"
-        val epRegex = Regex("""(?i)(?:^|[\s._\-\[\(])(?:episode|ep|e)[.\s_-]*0*(\d{1,4})(?:v\d)?(?:$|[\s._\-\]\)])""")
+        // 2. Explicit "Episode 01", "Ep. 01", "Ep 1", "EP01", "E01", "Capitulo 1", "Episodio 1", "Bölüm 1"
+        val epRegex = Regex("""(?i)(?:^|[\s._\-\[\(/])(?:episode|episodio|ep|capitulo|capítulo|cap|bölüm|bolum|e)[.\s_-]*0*(\d{1,4})(?:v\d)?(?:$|[\s._\-\]\)/])""")
         epRegex.find(cleaned)?.let { match ->
             val num = match.groupValues[1].toIntOrNull()
             if (num != null && num in 1..2000) return num
@@ -679,16 +760,31 @@ class VideoMatchService {
             if (num != null && num in 1..2000) return num
         }
 
-        // 5. Brackets or parentheses: "[01]", "(01)"
+        // 5. Leading episode number at start of filename (e.g. "01 - Angel Attack", "01. Title", "Season 1/01 Pilot")
+        val fileNameOnly = cleaned.substringAfterLast('/').trim()
+        val leadingRegex = Regex("""^0*(\d{1,3})(?:v\d)?(?:\s*[-._]\s*|\s+)[A-Za-z\u3040-\u30ff\u4e00-\u9fff]""")
+        leadingRegex.find(fileNameOnly)?.let { match ->
+            val num = match.groupValues[1].toIntOrNull()
+            if (num != null && num in 1..500) return num
+        }
+
+        // 6. Brackets or parentheses: "[01]", "(01)"
         val bracketRegex = Regex("""[\[\(]0*(\d{1,4})(?:v\d)?[\]\)]""")
         bracketRegex.find(cleaned)?.let { match ->
             val num = match.groupValues[1].toIntOrNull()
             if (num != null && num in 1..2000) return num
         }
 
-        // 6. Trailing number at end of filename: "Anime_Name_01" or "Anime Name 01"
+        // 7. Dot or underscore delimited number before version or end: "HxH99.Remastered.01.v5.0" or "Anime.01"
+        val dotRegex = Regex("""[._]0*(\d{1,3})(?:\.v\d+(?:\.\d+)?)?$""")
+        dotRegex.find(fileNameOnly)?.let { match ->
+            val num = match.groupValues[1].toIntOrNull()
+            if (num != null && num in 1..500) return num
+        }
+
+        // 8. Trailing number at end of filename: "Anime_Name_01" or "Anime Name 01"
         val trailingRegex = Regex("""(?:[_\s\-])0*(\d{1,3})(?:v\d)?$""")
-        trailingRegex.find(cleaned.trim())?.let { match ->
+        trailingRegex.find(fileNameOnly)?.let { match ->
             val num = match.groupValues[1].toIntOrNull()
             if (num != null && num in 1..500) return num
         }

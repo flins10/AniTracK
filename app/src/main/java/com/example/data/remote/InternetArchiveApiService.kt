@@ -129,7 +129,8 @@ interface InternetArchiveApiService {
     suspend fun searchArchive(
         @Query("q") query: String,
         @Query("fl[]") fields: List<String> = listOf("identifier", "title", "description", "creator", "year", "mediatype", "subject", "licenseurl", "publicdate", "item_size"),
-        @Query("rows") rows: Int = 20,
+        @Query("sort[]") sort: List<String> = listOf("downloads desc"),
+        @Query("rows") rows: Int = 25,
         @Query("page") page: Int = 1,
         @Query("output") output: String = "json"
     ): Response<ArchiveSearchResponse>
@@ -153,8 +154,8 @@ interface InternetArchiveApiService {
             }
 
             val client = OkHttpClient.Builder()
-                .connectTimeout(8, TimeUnit.SECONDS)
-                .readTimeout(8, TimeUnit.SECONDS)
+                .connectTimeout(12, TimeUnit.SECONDS)
+                .readTimeout(12, TimeUnit.SECONDS)
                 .addInterceptor(logging)
                 .build()
 

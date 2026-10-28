@@ -432,6 +432,205 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     private val _archiveResolutionError = MutableStateFlow<String?>(null)
     val archiveResolutionError = _archiveResolutionError.asStateFlow()
 
+    // AniKotoAPI integration (https://anikototvapi.vercel.app/api)
+    val aniKotoRepository = com.example.data.repository.AniKotoRepository()
+
+    private val _aniKotoTrending = MutableStateFlow<List<com.example.data.repository.AniKotoAnimeItem>>(emptyList())
+    val aniKotoTrending = _aniKotoTrending.asStateFlow()
+    private val _isAniKotoTrendingLoading = MutableStateFlow(false)
+    val isAniKotoTrendingLoading = _isAniKotoTrendingLoading.asStateFlow()
+    private val _aniKotoTrendingError = MutableStateFlow<String?>(null)
+    val aniKotoTrendingError = _aniKotoTrendingError.asStateFlow()
+
+    private val _aniKotoSearchResults = MutableStateFlow<List<com.example.data.repository.AniKotoAnimeItem>>(emptyList())
+    val aniKotoSearchResults = _aniKotoSearchResults.asStateFlow()
+    private val _isAniKotoSearching = MutableStateFlow(false)
+    val isAniKotoSearching = _isAniKotoSearching.asStateFlow()
+    private val _aniKotoSearchError = MutableStateFlow<String?>(null)
+    val aniKotoSearchError = _aniKotoSearchError.asStateFlow()
+
+    private val _selectedAniKotoInfoLink = MutableStateFlow<String?>(null)
+    val selectedAniKotoInfoLink = _selectedAniKotoInfoLink.asStateFlow()
+    private val _selectedAniKotoInfo = MutableStateFlow<com.example.data.repository.AniKotoAnimeDetail?>(null)
+    val selectedAniKotoInfo = _selectedAniKotoInfo.asStateFlow()
+    private val _isAniKotoInfoLoading = MutableStateFlow(false)
+    val isAniKotoInfoLoading = _isAniKotoInfoLoading.asStateFlow()
+    private val _aniKotoInfoError = MutableStateFlow<String?>(null)
+    val aniKotoInfoError = _aniKotoInfoError.asStateFlow()
+
+    private val _detailAniKotoInfo = MutableStateFlow<com.example.data.repository.AniKotoAnimeDetail?>(null)
+    val detailAniKotoInfo = _detailAniKotoInfo.asStateFlow()
+    private val _isDetailAniKotoLoading = MutableStateFlow(false)
+    val isDetailAniKotoLoading = _isDetailAniKotoLoading.asStateFlow()
+    private val _detailAniKotoError = MutableStateFlow<String?>(null)
+    val detailAniKotoError = _detailAniKotoError.asStateFlow()
+
+    fun loadAniKotoTrending(forceRefresh: Boolean = false) {
+        if (_isAniKotoTrendingLoading.value && !forceRefresh) return
+        _isAniKotoTrendingLoading.value = true
+        _aniKotoTrendingError.value = null
+        viewModelScope.launch(Dispatchers.IO) {
+            when (val res = aniKotoRepository.getTrendingAnime(forceRefresh = forceRefresh)) {
+                is com.example.data.repository.AniKotoResult.Success -> {
+                    _aniKotoTrending.value = res.data
+                    _aniKotoTrendingError.value = null
+                    _isAniKotoTrendingLoading.value = false
+                }
+                is com.example.data.repository.AniKotoResult.Empty -> {
+                    _aniKotoTrending.value = emptyList()
+                    _aniKotoTrendingError.value = null
+                    _isAniKotoTrendingLoading.value = false
+                }
+                is com.example.data.repository.AniKotoResult.Error -> {
+                    _aniKotoTrendingError.value = res.message
+                    _isAniKotoTrendingLoading.value = false
+                }
+            }
+        }
+    }
+
+    fun searchAniKoto(query: String) {
+        val clean = query.trim()
+        if (clean.isEmpty()) {
+            _aniKotoSearchResults.value = emptyList()
+            _aniKotoSearchError.value = null
+            _isAniKotoSearching.value = false
+            return
+        }
+        _isAniKotoSearching.value = true
+        _aniKotoSearchError.value = null
+        viewModelScope.launch(Dispatchers.IO) {
+            when (val res = aniKotoRepository.searchAnime(clean)) {
+                is com.example.data.repository.AniKotoResult.Success -> {
+                    _aniKotoSearchResults.value = res.data
+                    _aniKotoSearchError.value = null
+                    _isAniKotoSearching.value = false
+                }
+                is com.example.data.repository.AniKotoResult.Empty -> {
+                    _aniKotoSearchResults.value = emptyList()
+                    _aniKotoSearchError.value = null
+                    _isAniKotoSearching.value = false
+                }
+                is com.example.data.repository.AniKotoResult.Error -> {
+                    _aniKotoSearchResults.value = emptyList()
+                    _aniKotoSearchError.value = res.message
+                    _isAniKotoSearching.value = false
+                }
+            }
+        }
+    }
+
+    fun openAniKotoInfoModal(linkOrSlug: String, forceRefresh: Boolean = false) {
+        val canonical = com.example.data.repository.AniKotoRepository.toCanonicalAnimeLink(linkOrSlug)
+        _selectedAniKotoInfoLink.value = canonical
+        _isAniKotoInfoLoading.value = true
+        _aniKotoInfoError.value = null
+        if (forceRefresh) {
+            _selectedAniKotoInfo.value = null
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            when (val res = aniKotoRepository.getAnimeInfo(canonical, forceRefresh = forceRefresh)) {
+                is com.example.data.repository.AniKotoResult.Success -> {
+                    _selectedAniKotoInfo.value = res.data
+                    _aniKotoInfoError.value = null
+                    _isAniKotoInfoLoading.value = false
+                }
+                is com.example.data.repository.AniKotoResult.Empty -> {
+                    _selectedAniKotoInfo.value = null
+                    _aniKotoInfoError.value = res.message
+                    _isAniKotoInfoLoading.value = false
+                }
+                is com.example.data.repository.AniKotoResult.Error -> {
+                    _selectedAniKotoInfo.value = null
+                    _aniKotoInfoError.value = res.message
+                    _isAniKotoInfoLoading.value = false
+                }
+            }
+        }
+    }
+
+    fun dismissAniKotoInfoModal() {
+        _selectedAniKotoInfoLink.value = null
+        _selectedAniKotoInfo.value = null
+        _aniKotoInfoError.value = null
+        _isAniKotoInfoLoading.value = false
+    }
+
+    fun loadDetailAniKotoEnrichment(titleOrSlug: String, forceRefresh: Boolean = false) {
+        val clean = titleOrSlug.trim()
+        if (clean.isEmpty()) return
+        _isDetailAniKotoLoading.value = true
+        _detailAniKotoError.value = null
+        viewModelScope.launch(Dispatchers.IO) {
+            val slugCandidate = clean.lowercase()
+                .replace(Regex("[^a-z0-9]+"), "-")
+                .trim('-')
+            val link = "/anime/$slugCandidate"
+            when (val res = aniKotoRepository.getAnimeInfo(link, forceRefresh = forceRefresh)) {
+                is com.example.data.repository.AniKotoResult.Success -> {
+                    _detailAniKotoInfo.value = res.data
+                    _detailAniKotoError.value = null
+                    _isDetailAniKotoLoading.value = false
+                }
+                is com.example.data.repository.AniKotoResult.Empty -> {
+                    _detailAniKotoInfo.value = null
+                    _detailAniKotoError.value = res.message
+                    _isDetailAniKotoLoading.value = false
+                }
+                is com.example.data.repository.AniKotoResult.Error -> {
+                    _detailAniKotoInfo.value = null
+                    _detailAniKotoError.value = res.message
+                    _isDetailAniKotoLoading.value = false
+                }
+            }
+        }
+    }
+
+    fun saveAniKotoDetailToTracker(
+        detail: com.example.data.repository.AniKotoAnimeDetail,
+        onSaved: (Int) -> Unit = {}
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val existing = repository.getAnimeByTitleSync(detail.title)
+            if (existing != null) {
+                if (!existing.inWatchlist) {
+                    repository.addToWatchlist(existing.copy(inWatchlist = true))
+                }
+                withContext(Dispatchers.Main) {
+                    _userMessage.value = "Saved '${existing.displayTitle}' to Watchlist"
+                    onSaved(existing.id)
+                }
+                return@launch
+            }
+            val syntheticId = detail.animeId?.toIntOrNull()
+                ?: (900_000 + (detail.slug.hashCode() and 0x7FFFFFFF) % 90_000)
+            val scoreInt = detail.rating?.toDoubleOrNull()?.let { (it * 10).toInt().coerceIn(1, 100) }
+            val entity = AnimeEntity(
+                id = syntheticId,
+                titleRomaji = detail.japaneseTitle ?: detail.title,
+                titleEnglish = detail.title,
+                coverImage = detail.posterUrl,
+                bannerImage = detail.bannerUrl,
+                totalEpisodes = detail.totalEpisodesCount.takeIf { it > 0 },
+                currentEpisode = detail.totalEpisodesCount.coerceAtLeast(1),
+                nextEpisodeNumber = detail.totalEpisodesCount.coerceAtLeast(1),
+                watchedEpisodeCount = 0,
+                status = if (detail.status.contains("Finished", ignoreCase = true)) "FINISHED" else "RELEASING",
+                airingDayOfWeek = LocalDate.now().dayOfWeek.value,
+                inWatchlist = true,
+                genres = detail.genres.joinToString(", "),
+                score = scoreInt,
+                synopsis = detail.synopsis,
+                format = detail.type
+            )
+            repository.addToWatchlist(entity)
+            withContext(Dispatchers.Main) {
+                _userMessage.value = "Added '${detail.title}' to Watchlist!"
+                onSaved(entity.id)
+            }
+        }
+    }
+
     fun searchInternetArchive(query: String) {
         val q = query.trim()
         if (q.isBlank()) {
@@ -1498,10 +1697,16 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     fun onSearchQueryChanged(query: String) {
         _searchQuery.value = query
         performSearch(query)
+        searchAniKoto(query)
     }
 
     fun refreshSearch() {
         performSearch(_searchQuery.value)
+        if (_searchQuery.value.isNotBlank()) {
+            searchAniKoto(_searchQuery.value)
+        } else {
+            loadAniKotoTrending(forceRefresh = true)
+        }
     }
 
     fun onGenreSelected(genre: String) {
@@ -1652,6 +1857,9 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     fun ensureDiscoverLoaded() {
         if (_searchResults.value.isEmpty() && !_isSearching.value) {
             performSearch(_searchQuery.value)
+        }
+        if (_aniKotoTrending.value.isEmpty() && !_isAniKotoTrendingLoading.value) {
+            loadAniKotoTrending(forceRefresh = false)
         }
     }
 
@@ -1954,6 +2162,8 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectAnimeDetail(id: Int?) {
         _selectedAnimeDetailId.value = id
+        _detailAniKotoInfo.value = null
+        _detailAniKotoError.value = null
         if (id != null) {
             loadFullDetails(id)
             viewModelScope.launch(Dispatchers.IO) {
@@ -1963,6 +2173,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                     val queryTitle = updatedAnime.titleEnglish ?: updatedAnime.titleRomaji
                     searchYouTubeVideos("$queryTitle trailer", animeTitle = queryTitle)
                     searchInternetArchive(queryTitle)
+                    loadDetailAniKotoEnrichment(queryTitle)
                 }
             }
         }

@@ -143,6 +143,9 @@ fun AnimeDetailScreen(
     val isResolvingArchive by viewModel.isResolvingArchiveMedia.collectAsState()
     val activeSeasons by viewModel.activeDetailSeasons.collectAsState()
     val selectedSeason by viewModel.selectedDetailSeason.collectAsState()
+    val detailAniKotoInfo by viewModel.detailAniKotoInfo.collectAsState()
+    val isDetailAniKotoLoading by viewModel.isDetailAniKotoLoading.collectAsState()
+    val detailAniKotoError by viewModel.detailAniKotoError.collectAsState()
 
     var activeYouTubeVideo by remember { mutableStateOf<Pair<String, String>?>(null) }
     var activeArchiveMedia by remember { mutableStateOf<ArchivePlayableMedia?>(null) }
@@ -1444,14 +1447,14 @@ fun AnimeDetailScreen(
                                         shape = RoundedCornerShape(4.dp)
                                     ) {
                                         Text(
-                                            text = "ARCHIVE.ORG",
+                                            text = "ANIKOTO API",
                                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8)),
                                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                         )
                                     }
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        text = "FULL EPISODE & MOVIE STREAMS",
+                                        text = "FULL EPISODE & ANIME STREAMS",
                                         style = MaterialTheme.typography.labelSmall.copy(
                                             fontWeight = FontWeight.Bold,
                                             letterSpacing = 1.sp
@@ -1541,6 +1544,26 @@ fun AnimeDetailScreen(
                             }
                         }
                     }
+
+                    // ========================================================
+                    // SECTION: ANIKOTO API METADATA & EPISODE INDEX
+                    // ========================================================
+                    Spacer(modifier = Modifier.height(20.dp))
+                    com.example.ui.components.AniKotoDetailEnrichmentCard(
+                        detail = detailAniKotoInfo,
+                        isLoading = isDetailAniKotoLoading,
+                        errorMessage = detailAniKotoError,
+                        onRetry = {
+                            viewModel.loadDetailAniKotoEnrichment(
+                                titleOrSlug = anime.titleEnglish ?: anime.titleRomaji,
+                                forceRefresh = true
+                            )
+                        },
+                        onSelectEpisode = { epNum ->
+                            selectedEpisodeToWatch = epNum
+                            onOpenPlayer(anime.id, epNum, selectedSeason?.seasonNumber ?: 1)
+                        }
+                    )
                 }
             }
         }

@@ -29,11 +29,42 @@ class PlaybackRepository(
     companion object {
         private const val PREFS_NAME = "archive_playback_prefs"
         private const val KEY_RESUME_PREFIX = "resume_pos_"
+        private const val KEY_LOCAL_VIDEO_RESUME_PREFIX = "local_video_pos_"
+        private const val KEY_LOCAL_VIDEO_HISTORY = "local_video_recent_history_v1"
+        private const val KEY_SKIP_INTERVAL_SEC = "pref_skip_interval_sec"
         private const val KEY_VOLUME = "pref_player_volume"
         private const val KEY_SPEED = "pref_playback_speed"
-        private const val MIN_RESUME_THRESHOLD_MS = 5000L // Don't resume if watched < 5s
-        private const val NEAR_END_THRESHOLD_MS = 30000L  // Reset if finished
+        private const val MIN_RESUME_THRESHOLD_MS = 3000L // Resume if watched >= 3s
+        private const val NEAR_END_THRESHOLD_MS = 15000L  // Reset if within 15s of end
+        private const val MAX_LOCAL_HISTORY_ITEMS = 25
     }
+
+    /**
+     * Represents a recently played local device video file (stored separately from anime history).
+     */
+    data class LocalVideoHistoryItem(
+        val uriString: String,
+        val displayName: String,
+        val durationMs: Long,
+        val lastPositionMs: Long,
+        val lastPlayedAt: Long,
+        val mimeType: String? = null
+    )
+
+    /**
+     * Preferred skip interval in seconds (e.g., 5, 10, 15, 30, 85).
+     */
+    var skipIncrementSeconds: Int
+        get() = prefs.getInt(KEY_SKIP_INTERVAL_SEC, 10).coerceIn(5, 90)
+        set(value) {
+            val coerced = value.coerceIn(5, 90)
+            prefs.edit().putInt(KEY_SKIP_INTERVAL_SEC, coerced).apply()
+            ioScope.launch {
+                playbackPreferenceDao?.upsertPreference(
+                    PlaybackPreferenceEntity(prefKey = KEY_SKIP_INTERVAL_SEC, prefValue = coerced.toString())
+                )
+            }
+        }
 
     /**
      * Gets saved playback position in milliseconds. Returns 0 if watched near the end or start.
@@ -90,6 +121,117 @@ class PlaybackRepository(
         prefs.edit().remove(key).apply()
         ioScope.launch {
             playbackPreferenceDao?.deletePreference(key)
+        }
+    }
+
+    /**
+     * Gets saved playback position for a local device video URI (completely separate from anime watch history).
+     */
+    fun getLocalVideoSavedPositionMs(uriString: String, durationMs: Long = 0L): Long {
+        val key = "$KEY_LOCAL_VIDEO_RESUME_PREFIX${uriString.hashCode()}"
+        val pos = prefs.getLong(key, 0L)
+        if (pos < MIN_RESUME_THRESHOLD_MS) return 0L
+        if (durationMs > 30_000L && pos >= (durationMs - 10_000L)) {
+            return 0L
+        }
+        return pos
+    }
+
+    /**
+     * Saves progress and updates the Recently Played Local Videos list (separate from anime history).
+     */
+    fun saveLocalVideoProgress(
+        uriString: String,
+        displayName: String,
+        positionMs: Long,
+        durationMs: Long,
+        mimeType: String? = null
+    ) {
+        if (uriString.isBlank()) return
+        val posKey = "$KEY_LOCAL_VIDEO_RESUME_PREFIX${uriString.hashCode()}"
+        val safePos = positionMs.coerceAtLeast(0L)
+        val safeDur = durationMs.coerceAtLeast(0L)
+        prefs.edit().putLong(posKey, safePos).apply()
+
+        val currentList = getRecentLocalVideos().toMutableList()
+        val existingIndex = currentList.indexOfFirst { it.uriString == uriString }
+        val existingDur = if (existingIndex >= 0) currentList[existingIndex].durationMs else 0L
+        val updatedItem = LocalVideoHistoryItem(
+            uriString = uriString,
+            displayName = displayName.ifBlank { "Local Video" },
+            durationMs = if (safeDur > 0L) safeDur else existingDur,
+            lastPositionMs = safePos,
+            lastPlayedAt = System.currentTimeMillis(),
+            mimeType = mimeType ?: currentList.getOrNull(existingIndex)?.mimeType
+        )
+        if (existingIndex >= 0) {
+            currentList.removeAt(existingIndex)
+        }
+        currentList.add(0, updatedItem)
+        val trimmed = currentList.take(MAX_LOCAL_HISTORY_ITEMS)
+        persistLocalVideoHistoryList(trimmed)
+    }
+
+    /**
+     * Returns the list of recently played local device videos ordered by most recently played.
+     */
+    fun getRecentLocalVideos(): List<LocalVideoHistoryItem> {
+        val raw = prefs.getString(KEY_LOCAL_VIDEO_HISTORY, null) ?: return emptyList()
+        if (raw.isBlank()) return emptyList()
+        return raw.lineSequence()
+            .filter { it.isNotBlank() }
+            .mapNotNull { line ->
+                val parts = line.split("\t")
+                if (parts.size >= 5) {
+                    val uri = parts[0]
+                    val name = parts[1]
+                    val dur = parts[2].toLongOrNull() ?: 0L
+                    val pos = parts[3].toLongOrNull() ?: 0L
+                    val playedAt = parts[4].toLongOrNull() ?: 0L
+                    val mime = parts.getOrNull(5)?.takeIf { it.isNotBlank() }
+                    if (uri.isNotBlank()) {
+                        LocalVideoHistoryItem(
+                            uriString = uri,
+                            displayName = name,
+                            durationMs = dur,
+                            lastPositionMs = pos,
+                            lastPlayedAt = playedAt,
+                            mimeType = mime
+                        )
+                    } else null
+                } else null
+            }
+            .toList()
+    }
+
+    /**
+     * Removes a single local video from the recent local videos list.
+     */
+    fun removeLocalVideoFromHistory(uriString: String) {
+        val posKey = "$KEY_LOCAL_VIDEO_RESUME_PREFIX${uriString.hashCode()}"
+        prefs.edit().remove(posKey).apply()
+        val updated = getRecentLocalVideos().filterNot { it.uriString == uriString }
+        persistLocalVideoHistoryList(updated)
+    }
+
+    /**
+     * Clears all local video history without touching anime watch history.
+     */
+    fun clearLocalVideoHistory() {
+        persistLocalVideoHistoryList(emptyList())
+    }
+
+    private fun persistLocalVideoHistoryList(items: List<LocalVideoHistoryItem>) {
+        val serialized = items.joinToString("\n") { item ->
+            val safeName = item.displayName.replace("\t", " ").replace("\n", " ")
+            val safeMime = (item.mimeType ?: "").replace("\t", " ").replace("\n", " ")
+            "${item.uriString}\t$safeName\t${item.durationMs}\t${item.lastPositionMs}\t${item.lastPlayedAt}\t$safeMime"
+        }
+        prefs.edit().putString(KEY_LOCAL_VIDEO_HISTORY, serialized).apply()
+        ioScope.launch {
+            playbackPreferenceDao?.upsertPreference(
+                PlaybackPreferenceEntity(prefKey = KEY_LOCAL_VIDEO_HISTORY, prefValue = serialized)
+            )
         }
     }
 

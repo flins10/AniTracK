@@ -168,8 +168,11 @@ fun ArchiveDirectPlayerDialog(
     displayTitle: String = "",
     currentEpisode: Int? = null,
     totalEpisodes: Int = 1,
+    sourceBadgeText: String = "MOVIEBOX STREAM",
     onSelectEpisode: ((Int) -> Unit)? = null,
-    onRetry: (() -> Unit)? = null
+    onRetry: (() -> Unit)? = null,
+    initialPositionMs: Long = 0L,
+    onPositionUpdate: ((Long) -> Unit)? = null
 ) {
     var showEpisodeSelectorDialog by remember { mutableStateOf(false) }
 
@@ -206,7 +209,7 @@ fun ArchiveDirectPlayerDialog(
                                 shape = RoundedCornerShape(4.dp)
                             ) {
                                 Text(
-                                    text = "EXOPLAYER HD",
+                                    text = sourceBadgeText,
                                     style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8)),
                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                 )
@@ -305,7 +308,7 @@ fun ArchiveDirectPlayerDialog(
                                 )
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Text(
-                                    text = unavailableReason ?: "Can't find a full-length video for \"$resolvedHeaderTitle\" on the Internet Archive.",
+                                    text = unavailableReason ?: "Can't find a full-length video stream for \"$resolvedHeaderTitle\".",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = Color(0xFF94A3B8),
                                     textAlign = TextAlign.Center
@@ -365,6 +368,8 @@ fun ArchiveDirectPlayerDialog(
                                 subtitleBadge = if (epNum != null && epNum > 0) "Episode $epNum" else playable.format.uppercase(),
                                 fallbackUrls = fallbackUrls,
                                 streamLabels = streamLabels,
+                                initialPositionMs = initialPositionMs,
+                                onPositionUpdate = onPositionUpdate,
                                 isFullscreenMode = true,
                                 onPreviousEpisode = if (totalEpisodes > 1 && epNum != null && epNum > 1 && onSelectEpisode != null) {
                                     { onSelectEpisode(epNum - 1) }
