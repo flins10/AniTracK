@@ -68,6 +68,9 @@ jobs:
           elif [ ! -f ".env" ]; then
             touch .env
           fi
+          if [ ! -f "./debug.keystore" ] && [ -f "./debug.keystore.base64" ]; then
+            base64 -d ./debug.keystore.base64 > ./debug.keystore
+          fi
           if [ ! -f "./debug.keystore" ]; then
             "${JAVA_HOME}/bin/keytool" -genkeypair \
               -v \
@@ -86,6 +89,9 @@ jobs:
           fi
 
       - name: Build debug APK
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
           gradle :app:assembleDebug --stacktrace --no-daemon
 
