@@ -12,9 +12,6 @@ permissions:
 jobs:
   build-windows-exe:
     runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: desktop
 
     steps:
       - name: Checkout repository
@@ -32,23 +29,67 @@ jobs:
           gradle-version: '8.11.1'
 
       - name: Build Windows .exe Installer
+        working-directory: desktop
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: gradle packageExe --stacktrace --no-daemon
 
+      - name: Stage Windows .exe Installer
+        shell: bash
+        run: |
+          set -e
+          mkdir -p dist-win
+          EXE_FILE=$(find desktop/build/compose/binaries -name "*.exe" | head -n 1)
+          if [ -z "${EXE_FILE}" ] || [ ! -f "${EXE_FILE}" ]; then
+            echo "ERROR: Could not find generated .exe file"
+            find desktop/build -maxdepth 5 || true
+            exit 1
+          fi
+          cp "${EXE_FILE}" dist-win/AuraLog-Windows-Setup.exe
+          ls -lh dist-win/AuraLog-Windows-Setup.exe
+
       - name: Upload Windows .exe Artifact
         uses: actions/upload-artifact@v4
         with:
           name: AuraLog-Windows-exe
-          path: desktop/build/compose/binaries/main/exe/*.exe
+          path: dist-win/AuraLog-Windows-Setup.exe
           if-no-files-found: error
+
+      - name: Publish Windows .exe to GitHub Releases
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          RELEASE_TAG="desktop-build-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+          RELEASE_TITLE="Desktop Installers (.exe & .dmg) Build #${GITHUB_RUN_NUMBER}"
+          NOTES="Automatically generated Windows (.exe) and macOS (.dmg) desktop installers for AuraLog."
+
+          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" dist-win/AuraLog-Windows-Setup.exe --clobber --repo "${GITHUB_REPOSITORY}"
+          else
+            gh release create "${RELEASE_TAG}" dist-win/AuraLog-Windows-Setup.exe \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${RELEASE_TITLE}" \
+              --notes "${NOTES}" \
+              --target "${GITHUB_SHA}" \
+              --latest=false
+          fi
+
+          DIRECT_EXE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/AuraLog-Windows-Setup.exe"
+          RELEASE_PAGE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
+
+          {
+            echo "### DIRECT WINDOWS .EXE DOWNLOAD"
+            echo "${DIRECT_EXE_URL}"
+            echo ""
+            echo "- **Release Page:** ${RELEASE_PAGE_URL}"
+            echo "- **Filename:** \`AuraLog-Windows-Setup.exe\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
   build-macos-dmg:
     runs-on: macos-latest
-    defaults:
-      run:
-        working-directory: desktop
 
     steps:
       - name: Checkout repository
@@ -66,36 +107,35 @@ jobs:
           gradle-version: '8.11.1'
 
       - name: Build macOS .dmg Installer
+        working-directory: desktop
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: gradle packageDmg --stacktrace --no-daemon
 
+      - name: Stage macOS .dmg Installer
+        shell: bash
+        run: |
+          set -e
+          mkdir -p dist-mac
+          DMG_FILE=$(find desktop/build/compose/binaries -name "*.dmg" | head -n 1)
+          if [ -z "${DMG_FILE}" ] || [ ! -f "${DMG_FILE}" ]; then
+            echo "ERROR: Could not find generated .dmg file"
+            find desktop/build -maxdepth 5 || true
+            exit 1
+          fi
+          cp "${DMG_FILE}" dist-mac/AuraLog-macOS-Installer.dmg
+          ls -lh dist-mac/AuraLog-macOS-Installer.dmg
+
       - name: Upload macOS .dmg Artifact
         uses: actions/upload-artifact@v4
         with:
           name: AuraLog-macOS-dmg
-          path: desktop/build/compose/binaries/main/dmg/*.dmg
+          path: dist-mac/AuraLog-macOS-Installer.dmg
           if-no-files-found: error
 
-  publish-desktop-release:
-    needs: [build-windows-exe, build-macos-dmg]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download Windows .exe Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: AuraLog-Windows-exe
-          path: dist/windows
-
-      - name: Download macOS .dmg Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: AuraLog-macOS-dmg
-          path: dist/macos
-
-      - name: Publish .exe and .dmg to GitHub Releases
-        continue-on-error: true
+      - name: Publish macOS .dmg to GitHub Releases
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -104,17 +144,24 @@ jobs:
           RELEASE_TITLE="Desktop Installers (.exe & .dmg) Build #${GITHUB_RUN_NUMBER}"
           NOTES="Automatically generated Windows (.exe) and macOS (.dmg) desktop installers for AuraLog."
 
-          gh release create "${RELEASE_TAG}" \
-            dist/windows/*.exe \
-            dist/macos/*.dmg \
-            --title "${RELEASE_TITLE}" \
-            --notes "${NOTES}" \
-            --latest=false
+          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" dist-mac/AuraLog-macOS-Installer.dmg --clobber --repo "${GITHUB_REPOSITORY}"
+          else
+            gh release create "${RELEASE_TAG}" dist-mac/AuraLog-macOS-Installer.dmg \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${RELEASE_TITLE}" \
+              --notes "${NOTES}" \
+              --target "${GITHUB_SHA}" \
+              --latest=false
+          fi
+
+          DIRECT_DMG_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/AuraLog-macOS-Installer.dmg"
+          RELEASE_PAGE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
 
           {
-            echo "### Desktop Installers Ready (.exe & .dmg)"
-            echo "- **Release Tag:** \`${RELEASE_TAG}\`"
-            echo "- **Release Page:** https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
-            echo "- **Windows Installer:** \`AuraLog-2.1.0.exe\`"
-            echo "- **macOS Installer:** \`AuraLog-2.1.0.dmg\`"
+            echo "### DIRECT MACOS .DMG DOWNLOAD"
+            echo "${DIRECT_DMG_URL}"
+            echo ""
+            echo "- **Release Page:** ${RELEASE_PAGE_URL}"
+            echo "- **Filename:** \`AuraLog-macOS-Installer.dmg\`"
           } >> "${GITHUB_STEP_SUMMARY}"
