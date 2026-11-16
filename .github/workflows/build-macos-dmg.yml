@@ -1,0 +1,87 @@
+name: Build and Release macOS DMG
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos-dmg:
+    name: Build macOS (.dmg)
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Temurin Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Gradle 8.11.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Build macOS .dmg Installer
+        working-directory: desktop
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: gradle packageDmg --stacktrace --no-daemon
+
+      - name: Stage macOS .dmg Installer
+        shell: bash
+        run: |
+          set -e
+          mkdir -p dist-mac
+          DMG_FILE=$(find desktop/build/compose/binaries -name "*.dmg" | head -n 1)
+          if [ -z "${DMG_FILE}" ] || [ ! -f "${DMG_FILE}" ]; then
+            echo "ERROR: Could not find generated .dmg file"
+            find desktop/build -maxdepth 5 || true
+            exit 1
+          fi
+          cp "${DMG_FILE}" dist-mac/AuraLog-macOS-Installer.dmg
+          ls -lh dist-mac/AuraLog-macOS-Installer.dmg
+
+      - name: Upload macOS .dmg Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AuraLog-macOS-dmg
+          path: dist-mac/AuraLog-macOS-Installer.dmg
+          if-no-files-found: error
+
+      - name: Publish macOS .dmg to GitHub Releases
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          RELEASE_TAG="macos-dmg-build-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+          RELEASE_TITLE="macOS DMG Installer Build #${GITHUB_RUN_NUMBER}"
+          NOTES="Automatically generated macOS (.dmg) desktop installer for AuraLog."
+
+          gh release create "${RELEASE_TAG}" dist-mac/AuraLog-macOS-Installer.dmg \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${RELEASE_TITLE}" \
+            --notes "${NOTES}" \
+            --target "${GITHUB_SHA}" \
+            --latest=false
+
+          DIRECT_DMG_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/AuraLog-macOS-Installer.dmg"
+          RELEASE_PAGE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
+
+          {
+            echo "### DIRECT MACOS .DMG DOWNLOAD"
+            echo "${DIRECT_DMG_URL}"
+            echo ""
+            echo "- **Release Tag:** \`${RELEASE_TAG}\`"
+            echo "- **Release Page:** ${RELEASE_PAGE_URL}"
+            echo "- **Filename:** \`AuraLog-macOS-Installer.dmg\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
