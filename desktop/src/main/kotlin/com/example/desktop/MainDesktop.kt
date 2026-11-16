@@ -485,6 +485,7 @@ object DesktopApi {
                     .build()
                 http.newCall(lockReq).execute().close()
             }
+            Unit
         }
     }
 

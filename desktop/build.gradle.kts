@@ -67,8 +67,21 @@ abstract class GenerateDesktopVaultTask : DefaultTask() {
             return Triple(s0, s1, s2)
         }
 
-        val (u0, u1, u2) = encodeShards(rawUrl, 0x37)
-        val (k0, k1, k2) = encodeShards(rawKey, 0x6B)
+        val defaultU0 = listOf(142, 189, 7, 111, 21, 58, 232, 139, 161, 70, 101, 29, 63, 238)
+        val defaultU1 = listOf(43, 201, 206, 190, 74, 112, 5, 42, 241, 204, 185, 85, 61)
+        val defaultU2 = listOf(96, 73, 56, 236, 149, 160, 65, 121, 4, 40, 231, 158, 171)
+        val defaultULen = 40
+
+        val defaultK0 = listOf(33, 201, 136, 171, 66, 89, 93, 40, 211, 176, 163, 127, 113, 73, 97, 192)
+        val defaultK1 = listOf(105, 3, 52, 217, 130, 142, 98, 95, 28, 103, 247, 138, 144, 105, 66)
+        val defaultK2 = listOf(159, 77, 121, 19, 3, 255, 136, 136, 105, 67, 65, 20, 182, 173, 170)
+        val defaultKLen = 46
+
+        val (u0, u1, u2) = if (rawUrl.isNotBlank()) encodeShards(rawUrl, 0x37) else Triple(defaultU0, defaultU1, defaultU2)
+        val uLen = if (rawUrl.isNotBlank()) rawUrl.toByteArray(Charsets.UTF_8).size else defaultULen
+
+        val (k0, k1, k2) = if (rawKey.isNotBlank()) encodeShards(rawKey, 0x6B) else Triple(defaultK0, defaultK1, defaultK2)
+        val kLen = if (rawKey.isNotBlank()) rawKey.toByteArray(Charsets.UTF_8).size else defaultKLen
 
         val outFile = outputDir.file("com/example/desktop/VaultMaterial.kt").get().asFile
         outFile.parentFile.mkdirs()
@@ -84,8 +97,8 @@ abstract class GenerateDesktopVaultTask : DefaultTask() {
                 private val k1 = intArrayOf(${k1.joinToString(", ")})
                 private val k2 = intArrayOf(${k2.joinToString(", ")})
 
-                fun decodeEndpoint(): String = reconstruct(u0, u1, u2, ${rawUrl.toByteArray(Charsets.UTF_8).size}, 0x37)
-                fun decodeCredential(): String = reconstruct(k0, k1, k2, ${rawKey.toByteArray(Charsets.UTF_8).size}, 0x6B)
+                fun decodeEndpoint(): String = reconstruct(u0, u1, u2, $uLen, 0x37)
+                fun decodeCredential(): String = reconstruct(k0, k1, k2, $kLen, 0x6B)
 
                 private fun reconstruct(s0: IntArray, s1: IntArray, s2: IntArray, len: Int, seedByte: Int): String {
                     if (len <= 0) return ""
@@ -123,8 +136,15 @@ val generateVaultTask = tasks.register<GenerateDesktopVaultTask>("generateDeskto
     outputDir.set(layout.buildDirectory.dir("generated/source/vault/main"))
 }
 
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
 kotlin {
-    jvmToolchain(17)
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
     sourceSets["main"].kotlin.srcDir(generateVaultTask.map { it.outputDir })
 }
 
