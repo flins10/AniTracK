@@ -30,12 +30,6 @@ interface SavedAnimeDao {
     @Query("SELECT * FROM saved_anime WHERE id = :id LIMIT 1")
     suspend fun getSavedAnimeByIdSync(id: Int): SavedAnimeEntity?
 
-    @Query("SELECT * FROM saved_anime WHERE idMal = :idMal AND :idMal > 0 LIMIT 1")
-    suspend fun getByMalIdSync(idMal: Int): SavedAnimeEntity?
-
-    @Query("SELECT * FROM saved_anime WHERE archiveIdentifier = :archiveIdentifier AND :archiveIdentifier != '' LIMIT 1")
-    suspend fun getByArchiveIdentifierSync(archiveIdentifier: String): SavedAnimeEntity?
-
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertSavedAnime(entity: SavedAnimeEntity)
 
@@ -47,4 +41,7 @@ interface SavedAnimeDao {
 
     @Query("DELETE FROM saved_anime WHERE id = :id")
     suspend fun deleteSavedAnimeById(id: Int)
+
+    @Query("DELETE FROM saved_anime")
+    suspend fun clearAll()
 }

@@ -14,8 +14,7 @@ class AnimeApplication : Application(), ImageLoaderFactory {
             val codeCacheDir = java.io.File(cacheDir, "WebView/Default/HTTP Cache/Code Cache")
             java.io.File(codeCacheDir, "wasm").mkdirs()
             java.io.File(codeCacheDir, "js").mkdirs()
-        } catch (e: Exception) {
-            e.printStackTrace()
+        } catch (_: Exception) {
         }
     }
 
@@ -23,19 +22,20 @@ class AnimeApplication : Application(), ImageLoaderFactory {
         return ImageLoader.Builder(this)
             .memoryCache {
                 MemoryCache.Builder(this)
-                    .maxSizePercent(0.25)
+                    .maxSizePercent(0.14)
                     .build()
             }
             .diskCache {
                 DiskCache.Builder()
                     .directory(cacheDir.resolve("image_cache"))
-                    .maxSizeBytes(250 * 1024 * 1024) // 250 MB disk cache for full offline image viewing
+                    .maxSizeBytes(45L * 1024 * 1024) // Bounded 45 MB poster cache for lean storage footprint
                     .build()
             }
+            .allowRgb565(true)
             .diskCachePolicy(CachePolicy.ENABLED)
             .memoryCachePolicy(CachePolicy.ENABLED)
             .networkCachePolicy(CachePolicy.ENABLED)
-            .respectCacheHeaders(false) // Cache anime posters & banners aggressively for smooth offline viewing
+            .respectCacheHeaders(false)
             .crossfade(true)
             .build()
     }

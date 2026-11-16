@@ -6,14 +6,10 @@ import androidx.room.PrimaryKey
 
 @Entity(
     tableName = "deleted_anime",
-    indices = [
-        Index(value = ["animeId"]),
-        Index(value = ["malId"])
-    ]
+    indices = [Index(value = ["animeId"])]
 )
 data class DeletedAnimeEntity(
     @PrimaryKey val animeId: Int,
-    val malId: Int? = null,
     val title: String? = null,
     val listType: String = "ALL", // "WATCHLIST", "WISHLIST", "ALL"
     val deletedAt: Long = System.currentTimeMillis()

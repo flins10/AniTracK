@@ -20,6 +20,9 @@ interface EpisodeHistoryDao {
     @Query("SELECT * FROM episode_history WHERE animeId = :animeId ORDER BY episodeNumber DESC")
     fun getHistoryForAnime(animeId: Int): Flow<List<EpisodeHistoryEntity>>
 
+    @Query("SELECT * FROM episode_history WHERE animeId = :animeId ORDER BY watchedTimestamp DESC LIMIT 1")
+    suspend fun getLatestHistoryForAnime(animeId: Int): EpisodeHistoryEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertHistory(history: EpisodeHistoryEntity)
 
@@ -28,6 +31,9 @@ interface EpisodeHistoryDao {
 
     @Query("DELETE FROM episode_history WHERE animeId = :animeId AND episodeNumber = :episodeNumber")
     suspend fun deleteHistoryForEpisode(animeId: Int, episodeNumber: Int)
+
+    @Query("DELETE FROM episode_history WHERE id NOT IN (SELECT id FROM episode_history ORDER BY watchedTimestamp DESC LIMIT :maxEntries)")
+    suspend fun pruneToMaxEntries(maxEntries: Int = 150): Int
 
     @Query("DELETE FROM episode_history")
     suspend fun clearAllHistory()

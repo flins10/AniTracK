@@ -7,157 +7,19 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-private fun addColumnIfMissing(
-    db: SupportSQLiteDatabase,
-    tableName: String,
-    columnName: String,
-    columnDefSql: String
-) {
-    val cursor = db.query("PRAGMA table_info(`$tableName`)")
-    var exists = false
-    try {
-        val nameIndex = cursor.getColumnIndex("name")
-        while (cursor.moveToNext()) {
-            if (nameIndex >= 0 && cursor.getString(nameIndex).equals(columnName, ignoreCase = true)) {
-                exists = true
-                break
-            }
-        }
-    } finally {
-        cursor.close()
-    }
-    if (!exists) {
-        db.execSQL("ALTER TABLE `$tableName` ADD COLUMN `$columnName` $columnDefSql")
-    }
-}
-
-private fun ensureBaseTablesAndColumnsUpToV9(db: SupportSQLiteDatabase) {
-    db.execSQL(
-        """
-        CREATE TABLE IF NOT EXISTS `anime` (
-            `id` INTEGER NOT NULL,
-            `idMal` INTEGER,
-            `archiveIdentifier` TEXT DEFAULT NULL,
-            `titleRomaji` TEXT NOT NULL,
-            `titleEnglish` TEXT,
-            `titleNative` TEXT,
-            `titlePinyin` TEXT,
-            `metadataSource` TEXT NOT NULL DEFAULT 'metadata_provider',
-            `coverImage` TEXT NOT NULL,
-            `bannerImage` TEXT,
-            `format` TEXT,
-            `status` TEXT,
-            `totalEpisodes` INTEGER,
-            `currentEpisode` INTEGER NOT NULL,
-            `watchedEpisodeCount` INTEGER NOT NULL DEFAULT 0,
-            `userStatus` TEXT,
-            `userScore` INTEGER,
-            `startDate` TEXT,
-            `finishDate` TEXT,
-            `airingDayOfWeek` INTEGER NOT NULL,
-            `airingTimeUnix` INTEGER,
-            `nextEpisodeNumber` INTEGER,
-            `genres` TEXT NOT NULL,
-            `season` TEXT,
-            `seasonYear` INTEGER,
-            `score` INTEGER,
-            `synopsis` TEXT,
-            `countryOfOrigin` TEXT,
-            `inWatchlist` INTEGER NOT NULL,
-            `isWishlist` INTEGER NOT NULL DEFAULT 0,
-            `isFavorite` INTEGER NOT NULL,
-            `isPinned` INTEGER NOT NULL DEFAULT 0,
-            `notificationsEnabled` INTEGER NOT NULL,
-            `isWatched` INTEGER NOT NULL,
-            `lastWatchedTime` INTEGER,
-            `userNotes` TEXT,
-            `lastCachedAt` INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY(`id`)
-        )
-        """.trimIndent()
-    )
-    addColumnIfMissing(db, "anime", "idMal", "INTEGER")
-    addColumnIfMissing(db, "anime", "titlePinyin", "TEXT")
-    addColumnIfMissing(db, "anime", "metadataSource", "TEXT NOT NULL DEFAULT 'metadata_provider'")
-    addColumnIfMissing(db, "anime", "watchedEpisodeCount", "INTEGER NOT NULL DEFAULT 0")
-    addColumnIfMissing(db, "anime", "userStatus", "TEXT")
-    addColumnIfMissing(db, "anime", "userScore", "INTEGER")
-    addColumnIfMissing(db, "anime", "startDate", "TEXT")
-    addColumnIfMissing(db, "anime", "finishDate", "TEXT")
-    addColumnIfMissing(db, "anime", "countryOfOrigin", "TEXT DEFAULT 'JP'")
-    addColumnIfMissing(db, "anime", "isWishlist", "INTEGER NOT NULL DEFAULT 0")
-    addColumnIfMissing(db, "anime", "isPinned", "INTEGER NOT NULL DEFAULT 0")
-    addColumnIfMissing(db, "anime", "lastWatchedTime", "INTEGER")
-    addColumnIfMissing(db, "anime", "userNotes", "TEXT")
-    addColumnIfMissing(db, "anime", "lastCachedAt", "INTEGER NOT NULL DEFAULT 0")
-
-    db.execSQL(
-        """
-        CREATE TABLE IF NOT EXISTS `episode_history` (
-            `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-            `animeId` INTEGER NOT NULL,
-            `animeTitle` TEXT NOT NULL,
-            `episodeNumber` INTEGER NOT NULL,
-            `watchedTimestamp` INTEGER NOT NULL,
-            `isWatched` INTEGER NOT NULL DEFAULT 1
-        )
-        """.trimIndent()
-    )
-    addColumnIfMissing(db, "episode_history", "isWatched", "INTEGER NOT NULL DEFAULT 1")
-
-    db.execSQL(
-        """
-        CREATE TABLE IF NOT EXISTS `api_cache` (
-            `cacheKey` TEXT NOT NULL,
-            `entityIdsCsv` TEXT NOT NULL,
-            `cachedAt` INTEGER NOT NULL,
-            `ttlMillis` INTEGER NOT NULL,
-            PRIMARY KEY(`cacheKey`)
-        )
-        """.trimIndent()
-    )
-
-    db.execSQL(
-        """
-        CREATE TABLE IF NOT EXISTS `deleted_anime` (
-            `animeId` INTEGER NOT NULL,
-            `idMal` INTEGER,
-            `deletedAt` INTEGER NOT NULL,
-            PRIMARY KEY(`animeId`)
-        )
-        """.trimIndent()
-    )
-}
-
-private class MigrationTo9(startVer: Int) : Migration(startVer, 9) {
+private class Migration10To11 : Migration(10, 11) {
     override fun migrate(db: SupportSQLiteDatabase) {
-        ensureBaseTablesAndColumnsUpToV9(db)
-    }
-}
-
-private class MigrationTo10(startVer: Int) : Migration(startVer, 10) {
-    override fun migrate(db: SupportSQLiteDatabase) {
-        ensureBaseTablesAndColumnsUpToV9(db)
-        AppDatabase.MIGRATION_9_10.migrate(db)
-    }
-}
-
-private class Migration9To10 : Migration(9, 10) {
-    override fun migrate(db: SupportSQLiteDatabase) {
-        ensureBaseTablesAndColumnsUpToV9(db)
-        addColumnIfMissing(db, "anime", "archiveIdentifier", "TEXT DEFAULT NULL")
+        db.execSQL("DROP TABLE IF EXISTS `playback_preferences`")
 
         db.execSQL(
             """
-            CREATE TABLE IF NOT EXISTS `saved_anime` (
+            CREATE TABLE IF NOT EXISTS `anime_v11` (
                 `id` INTEGER NOT NULL,
-                `idMal` INTEGER,
-                `archiveIdentifier` TEXT DEFAULT NULL,
                 `titleRomaji` TEXT NOT NULL,
                 `titleEnglish` TEXT,
                 `titleNative` TEXT,
                 `titlePinyin` TEXT,
-                `metadataSource` TEXT NOT NULL,
+                `metadataSource` TEXT NOT NULL DEFAULT 'anilist',
                 `coverImage` TEXT NOT NULL,
                 `bannerImage` TEXT,
                 `format` TEXT,
@@ -173,9 +35,80 @@ private class Migration9To10 : Migration(9, 10) {
                 `airingTimeUnix` INTEGER,
                 `nextEpisodeNumber` INTEGER,
                 `genres` TEXT NOT NULL,
+                `studios` TEXT NOT NULL DEFAULT '',
                 `season` TEXT,
                 `seasonYear` INTEGER,
                 `score` INTEGER,
+                `popularity` INTEGER,
+                `synopsis` TEXT,
+                `countryOfOrigin` TEXT,
+                `inWatchlist` INTEGER NOT NULL,
+                `isWishlist` INTEGER NOT NULL,
+                `isFavorite` INTEGER NOT NULL,
+                `isPinned` INTEGER NOT NULL DEFAULT 0,
+                `notificationsEnabled` INTEGER NOT NULL,
+                `isWatched` INTEGER NOT NULL,
+                `lastWatchedTime` INTEGER,
+                `userNotes` TEXT,
+                `lastCachedAt` INTEGER NOT NULL,
+                PRIMARY KEY(`id`)
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            """
+            INSERT OR REPLACE INTO `anime_v11` (
+                `id`, `titleRomaji`, `titleEnglish`, `titleNative`, `titlePinyin`,
+                `metadataSource`, `coverImage`, `bannerImage`, `format`, `status`,
+                `totalEpisodes`, `currentEpisode`, `watchedEpisodeCount`, `userStatus`, `userScore`,
+                `startDate`, `finishDate`, `airingDayOfWeek`, `airingTimeUnix`, `nextEpisodeNumber`,
+                `genres`, `studios`, `season`, `seasonYear`, `score`, `popularity`, `synopsis`,
+                `countryOfOrigin`, `inWatchlist`, `isWishlist`, `isFavorite`, `isPinned`,
+                `notificationsEnabled`, `isWatched`, `lastWatchedTime`, `userNotes`, `lastCachedAt`
+            )
+            SELECT
+                `id`, `titleRomaji`, `titleEnglish`, `titleNative`, `titlePinyin`,
+                'anilist', `coverImage`, `bannerImage`, `format`, `status`,
+                `totalEpisodes`, `currentEpisode`, `watchedEpisodeCount`, `userStatus`, `userScore`,
+                `startDate`, `finishDate`, `airingDayOfWeek`, `airingTimeUnix`, `nextEpisodeNumber`,
+                `genres`, '', `season`, `seasonYear`, `score`, NULL, `synopsis`,
+                `countryOfOrigin`, `inWatchlist`, `isWishlist`, `isFavorite`, `isPinned`,
+                `notificationsEnabled`, `isWatched`, `lastWatchedTime`, `userNotes`, `lastCachedAt`
+            FROM `anime`
+            """.trimIndent()
+        )
+        db.execSQL("DROP TABLE `anime`")
+        db.execSQL("ALTER TABLE `anime_v11` RENAME TO `anime`")
+
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS `saved_anime_v11` (
+                `id` INTEGER NOT NULL,
+                `titleRomaji` TEXT NOT NULL,
+                `titleEnglish` TEXT,
+                `titleNative` TEXT,
+                `titlePinyin` TEXT,
+                `metadataSource` TEXT NOT NULL DEFAULT 'anilist',
+                `coverImage` TEXT NOT NULL,
+                `bannerImage` TEXT,
+                `format` TEXT,
+                `status` TEXT,
+                `totalEpisodes` INTEGER,
+                `currentEpisode` INTEGER NOT NULL,
+                `watchedEpisodeCount` INTEGER NOT NULL,
+                `userStatus` TEXT,
+                `userScore` INTEGER,
+                `startDate` TEXT,
+                `finishDate` TEXT,
+                `airingDayOfWeek` INTEGER NOT NULL,
+                `airingTimeUnix` INTEGER,
+                `nextEpisodeNumber` INTEGER,
+                `genres` TEXT NOT NULL,
+                `studios` TEXT NOT NULL DEFAULT '',
+                `season` TEXT,
+                `seasonYear` INTEGER,
+                `score` INTEGER,
+                `popularity` INTEGER,
                 `synopsis` TEXT,
                 `countryOfOrigin` TEXT,
                 `inWatchlist` INTEGER NOT NULL,
@@ -192,49 +125,58 @@ private class Migration9To10 : Migration(9, 10) {
             )
             """.trimIndent()
         )
-        db.execSQL("CREATE INDEX IF NOT EXISTS `index_saved_anime_idMal` ON `saved_anime` (`idMal`)")
-        db.execSQL("CREATE INDEX IF NOT EXISTS `index_saved_anime_archiveIdentifier` ON `saved_anime` (`archiveIdentifier`)")
-
-        val now = System.currentTimeMillis()
         db.execSQL(
             """
-            INSERT OR REPLACE INTO `saved_anime` (
-                `id`, `idMal`, `archiveIdentifier`, `titleRomaji`, `titleEnglish`, `titleNative`, `titlePinyin`,
-                `metadataSource`, `coverImage`, `bannerImage`, `format`, `status`, `totalEpisodes`, `currentEpisode`,
-                `watchedEpisodeCount`, `userStatus`, `userScore`, `startDate`, `finishDate`, `airingDayOfWeek`,
-                `airingTimeUnix`, `nextEpisodeNumber`, `genres`, `season`, `seasonYear`, `score`, `synopsis`,
-                `countryOfOrigin`, `inWatchlist`, `isWishlist`, `isFavorite`, `isPinned`, `notificationsEnabled`,
-                `isWatched`, `lastWatchedTime`, `userNotes`, `savedAt`, `updatedAt`
+            INSERT OR REPLACE INTO `saved_anime_v11` (
+                `id`, `titleRomaji`, `titleEnglish`, `titleNative`, `titlePinyin`,
+                `metadataSource`, `coverImage`, `bannerImage`, `format`, `status`,
+                `totalEpisodes`, `currentEpisode`, `watchedEpisodeCount`, `userStatus`, `userScore`,
+                `startDate`, `finishDate`, `airingDayOfWeek`, `airingTimeUnix`, `nextEpisodeNumber`,
+                `genres`, `studios`, `season`, `seasonYear`, `score`, `popularity`, `synopsis`,
+                `countryOfOrigin`, `inWatchlist`, `isWishlist`, `isFavorite`, `isPinned`,
+                `notificationsEnabled`, `isWatched`, `lastWatchedTime`, `userNotes`, `savedAt`, `updatedAt`
             )
             SELECT
-                `id`, `idMal`, `archiveIdentifier`, `titleRomaji`, `titleEnglish`, `titleNative`, `titlePinyin`,
-                COALESCE(`metadataSource`, 'local'), `coverImage`, `bannerImage`, `format`, `status`, `totalEpisodes`, `currentEpisode`,
-                `watchedEpisodeCount`, `userStatus`, `userScore`, `startDate`, `finishDate`, `airingDayOfWeek`,
-                `airingTimeUnix`, `nextEpisodeNumber`, `genres`, `season`, `seasonYear`, `score`, `synopsis`,
-                `countryOfOrigin`, `inWatchlist`, `isWishlist`, `isFavorite`, `isPinned`, `notificationsEnabled`,
-                `isWatched`, `lastWatchedTime`, `userNotes`, $now, $now
-            FROM `anime`
-            WHERE `inWatchlist` = 1
-               OR `isWishlist` = 1
-               OR `isFavorite` = 1
-               OR `isPinned` = 1
-               OR `watchedEpisodeCount` > 0
-               OR (`userStatus` IS NOT NULL AND `userStatus` != '')
-               OR (`userNotes` IS NOT NULL AND `userNotes` != '')
-               OR (`archiveIdentifier` IS NOT NULL AND `archiveIdentifier` != '')
+                `id`, `titleRomaji`, `titleEnglish`, `titleNative`, `titlePinyin`,
+                'anilist', `coverImage`, `bannerImage`, `format`, `status`,
+                `totalEpisodes`, `currentEpisode`, `watchedEpisodeCount`, `userStatus`, `userScore`,
+                `startDate`, `finishDate`, `airingDayOfWeek`, `airingTimeUnix`, `nextEpisodeNumber`,
+                `genres`, '', `season`, `seasonYear`, `score`, NULL, `synopsis`,
+                `countryOfOrigin`, `inWatchlist`, `isWishlist`, `isFavorite`, `isPinned`,
+                `notificationsEnabled`, `isWatched`, `lastWatchedTime`, `userNotes`, `savedAt`, `updatedAt`
+            FROM `saved_anime`
             """.trimIndent()
         )
+        db.execSQL("DROP TABLE `saved_anime`")
+        db.execSQL("ALTER TABLE `saved_anime_v11` RENAME TO `saved_anime`")
 
         db.execSQL(
             """
-            CREATE TABLE IF NOT EXISTS `playback_preferences` (
-                `prefKey` TEXT NOT NULL,
-                `prefValue` TEXT NOT NULL,
-                `updatedAt` INTEGER NOT NULL,
-                PRIMARY KEY(`prefKey`)
+            CREATE TABLE IF NOT EXISTS `deleted_anime_v11` (
+                `animeId` INTEGER NOT NULL,
+                `title` TEXT,
+                `listType` TEXT NOT NULL,
+                `deletedAt` INTEGER NOT NULL,
+                PRIMARY KEY(`animeId`)
             )
             """.trimIndent()
         )
+        db.execSQL(
+            """
+            INSERT OR REPLACE INTO `deleted_anime_v11` (`animeId`, `title`, `listType`, `deletedAt`)
+            SELECT `animeId`, NULL, `listType`, `deletedAt` FROM `deleted_anime`
+            """.trimIndent()
+        )
+        db.execSQL("DROP TABLE `deleted_anime`")
+        db.execSQL("ALTER TABLE `deleted_anime_v11` RENAME TO `deleted_anime`")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_deleted_anime_animeId` ON `deleted_anime` (`animeId`)")
+    }
+}
+
+private class Migration11To12 : Migration(11, 12) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `anime` ADD COLUMN `userSeason` INTEGER NOT NULL DEFAULT 1")
+        db.execSQL("ALTER TABLE `saved_anime` ADD COLUMN `userSeason` INTEGER NOT NULL DEFAULT 1")
     }
 }
 
@@ -244,10 +186,9 @@ private class Migration9To10 : Migration(9, 10) {
         EpisodeHistoryEntity::class,
         ApiCacheEntity::class,
         DeletedAnimeEntity::class,
-        SavedAnimeEntity::class,
-        PlaybackPreferenceEntity::class
+        SavedAnimeEntity::class
     ],
-    version = 10,
+    version = 12,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -256,21 +197,15 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun apiCacheDao(): ApiCacheDao
     abstract fun deletedAnimeDao(): DeletedAnimeDao
     abstract fun savedAnimeDao(): SavedAnimeDao
-    abstract fun playbackPreferenceDao(): PlaybackPreferenceDao
 
     companion object {
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
-        val MIGRATION_9_10: Migration = Migration9To10()
+        val MIGRATION_10_11: Migration = Migration10To11()
+        val MIGRATION_11_12: Migration = Migration11To12()
 
-        val ALL_MIGRATIONS: Array<Migration> = buildList<Migration> {
-            for (startVer in 1..8) {
-                add(MigrationTo9(startVer))
-                add(MigrationTo10(startVer))
-            }
-            add(MIGRATION_9_10)
-        }.toTypedArray()
+        val ALL_MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_10_11, MIGRATION_11_12)
 
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
@@ -280,10 +215,27 @@ abstract class AppDatabase : RoomDatabase() {
                     "anitrack_anime.db"
                 )
                     .addMigrations(*ALL_MIGRATIONS)
+                    .fallbackToDestructiveMigration(dropAllTables = true)
+                    .addCallback(object : Callback() {
+                        override fun onOpen(db: SupportSQLiteDatabase) {
+                            super.onOpen(db)
+                            runCatching {
+                                db.execSQL("PRAGMA auto_vacuum = INCREMENTAL")
+                                db.execSQL("PRAGMA cache_size = -1024")
+                                db.execSQL("PRAGMA temp_store = MEMORY")
+                            }
+                        }
+                    })
                     .build()
                 INSTANCE = instance
                 instance
             }
+        }
+    }
+
+    fun compactDatabase() {
+        runCatching {
+            openHelper.writableDatabase.execSQL("PRAGMA incremental_vacuum(32)")
         }
     }
 }

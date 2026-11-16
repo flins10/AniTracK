@@ -26,9 +26,8 @@
 -keepclassmembers class * {
     @com.squareup.moshi.Json *;
 }
--keep class com.example.data.remote.MalUserProfile { *; }
--keep class com.example.data.remote.MalSyncLog { *; }
--keep class com.example.data.remote.AiEpisodeInfo { *; }
+-keep class com.example.data.remote.** { *; }
+-keep class com.example.model.** { *; }
 
 # Network and reflection safety under aggressive obfuscation
 -keepattributes Signature

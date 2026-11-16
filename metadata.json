@@ -1,6 +1,6 @@
 {
-  "name": "AniTrAk",
-  "description": "Anime tracker, schedule, and Frost Glow streaming catalogue",
+  "name": "Anime Universe",
+  "description": "Private, invite-only anime tracking and community app powered by AniList GraphQL and Supabase",
   "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

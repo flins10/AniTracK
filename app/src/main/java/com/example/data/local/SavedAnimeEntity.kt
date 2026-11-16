@@ -7,13 +7,11 @@ import androidx.room.PrimaryKey
 @Entity(tableName = "saved_anime")
 data class SavedAnimeEntity(
     @PrimaryKey val id: Int,
-    val idMal: Int? = null,
-    @ColumnInfo(defaultValue = "NULL") val archiveIdentifier: String? = null,
     val titleRomaji: String,
     val titleEnglish: String? = null,
     val titleNative: String? = null,
     val titlePinyin: String? = null,
-    val metadataSource: String = "metadata_provider",
+    val metadataSource: String = "anilist",
     val coverImage: String,
     val bannerImage: String? = null,
     val format: String? = "TV",
@@ -21,6 +19,7 @@ data class SavedAnimeEntity(
     val totalEpisodes: Int? = null,
     val currentEpisode: Int = 1,
     val watchedEpisodeCount: Int = 0,
+    @ColumnInfo(defaultValue = "1") val userSeason: Int = 1,
     val userStatus: String? = null,
     val userScore: Int? = null,
     val startDate: String? = null,
@@ -29,9 +28,11 @@ data class SavedAnimeEntity(
     val airingTimeUnix: Long? = null,
     val nextEpisodeNumber: Int? = null,
     val genres: String = "",
+    @ColumnInfo(defaultValue = "") val studios: String = "",
     val season: String? = null,
     val seasonYear: Int? = null,
     val score: Int? = null,
+    val popularity: Int? = null,
     val synopsis: String? = null,
     val countryOfOrigin: String? = "JP",
     val inWatchlist: Boolean = false,
@@ -47,16 +48,14 @@ data class SavedAnimeEntity(
 ) {
     val hasActiveUserState: Boolean
         get() = inWatchlist || isWishlist || isFavorite || isPinned ||
-                watchedEpisodeCount > 0 || !userStatus.isNullOrBlank() ||
-                !userNotes.isNullOrBlank() || !archiveIdentifier.isNullOrBlank()
+            watchedEpisodeCount > 0 || !userStatus.isNullOrBlank() ||
+            !userNotes.isNullOrBlank()
 }
 
 fun AnimeEntity.toSavedAnimeEntity(existingSavedAt: Long? = null): SavedAnimeEntity {
     val now = System.currentTimeMillis()
     return SavedAnimeEntity(
         id = id,
-        idMal = idMal,
-        archiveIdentifier = archiveIdentifier,
         titleRomaji = titleRomaji,
         titleEnglish = titleEnglish,
         titleNative = titleNative,
@@ -69,6 +68,7 @@ fun AnimeEntity.toSavedAnimeEntity(existingSavedAt: Long? = null): SavedAnimeEnt
         totalEpisodes = totalEpisodes,
         currentEpisode = currentEpisode,
         watchedEpisodeCount = watchedEpisodeCount,
+        userSeason = userSeason,
         userStatus = userStatus,
         userScore = userScore,
         startDate = startDate,
@@ -77,9 +77,11 @@ fun AnimeEntity.toSavedAnimeEntity(existingSavedAt: Long? = null): SavedAnimeEnt
         airingTimeUnix = airingTimeUnix,
         nextEpisodeNumber = nextEpisodeNumber,
         genres = genres,
+        studios = studios,
         season = season,
         seasonYear = seasonYear,
         score = score,
+        popularity = popularity,
         synopsis = synopsis,
         countryOfOrigin = countryOfOrigin,
         inWatchlist = inWatchlist,
@@ -98,8 +100,6 @@ fun AnimeEntity.toSavedAnimeEntity(existingSavedAt: Long? = null): SavedAnimeEnt
 fun SavedAnimeEntity.toAnimeEntity(): AnimeEntity {
     return AnimeEntity(
         id = id,
-        idMal = idMal,
-        archiveIdentifier = archiveIdentifier,
         titleRomaji = titleRomaji,
         titleEnglish = titleEnglish,
         titleNative = titleNative,
@@ -112,6 +112,7 @@ fun SavedAnimeEntity.toAnimeEntity(): AnimeEntity {
         totalEpisodes = totalEpisodes,
         currentEpisode = currentEpisode,
         watchedEpisodeCount = watchedEpisodeCount,
+        userSeason = userSeason,
         userStatus = userStatus,
         userScore = userScore,
         startDate = startDate,
@@ -120,9 +121,11 @@ fun SavedAnimeEntity.toAnimeEntity(): AnimeEntity {
         airingTimeUnix = airingTimeUnix,
         nextEpisodeNumber = nextEpisodeNumber,
         genres = genres,
+        studios = studios,
         season = season,
         seasonYear = seasonYear,
         score = score,
+        popularity = popularity,
         synopsis = synopsis,
         countryOfOrigin = countryOfOrigin,
         inWatchlist = inWatchlist,

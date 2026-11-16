@@ -9,9 +9,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.example.data.local.AppDatabase
 import com.example.data.repository.AnimeRepository
-import java.time.Instant
 import java.time.LocalDate
-import java.time.ZoneId
 
 class ScheduleUpdateWorker(
     private val context: Context,
@@ -21,17 +19,21 @@ class ScheduleUpdateWorker(
     override suspend fun doWork(): Result {
         return try {
             val database = AppDatabase.getInstance(context)
-            val repository = AnimeRepository(database.animeDao(), database.episodeHistoryDao(), database.apiCacheDao(), database.deletedAnimeDao())
-            // Execute live schedule & countdown refresh
+            val repository = AnimeRepository(
+                animeDao = database.animeDao(),
+                historyDao = database.episodeHistoryDao(),
+                apiCacheDao = database.apiCacheDao(),
+                deletedAnimeDao = database.deletedAnimeDao(),
+                savedAnimeDao = database.savedAnimeDao()
+            )
             val result = repository.refreshSchedule()
             if (result.isSuccess) {
-                // Check and trigger notifications for today's releases
                 checkAndNotifyUpcoming(context, database)
                 Result.success()
             } else {
                 Result.retry()
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             Result.failure()
         }
     }
@@ -40,14 +42,13 @@ class ScheduleUpdateWorker(
         val todayValue = LocalDate.now().dayOfWeek.value
         val nowSeconds = System.currentTimeMillis() / 1000
         val animeList = database.animeDao().getAllAnimeSync()
-        val todayAnime = animeList.filter { it.inWatchlist && it.airingDayOfWeek == todayValue }
+        val todayAnime = animeList.filter { it.inWatchlist && it.notificationsEnabled && it.airingDayOfWeek == todayValue }
 
         createNotificationChannel(context)
 
         for (anime in todayAnime) {
             val airingTime = anime.getEffectiveAiringTime(nowSeconds)
             val nextEp = anime.getEffectiveNextEpisodeNumber(nowSeconds)
-            // If episode airs within 1 hour or aired within last 30 minutes, notify user
             if (airingTime != null && nextEp != null && (airingTime - nowSeconds) in -1800L..3600L) {
                 sendReleaseNotification(
                     context = context,
@@ -60,8 +61,8 @@ class ScheduleUpdateWorker(
     }
 
     companion object {
-        const val CHANNEL_ID = "anitrack_release_notifications"
-        const val CHANNEL_NAME = "AniTrAk Episode Releases"
+        const val CHANNEL_ID = "anime_universe_release_notifications"
+        const val CHANNEL_NAME = "Anime Universe Releases"
 
         fun createNotificationChannel(context: Context) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -70,7 +71,7 @@ class ScheduleUpdateWorker(
                     CHANNEL_NAME,
                     NotificationManager.IMPORTANCE_DEFAULT
                 ).apply {
-                    description = "Notifications when a tracked seasonal anime episode is released"
+                    description = "Notifications when a tracked airing anime episode releases"
                 }
                 val notificationManager =
                     context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -90,8 +91,8 @@ class ScheduleUpdateWorker(
 
             val builder = NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setContentTitle("New Episode Release Alert!")
-                .setContentText("$title Episode $episodeNumber is now airing!")
+                .setContentTitle("New Episode Alert")
+                .setContentText("$title Episode $episodeNumber is airing soon!")
                 .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                 .setAutoCancel(true)
 

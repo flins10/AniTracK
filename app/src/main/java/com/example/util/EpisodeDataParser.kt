@@ -19,7 +19,7 @@ data class ParsedEpisodeInfo(
 
 /**
  * Utility to parse and differentiate between 'currently aired episodes' and 'total planned episodes'
- * across different remote data providers (AniList, MyAnimeList, Jikan).
+ * for public AniList anime metadata.
  */
 object EpisodeDataParser {
     /**
@@ -159,42 +159,6 @@ object EpisodeDataParser {
             airedEpisodeCount = finalAired,
             totalEpisodes = apiEpisodes,
             nextEpisodeNumber = if (apiEpisodes != null && apiEpisodes > 0 && finalAired >= apiEpisodes) finalAired else nextEp,
-            isFinished = false
-        )
-    }
-
-    /**
-     * Parses episode details from MyAnimeList (MAL) data, properly differentiating
-     * between 'currently aired episodes' and 'total planned episodes'.
-     */
-    fun parseMalEpisodes(
-        malNumEpisodes: Int?,
-        malStatusStr: String?,
-        userWatchedEpisodes: Int = 0,
-        existingAired: Int = 0,
-        malAiredEpisode: Int? = null,
-        nowSeconds: Long = System.currentTimeMillis() / 1000
-    ): ParsedEpisodeInfo {
-        val malStatus = malStatusStr?.lowercase() ?: "currently_airing"
-        val isFinished = malStatus == "finished_airing" || malStatus == "finished"
-        if (isFinished) {
-            val total = maxOf(malNumEpisodes ?: 0, malAiredEpisode ?: 0, existingAired, userWatchedEpisodes, 1)
-            return ParsedEpisodeInfo(
-                airedEpisodeCount = total,
-                totalEpisodes = total,
-                nextEpisodeNumber = total,
-                isFinished = true
-            )
-        }
-
-        val totalEps = if (malNumEpisodes != null && malNumEpisodes > 0) malNumEpisodes else null
-        val rawAired = maxOf(malAiredEpisode ?: 0, existingAired, userWatchedEpisodes).coerceAtLeast(1)
-        val airedCount = if (totalEps != null) rawAired.coerceIn(1, totalEps) else rawAired
-
-        return ParsedEpisodeInfo(
-            airedEpisodeCount = airedCount,
-            totalEpisodes = totalEps,
-            nextEpisodeNumber = if (totalEps != null && airedCount >= totalEps) airedCount else (airedCount + 1),
             isFinished = false
         )
     }

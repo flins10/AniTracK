@@ -1,232 +1,205 @@
 package com.example.viewmodel
 
 import android.app.Application
+import android.content.ContentResolver
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.auth.AuthCallbackOutcome
+import com.example.auth.SignUpOutcome
+import com.example.auth.SupabaseAuthService
+import com.example.config.AppConfig
 import com.example.data.local.AnimeEntity
 import com.example.data.local.AppDatabase
-import com.example.data.local.EpisodeHistoryEntity
-import com.example.data.remote.AiVerificationService
-import com.example.data.remote.AniListOAuthManager
-import com.example.data.remote.AniListUserProfile
-import com.example.data.remote.AniListMedia
-import com.example.data.remote.MalSyncLog
-import com.example.data.remote.MalUserProfile
-import com.example.data.remote.MyAnimeListOAuthManager
-import com.example.data.remote.MyAnimeListService
 import com.example.data.repository.AnimeRepository
-import com.example.data.repository.YouTubeRepository
-import com.example.data.repository.YouTubeVideo
-import com.example.data.repository.YouTubeVideoType
-import com.example.data.repository.YouTubeSearchResultState
-import com.example.data.repository.YouTubeSearchLink
-import com.example.data.repository.InternetArchiveRepository
-import com.example.data.repository.ArchiveMediaItem
-import com.example.data.repository.ArchivePlayableMedia
-import com.example.data.repository.ArchiveSearchResultState
-import com.example.data.repository.ArchivePlayableMediaResult
-import com.example.data.repository.AnimeSeasonInfo
-import com.example.util.EpisodeDataParser
+import com.example.data.repository.AppPreferencesState
+import com.example.data.repository.PreferencesRepository
+import com.example.model.AnimeCollection
+import com.example.model.AnimeRichDetail
+import com.example.model.AuthSession
+import com.example.model.BuiltInAvatar
+import com.example.model.CommunityActivityItem
+import com.example.model.CommunityCapacity
+import com.example.model.CommunityMember
+import com.example.model.CommunityReview
+import com.example.model.InvitationCode
+import com.example.model.MemberStatus
+import com.example.model.PrivacySettings
+import com.example.model.ThemeModePreference
+import com.example.model.UserProfile
+import com.example.model.VisibilityLevel
+import com.example.model.WatchStatus
+import com.example.model.WatchlistLayoutMode
+import com.example.service.AniListMetadataProvider
+import com.example.service.AppUpdateInfo
+import com.example.service.SupabaseDatabaseService
+import com.example.util.ErrorSanitizer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.LocalDate
+
+enum class ReviewSortOption(val label: String) {
+    NEWEST("Newest"),
+    HIGHEST_RATED("Highest Rated")
+}
+
+enum class OnboardingStage {
+    NONE,
+    USERNAME,
+    AVATAR
+}
+
+data class DynamicIslandFeedback(
+    val id: Long = System.currentTimeMillis(),
+    val title: String,
+    val subtitle: String,
+    val animeId: Int? = null,
+    val previousEpisode: Int? = null,
+    val previousStatus: WatchStatus? = null,
+    val canUndo: Boolean = false
+)
 
 class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     private val database = AppDatabase.getInstance(application)
+    private val metadataProvider = AniListMetadataProvider()
     private val repository = AnimeRepository(
         animeDao = database.animeDao(),
         historyDao = database.episodeHistoryDao(),
         apiCacheDao = database.apiCacheDao(),
         deletedAnimeDao = database.deletedAnimeDao(),
         savedAnimeDao = database.savedAnimeDao(),
-        playbackPreferenceDao = database.playbackPreferenceDao()
+        metadataProvider = metadataProvider,
+        onCompactDatabase = { database.compactDatabase() }
     )
-    val malOAuthManager = MyAnimeListOAuthManager(application)
-    private val _isStealthModeEnabled = MutableStateFlow(false)
-    val isStealthModeEnabled = _isStealthModeEnabled.asStateFlow()
-    val selectedDay = MutableStateFlow(LocalDate.now().dayOfWeek.value)
+    private val preferencesRepo = PreferencesRepository(application)
+    private val supabaseAuth = SupabaseAuthService(application)
+    private val supabaseDb = SupabaseDatabaseService()
 
+    // App Preferences (DataStore)
+    val preferences: StateFlow<AppPreferencesState> = preferencesRepo.preferencesFlow
+        .stateIn(viewModelScope, SharingStarted.Eagerly, AppPreferencesState())
+
+    // Global Feedback & Dynamic Island Morph State
+    private val _userMessage = MutableStateFlow<String?>(null)
+    val userMessage = _userMessage.asStateFlow()
+    fun clearUserMessage() { _userMessage.value = null }
+    fun showMessage(message: String) { _userMessage.value = message }
+
+    private val _dynamicIslandFeedback = MutableStateFlow<DynamicIslandFeedback?>(null)
+    val dynamicIslandFeedback = _dynamicIslandFeedback.asStateFlow()
+    fun dismissDynamicIslandFeedback() { _dynamicIslandFeedback.value = null }
+
+    private val _focusedArtworkUrl = MutableStateFlow<String?>(null)
+    val focusedArtworkUrl = _focusedArtworkUrl.asStateFlow()
+    fun updateFocusedArtwork(url: String?) {
+        if (!url.isNullOrBlank()) {
+            _focusedArtworkUrl.value = url
+        }
+    }
+
+    // Auth & Membership State
+    private val _authSession = MutableStateFlow<AuthSession?>(null)
+    val authSession = _authSession.asStateFlow()
+
+    private val _isLocalPreviewMode = MutableStateFlow(false)
+    val isLocalPreviewMode = _isLocalPreviewMode.asStateFlow()
+
+    private val _userProfile = MutableStateFlow<UserProfile?>(null)
+    val userProfile = _userProfile.asStateFlow()
+
+    private val _isAuthLoading = MutableStateFlow(false)
+    val isAuthLoading = _isAuthLoading.asStateFlow()
+
+    private val _authError = MutableStateFlow<String?>(null)
+    val authError = _authError.asStateFlow()
+
+    private val _pendingEmailVerification = MutableStateFlow<String?>(null)
+    val pendingEmailVerification = _pendingEmailVerification.asStateFlow()
+
+    private val _needsInviteRedemption = MutableStateFlow(false)
+    val needsInviteRedemption = _needsInviteRedemption.asStateFlow()
+
+    private val _isSupabaseReady = MutableStateFlow(AppConfig.isSupabaseConfigured)
+    val isSupabaseReady = _isSupabaseReady.asStateFlow()
+
+    private val _isPasswordRecoveryPending = MutableStateFlow(false)
+    val isPasswordRecoveryPending = _isPasswordRecoveryPending.asStateFlow()
+
+    private val _onboardingStage = MutableStateFlow(OnboardingStage.NONE)
+    val onboardingStage = _onboardingStage.asStateFlow()
+
+    private val _pendingOnboardingUsername = MutableStateFlow("")
+    val pendingOnboardingUsername = _pendingOnboardingUsername.asStateFlow()
+
+    private val _isCheckingUsername = MutableStateFlow(false)
+    val isCheckingUsername = _isCheckingUsername.asStateFlow()
+
+    private val _usernameAvailabilityError = MutableStateFlow<String?>(null)
+    val usernameAvailabilityError = _usernameAvailabilityError.asStateFlow()
+
+    private val _profileError = MutableStateFlow<String?>(null)
+    val profileError = _profileError.asStateFlow()
+
+    private val _isProfileSaving = MutableStateFlow(false)
+    val isProfileSaving = _isProfileSaving.asStateFlow()
+
+    private val _isDeletingAccount = MutableStateFlow(false)
+    val isDeletingAccount = _isDeletingAccount.asStateFlow()
+
+    private val _deleteAccountError = MutableStateFlow<String?>(null)
+    val deleteAccountError = _deleteAccountError.asStateFlow()
+
+    private val _availableUpdate = MutableStateFlow<AppUpdateInfo?>(null)
+    val availableUpdate = _availableUpdate.asStateFlow()
+
+    private val _isCheckingUpdate = MutableStateFlow(false)
+    val isCheckingUpdate = _isCheckingUpdate.asStateFlow()
+
+    private var pendingSignUpEmail: String? = null
+    private var pendingSignUpPassword: String? = null
+    private var verificationPollJob: Job? = null
+
+    private val _privacySettings = MutableStateFlow(PrivacySettings())
+    val privacySettings = _privacySettings.asStateFlow()
+
+    // Watchlist & Schedule
+    val watchlist: StateFlow<List<AnimeEntity>> = repository.watchlist
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    val favorites: StateFlow<List<AnimeEntity>> = repository.favorites
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    val selectedDay = MutableStateFlow(LocalDate.now().dayOfWeek.value)
     @OptIn(ExperimentalCoroutinesApi::class)
     val dayAnime: StateFlow<List<AnimeEntity>> = selectedDay
         .flatMapLatest { day -> repository.getPlannerAnimeByDay(day) }
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.Eagerly,
-            initialValue = emptyList()
-        )
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    @OptIn(ExperimentalCoroutinesApi::class)
-    val calendarAnime: StateFlow<List<AnimeEntity>> = selectedDay
-        .flatMapLatest { day -> repository.getCalendarAnimeByDay(day) }
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.Eagerly,
-            initialValue = emptyList()
-        )
+    // Home Highlights
+    private val _trendingAnime = MutableStateFlow<List<AnimeEntity>>(emptyList())
+    val trendingAnime = _trendingAnime.asStateFlow()
 
-    val watchlist: StateFlow<List<AnimeEntity>> = repository.watchlist
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.Eagerly,
-            initialValue = emptyList()
-        )
+    private val _isHomeRefreshing = MutableStateFlow(false)
+    val isHomeRefreshing = _isHomeRefreshing.asStateFlow()
 
-    val favorites: StateFlow<List<AnimeEntity>> = repository.favorites
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.Eagerly,
-            initialValue = emptyList()
-        )
+    private val _homeError = MutableStateFlow<String?>(null)
+    val homeError = _homeError.asStateFlow()
 
-    val wishlist: StateFlow<List<AnimeEntity>> = repository.wishlist
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.Eagerly,
-            initialValue = emptyList()
-        )
-
-    val watchHistory: StateFlow<List<EpisodeHistoryEntity>> = repository.watchHistory
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.Eagerly,
-            initialValue = emptyList()
-        )
-
-    val upcomingAnime: StateFlow<List<AnimeEntity>> = repository.upcomingAnime
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.Eagerly,
-            initialValue = emptyList()
-        )
-
-    val allOngoingAnime: StateFlow<List<AnimeEntity>> = repository.allOngoingAnime
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.Eagerly,
-            initialValue = emptyList()
-        )
-
-    val ongoingDonghua: StateFlow<List<AnimeEntity>> = repository.ongoingDonghua
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.Eagerly,
-            initialValue = emptyList()
-        )
-
-    // Theme & Styling customization
-    private val _themeColor = MutableStateFlow("LIGHT_BLUE")
-    val themeColor = _themeColor.asStateFlow()
-
-    // Title Language Display Preference (ENGLISH, AUTO, ORIGINAL, ROMAJI_PINYIN)
-    private val _titleLanguagePreference = MutableStateFlow("ENGLISH")
-    val titleLanguagePreference = _titleLanguagePreference.asStateFlow()
-
-    fun setTitleLanguagePreference(preference: String) {
-        val clean = preference.uppercase().trim()
-        _titleLanguagePreference.value = clean
-        _userMessage.value = "Title language set to: $clean"
-    }
-
-    // Account & MAL Login State
-    private val _isCloudLoggedIn = MutableStateFlow(false)
-    val isCloudLoggedIn = _isCloudLoggedIn.asStateFlow()
-
-    private val _isMalLoggedIn = MutableStateFlow(malOAuthManager.isLoggedIn)
-    val isMalLoggedIn = _isMalLoggedIn.asStateFlow()
-
-    private val _malUserProfile = MutableStateFlow<MalUserProfile?>(null)
-    val malUserProfile = _malUserProfile.asStateFlow()
-
-    private val _isMalSyncing = MutableStateFlow(false)
-    val isMalSyncing = _isMalSyncing.asStateFlow()
-
-    private val _malSyncLogs = MutableStateFlow<List<MalSyncLog>>(emptyList())
-    val malSyncLogs = _malSyncLogs.asStateFlow()
-
-    private val _cloudUserEmail = MutableStateFlow<String?>(null)
-    val cloudUserEmail = _cloudUserEmail.asStateFlow()
-
-    private val _cloudUserName = MutableStateFlow<String?>(null)
-    val cloudUserName = _cloudUserName.asStateFlow()
-
-    private val _lastCloudSyncTime = MutableStateFlow<Long?>(null)
-    val lastCloudSyncTime = _lastCloudSyncTime.asStateFlow()
-
-    private val _isCloudSyncing = MutableStateFlow(false)
-    val isCloudSyncing = _isCloudSyncing.asStateFlow()
-
-    // Settings preferences
-    private val _autoIncrementEpisode = MutableStateFlow(true)
-    val autoIncrementEpisode = _autoIncrementEpisode.asStateFlow()
-
-    private val _globalNotificationsEnabled = MutableStateFlow(true)
-    val globalNotificationsEnabled = _globalNotificationsEnabled.asStateFlow()
-
-    // Enabled features toggles
-    private val _enabledFeatures = MutableStateFlow(
-        setOf("STEPPER", "COUNTDOWN", "CLOUD_SYNC", "UPCOMING_CAROUSEL", "AI_ADVISOR", "NOTIFICATION_DOTS")
-    )
-    val enabledFeatures = _enabledFeatures.asStateFlow()
-
-    // AI Craftsman state
-    private val _aiCraftingState = MutableStateFlow(false)
-    val aiCraftingState = _aiCraftingState.asStateFlow()
-
-    private val _aiCraftResults = MutableStateFlow<List<String>>(emptyList())
-    val aiCraftResults = _aiCraftResults.asStateFlow()
-
-    // Search & Discover filters
+    // Discover & Search
     private val _searchQuery = MutableStateFlow("")
     val searchQuery = _searchQuery.asStateFlow()
-
-    private val _selectedGenre = MutableStateFlow("ALL")
-    val selectedGenre = _selectedGenre.asStateFlow()
-
-    private val prefs = application.getSharedPreferences("anitrack_app_prefs", android.content.Context.MODE_PRIVATE)
-    private val _safeModeEnabled = MutableStateFlow(prefs.getBoolean("safe_mode_enabled", true))
-    val safeModeEnabled: StateFlow<Boolean> = _safeModeEnabled.asStateFlow()
-
-    fun toggleSafeMode() {
-        val newValue = !_safeModeEnabled.value
-        _safeModeEnabled.value = newValue
-        prefs.edit().putBoolean("safe_mode_enabled", newValue).apply()
-        _userMessage.value = if (newValue) "Safe Mode ON (Adult content hidden)" else "Adult Content Unlocked"
-        performSearch(_searchQuery.value)
-    }
-
-    fun getCurrentDateSeasonAndYear(): Pair<String, Int> {
-        val now = java.time.LocalDate.now()
-        val year = now.year
-        val season = when (now.monthValue) {
-            12, 1, 2 -> "WINTER"
-            3, 4, 5 -> "SPRING"
-            6, 7, 8 -> "SUMMER"
-            else -> "FALL"
-        }
-        return Pair(season, year)
-    }
-
-    private val _discoverFilter = MutableStateFlow("ALL_TIME") // "ALL_TIME", "ONGOING", "UPCOMING", "SEASON"
-    val discoverFilter = _discoverFilter.asStateFlow()
-
-    private val _selectedSeason = MutableStateFlow<String?>(null) // Default unrestricted
-    val selectedSeason = _selectedSeason.asStateFlow()
-
-    private val _selectedYear = MutableStateFlow<Int?>(null) // Default unrestricted
-    val selectedYear = _selectedYear.asStateFlow()
 
     private val _filterState = MutableStateFlow(DiscoverFilterState())
     val filterState = _filterState.asStateFlow()
@@ -237,2094 +210,1604 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     private val _isSearching = MutableStateFlow(false)
     val isSearching = _isSearching.asStateFlow()
 
-    private val _searchError = MutableStateFlow<String?>(null)
-    val searchError = _searchError.asStateFlow()
-
     private val _isNextPageLoading = MutableStateFlow(false)
     val isNextPageLoading = _isNextPageLoading.asStateFlow()
 
-    private var currentPage = 1
-    private var hasNextPage = true
-
-    // Refresh state
-    private val _isRefreshing = MutableStateFlow(false)
-    val isRefreshing = _isRefreshing.asStateFlow()
-
-    // Selected Anime Detail
-    private val _selectedAnimeDetailId = MutableStateFlow<Int?>(null)
-    val selectedAnimeDetailId = _selectedAnimeDetailId.asStateFlow()
-
-    @OptIn(ExperimentalCoroutinesApi::class)
-    val selectedAnimeDetail: StateFlow<AnimeEntity?> = _selectedAnimeDetailId
-        .flatMapLatest { id ->
-            if (id != null) repository.getAnimeById(id) else kotlinx.coroutines.flow.flowOf(null)
-        }
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.Eagerly,
-            initialValue = null
-        )
-
-    // Streaming Source & Player State
-    private val streamingSourceRepository = com.example.data.repository.StreamingSourceRepository()
-
-    private val _currentStreamingSource = MutableStateFlow<com.example.data.repository.StreamingSource?>(null)
-    val currentStreamingSource = _currentStreamingSource.asStateFlow()
-
-    private val _isStreamingLoading = MutableStateFlow(false)
-    val isStreamingLoading = _isStreamingLoading.asStateFlow()
-
-    private val _streamingError = MutableStateFlow<String?>(null)
-    val streamingError = _streamingError.asStateFlow()
-
-    fun loadStreamingSource(animeId: Int, episodeNumber: Int) {
-        _isStreamingLoading.value = true
-        _streamingError.value = null
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val anime = repository.getAnimeByIdSync(animeId)
-                if (anime != null) {
-                    val source = streamingSourceRepository.getStreamingSource(anime, episodeNumber)
-                    _currentStreamingSource.value = source
-                } else {
-                    _streamingError.value = "Anime details not found in database."
-                }
-            } catch (e: Exception) {
-                _streamingError.value = e.localizedMessage ?: "Failed to load streaming source."
-            } finally {
-                _isStreamingLoading.value = false
-            }
-        }
-    }
-
-    // YouTube Integration: Keyless by default, optional Data API
-    val youtubeRepository = YouTubeRepository()
-    private val _isOptionalYouTubeApiEnabled = MutableStateFlow(
-        prefs.getBoolean("optional_youtube_api_enabled", false)
-    )
-    val isOptionalYouTubeApiEnabled = _isOptionalYouTubeApiEnabled.asStateFlow()
-
-    private val _keylessYouTubeSearchLinks = MutableStateFlow<List<YouTubeSearchLink>>(emptyList())
-    val keylessYouTubeSearchLinks = _keylessYouTubeSearchLinks.asStateFlow()
-
-    private val _aniListVerifiedTrailer = MutableStateFlow<YouTubeVideo?>(null)
-    val aniListVerifiedTrailer = _aniListVerifiedTrailer.asStateFlow()
-
-    private val _youtubeVideos = MutableStateFlow<List<YouTubeVideo>>(emptyList())
-    val youtubeVideos = _youtubeVideos.asStateFlow()
-    private val _isYouTubeSearching = MutableStateFlow(false)
-    val isYouTubeSearching = _isYouTubeSearching.asStateFlow()
-    private val _youtubeSearchError = MutableStateFlow<String?>(null)
-    val youtubeSearchError = _youtubeSearchError.asStateFlow()
-    private val _isYouTubeQuotaExceeded = MutableStateFlow(false)
-    val isYouTubeQuotaExceeded = _isYouTubeQuotaExceeded.asStateFlow()
-    val isYouTubeKeyConfigured: Boolean
-        get() = youtubeRepository.isApiKeyConfigured()
-
-    private val _youtubeRegionCode = MutableStateFlow(prefs.getString("youtube_region_code", "IN") ?: "IN")
-    val youtubeRegionCode = _youtubeRegionCode.asStateFlow()
-
-    init {
-        val isOptEnabled = prefs.getBoolean("optional_youtube_api_enabled", false)
-        youtubeRepository.setOptionalApiEnabled(isOptEnabled)
-        val savedCustomKey = prefs.getString("custom_youtube_api_key", null)
-        if (!savedCustomKey.isNullOrBlank()) {
-            youtubeRepository.setRuntimeApiKey(savedCustomKey)
-        }
-    }
-
-    fun setOptionalYouTubeApiEnabled(enabled: Boolean) {
-        _isOptionalYouTubeApiEnabled.value = enabled
-        prefs.edit().putBoolean("optional_youtube_api_enabled", enabled).apply()
-        youtubeRepository.setOptionalApiEnabled(enabled)
-        if (!enabled) {
-            _youtubeSearchError.value = null
-            _isYouTubeQuotaExceeded.value = false
-            _youtubeVideos.value = emptyList()
-            _userMessage.value = "Switched to YouTube Keyless Mode (zero API key required)."
-        } else {
-            _userMessage.value = "Optional YouTube Data API enabled."
-            if (youtubeRepository.isApiKeyConfigured()) {
-                _videoCatalogSearchQuery.value.takeIf { it.isNotBlank() }?.let { searchYouTubeVideos(it) }
-            }
-        }
-    }
-
-    fun setCustomYouTubeApiKey(key: String?) {
-        val clean = key?.trim()?.takeIf { it.isNotBlank() }
-        youtubeRepository.setRuntimeApiKey(clean)
-        if (clean != null) {
-            prefs.edit().putString("custom_youtube_api_key", clean).apply()
-            _userMessage.value = "Custom YouTube API Key saved."
-        } else {
-            prefs.edit().remove("custom_youtube_api_key").apply()
-            _userMessage.value = "Reset to default build YouTube API Key."
-        }
-    }
-
-    fun setYouTubeRegionCode(regionCode: String) {
-        val clean = regionCode.trim().uppercase()
-        _youtubeRegionCode.value = clean
-        prefs.edit().putString("youtube_region_code", clean).apply()
-        _userMessage.value = "YouTube video region set to: $clean"
-    }
-
-    fun searchYouTubeVideos(query: String, animeTitle: String? = null) {
-        val q = query.trim()
-        if (q.isBlank()) {
-            _youtubeVideos.value = emptyList()
-            _keylessYouTubeSearchLinks.value = emptyList()
-            return
-        }
-        val targetTitle = animeTitle?.trim()?.takeIf { it.isNotBlank() } ?: q
-        _keylessYouTubeSearchLinks.value = youtubeRepository.generateKeylessSearchLinks(targetTitle)
-
-        if (!_isOptionalYouTubeApiEnabled.value) {
-            // Keyless mode is active by default. No API network request, no missing key error.
-            _youtubeVideos.value = emptyList()
-            _isYouTubeSearching.value = false
-            _youtubeSearchError.value = null
-            _isYouTubeQuotaExceeded.value = false
-            return
-        }
-
-        _isYouTubeSearching.value = true
-        _youtubeSearchError.value = null
-        _isYouTubeQuotaExceeded.value = false
-        viewModelScope.launch(Dispatchers.IO) {
-            when (val result = youtubeRepository.searchAnimeVideos(q, regionCode = _youtubeRegionCode.value)) {
-                is YouTubeSearchResultState.Success -> {
-                    _youtubeVideos.value = result.videos
-                    _isYouTubeSearching.value = false
-                }
-                is YouTubeSearchResultState.Keyless -> {
-                    _keylessYouTubeSearchLinks.value = result.searchLinks
-                    _youtubeVideos.value = emptyList()
-                    _isYouTubeSearching.value = false
-                }
-                is YouTubeSearchResultState.Empty -> {
-                    _youtubeVideos.value = emptyList()
-                    _isYouTubeSearching.value = false
-                }
-                is YouTubeSearchResultState.Error -> {
-                    _youtubeVideos.value = emptyList()
-                    _youtubeSearchError.value = result.message
-                    _isYouTubeQuotaExceeded.value = result.isQuotaExceeded
-                    _isYouTubeSearching.value = false
-                }
-            }
-        }
-    }
-
-    // Internet Archive integration
-    val internetArchiveRepository = InternetArchiveRepository()
-    private val _archiveVideos = MutableStateFlow<List<ArchiveMediaItem>>(emptyList())
-    val archiveVideos = _archiveVideos.asStateFlow()
-    private val _isArchiveSearching = MutableStateFlow(false)
-    val isArchiveSearching = _isArchiveSearching.asStateFlow()
-    private val _archiveSearchError = MutableStateFlow<String?>(null)
-    val archiveSearchError = _archiveSearchError.asStateFlow()
-
-    private val _selectedArchivePlayableMedia = MutableStateFlow<ArchivePlayableMedia?>(null)
-    val selectedArchivePlayableMedia = _selectedArchivePlayableMedia.asStateFlow()
-    private val _isResolvingArchiveMedia = MutableStateFlow(false)
-    val isResolvingArchiveMedia = _isResolvingArchiveMedia.asStateFlow()
-    private val _archiveResolutionError = MutableStateFlow<String?>(null)
-    val archiveResolutionError = _archiveResolutionError.asStateFlow()
-
-    // AniKotoAPI integration (https://anikototvapi.vercel.app/api)
-    val aniKotoRepository = com.example.data.repository.AniKotoRepository()
-
-    private val _aniKotoTrending = MutableStateFlow<List<com.example.data.repository.AniKotoAnimeItem>>(emptyList())
-    val aniKotoTrending = _aniKotoTrending.asStateFlow()
-    private val _isAniKotoTrendingLoading = MutableStateFlow(false)
-    val isAniKotoTrendingLoading = _isAniKotoTrendingLoading.asStateFlow()
-    private val _aniKotoTrendingError = MutableStateFlow<String?>(null)
-    val aniKotoTrendingError = _aniKotoTrendingError.asStateFlow()
-
-    private val _aniKotoSearchResults = MutableStateFlow<List<com.example.data.repository.AniKotoAnimeItem>>(emptyList())
-    val aniKotoSearchResults = _aniKotoSearchResults.asStateFlow()
-    private val _isAniKotoSearching = MutableStateFlow(false)
-    val isAniKotoSearching = _isAniKotoSearching.asStateFlow()
-    private val _aniKotoSearchError = MutableStateFlow<String?>(null)
-    val aniKotoSearchError = _aniKotoSearchError.asStateFlow()
-
-    private val _selectedAniKotoInfoLink = MutableStateFlow<String?>(null)
-    val selectedAniKotoInfoLink = _selectedAniKotoInfoLink.asStateFlow()
-    private val _selectedAniKotoInfo = MutableStateFlow<com.example.data.repository.AniKotoAnimeDetail?>(null)
-    val selectedAniKotoInfo = _selectedAniKotoInfo.asStateFlow()
-    private val _isAniKotoInfoLoading = MutableStateFlow(false)
-    val isAniKotoInfoLoading = _isAniKotoInfoLoading.asStateFlow()
-    private val _aniKotoInfoError = MutableStateFlow<String?>(null)
-    val aniKotoInfoError = _aniKotoInfoError.asStateFlow()
-
-    private val _detailAniKotoInfo = MutableStateFlow<com.example.data.repository.AniKotoAnimeDetail?>(null)
-    val detailAniKotoInfo = _detailAniKotoInfo.asStateFlow()
-    private val _isDetailAniKotoLoading = MutableStateFlow(false)
-    val isDetailAniKotoLoading = _isDetailAniKotoLoading.asStateFlow()
-    private val _detailAniKotoError = MutableStateFlow<String?>(null)
-    val detailAniKotoError = _detailAniKotoError.asStateFlow()
-
-    fun loadAniKotoTrending(forceRefresh: Boolean = false) {
-        if (_isAniKotoTrendingLoading.value && !forceRefresh) return
-        _isAniKotoTrendingLoading.value = true
-        _aniKotoTrendingError.value = null
-        viewModelScope.launch(Dispatchers.IO) {
-            when (val res = aniKotoRepository.getTrendingAnime(forceRefresh = forceRefresh)) {
-                is com.example.data.repository.AniKotoResult.Success -> {
-                    _aniKotoTrending.value = res.data
-                    _aniKotoTrendingError.value = null
-                    _isAniKotoTrendingLoading.value = false
-                }
-                is com.example.data.repository.AniKotoResult.Empty -> {
-                    _aniKotoTrending.value = emptyList()
-                    _aniKotoTrendingError.value = null
-                    _isAniKotoTrendingLoading.value = false
-                }
-                is com.example.data.repository.AniKotoResult.Error -> {
-                    _aniKotoTrendingError.value = res.message
-                    _isAniKotoTrendingLoading.value = false
-                }
-            }
-        }
-    }
-
-    fun searchAniKoto(query: String) {
-        val clean = query.trim()
-        if (clean.isEmpty()) {
-            _aniKotoSearchResults.value = emptyList()
-            _aniKotoSearchError.value = null
-            _isAniKotoSearching.value = false
-            return
-        }
-        _isAniKotoSearching.value = true
-        _aniKotoSearchError.value = null
-        viewModelScope.launch(Dispatchers.IO) {
-            when (val res = aniKotoRepository.searchAnime(clean)) {
-                is com.example.data.repository.AniKotoResult.Success -> {
-                    _aniKotoSearchResults.value = res.data
-                    _aniKotoSearchError.value = null
-                    _isAniKotoSearching.value = false
-                }
-                is com.example.data.repository.AniKotoResult.Empty -> {
-                    _aniKotoSearchResults.value = emptyList()
-                    _aniKotoSearchError.value = null
-                    _isAniKotoSearching.value = false
-                }
-                is com.example.data.repository.AniKotoResult.Error -> {
-                    _aniKotoSearchResults.value = emptyList()
-                    _aniKotoSearchError.value = res.message
-                    _isAniKotoSearching.value = false
-                }
-            }
-        }
-    }
-
-    fun openAniKotoInfoModal(linkOrSlug: String, forceRefresh: Boolean = false) {
-        val canonical = com.example.data.repository.AniKotoRepository.toCanonicalAnimeLink(linkOrSlug)
-        _selectedAniKotoInfoLink.value = canonical
-        _isAniKotoInfoLoading.value = true
-        _aniKotoInfoError.value = null
-        if (forceRefresh) {
-            _selectedAniKotoInfo.value = null
-        }
-        viewModelScope.launch(Dispatchers.IO) {
-            when (val res = aniKotoRepository.getAnimeInfo(canonical, forceRefresh = forceRefresh)) {
-                is com.example.data.repository.AniKotoResult.Success -> {
-                    _selectedAniKotoInfo.value = res.data
-                    _aniKotoInfoError.value = null
-                    _isAniKotoInfoLoading.value = false
-                }
-                is com.example.data.repository.AniKotoResult.Empty -> {
-                    _selectedAniKotoInfo.value = null
-                    _aniKotoInfoError.value = res.message
-                    _isAniKotoInfoLoading.value = false
-                }
-                is com.example.data.repository.AniKotoResult.Error -> {
-                    _selectedAniKotoInfo.value = null
-                    _aniKotoInfoError.value = res.message
-                    _isAniKotoInfoLoading.value = false
-                }
-            }
-        }
-    }
-
-    fun dismissAniKotoInfoModal() {
-        _selectedAniKotoInfoLink.value = null
-        _selectedAniKotoInfo.value = null
-        _aniKotoInfoError.value = null
-        _isAniKotoInfoLoading.value = false
-    }
-
-    fun loadDetailAniKotoEnrichment(titleOrSlug: String, forceRefresh: Boolean = false) {
-        val clean = titleOrSlug.trim()
-        if (clean.isEmpty()) return
-        _isDetailAniKotoLoading.value = true
-        _detailAniKotoError.value = null
-        viewModelScope.launch(Dispatchers.IO) {
-            val slugCandidate = clean.lowercase()
-                .replace(Regex("[^a-z0-9]+"), "-")
-                .trim('-')
-            val link = "/anime/$slugCandidate"
-            when (val res = aniKotoRepository.getAnimeInfo(link, forceRefresh = forceRefresh)) {
-                is com.example.data.repository.AniKotoResult.Success -> {
-                    _detailAniKotoInfo.value = res.data
-                    _detailAniKotoError.value = null
-                    _isDetailAniKotoLoading.value = false
-                }
-                is com.example.data.repository.AniKotoResult.Empty -> {
-                    _detailAniKotoInfo.value = null
-                    _detailAniKotoError.value = res.message
-                    _isDetailAniKotoLoading.value = false
-                }
-                is com.example.data.repository.AniKotoResult.Error -> {
-                    _detailAniKotoInfo.value = null
-                    _detailAniKotoError.value = res.message
-                    _isDetailAniKotoLoading.value = false
-                }
-            }
-        }
-    }
-
-    fun saveAniKotoDetailToTracker(
-        detail: com.example.data.repository.AniKotoAnimeDetail,
-        onSaved: (Int) -> Unit = {}
-    ) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val existing = repository.getAnimeByTitleSync(detail.title)
-            if (existing != null) {
-                if (!existing.inWatchlist) {
-                    repository.addToWatchlist(existing.copy(inWatchlist = true))
-                }
-                withContext(Dispatchers.Main) {
-                    _userMessage.value = "Saved '${existing.displayTitle}' to Watchlist"
-                    onSaved(existing.id)
-                }
-                return@launch
-            }
-            val syntheticId = detail.animeId?.toIntOrNull()
-                ?: (900_000 + (detail.slug.hashCode() and 0x7FFFFFFF) % 90_000)
-            val scoreInt = detail.rating?.toDoubleOrNull()?.let { (it * 10).toInt().coerceIn(1, 100) }
-            val entity = AnimeEntity(
-                id = syntheticId,
-                titleRomaji = detail.japaneseTitle ?: detail.title,
-                titleEnglish = detail.title,
-                coverImage = detail.posterUrl,
-                bannerImage = detail.bannerUrl,
-                totalEpisodes = detail.totalEpisodesCount.takeIf { it > 0 },
-                currentEpisode = detail.totalEpisodesCount.coerceAtLeast(1),
-                nextEpisodeNumber = detail.totalEpisodesCount.coerceAtLeast(1),
-                watchedEpisodeCount = 0,
-                status = if (detail.status.contains("Finished", ignoreCase = true)) "FINISHED" else "RELEASING",
-                airingDayOfWeek = LocalDate.now().dayOfWeek.value,
-                inWatchlist = true,
-                genres = detail.genres.joinToString(", "),
-                score = scoreInt,
-                synopsis = detail.synopsis,
-                format = detail.type
-            )
-            repository.addToWatchlist(entity)
-            withContext(Dispatchers.Main) {
-                _userMessage.value = "Added '${detail.title}' to Watchlist!"
-                onSaved(entity.id)
-            }
-        }
-    }
-
-    fun searchInternetArchive(query: String) {
-        val q = query.trim()
-        if (q.isBlank()) {
-            _archiveVideos.value = emptyList()
-            return
-        }
-        _isArchiveSearching.value = true
-        _archiveSearchError.value = null
-        viewModelScope.launch(Dispatchers.IO) {
-            when (val result = internetArchiveRepository.searchAnimeArchive(q)) {
-                is ArchiveSearchResultState.Success -> {
-                    _archiveVideos.value = result.items
-                    _isArchiveSearching.value = false
-                }
-                is ArchiveSearchResultState.Empty -> {
-                    _archiveVideos.value = emptyList()
-                    _isArchiveSearching.value = false
-                }
-                is ArchiveSearchResultState.Error -> {
-                    _archiveVideos.value = emptyList()
-                    _archiveSearchError.value = result.message
-                    _isArchiveSearching.value = false
-                }
-            }
-        }
-    }
-
-    fun resolveArchiveMedia(identifier: String, onResolved: (ArchivePlayableMedia) -> Unit = {}) {
-        _isResolvingArchiveMedia.value = true
-        _archiveResolutionError.value = null
-        viewModelScope.launch(Dispatchers.IO) {
-            when (val result = internetArchiveRepository.inspectAndResolvePlayableMedia(identifier)) {
-                is ArchivePlayableMediaResult.Success -> {
-                    _selectedArchivePlayableMedia.value = result.media
-                    _isResolvingArchiveMedia.value = false
-                    withContext(Dispatchers.Main) {
-                        onResolved(result.media)
-                    }
-                }
-                is ArchivePlayableMediaResult.Unavailable -> {
-                    _isResolvingArchiveMedia.value = false
-                    _archiveResolutionError.value = result.reason
-                    _userMessage.value = result.reason
-                }
-                is ArchivePlayableMediaResult.Error -> {
-                    _isResolvingArchiveMedia.value = false
-                    _archiveResolutionError.value = result.message
-                    _userMessage.value = result.message
-                }
-            }
-        }
-    }
-
-    // AniList OAuth2 integration
-    val anilistOAuthManager = AniListOAuthManager(application)
-    private val _isAniListLoggedIn = MutableStateFlow(anilistOAuthManager.isLoggedIn)
-    val isAniListLoggedIn = _isAniListLoggedIn.asStateFlow()
-    private val _anilistUserProfile = MutableStateFlow<AniListUserProfile?>(null)
-    val anilistUserProfile = _anilistUserProfile.asStateFlow()
-    private val _isAniListSyncing = MutableStateFlow(false)
-    val isAniListSyncing = _isAniListSyncing.asStateFlow()
-
-    fun handleAniListToken(token: String) {
-        anilistOAuthManager.saveToken(token)
-        _isAniListLoggedIn.value = true
-        _userMessage.value = "AniList token saved. Fetching user profile..."
-        fetchAniListProfileAndSync()
-    }
-
-    fun logoutAniList() {
-        anilistOAuthManager.logout()
-        _isAniListLoggedIn.value = false
-        _anilistUserProfile.value = null
-        _userMessage.value = "Signed out from AniList."
-    }
-
-    fun fetchAniListProfileAndSync() {
-        if (!anilistOAuthManager.isLoggedIn) return
-        _isAniListSyncing.value = true
-        viewModelScope.launch(Dispatchers.IO) {
-            val result = anilistOAuthManager.fetchCurrentUserProfile()
-            if (result.isSuccess) {
-                _anilistUserProfile.value = result.getOrNull()
-                _userMessage.value = "Connected to AniList as ${result.getOrNull()?.name}"
-            } else {
-                _userMessage.value = result.exceptionOrNull()?.message ?: "Failed to fetch AniList profile."
-            }
-            _isAniListSyncing.value = false
-        }
-    }
-
-    // Full Details with AniList characters, studios, relations & recommendations
-    private val _selectedAnimeFullDetails = MutableStateFlow<AniListMedia?>(null)
-    val selectedAnimeFullDetails = _selectedAnimeFullDetails.asStateFlow()
-    private val _isLoadingFullDetails = MutableStateFlow(false)
-    val isLoadingFullDetails = _isLoadingFullDetails.asStateFlow()
-
-    private val _selectedDetailSeason = MutableStateFlow<AnimeSeasonInfo?>(null)
-    val selectedDetailSeason = _selectedDetailSeason.asStateFlow()
-
-    private val _activeDetailSeasons = MutableStateFlow<List<AnimeSeasonInfo>>(emptyList())
-    val activeDetailSeasons = _activeDetailSeasons.asStateFlow()
-
-    fun selectDetailSeason(season: AnimeSeasonInfo) {
-        _selectedDetailSeason.value = season
-    }
-
-    fun loadFullDetails(animeId: Int) {
-        _isLoadingFullDetails.value = true
-        _aniListVerifiedTrailer.value = null
-        viewModelScope.launch(Dispatchers.IO) {
-            val currentEntity = repository.getAnimeByIdSync(animeId)
-            val result = repository.fetchAniListFullDetails(animeId)
-            if (result.isSuccess) {
-                val fullMedia = result.getOrNull()
-                _selectedAnimeFullDetails.value = fullMedia
-                val tr = fullMedia?.trailer
-                if (tr != null && tr.site?.equals("youtube", ignoreCase = true) == true && !tr.id.isNullOrBlank()) {
-                    val title = fullMedia.title?.english ?: fullMedia.title?.romaji ?: "Anime"
-                    _aniListVerifiedTrailer.value = YouTubeVideo(
-                        id = tr.id,
-                        title = "$title - Official Trailer",
-                        description = "Verified official trailer from AniList catalog",
-                        channelTitle = "AniList Verified",
-                        publishedAt = "",
-                        thumbnailUrl = tr.thumbnail ?: "https://img.youtube.com/vi/${tr.id}/hqdefault.jpg",
-                        durationFormatted = null,
-                        isVerifiedOfficial = true,
-                        videoType = YouTubeVideoType.TRAILER,
-                        sourceBadge = "AniList Verified Trailer"
-                    )
-                }
-                if (currentEntity != null) {
-                    val resolvedSeasons = resolveFranchiseSeasons(currentEntity, fullMedia)
-                    _activeDetailSeasons.value = resolvedSeasons
-                    val matchedCurr = resolvedSeasons.firstOrNull { it.animeId == animeId } ?: resolvedSeasons.firstOrNull()
-                    _selectedDetailSeason.value = matchedCurr
-                }
-            } else if (currentEntity != null) {
-                val resolvedSeasons = resolveFranchiseSeasons(currentEntity, null)
-                _activeDetailSeasons.value = resolvedSeasons
-                _selectedDetailSeason.value = resolvedSeasons.firstOrNull()
-            }
-            _isLoadingFullDetails.value = false
-        }
-    }
-
-    fun resolveFranchiseSeasons(anime: AnimeEntity, fullMedia: AniListMedia?): List<AnimeSeasonInfo> {
-        val seasons = mutableListOf<AnimeSeasonInfo>()
-
-        if (fullMedia?.relations?.edges != null) {
-            val edges = fullMedia.relations.edges.orEmpty()
-            val seasonNodes = edges.mapNotNull { edge ->
-                val node = edge.node ?: return@mapNotNull null
-                val type = edge.relationType?.uppercase() ?: ""
-                val title = node.title?.english ?: node.title?.romaji ?: "Season"
-                if (type in listOf("PREQUEL", "SEQUEL", "PARENT", "ALTERNATIVE", "SIDE_STORY") ||
-                    title.contains("Season", ignoreCase = true) ||
-                    title.contains("2nd", ignoreCase = true) ||
-                    title.contains("3rd", ignoreCase = true)
-                ) {
-                    Pair(type, node)
-                } else null
-            }
-
-            val prequels = seasonNodes.filter { it.first == "PREQUEL" }.map { it.second }.reversed()
-            val sequels = seasonNodes.filter { it.first == "SEQUEL" }.map { it.second }
-            val others = seasonNodes.filter { it.first !in listOf("PREQUEL", "SEQUEL") }.map { it.second }
-
-            var sNum = 1
-            var cumulativeStart = 1
-            for (node in prequels) {
-                val nodeTitle = node.title?.english ?: node.title?.romaji ?: "Season $sNum"
-                val epCount = node.episodes
-                seasons.add(
-                    AnimeSeasonInfo(
-                        seasonNumber = sNum++,
-                        title = nodeTitle,
-                        animeId = node.id,
-                        totalEpisodes = epCount,
-                        startEpisode = cumulativeStart,
-                        coverImage = node.coverImage?.large ?: node.coverImage?.medium,
-                        format = node.format,
-                        isCurrentSeason = false
-                    )
-                )
-                if (epCount != null && epCount > 0) {
-                    cumulativeStart += epCount
-                }
-            }
-
-            val currentSeasonEpisodes = anime.totalEpisodes
-            seasons.add(
-                AnimeSeasonInfo(
-                    seasonNumber = sNum++,
-                    title = anime.getResolvedTitle(_titleLanguagePreference.value),
-                    animeId = anime.id,
-                    idMal = anime.idMal,
-                    totalEpisodes = currentSeasonEpisodes,
-                    startEpisode = cumulativeStart,
-                    coverImage = anime.coverImage,
-                    bannerImage = anime.bannerImage,
-                    format = anime.format,
-                    isCurrentSeason = true
-                )
-            )
-            if (currentSeasonEpisodes != null && currentSeasonEpisodes > 0) {
-                cumulativeStart += currentSeasonEpisodes
-            }
-
-            for (node in sequels) {
-                val nodeTitle = node.title?.english ?: node.title?.romaji ?: "Season $sNum"
-                val epCount = node.episodes
-                seasons.add(
-                    AnimeSeasonInfo(
-                        seasonNumber = sNum++,
-                        title = nodeTitle,
-                        animeId = node.id,
-                        totalEpisodes = epCount,
-                        startEpisode = cumulativeStart,
-                        coverImage = node.coverImage?.large ?: node.coverImage?.medium,
-                        format = node.format,
-                        isCurrentSeason = false
-                    )
-                )
-                if (epCount != null && epCount > 0) {
-                    cumulativeStart += epCount
-                }
-            }
-
-            for (node in others) {
-                if (seasons.none { it.animeId == node.id }) {
-                    val nodeTitle = node.title?.english ?: node.title?.romaji ?: "Season $sNum"
-                    val epCount = node.episodes
-                    seasons.add(
-                        AnimeSeasonInfo(
-                            seasonNumber = sNum++,
-                            title = nodeTitle,
-                            animeId = node.id,
-                            totalEpisodes = epCount,
-                            startEpisode = cumulativeStart,
-                            coverImage = node.coverImage?.large ?: node.coverImage?.medium,
-                            format = node.format,
-                            isCurrentSeason = false
-                        )
-                    )
-                    if (epCount != null && epCount > 0) {
-                        cumulativeStart += epCount
-                    }
-                }
-            }
-        }
-
-        if (seasons.isEmpty()) {
-            seasons.add(
-                AnimeSeasonInfo(
-                    seasonNumber = 1,
-                    title = anime.getResolvedTitle(_titleLanguagePreference.value),
-                    animeId = anime.id,
-                    idMal = anime.idMal,
-                    totalEpisodes = anime.totalEpisodes,
-                    coverImage = anime.coverImage,
-                    bannerImage = anime.bannerImage,
-                    format = anime.format,
-                    isCurrentSeason = true
-                )
-            )
-        }
-
-        return seasons
-    }
-
-    // Unified Video Catalog
-    private val _videoCatalogSearchQuery = MutableStateFlow("")
-    val videoCatalogSearchQuery = _videoCatalogSearchQuery.asStateFlow()
-    private val _videoCatalogSourceFilter = MutableStateFlow("ALL") // "ALL", "YOUTUBE", "ARCHIVE"
-    val videoCatalogSourceFilter = _videoCatalogSourceFilter.asStateFlow()
-
-    fun setVideoCatalogSourceFilter(filter: String) {
-        _videoCatalogSourceFilter.value = filter
-    }
-
-    fun searchVideoCatalog(query: String) {
-        _videoCatalogSearchQuery.value = query
-        searchYouTubeVideos(query)
-        searchInternetArchive(query)
-    }
-
-    // Tracking Management
-    fun updateUserTracking(
-        animeId: Int,
-        status: String? = null,
-        score: Int? = null,
-        notes: String? = null,
-        watchedCount: Int? = null
-    ) {
-        viewModelScope.launch(Dispatchers.IO) {
-            repository.updateUserMediaState(
-                animeId = animeId,
-                userStatus = status,
-                userScore = score,
-                userNotes = notes,
-                watchedCount = watchedCount
-            )
-            // Remote sync to AniList if user is authenticated with AniList
-            if (anilistOAuthManager.isLoggedIn) {
-                launch {
-                    anilistOAuthManager.updateAniListEntry(
-                        mediaId = animeId,
-                        status = status,
-                        progress = watchedCount,
-                        scoreRaw = score
-                    )
-                }
-            }
-        }
-    }
-
-    fun confirmEpisodeCompletion(animeId: Int, episodeNumber: Int) {
-        viewModelScope.launch(Dispatchers.IO) {
-            repository.updateWatchedEpisodeCount(animeId, episodeNumber)
-            _userMessage.value = "Episode $episodeNumber marked as completed!"
-        }
-    }
-
-    // User Toast Messages
-    private val _userMessage = MutableStateFlow<String?>(null)
-    val userMessage = _userMessage.asStateFlow()
-
-    init {
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                // 1. Reconcile durable saved_anime table with anime table first so saved items are immediately available
-                repository.reconcileSavedAnime()
-                repository.seedInitialDataIfEmpty()
-                repository.sanitizeAndFixEpisodeCounts()
-                repository.reconcileSavedAnime()
-            } catch (e: Exception) {
-                // Never reset or clear saved lists on initialization error
-            }
-            performSearch("")
-            // Auto refresh live schedule & upcoming release dates in background silently
-            launch {
-                refreshSchedule(showToast = false)
-            }
-            // Background async verification with MyAnimeList without delaying UI launch
-            launch {
-                repository.verifyAndSyncWithMal(malOAuthManager.getValidAccessToken())
-            }
-            if (malOAuthManager.isLoggedIn) {
-                _isMalLoggedIn.value = true
-                launch {
-                    fetchMalProfileAndSync()
-                }
-            }
-        }
-    }
-
-    val malClientId: String
-        get() = malOAuthManager.effectiveClientId
-
-    val malRedirectUri: String
-        get() = malOAuthManager.effectiveRedirectUri
-
-    fun setCustomMalConfig(clientId: String?, redirectUri: String?) {
-        malOAuthManager.customClientId = clientId
-        malOAuthManager.customRedirectUri = redirectUri
-        _userMessage.value = "MAL OAuth configuration updated"
-    }
-
-    /**
-     * Start Official MyAnimeList PKCE OAuth Flow
-     */
-    fun startMalOAuthFlow() {
-        malOAuthManager.startOAuthFlow()
-    }
-
-    /**
-     * Sets user error message from OAuth deep link or other operations
-     */
-    fun setAuthErrorMessage(message: String) {
-        _userMessage.value = message
-    }
-
-    /**
-     * Gets the full OAuth Authorization URL for in-app WebView or custom browser
-     */
-    fun getMalOAuthUrl(forceNew: Boolean = false): String {
-        return malOAuthManager.buildOAuthAuthorizationUrl(forceNewVerifier = forceNew)
-    }
-
-    val connectedMalUsername: String?
-        get() = malOAuthManager.connectedUsername
-
-    /**
-     * Connects user's MyAnimeList account by username. All data is encrypted with AES-256 GCM.
-     */
-    fun connectMalAccountByUsername(username: String) {
-        viewModelScope.launch {
-            val clean = username.trim()
-            if (clean.isBlank()) {
-                _userMessage.value = "Please enter your MyAnimeList username"
-                return@launch
-            }
-            _isMalSyncing.value = true
-            malOAuthManager.connectWithUsername(clean)
-            _isMalLoggedIn.value = true
-            _userMessage.value = "Connecting to @$clean..."
-            fetchMalProfileAndSync(showToast = true)
-        }
-    }
-
-    /**
-     * Handles deep link callback or manual input from MyAnimeList OAuth redirect URI
-     */
-    fun handleMalOAuthCallback(authorizationCodeOrUrl: String) {
-        viewModelScope.launch {
-            _isMalSyncing.value = true
-            val result = malOAuthManager.handleOAuthCallback(authorizationCodeOrUrl)
-            if (result.isSuccess) {
-                _isMalLoggedIn.value = true
-                _isCloudLoggedIn.value = true
-                _userMessage.value = "Authenticated with MyAnimeList! Syncing data..."
-                fetchMalProfileAndSync(showToast = true)
-            } else {
-                _userMessage.value = "MAL Auth failed: ${result.exceptionOrNull()?.message}"
-            }
-            _isMalSyncing.value = false
-        }
-    }
-
-    /**
-     * Fetches authenticated user's MyAnimeList profile & anime list via OAuth 2.0 API, then updates Room database.
-     * Accurately preserves AniList Donghua English titles and ongoing airing info while updating MAL user data.
-     */
-    fun fetchMalProfileAndSync(showToast: Boolean = false) {
-        viewModelScope.launch {
-            if (_isMalSyncing.value) return@launch
-            _isMalSyncing.value = true
-            val token = malOAuthManager.getValidAccessToken()
-            if (token != null) {
-                val profileRes = MyAnimeListService.getUserProfile(token)
-                if (profileRes.isSuccess) {
-                    val profile = profileRes.getOrNull()
-                    _malUserProfile.value = profile
-                    if (profile != null) {
-                        _cloudUserName.value = profile.name
-                    }
-                }
-                val listRes = MyAnimeListService.getUserAnimeList(token)
-                if (listRes.isSuccess) {
-                    val items = listRes.getOrNull() ?: emptyList()
-                    for (item in items) {
-                        val node = item.node
-                        val listStatus = item.listStatus
-                        val watched = listStatus?.numEpisodesWatched ?: 0
-                        val status = listStatus?.status ?: "watching"
-                        val score = listStatus?.score ?: 0
-                        val canonicalEnglish = EpisodeDataParser.getCanonicalEnglish(node.title)
-                        var existing = repository.getAnimeByMalIdSync(node.id)
-                            ?: repository.getAnimeByIdSync(node.id)
-                            ?: repository.getAnimeByTitleSync(node.title)
-                            ?: if (canonicalEnglish != null) repository.getAnimeByTitleSync(canonicalEnglish) else null
-
-                        val checkAnimeId = existing?.id ?: node.id
-                        val checkMalId = node.id
-
-                        if (repository.isDeleted(checkAnimeId, checkMalId, "ALL")) {
-                            continue
-                        }
-                        val isWatchlistDeleted = repository.isDeleted(checkAnimeId, checkMalId, "WATCHLIST")
-                        val isWishlistDeleted = repository.isDeleted(checkAnimeId, checkMalId, "WISHLIST")
-
-                        val isWatched = status == "completed"
-                        val rawWishlist = status == "plan_to_watch"
-                        val malBroadcastDay = MyAnimeListService.parseMalDayOfWeek(node.broadcast?.dayOfTheWeek)
-                        val targetWishlist = if (isWishlistDeleted) false else rawWishlist
-                        val targetWatchlist = if (isWatchlistDeleted) false else (!targetWishlist && (existing?.inWatchlist ?: true))
-
-                        if (existing != null) {
-                            val mergedWatched = maxOf(existing.watchedEpisodeCount, watched)
-                            if (existing.isDonghua) {
-                                // STRICT REQUIREMENT: Preserve Donghua English title, ongoing episode count, and airing status from AniList.
-                                // Only update user's personal watched episode count, watchlist state, and score.
-                                val updated = existing.copy(
-                                    idMal = node.id,
-                                    watchedEpisodeCount = mergedWatched,
-                                    isWatched = isWatched || existing.isWatched || (existing.totalEpisodes != null && mergedWatched >= existing.totalEpisodes),
-                                    isWishlist = targetWishlist || existing.isWishlist,
-                                    inWatchlist = targetWatchlist || existing.inWatchlist,
-                                    score = if (score > 0) score else existing.score,
-                                    userScore = if (score > 0) score else existing.userScore,
-                                    userStatus = status
-                                )
-                                repository.updateAnime(updated)
-                            } else {
-                                val parsedInfo = EpisodeDataParser.parseMalEpisodes(
-                                    malNumEpisodes = node.numEpisodes,
-                                    malStatusStr = node.status,
-                                    userWatchedEpisodes = mergedWatched,
-                                    existingAired = existing.currentEpisode
-                                )
-                                val updatedDay = if (malBroadcastDay in 1..7) malBroadcastDay else existing.airingDayOfWeek
-                                val updatedAired = maxOf(existing.currentEpisode, parsedInfo.airedEpisodeCount)
-                                val updatedTotal = if (existing.totalEpisodes != null && existing.totalEpisodes > 0) {
-                                    if (parsedInfo.totalEpisodes != null && parsedInfo.totalEpisodes >= updatedAired) {
-                                        parsedInfo.totalEpisodes
-                                    } else {
-                                        existing.totalEpisodes
-                                    }
-                                } else {
-                                    parsedInfo.totalEpisodes
-                                }
-                                val isShowFinished = existing.status == "FINISHED" || (parsedInfo.isFinished && (updatedTotal != null && updatedAired >= updatedTotal))
-                                val nextEp = if (isShowFinished) updatedAired else maxOf(existing.nextEpisodeNumber ?: (updatedAired + 1), updatedAired + 1)
-                                val updated = existing.copy(
-                                    idMal = node.id,
-                                    watchedEpisodeCount = mergedWatched,
-                                    currentEpisode = updatedAired,
-                                    nextEpisodeNumber = nextEp,
-                                    totalEpisodes = updatedTotal,
-                                    status = if (isShowFinished) "FINISHED" else existing.status,
-                                    isWatched = isWatched || existing.isWatched || (updatedTotal != null && mergedWatched >= updatedTotal),
-                                    isWishlist = targetWishlist || existing.isWishlist,
-                                    inWatchlist = targetWatchlist || existing.inWatchlist,
-                                    airingDayOfWeek = updatedDay,
-                                    score = if (score > 0) score else existing.score,
-                                    userScore = if (score > 0) score else existing.userScore,
-                                    userStatus = status
-                                )
-                                repository.updateAnime(updated)
-                            }
-                        } else {
-                            val resolvedEnglish = canonicalEnglish ?: node.title
-                            val isDonghua = node.title.contains("Douluo", true) || node.title.contains("Doupo", true) || node.title.contains("Wanmei", true) || node.title.contains("Tunshi", true)
-                            val parsedInfo = EpisodeDataParser.parseMalEpisodes(
-                                malNumEpisodes = node.numEpisodes,
-                                malStatusStr = node.status,
-                                userWatchedEpisodes = watched,
-                                existingAired = maxOf(watched, 1)
-                            )
-                            val resolvedDay = if (malBroadcastDay in 1..7) {
-                                malBroadcastDay
-                            } else {
-                                ((node.id.coerceAtLeast(1) % 7) + 1)
-                            }
-                            val initialAired = maxOf(parsedInfo.airedEpisodeCount, watched, 1)
-                            val newEntity = AnimeEntity(
-                                id = node.id,
-                                idMal = node.id,
-                                titleRomaji = node.title,
-                                titleEnglish = resolvedEnglish,
-                                coverImage = node.mainPicture?.large ?: node.mainPicture?.medium ?: "",
-                                totalEpisodes = parsedInfo.totalEpisodes,
-                                currentEpisode = initialAired,
-                                nextEpisodeNumber = if (parsedInfo.isFinished) initialAired else (initialAired + 1),
-                                watchedEpisodeCount = watched,
-                                status = if (parsedInfo.isFinished) "FINISHED" else "RELEASING",
-                                airingDayOfWeek = resolvedDay,
-                                inWatchlist = targetWatchlist,
-                                isWishlist = targetWishlist,
-                                isWatched = isWatched,
-                                score = score,
-                                userScore = score,
-                                userStatus = status,
-                                countryOfOrigin = if (isDonghua) "CN" else "JP",
-                                synopsis = node.synopsis
-                            )
-                            if (targetWatchlist) {
-                                repository.addToWatchlist(newEntity)
-                            } else {
-                                repository.updateAnime(newEntity)
-                            }
-                        }
-                    }
-                    repository.ensureDatabaseDeduplicated()
-                    _lastCloudSyncTime.value = System.currentTimeMillis()
-                    if (showToast) {
-                        _userMessage.value = "Synced ${items.size} titles from MyAnimeList"
-                    }
-                }
-            } else if (!malOAuthManager.connectedUsername.isNullOrBlank()) {
-                val user = malOAuthManager.connectedUsername!!
-                val profileRes = MyAnimeListService.fetchUserPublicProfile(user)
-                if (profileRes.isSuccess) {
-                    _malUserProfile.value = profileRes.getOrNull()
-                }
-                val listRes = MyAnimeListService.fetchUserPublicAnimeList(user)
-                if (listRes.isSuccess) {
-                    val items = listRes.getOrNull() ?: emptyList()
-                    for (item in items) {
-                        val node = item.node ?: continue
-                        val listStatus = item.listStatus
-                        val watched = listStatus?.numEpisodesWatched ?: 0
-                        val status = listStatus?.status ?: "watching"
-                        val score = listStatus?.score ?: 0
-                        val canonicalEnglish = EpisodeDataParser.getCanonicalEnglish(node.title)
-                        var existing = repository.getAnimeByMalIdSync(node.id)
-                            ?: repository.getAnimeByIdSync(node.id)
-                            ?: repository.getAnimeByTitleSync(node.title)
-                            ?: if (canonicalEnglish != null) repository.getAnimeByTitleSync(canonicalEnglish) else null
-
-                        if (existing != null) {
-                            val isWatched = status == "completed"
-                            val isWishlist = status == "plan_to_watch"
-                            val updated = existing.copy(
-                                idMal = node.id,
-                                watchedEpisodeCount = watched,
-                                isWatched = isWatched || (existing.totalEpisodes != null && watched >= existing.totalEpisodes),
-                                isWishlist = isWishlist,
-                                inWatchlist = !isWishlist && existing.inWatchlist,
-                                userScore = score,
-                                userStatus = status
-                            )
-                            repository.updateAnime(updated)
-                        }
-                    }
-                    repository.ensureDatabaseDeduplicated()
-                    _lastCloudSyncTime.value = System.currentTimeMillis()
-                    if (showToast) {
-                        _userMessage.value = "Synced ${items.size} titles for @$user"
-                    }
-                }
-            } else {
-                _isMalLoggedIn.value = false
-            }
-            _isMalSyncing.value = false
-        }
-    }
-
-    /**
-     * Executes real, 100% verified synchronization with MyAnimeList API.
-     */
-    fun syncWatchlistToMal() {
-        viewModelScope.launch {
-            _isMalSyncing.value = true
-            val token = malOAuthManager.getValidAccessToken()
-            if (token == null) {
-                _isMalLoggedIn.value = false
-                _userMessage.value = "Sync failed: Not authenticated with MyAnimeList. Please connect your account."
-                _isMalSyncing.value = false
-                return@launch
-            }
-
-            val currentWatchlist = watchlist.value
-            if (currentWatchlist.isEmpty()) {
-                _userMessage.value = "Watchlist is empty. Nothing to sync."
-                _isMalSyncing.value = false
-                return@launch
-            }
-
-            val newLogs = mutableListOf<MalSyncLog>()
-            var verifiedCount = 0
-
-            // Parallel batch processing in chunks of 4 for fast, high-speed MAL syncing
-            val chunkedList = currentWatchlist.chunked(4)
-            var processed = 0
-            for (chunk in chunkedList) {
-                val results = coroutineScope {
-                    val jobs = chunk.map { anime ->
-                        async(Dispatchers.IO) {
-                            var targetMalId = anime.idMal
-                            if (targetMalId == null || targetMalId <= 0) {
-                                val titleToSearch = anime.titleEnglish ?: anime.titleRomaji
-                                val searchRes = MyAnimeListService.searchMalAnimeByTitle(token, titleToSearch)
-                                if (searchRes.isSuccess) {
-                                    targetMalId = searchRes.getOrNull()
-                                    if (targetMalId != null && targetMalId > 0) {
-                                        repository.updateAnime(anime.copy(idMal = targetMalId))
-                                    }
-                                }
-                            }
-
-                            if (targetMalId == null || targetMalId <= 0) {
-                                Pair(
-                                    MalSyncLog(
-                                        animeTitle = anime.titleRomaji,
-                                        malId = 0,
-                                        httpStatusCode = 404,
-                                        requestUrl = "${com.example.data.remote.MyAnimeListConfig.API_BASE_URL}anime?q=${anime.titleRomaji}",
-                                        responseBody = "{\"error\":\"not_found\",\"message\":\"Could not resolve official MAL ID\"}",
-                                        success = false,
-                                        verificationPassed = false,
-                                        message = "Sync failed: Unable to locate official MAL ID for '${anime.titleRomaji}'"
-                                    ),
-                                    false
-                                )
-                            } else {
-                                val targetStatus = when {
-                                    anime.isWishlist -> "plan_to_watch"
-                                    anime.isWatched || (anime.totalEpisodes != null && anime.watchedEpisodeCount >= anime.totalEpisodes) -> "completed"
-                                    else -> "watching"
-                                }
-                                val log = MyAnimeListService.updateAndVerifyAnimeStatusDetailed(
-                                    accessToken = token,
-                                    animeTitle = anime.titleEnglish ?: anime.titleRomaji,
-                                    malId = targetMalId,
-                                    numEpisodesWatched = anime.watchedEpisodeCount,
-                                    status = targetStatus,
-                                    score = anime.score
-                                )
-                                Pair(log, log.success && log.verificationPassed)
-                            }
-                        }
-                    }
-                    jobs.awaitAll()
-                }
-
-                for (res in results) {
-                    val log = res.first
-                    val verified = res.second
-                    newLogs.add(0, log)
-                    if (verified) verifiedCount++
-                    processed++
-                }
-                _userMessage.value = "Syncing with MyAnimeList... ($processed/${currentWatchlist.size})"
-                delay(100L)
-            }
-
-            _malSyncLogs.value = newLogs + _malSyncLogs.value
-            _isMalSyncing.value = false
-
-            if (verifiedCount == currentWatchlist.size) {
-                _lastCloudSyncTime.value = System.currentTimeMillis()
-                _userMessage.value = "Successfully synced and verified $verifiedCount/${currentWatchlist.size} anime on MyAnimeList!"
-            } else if (verifiedCount > 0) {
-                _lastCloudSyncTime.value = System.currentTimeMillis()
-                _userMessage.value = "Synced $verifiedCount/${currentWatchlist.size} anime. ${currentWatchlist.size - verifiedCount} failed."
-            } else {
-                _userMessage.value = "Sync failed: 0/${currentWatchlist.size} anime verified on MyAnimeList."
-            }
-        }
-    }
-
-    /**
-     * Updates an anime entry's status directly on MyAnimeList with real verification and error handling.
-     * Status options: "plan_to_watch", "watching", "completed", "on_hold", "dropped".
-     */
-    fun updateAnimeMalStatus(
-        anime: AnimeEntity,
-        malStatus: String,
-        watchedCount: Int? = null,
-        showToast: Boolean = false,
-        onResult: ((Boolean) -> Unit)? = null
-    ) {
-        viewModelScope.launch {
-            val token = malOAuthManager.getValidAccessToken()
-            if (token == null) {
-                _userMessage.value = "Connect MyAnimeList account in Settings to synchronize online."
-                onResult?.invoke(false)
-                return@launch
-            }
-            _isMalSyncing.value = true
-
-            // Resolve official MAL ID
-            var targetMalId = anime.idMal
-            val titleToSearch = anime.titleEnglish ?: anime.titleRomaji
-            if (targetMalId == null || targetMalId <= 0) {
-                val searchRes = MyAnimeListService.searchMalAnimeByTitle(token, titleToSearch)
-                if (searchRes.isSuccess) {
-                    targetMalId = searchRes.getOrNull()
-                    if (targetMalId != null && targetMalId > 0) {
-                        repository.updateAnime(anime.copy(idMal = targetMalId))
-                    }
-                }
-            }
-
-            if (targetMalId == null || targetMalId <= 0) {
-                _userMessage.value = "Sync failed: Could not resolve official MAL ID for '$titleToSearch'"
-                _isMalSyncing.value = false
-                onResult?.invoke(false)
-                return@launch
-            }
-
-            val targetEpCount = watchedCount ?: anime.watchedEpisodeCount
-            var log = MyAnimeListService.updateAndVerifyAnimeStatusDetailed(
-                accessToken = token,
-                animeTitle = titleToSearch,
-                malId = targetMalId,
-                numEpisodesWatched = targetEpCount,
-                status = malStatus,
-                score = anime.score
-            )
-
-            // Retry logic if MAL ID was invalid or HTTP 400 occurred
-            if (!log.success && (log.httpStatusCode == 400 || log.httpStatusCode == 404)) {
-                val searchRes = MyAnimeListService.searchMalAnimeByTitle(token, titleToSearch)
-                val reResolvedMalId = searchRes.getOrNull()
-                if (reResolvedMalId != null && reResolvedMalId > 0 && reResolvedMalId != targetMalId) {
-                    targetMalId = reResolvedMalId
-                    repository.updateAnime(anime.copy(idMal = targetMalId))
-                    log = MyAnimeListService.updateAndVerifyAnimeStatusDetailed(
-                        accessToken = token,
-                        animeTitle = titleToSearch,
-                        malId = targetMalId,
-                        numEpisodesWatched = targetEpCount,
-                        status = malStatus,
-                        score = anime.score
-                    )
-                }
-            }
-
-            val currentLogs = _malSyncLogs.value.toMutableList()
-            currentLogs.add(0, log)
-            _malSyncLogs.value = currentLogs
-            _isMalSyncing.value = false
-
-            if (log.success && log.verificationPassed) {
-                _lastCloudSyncTime.value = System.currentTimeMillis()
-                if (showToast) {
-                    _userMessage.value = "Updated '$titleToSearch' to '$malStatus' on MyAnimeList (Verified)"
-                }
-                val cleanMalStatus = MyAnimeListService.normalizeMalStatus(malStatus)
-                val isWatched = cleanMalStatus == "completed" || (anime.totalEpisodes != null && targetEpCount >= anime.totalEpisodes)
-                val isWishlist = cleanMalStatus == "plan_to_watch"
-                val updatedEntity = anime.copy(
-                    idMal = targetMalId,
-                    watchedEpisodeCount = targetEpCount,
-                    isWatched = isWatched,
-                    isWishlist = isWishlist,
-                    inWatchlist = !isWishlist
-                )
-                repository.updateAnime(updatedEntity)
-                onResult?.invoke(true)
-            } else {
-                _userMessage.value = "MAL Sync failed for '$titleToSearch': ${log.message}"
-                onResult?.invoke(false)
-            }
-        }
-    }
-
-    fun removeAnimeFromMal(anime: AnimeEntity) {
-        viewModelScope.launch {
-            val token = malOAuthManager.getValidAccessToken() ?: return@launch
-            var targetMalId = anime.idMal
-            val titleToSearch = anime.titleEnglish ?: anime.titleRomaji
-            if (targetMalId == null || targetMalId <= 0) {
-                val searchRes = MyAnimeListService.searchMalAnimeByTitle(token, titleToSearch)
-                targetMalId = searchRes.getOrNull()
-            }
-            if (targetMalId != null && targetMalId > 0) {
-                val res = MyAnimeListService.deleteAnimeFromMal(token, targetMalId)
-                if (res.isSuccess) {
-                    _userMessage.value = "Removed '$titleToSearch' from MyAnimeList"
-                }
-            }
-        }
-    }
-
-    fun clearSyncLogs() {
-        _malSyncLogs.value = emptyList()
-        _userMessage.value = "Sync logs cleared"
-    }
-
-    /**
-     * Updates watch progress locally and synchronizes directly with MyAnimeList API.
-     */
-    fun updateWatchedEpisodeCount(animeId: Int, newCount: Int, malStatus: String = "watching", showToast: Boolean = false) {
-        viewModelScope.launch {
-            val oldAnime = repository.getAnimeByIdSync(animeId) ?: return@launch
-            val oldCount = oldAnime.watchedEpisodeCount
-            // Optimistic update
-            repository.updateWatchedEpisodeCount(animeId, newCount)
-
-            if (_isMalLoggedIn.value) {
-                val anime = repository.getAnimeByIdSync(animeId) ?: oldAnime
-                val statusToSend = if (anime.totalEpisodes != null && newCount >= anime.totalEpisodes) "completed" else malStatus
-                updateAnimeMalStatus(anime = anime, malStatus = statusToSend, watchedCount = newCount, showToast = showToast) { success ->
-                    if (!success) {
-                        viewModelScope.launch {
-                            repository.updateWatchedEpisodeCount(animeId, oldCount)
-                            _userMessage.value = "MAL sync rejected update. Episode reverted to Ep $oldCount."
-                        }
-                    }
-                }
-            } else if (showToast) {
-                _userMessage.value = "Updated watched episode to Ep $newCount"
-            }
-        }
-    }
-
-    /**
-     * Updates media watch progress, user status, user rating score, and dates locally.
-     * Synchronizes with MyAnimeList if title has a MAL ID and MAL account is logged in.
-     */
-    fun updateUserMediaState(
-        animeId: Int,
-        userStatus: String? = null,
-        userScore: Int? = null,
-        watchedCount: Int? = null,
-        startDate: String? = null,
-        finishDate: String? = null
-    ) {
-        viewModelScope.launch {
-            val token = if (malOAuthManager.isLoggedIn) malOAuthManager.getValidAccessToken() else null
-            val result = repository.updateUserMediaState(
-                animeId = animeId,
-                userStatus = userStatus,
-                userScore = userScore,
-                watchedCount = watchedCount,
-                startDate = startDate,
-                finishDate = finishDate,
-                accessToken = token
-            )
-            if (result.isSuccess) {
-                _userMessage.value = "Updated media status & progress"
-            }
-        }
-    }
-
-    /**
-     * Adds a custom local title untracked or missing from MyAnimeList.
-     */
-    fun addNewLocalTitle(
-        title: String,
-        titleNative: String? = null,
-        titlePinyin: String? = null,
-        countryOfOrigin: String = "JP",
-        totalEpisodes: Int? = null,
-        currentEpisode: Int = 1,
-        synopsis: String? = null,
-        coverImage: String? = null,
-        format: String = "TV",
-        genres: String = ""
-    ) {
-        viewModelScope.launch {
-            val created = repository.addNewLocalTitle(
-                title = title,
-                titleNative = titleNative,
-                titlePinyin = titlePinyin,
-                countryOfOrigin = countryOfOrigin,
-                totalEpisodes = totalEpisodes,
-                currentEpisode = currentEpisode,
-                synopsis = synopsis,
-                coverImage = coverImage,
-                format = format,
-                genres = genres
-            )
-            _userMessage.value = "Added '${created.displayTitle}' locally (Untracked on MAL)"
-        }
-    }
-
-    /**
-     * Logout from MyAnimeList
-     */
-    fun logoutMal() {
-        malOAuthManager.logout()
-        _isMalLoggedIn.value = false
-        _malUserProfile.value = null
-        _userMessage.value = "Signed out of MyAnimeList"
-    }
-
-    fun setThemeColor(colorName: String) {
-        _themeColor.value = colorName
-        _userMessage.value = "Theme updated to ${colorName.replace("_", " ")}"
-    }
-
-    fun loginCloud(email: String? = null, name: String? = null) {
-        viewModelScope.launch {
-            _isCloudLoggedIn.value = true
-            _cloudUserEmail.value = email
-            _cloudUserName.value = name ?: _malUserProfile.value?.name
-            syncScheduleAndMAL()
-        }
-    }
-
-    fun logoutCloud() {
-        _isCloudLoggedIn.value = false
-        _cloudUserEmail.value = null
-        _cloudUserName.value = null
-        logoutMal()
-        _userMessage.value = "Signed out"
-    }
-
-    fun syncScheduleAndMAL() {
-        viewModelScope.launch {
-            _isCloudSyncing.value = true
-            repository.refreshSchedule()
-            if (_isMalLoggedIn.value) {
-                fetchMalProfileAndSync()
-            } else {
-                _lastCloudSyncTime.value = System.currentTimeMillis()
-                _isCloudSyncing.value = false
-                _userMessage.value = "Schedule refreshed & synced!"
-            }
-        }
-    }
-
-    fun toggleFeature(featureKey: String) {
-        val current = _enabledFeatures.value.toMutableSet()
-        if (current.contains(featureKey)) {
-            current.remove(featureKey)
-            _userMessage.value = "Feature disabled"
-        } else {
-            current.add(featureKey)
-            _userMessage.value = "Feature enabled"
-        }
-        _enabledFeatures.value = current
-    }
-
-    fun askAiCraft(prompt: String) {
-        viewModelScope.launch {
-            _aiCraftingState.value = true
-            val response = AiVerificationService.craftFeatureWithAi(prompt)
-            _aiCraftingState.value = false
-            val currentList = _aiCraftResults.value.toMutableList()
-            currentList.add(0, response)
-            _aiCraftResults.value = currentList
-            _userMessage.value = "Feature recommendations generated!"
-        }
-    }
-
-    fun setStealthMode(enabled: Boolean) {
-        _isStealthModeEnabled.value = enabled
-        _userMessage.value = if (enabled) "Stealth Camouflage Mode Active" else "Stealth Mode Disabled"
-    }
-
-    fun setDay(day: Int) {
-        selectedDay.value = day
-    }
-
-    fun setMediaType(mediaType: String) {
-        val current = _filterState.value
-        val updated = current.copy(mediaType = mediaType)
-        _filterState.value = updated
-        if (mediaType == "DONGHUA") {
-            _discoverFilter.value = "DONGHUA"
-        } else if (_discoverFilter.value == "DONGHUA") {
-            _discoverFilter.value = "ALL_TIME"
-        }
-        performSearch(_searchQuery.value)
-    }
-
-    fun updateFilterState(newFilter: DiscoverFilterState) {
-        _filterState.value = newFilter
-        _selectedSeason.value = newFilter.season
-        _selectedYear.value = newFilter.yearFrom
-        performSearch(_searchQuery.value)
-    }
-
-    fun resetFilters() {
-        _searchQuery.value = ""
-        _filterState.value = DiscoverFilterState()
-        _selectedSeason.value = null
-        _selectedYear.value = null
-        _selectedGenre.value = "ALL"
-        _discoverFilter.value = "ALL_TIME"
-        _searchError.value = null
-        performSearch("")
-    }
-
-    fun toggleGenreFilter(genre: String) {
-        val current = _filterState.value.selectedGenres
-        val updated = if (current.contains(genre)) current - genre else current + genre
-        _filterState.value = _filterState.value.copy(selectedGenres = updated)
-        performSearch(_searchQuery.value)
-    }
-
-    fun setSortBy(sort: String) {
-        _filterState.value = _filterState.value.copy(sortBy = sort)
-        performSearch(_searchQuery.value)
-    }
-
-    fun onSearchQueryChanged(query: String) {
-        _searchQuery.value = query
-        performSearch(query)
-        searchAniKoto(query)
-    }
-
-    fun refreshSearch() {
-        performSearch(_searchQuery.value)
-        if (_searchQuery.value.isNotBlank()) {
-            searchAniKoto(_searchQuery.value)
-        } else {
-            loadAniKotoTrending(forceRefresh = true)
-        }
-    }
-
-    fun onGenreSelected(genre: String) {
-        _selectedGenre.value = genre
-        val current = _filterState.value.selectedGenres
-        val updated = if (genre == "ALL" || genre == "All") emptySet() else setOf(genre)
-        _filterState.value = _filterState.value.copy(selectedGenres = updated)
-        performSearch(_searchQuery.value)
-    }
-
-    fun setDiscoverFilter(filter: String) {
-        _discoverFilter.value = filter
-        val currentMediaType = _filterState.value.mediaType
-        val mediaType = if (filter == "DONGHUA") "DONGHUA" else currentMediaType
-        val status = when (filter) {
-            "ONGOING" -> "RELEASING"
-            "UPCOMING" -> "NOT_YET_RELEASED"
-            else -> "ALL"
-        }
-        _filterState.value = _filterState.value.copy(mediaType = mediaType, status = status)
-        performSearch(_searchQuery.value)
-    }
-
-    fun setSelectedSeason(season: String?) {
-        _selectedSeason.value = season
-        _filterState.value = _filterState.value.copy(season = season)
-        performSearch(_searchQuery.value)
-    }
-
-    fun setSelectedYear(year: Int?) {
-        _selectedYear.value = year
-        _filterState.value = _filterState.value.copy(yearFrom = year, yearTo = year)
-        performSearch(_searchQuery.value)
-    }
-
-    fun setSeasonAndYear(season: String?, year: Int?) {
-        _selectedSeason.value = season
-        _selectedYear.value = year
-        _filterState.value = _filterState.value.copy(season = season, yearFrom = year, yearTo = year)
-        performSearch(_searchQuery.value)
-    }
-
+    private val _searchError = MutableStateFlow<String?>(null)
+    val searchError = _searchError.asStateFlow()
+
+    private var currentDiscoverPage = 1
+    private var hasNextDiscoverPage = true
     private var searchJob: Job? = null
 
-    private fun applyPostFilters(list: List<AnimeEntity>, filter: DiscoverFilterState): List<AnimeEntity> {
-        var result = list
+    // Anime Detail
+    private val _selectedAnimeId = MutableStateFlow<Int?>(null)
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val selectedAnimeDetail: StateFlow<AnimeEntity?> = _selectedAnimeId
+        .flatMapLatest { id -> if (id != null) repository.getAnimeById(id) else flowOf(null) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
-        // Safe Mode Filter
-        if (_safeModeEnabled.value) {
-            result = result.filter { !it.isAdult }
-        }
+    private val _selectedRichDetail = MutableStateFlow<AnimeRichDetail?>(null)
+    val selectedRichDetail = _selectedRichDetail.asStateFlow()
 
-        // Media Type Filter
-        if (filter.mediaType == "ANIME") {
-            result = result.filter { !it.isDonghua }
-        } else if (filter.mediaType == "DONGHUA") {
-            result = result.filter { it.isDonghua }
-        }
+    private val _isDetailLoading = MutableStateFlow(false)
+    val isDetailLoading = _isDetailLoading.asStateFlow()
 
-        // Airing Status Filter
-        if (filter.status != "ALL") {
-            result = result.filter { entity ->
-                when (filter.status) {
-                    "RELEASING", "ONGOING" -> entity.status == "RELEASING"
-                    "UPCOMING", "NOT_YET_RELEASED" -> entity.status == "NOT_YET_RELEASED"
-                    "FINISHED" -> entity.status == "FINISHED" || entity.status == "finished_airing"
-                    else -> true
-                }
-            }
-        }
+    private val _animeReviews = MutableStateFlow<List<CommunityReview>>(emptyList())
+    val animeReviews = _animeReviews.asStateFlow()
 
-        // Season Filter (Supporting Autumn & Fall interchangeably)
-        if (filter.season != null && filter.season != "ALL") {
-            val isAutumn = filter.season.equals("AUTUMN", ignoreCase = true) || filter.season.equals("FALL", ignoreCase = true)
-            result = result.filter { anime ->
-                if (isAutumn) {
-                    anime.season.equals("FALL", ignoreCase = true) || anime.season.equals("AUTUMN", ignoreCase = true)
-                } else {
-                    anime.season.equals(filter.season, ignoreCase = true)
-                }
-            }
-        }
+    // Collections
+    private val _collections = MutableStateFlow<List<AnimeCollection>>(emptyList())
+    val collections = _collections.asStateFlow()
 
-        // Year Range Filter
-        if (filter.yearFrom != null) {
-            result = result.filter { entity ->
-                entity.seasonYear == null || entity.seasonYear >= filter.yearFrom
-            }
-        }
-        if (filter.yearTo != null) {
-            result = result.filter { entity ->
-                entity.seasonYear == null || entity.seasonYear <= filter.yearTo
-            }
-        }
+    // Community
+    private val _communityCapacity = MutableStateFlow(CommunityCapacity())
+    val communityCapacity = _communityCapacity.asStateFlow()
 
-        // Genres Filter
-        if (filter.selectedGenres.isNotEmpty()) {
-            result = result.filter { entity ->
-                val entityGenres = entity.genres.split(",").map { g -> g.trim().lowercase() }
-                if (filter.genreMatchAll) {
-                    filter.selectedGenres.all { sel -> entityGenres.any { eg -> eg.contains(sel.lowercase()) } }
-                } else {
-                    filter.selectedGenres.any { sel -> entityGenres.any { eg -> eg.contains(sel.lowercase()) } }
-                }
-            }
-        }
+    private val _communityMembers = MutableStateFlow<List<CommunityMember>>(emptyList())
+    val communityMembers = _communityMembers.asStateFlow()
 
-        // Format Filter
-        if (filter.format != "ALL") {
-            result = result.filter { it.format.equals(filter.format, ignoreCase = true) }
-        }
+    private val _communityReviews = MutableStateFlow<List<CommunityReview>>(emptyList())
+    val communityReviews = _communityReviews.asStateFlow()
 
-        // Country Filter
-        if (filter.country != "ALL") {
-            result = result.filter { it.countryOfOrigin.equals(filter.country, ignoreCase = true) }
-        }
+    private val _communityActivity = MutableStateFlow<List<CommunityActivityItem>>(emptyList())
+    val communityActivity = _communityActivity.asStateFlow()
 
-        // MAL Availability Filter
-        if (filter.malAvailability == "MAL_ONLY") {
-            result = result.filter { it.idMal != null }
-        } else if (filter.malAvailability == "LOCAL_ONLY") {
-            result = result.filter { it.idMal == null }
-        }
+    private val _isCommunityLoading = MutableStateFlow(false)
+    val isCommunityLoading = _isCommunityLoading.asStateFlow()
 
-        // Sorting
-        result = when (filter.sortBy) {
-            "SCORE_DESC" -> result.sortedByDescending { it.score ?: 0 }
-            "START_DATE_DESC" -> result.sortedByDescending { it.seasonYear ?: 0 }
-            "TITLE_ROMAJI" -> result.sortedBy { it.displayTitle.lowercase() }
-            "EPISODES_DESC" -> result.sortedByDescending { it.totalEpisodes ?: 0 }
-            else -> result
-        }
+    private val _communityError = MutableStateFlow<String?>(null)
+    val communityError = _communityError.asStateFlow()
 
-        return result
+    private val _reviewSortOption = MutableStateFlow(ReviewSortOption.NEWEST)
+    val reviewSortOption = _reviewSortOption.asStateFlow()
+
+    // Selected Member Inspection
+    private val _inspectedMemberWatchlist = MutableStateFlow<List<AnimeEntity>>(emptyList())
+    val inspectedMemberWatchlist = _inspectedMemberWatchlist.asStateFlow()
+
+    private val _inspectedMemberCollections = MutableStateFlow<List<AnimeCollection>>(emptyList())
+    val inspectedMemberCollections = _inspectedMemberCollections.asStateFlow()
+
+    private val _isMemberInspectLoading = MutableStateFlow(false)
+    val isMemberInspectLoading = _isMemberInspectLoading.asStateFlow()
+
+    // Admin Invitations
+    private val _invitations = MutableStateFlow<List<InvitationCode>>(emptyList())
+    val invitations = _invitations.asStateFlow()
+
+    init {
+        restoreSessionAndInitialData()
     }
 
-    private fun getAniListSort(sortKey: String, hasSearch: Boolean): List<String> {
-        if (hasSearch) return listOf("SEARCH_MATCH", "POPULARITY_DESC")
-        return when (sortKey) {
-            "SCORE_DESC" -> listOf("SCORE_DESC")
-            "START_DATE_DESC" -> listOf("START_DATE_DESC")
-            "TITLE_ROMAJI" -> listOf("TITLE_ROMAJI")
-            "EPISODES_DESC" -> listOf("EPISODES_DESC")
-            else -> listOf("POPULARITY_DESC")
+    private fun restoreSessionAndInitialData() {
+        viewModelScope.launch {
+            preferencesRepo.preferencesFlow.collect { prefs ->
+                AppConfig.updateRuntimeSupabaseConfig(prefs.supabaseUrl, prefs.supabaseAnonKey)
+                val ready = AppConfig.isSupabaseConfigured
+                _isSupabaseReady.value = ready
+                if (ready && _authSession.value == null) {
+                    val saved = supabaseAuth.getSavedSession()
+                    if (saved != null) {
+                        val refreshed = supabaseAuth.refreshSessionIfNeeded(saved)
+                        if (refreshed.isSuccess) {
+                            val activeSession = refreshed.getOrThrow()
+                            _authSession.value = activeSession
+                            val loaded = supabaseDb.fetchCurrentProfile(activeSession).getOrNull()
+                            val needsOnboarding = !activeSession.onboardingCompleted ||
+                                loaded == null ||
+                                loaded.username.startsWith("traveler_", ignoreCase = true)
+                            if (needsOnboarding) {
+                                _userProfile.value = loaded
+                                _onboardingStage.value = OnboardingStage.USERNAME
+                            } else {
+                                _onboardingStage.value = OnboardingStage.NONE
+                                loadAuthenticatedWorkspace(activeSession)
+                            }
+                        } else {
+                            supabaseAuth.clearSession()
+                        }
+                    }
+                }
+            }
+        }
+        viewModelScope.launch {
+            repository.reconcileSavedAnime()
+            repository.pruneAndCompactStorage()
+            refreshHome()
+            checkForUpdates(manual = false)
+        }
+    }
+
+    fun checkForUpdates(manual: Boolean = false) {
+        viewModelScope.launch {
+            if (manual) _isCheckingUpdate.value = true
+            val res = supabaseDb.checkAppUpdate(
+                currentVersionCode = AppConfig.APP_VERSION_CODE,
+                currentVersionName = AppConfig.APP_VERSION
+            )
+            res.onSuccess { info ->
+                if (info != null) {
+                    _availableUpdate.value = info
+                } else if (manual) {
+                    _userMessage.value = "You're on the latest version (v${AppConfig.APP_VERSION})."
+                }
+            }.onFailure {
+                if (manual) {
+                    _userMessage.value = "You're on the latest version (v${AppConfig.APP_VERSION})."
+                }
+            }
+            if (manual) _isCheckingUpdate.value = false
+        }
+    }
+
+    fun dismissUpdatePrompt() {
+        val current = _availableUpdate.value
+        if (current != null && !current.isMandatory) {
+            _availableUpdate.value = null
+        }
+    }
+
+    fun saveSupabaseConfig(url: String, anonKey: String) {
+        val cleanUrl = url.trim().trimEnd('/')
+        val cleanKey = anonKey.trim()
+        if (!cleanUrl.startsWith("https://") || !cleanUrl.contains(".")) {
+            _authError.value = "Invalid cloud configuration."
+            return
+        }
+        if (cleanKey.length <= 20) {
+            _authError.value = "Invalid cloud configuration."
+            return
+        }
+        viewModelScope.launch {
+            _authError.value = null
+            preferencesRepo.setSupabaseConfig(cleanUrl, cleanKey)
+            AppConfig.updateRuntimeSupabaseConfig(cleanUrl, cleanKey)
+            _isSupabaseReady.value = AppConfig.isSupabaseConfigured
+            _userMessage.value = "Cloud sync configuration updated."
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // AUTH & INVITE FLOWS
+    // ------------------------------------------------------------------------
+
+    fun enterLocalPreviewMode() {
+        _isLocalPreviewMode.value = true
+        refreshHome()
+        ensureDiscoverLoaded()
+    }
+
+    fun exitLocalPreviewMode() {
+        _isLocalPreviewMode.value = false
+    }
+
+    fun clearAuthMessages() {
+        _authError.value = null
+        _pendingEmailVerification.value = null
+        _usernameAvailabilityError.value = null
+        verificationPollJob?.cancel()
+        verificationPollJob = null
+    }
+
+    fun clearUsernameError() {
+        _usernameAvailabilityError.value = null
+    }
+
+    fun clearProfileError() {
+        _profileError.value = null
+    }
+
+    fun clearDeleteAccountError() {
+        _deleteAccountError.value = null
+    }
+
+    fun signUpEmailOnly(email: String, password: String) {
+        val cleanEmail = email.trim()
+        if (!cleanEmail.contains("@") || !cleanEmail.contains(".")) {
+            _authError.value = "Enter a valid email address."
+            return
+        }
+        if (password.length < 6) {
+            _authError.value = "Password must be at least 6 characters."
+            return
+        }
+        pendingSignUpEmail = cleanEmail
+        pendingSignUpPassword = password
+
+        viewModelScope.launch {
+            _isAuthLoading.value = true
+            _authError.value = null
+            _pendingEmailVerification.value = null
+
+            val localWaitSec = supabaseAuth.checkLocalEmailCooldownSeconds(cleanEmail)
+            if (localWaitSec > 0L) {
+                val waitText = SupabaseAuthService.formatRemainingMinutes(localWaitSec)
+                _authError.value = "This email was recently deleted. You can register with it again in $waitText."
+                _isAuthLoading.value = false
+                return@launch
+            }
+
+            val remoteCooldown = supabaseDb.checkEmailRegistrationAllowed(cleanEmail).getOrNull()
+            if (remoteCooldown != null && !remoteCooldown.allowed) {
+                val waitText = SupabaseAuthService.formatRemainingMinutes(remoteCooldown.retryAfterSeconds.coerceAtLeast(60L))
+                _authError.value = "This email was recently deleted. You can register with it again in $waitText."
+                _isAuthLoading.value = false
+                return@launch
+            }
+
+            val result = supabaseAuth.signUpEmailOnly(
+                email = cleanEmail,
+                password = password
+            )
+            result.onSuccess { outcome ->
+                when (outcome) {
+                    is SignUpOutcome.Authenticated -> {
+                        _authSession.value = outcome.session
+                        _isLocalPreviewMode.value = false
+                        _onboardingStage.value = OnboardingStage.USERNAME
+                        _needsInviteRedemption.value = false
+                    }
+                    is SignUpOutcome.EmailVerificationRequired -> {
+                        _pendingEmailVerification.value = outcome.message
+                        startEmailVerificationPolling(cleanEmail, password)
+                    }
+                }
+            }.onFailure { err ->
+                _authError.value = ErrorSanitizer.sanitize(err, "Unable to create your account right now.")
+            }
+            _isAuthLoading.value = false
+        }
+    }
+
+    private fun startEmailVerificationPolling(email: String, password: String) {
+        verificationPollJob?.cancel()
+        verificationPollJob = viewModelScope.launch {
+            // Automatically detect when the user clicks the confirmation link in Gmail/Chrome
+            repeat(60) {
+                delay(3500L)
+                if (!isActive || _authSession.value != null || _pendingEmailVerification.value.isNullOrBlank()) {
+                    return@launch
+                }
+                val res = supabaseAuth.signInWithEmail(email, password)
+                if (res.isSuccess) {
+                    val session = res.getOrThrow()
+                    _authSession.value = session
+                    _pendingEmailVerification.value = null
+                    _isLocalPreviewMode.value = false
+                    _needsInviteRedemption.value = false
+                    val existingProfile = supabaseDb.fetchCurrentProfile(session).getOrNull()
+                    val needsOnboarding = !session.onboardingCompleted ||
+                        existingProfile == null ||
+                        existingProfile.username.startsWith("traveler_", ignoreCase = true)
+                    if (needsOnboarding) {
+                        _userProfile.value = existingProfile
+                        _onboardingStage.value = OnboardingStage.USERNAME
+                        _userMessage.value = "Email verified! Choose your unique username."
+                    } else {
+                        _onboardingStage.value = OnboardingStage.NONE
+                        _userProfile.value = existingProfile
+                        loadAuthenticatedWorkspace(session)
+                    }
+                    return@launch
+                }
+            }
+        }
+    }
+
+    fun handlePastedAuthLink(rawLink: String) {
+        val clean = rawLink.trim()
+        if (clean.isBlank()) {
+            _authError.value = "Paste the link from your email or browser address bar."
+            return
+        }
+        runCatching {
+            val uri = Uri.parse(clean)
+            handleDeepLinkUri(uri, allowAnyScheme = true)
+        }.onFailure {
+            _authError.value = "Invalid link format."
+        }
+    }
+
+    fun confirmEmailAndContinue(email: String, password: String) {
+        val targetEmail = email.trim().ifBlank { pendingSignUpEmail.orEmpty() }
+        val targetPassword = password.ifBlank { pendingSignUpPassword.orEmpty() }
+        if (targetEmail.isBlank() || targetPassword.isBlank()) {
+            _authError.value = "Sign in with your email and password to continue setup."
+            return
+        }
+        signInWithIdentifier(targetEmail, targetPassword)
+    }
+
+    /**
+     * Silently checks in the background while on the "Check Your Inbox" screen whether
+     * the user clicked the verification link in Gmail (even if Chrome opened a blank page).
+     * As soon as Supabase marks the email confirmed, this automatically signs the user in
+     * and opens the Username + Royal PFP onboarding screen.
+     */
+    suspend fun checkEmailVerifiedSilently(email: String, password: String): Boolean {
+        val targetEmail = email.trim().ifBlank { pendingSignUpEmail.orEmpty() }
+        val targetPassword = password.ifBlank { pendingSignUpPassword.orEmpty() }
+        if (targetEmail.isBlank() || targetPassword.isBlank() || _authSession.value != null) {
+            return false
+        }
+        val res = supabaseAuth.signInWithEmail(targetEmail, targetPassword)
+        if (res.isSuccess) {
+            val session = res.getOrThrow()
+            _authSession.value = session
+            _pendingEmailVerification.value = null
+            _authError.value = null
+            _isLocalPreviewMode.value = false
+            _needsInviteRedemption.value = false
+            val loadedProfile = supabaseDb.fetchCurrentProfile(session).getOrNull()
+            val needsOnboarding = !session.onboardingCompleted ||
+                loadedProfile == null ||
+                loadedProfile.username.startsWith("traveler_", ignoreCase = true)
+            if (needsOnboarding) {
+                _userProfile.value = loadedProfile
+                _onboardingStage.value = OnboardingStage.USERNAME
+                _userMessage.value = "Email verified! Claim your unique username."
+            } else {
+                _onboardingStage.value = OnboardingStage.NONE
+                _userProfile.value = loadedProfile
+                pendingSignUpEmail = null
+                pendingSignUpPassword = null
+                loadAuthenticatedWorkspace(session)
+            }
+            return true
+        }
+        return false
+    }
+
+    fun processPastedAuthLink(rawLink: String) {
+        val trimmed = rawLink.trim()
+        if (trimmed.isBlank()) {
+            _authError.value = "Paste the link from your email or browser address bar."
+            return
+        }
+        runCatching { Uri.parse(trimmed) }.getOrNull()?.let { uri ->
+            handleDeepLinkUri(uri, allowAnyScheme = true)
+        } ?: run {
+            _authError.value = "Invalid link format."
+        }
+    }
+
+    fun signInWithIdentifier(identifier: String, password: String) {
+        val cleanIdentifier = identifier.trim()
+        if (cleanIdentifier.isBlank() || password.isBlank()) {
+            _authError.value = "Enter your email or username and password."
+            return
+        }
+        viewModelScope.launch {
+            _isAuthLoading.value = true
+            _authError.value = null
+            _pendingEmailVerification.value = null
+
+            val resolvedEmailRes = if (cleanIdentifier.contains("@") && !cleanIdentifier.startsWith("@")) {
+                Result.success(cleanIdentifier)
+            } else {
+                supabaseDb.resolveLoginEmail(cleanIdentifier)
+            }
+
+            if (resolvedEmailRes.isFailure) {
+                _authError.value = ErrorSanitizer.sanitize(
+                    resolvedEmailRes.exceptionOrNull(),
+                    "No account found with that username."
+                )
+                _isAuthLoading.value = false
+                return@launch
+            }
+
+            val resolvedEmail = resolvedEmailRes.getOrThrow()
+            val res = supabaseAuth.signInWithEmail(resolvedEmail, password)
+            res.onSuccess { session ->
+                _authSession.value = session
+                _isLocalPreviewMode.value = false
+                _needsInviteRedemption.value = false
+                val existingProfile = supabaseDb.fetchCurrentProfile(session).getOrNull()
+                val needsOnboarding = !session.onboardingCompleted ||
+                    existingProfile == null ||
+                    existingProfile.username.startsWith("traveler_", ignoreCase = true)
+
+                if (needsOnboarding) {
+                    _userProfile.value = existingProfile
+                    _onboardingStage.value = OnboardingStage.USERNAME
+                } else {
+                    _onboardingStage.value = OnboardingStage.NONE
+                    _userProfile.value = existingProfile
+                    pendingSignUpEmail = null
+                    pendingSignUpPassword = null
+                    loadAuthenticatedWorkspace(session)
+                }
+            }.onFailure { err ->
+                _authError.value = ErrorSanitizer.sanitize(err, "Incorrect email/username or password.")
+            }
+            _isAuthLoading.value = false
+        }
+    }
+
+    fun signInWithEmail(
+        email: String,
+        password: String,
+        pendingInviteCode: String = "",
+        pendingAvatarKey: String = BuiltInAvatar.AVATAR_1.key
+    ) = signInWithIdentifier(email, password)
+
+    fun verifyAndAdvanceUsername(username: String) {
+        val clean = username.trim()
+        when {
+            clean.length !in 2..32 -> {
+                _usernameAvailabilityError.value = "Username must be between 2 and 32 characters."
+                return
+            }
+            clean.contains("@") -> {
+                _usernameAvailabilityError.value = "Usernames cannot contain the @ symbol."
+                return
+            }
+            !clean.matches(Regex("^[A-Za-z0-9_ .-]+$")) -> {
+                _usernameAvailabilityError.value = "Use letters, numbers, spaces, dots, hyphens, or underscores."
+                return
+            }
+        }
+        val session = _authSession.value
+        viewModelScope.launch {
+            _isCheckingUsername.value = true
+            _usernameAvailabilityError.value = null
+            _authError.value = null
+            val localUserCooldown = supabaseAuth.checkLocalUsernameCooldownSeconds(clean)
+            if (localUserCooldown > 0L) {
+                _usernameAvailabilityError.value = "That username was recently deleted and will be available again after 24 hours."
+                _isCheckingUsername.value = false
+                return@launch
+            }
+            supabaseDb.checkUsernameStatus(
+                username = clean,
+                accessToken = session?.accessToken,
+                currentUserId = session?.userId
+            ).onSuccess { status ->
+                if (status.available) {
+                    _pendingOnboardingUsername.value = clean
+                    _onboardingStage.value = OnboardingStage.AVATAR
+                } else {
+                    _usernameAvailabilityError.value = status.reason
+                        ?: "That username is already taken. Please choose a different unique username."
+                }
+            }.onFailure { err ->
+                _usernameAvailabilityError.value = ErrorSanitizer.sanitize(err, "Unable to check username right now.")
+            }
+            _isCheckingUsername.value = false
+        }
+    }
+
+    fun backToUsernameStep() {
+        _authError.value = null
+        _onboardingStage.value = OnboardingStage.USERNAME
+    }
+
+    fun completeRoyalAvatarOnboarding(avatarKey: String) {
+        val session = _authSession.value ?: return
+        val chosenUsername = _pendingOnboardingUsername.value.trim()
+        if (chosenUsername.length < 2) {
+            _onboardingStage.value = OnboardingStage.USERNAME
+            _usernameAvailabilityError.value = "Choose your unique username first."
+            return
+        }
+        viewModelScope.launch {
+            _isAuthLoading.value = true
+            _authError.value = null
+            _usernameAvailabilityError.value = null
+
+            val saveRes = supabaseDb.completeOnboardingProfile(
+                session = session,
+                username = chosenUsername,
+                avatarKey = avatarKey
+            )
+            saveRes.onSuccess { profile ->
+                val metaRes = supabaseAuth.updateAuthUserMetadata(
+                    session = session,
+                    username = chosenUsername,
+                    avatarKey = avatarKey,
+                    onboardingCompleted = true
+                )
+                val updatedSession = metaRes.getOrElse {
+                    session.copy(
+                        pendingUsername = chosenUsername,
+                        pendingAvatarKey = avatarKey,
+                        onboardingCompleted = true
+                    )
+                }
+                _authSession.value = updatedSession
+                _userProfile.value = profile
+                _onboardingStage.value = OnboardingStage.NONE
+                _needsInviteRedemption.value = false
+                pendingSignUpEmail = null
+                pendingSignUpPassword = null
+                loadAuthenticatedWorkspace(updatedSession)
+                _userMessage.value = "Welcome to ANIME UNIVERSE, $chosenUsername!"
+            }.onFailure { err ->
+                val cleanMsg = ErrorSanitizer.sanitize(err, "Unable to complete profile setup right now.")
+                if (cleanMsg.contains("taken", ignoreCase = true) || cleanMsg.contains("username", ignoreCase = true)) {
+                    _usernameAvailabilityError.value = cleanMsg
+                    _onboardingStage.value = OnboardingStage.USERNAME
+                } else {
+                    _authError.value = cleanMsg
+                }
+            }
+            _isAuthLoading.value = false
+        }
+    }
+
+    fun completeProfileSetup(
+        username: String,
+        avatarKey: String = BuiltInAvatar.AVATAR_1.key
+    ) {
+        _pendingOnboardingUsername.value = username.trim()
+        completeRoyalAvatarOnboarding(avatarKey)
+    }
+
+    fun verifySignUpOtp(email: String, otpCode: String) {
+        val targetEmail = email.trim().ifBlank { pendingSignUpEmail.orEmpty() }
+        val cleanCode = otpCode.trim().replace(" ", "")
+        if (targetEmail.isBlank()) {
+            _authError.value = "Enter your email address first."
+            return
+        }
+        if (cleanCode.length != 8) {
+            _authError.value = "Enter the 8-digit code sent to your email."
+            return
+        }
+        viewModelScope.launch {
+            _isAuthLoading.value = true
+            _authError.value = null
+            supabaseAuth.verifyEmailOtp(
+                email = targetEmail,
+                otpCode = cleanCode,
+                type = "signup"
+            ).onSuccess { session ->
+                verificationPollJob?.cancel()
+                _authSession.value = session
+                _pendingEmailVerification.value = null
+                _isLocalPreviewMode.value = false
+                _needsInviteRedemption.value = false
+                val existingProfile = supabaseDb.fetchCurrentProfile(session).getOrNull()
+                val needsOnboarding = !session.onboardingCompleted ||
+                    existingProfile == null ||
+                    existingProfile.username.startsWith("traveler_", ignoreCase = true)
+                if (needsOnboarding) {
+                    _userProfile.value = existingProfile
+                    _onboardingStage.value = OnboardingStage.USERNAME
+                    _userMessage.value = "Email verified! Claim your unique username."
+                } else {
+                    _onboardingStage.value = OnboardingStage.NONE
+                    _userProfile.value = existingProfile
+                    loadAuthenticatedWorkspace(session)
+                }
+            }.onFailure { err ->
+                _authError.value = ErrorSanitizer.sanitize(err, "Invalid or expired verification code.")
+            }
+            _isAuthLoading.value = false
+        }
+    }
+
+    fun sendPasswordReset(identifier: String, onSent: () -> Unit = {}) {
+        val clean = identifier.trim()
+        if (clean.isBlank()) {
+            _authError.value = "Enter your email address or username to reset your password."
+            return
+        }
+        viewModelScope.launch {
+            _isAuthLoading.value = true
+            _authError.value = null
+            val emailRes = if (clean.contains("@") && !clean.startsWith("@")) {
+                Result.success(clean)
+            } else {
+                supabaseDb.resolveLoginEmail(clean)
+            }
+            emailRes.onSuccess { targetEmail ->
+                supabaseAuth.sendPasswordReset(targetEmail).onSuccess { msg ->
+                    _pendingEmailVerification.value = msg
+                    onSent()
+                }.onFailure { err ->
+                    _authError.value = ErrorSanitizer.sanitize(err, "Unable to send password reset code right now.")
+                }
+            }.onFailure { err ->
+                _authError.value = ErrorSanitizer.sanitize(err, "No account found matching that username.")
+            }
+            _isAuthLoading.value = false
+        }
+    }
+
+    fun verifyRecoveryCodeAndSetPassword(
+        identifier: String,
+        otpOrLink: String,
+        newPassword: String,
+        onCompleted: () -> Unit = {}
+    ) {
+        val cleanId = identifier.trim()
+        val cleanCode = otpOrLink.trim().replace(" ", "")
+        if (cleanId.isBlank()) {
+            _authError.value = "Enter your email address or username."
+            return
+        }
+        if (cleanCode.length != 8) {
+            _authError.value = "Enter the 8-digit reset code from your email."
+            return
+        }
+        if (newPassword.length < 6) {
+            _authError.value = "New password must be at least 6 characters."
+            return
+        }
+        if (cleanCode.startsWith("http://", ignoreCase = true) ||
+            cleanCode.startsWith("https://", ignoreCase = true) ||
+            cleanCode.startsWith("animeuniverse://", ignoreCase = true)
+        ) {
+            handlePastedAuthLink(cleanCode)
+            onCompleted()
+            return
+        }
+        viewModelScope.launch {
+            _isAuthLoading.value = true
+            _authError.value = null
+            val emailRes = if (cleanId.contains("@") && !cleanId.startsWith("@")) {
+                Result.success(cleanId)
+            } else {
+                supabaseDb.resolveLoginEmail(cleanId)
+            }
+            if (emailRes.isFailure) {
+                _authError.value = ErrorSanitizer.sanitize(emailRes.exceptionOrNull(), "No account found matching that username.")
+                _isAuthLoading.value = false
+                return@launch
+            }
+            val targetEmail = emailRes.getOrThrow()
+            val verifyRes = supabaseAuth.verifyEmailOtp(
+                email = targetEmail,
+                otpCode = cleanCode,
+                type = "recovery"
+            )
+            if (verifyRes.isFailure) {
+                _authError.value = ErrorSanitizer.sanitize(verifyRes.exceptionOrNull(), "Invalid or expired reset code.")
+                _isAuthLoading.value = false
+                return@launch
+            }
+            val session = verifyRes.getOrThrow()
+            supabaseAuth.updatePassword(session, newPassword).onSuccess {
+                _authSession.value = session
+                _isPasswordRecoveryPending.value = false
+                _pendingEmailVerification.value = null
+                loadAuthenticatedWorkspace(session)
+                _userMessage.value = "Password updated successfully!"
+                onCompleted()
+            }.onFailure { err ->
+                _authError.value = ErrorSanitizer.sanitize(err, "Unable to update password right now.")
+            }
+            _isAuthLoading.value = false
+        }
+    }
+
+    fun resendVerificationEmail(email: String) {
+        val target = email.trim().ifBlank { pendingSignUpEmail.orEmpty() }
+        if (target.isBlank()) return
+        viewModelScope.launch {
+            _isAuthLoading.value = true
+            _authError.value = null
+            supabaseAuth.resendVerificationEmail(target).onSuccess { msg ->
+                _pendingEmailVerification.value = msg
+                _userMessage.value = msg
+            }.onFailure { err ->
+                _authError.value = ErrorSanitizer.sanitize(err, "Unable to resend verification link right now.")
+            }
+            _isAuthLoading.value = false
+        }
+    }
+
+    fun handleDeepLinkUri(uri: Uri?, allowAnyScheme: Boolean = false) {
+        if (uri == null) return
+        val isCustomScheme = uri.scheme == "animeuniverse" && uri.host == "auth-callback"
+        val hasAuthTokens = uri.fragment?.contains("access_token") == true ||
+            uri.getQueryParameter("access_token") != null ||
+            uri.getQueryParameter("token_hash") != null ||
+            uri.getQueryParameter("token") != null
+        if (!isCustomScheme && !(allowAnyScheme && hasAuthTokens)) return
+        viewModelScope.launch {
+            _isAuthLoading.value = true
+            _authError.value = null
+            supabaseAuth.handleAuthCallbackUri(uri).onSuccess { outcome ->
+                when (outcome) {
+                    is AuthCallbackOutcome.VerifiedSession -> {
+                        val session = outcome.session
+                        _authSession.value = session
+                        _pendingEmailVerification.value = null
+                        _isLocalPreviewMode.value = false
+                        _needsInviteRedemption.value = false
+                        val existingProfile = supabaseDb.fetchCurrentProfile(session).getOrNull()
+                        val needsOnboarding = !session.onboardingCompleted ||
+                            existingProfile == null ||
+                            existingProfile.username.startsWith("traveler_", ignoreCase = true)
+                        if (needsOnboarding) {
+                            _userProfile.value = existingProfile
+                            _onboardingStage.value = OnboardingStage.USERNAME
+                            _userMessage.value = "Email verified! Claim your unique username."
+                        } else {
+                            _onboardingStage.value = OnboardingStage.NONE
+                            _userProfile.value = existingProfile
+                            pendingSignUpEmail = null
+                            pendingSignUpPassword = null
+                            loadAuthenticatedWorkspace(session)
+                            _userMessage.value = "Email verified! Welcome to ANIME UNIVERSE."
+                        }
+                    }
+                    is AuthCallbackOutcome.PasswordRecoverySession -> {
+                        _authSession.value = outcome.session
+                        _isPasswordRecoveryPending.value = true
+                    }
+                }
+            }.onFailure { err ->
+                val clean = ErrorSanitizer.sanitize(err, "Email confirmed! Sign in below to continue.")
+                if (clean.contains("confirmed", ignoreCase = true)) {
+                    _pendingEmailVerification.value = clean
+                } else {
+                    _authError.value = clean
+                }
+            }
+            _isAuthLoading.value = false
+        }
+    }
+
+    fun submitNewPassword(newPassword: String) {
+        val session = _authSession.value ?: return
+        if (newPassword.length < 6) {
+            _authError.value = "Password must be at least 6 characters."
+            return
+        }
+        viewModelScope.launch {
+            _isAuthLoading.value = true
+            supabaseAuth.updatePassword(session, newPassword).onSuccess {
+                _isPasswordRecoveryPending.value = false
+                loadAuthenticatedWorkspace(session)
+                _userMessage.value = "Password updated successfully!"
+            }.onFailure { err ->
+                _authError.value = ErrorSanitizer.sanitize(err, "Unable to update password right now.")
+            }
+            _isAuthLoading.value = false
+        }
+    }
+
+    fun dismissPasswordRecovery() {
+        _isPasswordRecoveryPending.value = false
+    }
+
+    fun signOut() {
+        val current = _authSession.value
+        viewModelScope.launch {
+            supabaseAuth.signOut(current)
+            _authSession.value = null
+            _userProfile.value = null
+            _privacySettings.value = PrivacySettings()
+            _collections.value = emptyList()
+            _communityMembers.value = emptyList()
+            _communityReviews.value = emptyList()
+            _communityActivity.value = emptyList()
+            _invitations.value = emptyList()
+            _needsInviteRedemption.value = false
+            _onboardingStage.value = OnboardingStage.NONE
+            _pendingOnboardingUsername.value = ""
+            _usernameAvailabilityError.value = null
+            _profileError.value = null
+            _deleteAccountError.value = null
+            pendingSignUpEmail = null
+            pendingSignUpPassword = null
+            _isLocalPreviewMode.value = false
+            _userMessage.value = "Signed out."
+        }
+    }
+
+    fun deleteAccount(
+        password: String,
+        onSuccess: () -> Unit = {}
+    ) {
+        val session = _authSession.value
+        val currentProfile = _userProfile.value
+        if (session == null || currentProfile == null) {
+            _deleteAccountError.value = "No active account session found."
+            return
+        }
+        if (password.isBlank()) {
+            _deleteAccountError.value = "Enter your password to confirm deletion."
+            return
+        }
+        viewModelScope.launch {
+            _isDeletingAccount.value = true
+            _deleteAccountError.value = null
+
+            val verifyRes = supabaseAuth.verifyPassword(session, password)
+            if (verifyRes.isFailure) {
+                _deleteAccountError.value = ErrorSanitizer.sanitize(
+                    verifyRes.exceptionOrNull(),
+                    "Incorrect password. Please try again."
+                )
+                _isDeletingAccount.value = false
+                return@launch
+            }
+
+            val verifiedSession = verifyRes.getOrThrow()
+            val deleteRes = supabaseDb.deleteAccountCompletely(verifiedSession)
+            if (deleteRes.isFailure) {
+                _deleteAccountError.value = ErrorSanitizer.sanitize(
+                    deleteRes.exceptionOrNull(),
+                    "Unable to delete account right now."
+                )
+                _isDeletingAccount.value = false
+                return@launch
+            }
+
+            supabaseAuth.recordDeletionCooldowns(
+                email = verifiedSession.email,
+                username = currentProfile.username
+            )
+            supabaseAuth.clearSession()
+            repository.clearAllUserData()
+
+            _authSession.value = null
+            _userProfile.value = null
+            _privacySettings.value = PrivacySettings()
+            _collections.value = emptyList()
+            _communityMembers.value = emptyList()
+            _communityReviews.value = emptyList()
+            _communityActivity.value = emptyList()
+            _invitations.value = emptyList()
+            _inspectedMemberWatchlist.value = emptyList()
+            _inspectedMemberCollections.value = emptyList()
+            _needsInviteRedemption.value = false
+            _onboardingStage.value = OnboardingStage.NONE
+            _pendingOnboardingUsername.value = ""
+            _usernameAvailabilityError.value = null
+            _profileError.value = null
+            _deleteAccountError.value = null
+            pendingSignUpEmail = null
+            pendingSignUpPassword = null
+            _isLocalPreviewMode.value = false
+            _isDeletingAccount.value = false
+            _userMessage.value = "Account deleted. Your email can re-register after 5 minutes and your username after 24 hours."
+            onSuccess()
+        }
+    }
+
+    fun joinCommunity(inviteCode: String = "") {
+        val session = _authSession.value
+        val profile = _userProfile.value
+        if (session == null || profile == null) {
+            _userMessage.value = "Sign in first to join the community."
+            return
+        }
+        viewModelScope.launch {
+            _isCommunityLoading.value = true
+            _communityError.value = null
+            supabaseDb.joinCommunity(
+                session = session,
+                username = profile.username,
+                avatarKey = profile.avatarKey,
+                inviteCode = inviteCode
+            ).onSuccess {
+                loadAuthenticatedWorkspace(session)
+                _userMessage.value = "Joined community! You can now see friends' ratings, notes, and activity."
+            }.onFailure { err ->
+                val msg = ErrorSanitizer.sanitize(err, "Unable to join community.")
+                _communityError.value = msg
+                _userMessage.value = msg
+            }
+            _isCommunityLoading.value = false
+        }
+    }
+
+    fun leaveCommunity() {
+        val session = _authSession.value ?: return
+        viewModelScope.launch {
+            supabaseDb.leaveCommunity(session).onSuccess {
+                _userProfile.value = _userProfile.value?.copy(memberStatus = MemberStatus.LEFT)
+                _communityMembers.value = emptyList()
+                _communityReviews.value = emptyList()
+                _communityActivity.value = emptyList()
+                _userMessage.value = "You have left the community."
+            }.onFailure { err ->
+                _userMessage.value = ErrorSanitizer.sanitize(err, "Unable to leave community.")
+            }
+        }
+    }
+
+    private fun loadAuthenticatedWorkspace(session: AuthSession) {
+        viewModelScope.launch {
+            val loaded = supabaseDb.fetchCurrentProfile(session).getOrNull()
+                ?: supabaseDb.ensurePersonalProfile(session).getOrNull()
+            if (loaded != null) {
+                _userProfile.value = loaded
+                _needsInviteRedemption.value = false
+                supabaseDb.fetchPrivacySettings(session).onSuccess { _privacySettings.value = it }
+                supabaseDb.fetchUserWatchlist(session).onSuccess { cloudItems ->
+                    repository.syncCloudWatchlistEntries(cloudItems)
+                }
+                supabaseDb.fetchCollections(session).onSuccess { _collections.value = it }
+                if (loaded.memberStatus == MemberStatus.ACTIVE) {
+                    refreshCommunityData()
+                    if (loaded.isInviteCreator) {
+                        fetchInvitations()
+                    }
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // HOME & ANILIST METADATA DISCOVERY
+    // ------------------------------------------------------------------------
+
+    fun setSelectedDay(day: Int) {
+        selectedDay.value = day.coerceIn(1, 7)
+    }
+
+    fun refreshHome() {
+        viewModelScope.launch {
+            _isHomeRefreshing.value = true
+            _homeError.value = null
+            val trendingRes = metadataProvider.getTrendingAnime(page = 1, perPage = 16)
+            trendingRes.onSuccess { mediaList ->
+                val entities = mediaList.map { AniListMetadataProvider.mapMediaToEntity(it) }
+                repository.upsertCatalogItems(entities)
+                _trendingAnime.value = entities
+            }.onFailure { err ->
+                _homeError.value = ErrorSanitizer.sanitize(err, "Unable to refresh schedule right now.")
+            }
+            repository.refreshSchedule()
+            if (_authSession.value != null && _userProfile.value?.memberStatus == MemberStatus.ACTIVE) {
+                refreshCommunityData()
+            }
+            _isHomeRefreshing.value = false
         }
     }
 
     fun ensureDiscoverLoaded() {
         if (_searchResults.value.isEmpty() && !_isSearching.value) {
-            performSearch(_searchQuery.value)
-        }
-        if (_aniKotoTrending.value.isEmpty() && !_isAniKotoTrendingLoading.value) {
-            loadAniKotoTrending(forceRefresh = false)
+            performSearch(resetPage = true)
         }
     }
 
-    fun loadNextPage() {
-        if (_isNextPageLoading.value || !hasNextPage || _isSearching.value) return
-        val query = _searchQuery.value
-        val filter = _filterState.value
-        viewModelScope.launch(Dispatchers.IO) {
-            _isNextPageLoading.value = true
-            val nextPage = currentPage + 1
-            val isDonghuaFilter = filter.mediaType == "DONGHUA" || filter.country == "CN"
-            val status = when (filter.status) {
-                "RELEASING", "ONGOING" -> "RELEASING"
-                "UPCOMING", "NOT_YET_RELEASED" -> "NOT_YET_RELEASED"
-                "FINISHED" -> "FINISHED"
-                else -> null
-            }
-            val countryCode = if (isDonghuaFilter) "CN" else if (filter.country != "ALL") filter.country else if (filter.mediaType == "ANIME") "JP" else null
-            val primaryGenre = filter.selectedGenres.firstOrNull() ?: if (_selectedGenre.value != "ALL") _selectedGenre.value else null
-            val rawSeason = filter.season
-            val season = if (rawSeason?.equals("AUTUMN", ignoreCase = true) == true) "FALL" else rawSeason
-            val year = filter.yearFrom ?: filter.yearTo
-            val apiSort = getAniListSort(filter.sortBy, query.isNotEmpty())
-
-            try {
-                val result = repository.searchAniList(
-                    query = query,
-                    genre = primaryGenre,
-                    season = season,
-                    seasonYear = year,
-                    status = status,
-                    countryOfOrigin = countryCode,
-                    sort = apiSort,
-                    page = nextPage
-                )
-                val searchRes = result.getOrNull()
-                if (searchRes != null && searchRes.items.isNotEmpty()) {
-                    currentPage = nextPage
-                    hasNextPage = searchRes.hasNextPage
-                    val currentList = _searchResults.value
-                    val combined = (currentList + searchRes.items).distinctBy { it.id }
-                    _searchResults.value = applyPostFilters(combined, filter)
-                } else {
-                    hasNextPage = false
-                }
-            } catch (e: Exception) {
-                // Ignore pagination errors
-            } finally {
-                _isNextPageLoading.value = false
-            }
-        }
+    fun updateSearchQuery(query: String) {
+        _searchQuery.value = query
+        performSearch(resetPage = true)
     }
 
-    fun performSearch(query: String) {
+    fun updateFilterState(newState: DiscoverFilterState) {
+        _filterState.value = newState
+        performSearch(resetPage = true)
+    }
+
+    fun resetFilters() {
+        _filterState.value = DiscoverFilterState()
+        _searchQuery.value = ""
+        performSearch(resetPage = true)
+    }
+
+    fun performSearch(resetPage: Boolean = true) {
         searchJob?.cancel()
-        searchJob = viewModelScope.launch(Dispatchers.IO) {
-            if (query.isNotEmpty()) {
-                delay(200)
+        searchJob = viewModelScope.launch {
+            if (resetPage) {
+                currentDiscoverPage = 1
+                hasNextDiscoverPage = true
+                _isSearching.value = true
+            } else {
+                if (!hasNextDiscoverPage || _isNextPageLoading.value) return@launch
+                _isNextPageLoading.value = true
             }
-            currentPage = 1
-            hasNextPage = true
-            _isNextPageLoading.value = false
             _searchError.value = null
-            _isSearching.value = true
 
-            val filter = _filterState.value
-            val isDonghuaFilter = filter.mediaType == "DONGHUA" || filter.country == "CN"
-            val status = when (filter.status) {
-                "RELEASING", "ONGOING" -> "RELEASING"
-                "UPCOMING", "NOT_YET_RELEASED" -> "NOT_YET_RELEASED"
-                "FINISHED" -> "FINISHED"
+            val filters = _filterState.value
+            val country = when {
+                filters.mediaType == "DONGHUA" -> "CN"
+                filters.country != "ALL" -> filters.country
                 else -> null
             }
-            val countryCode = if (isDonghuaFilter) "CN" else if (filter.country != "ALL") filter.country else if (filter.mediaType == "ANIME") "JP" else null
-            val primaryGenre = filter.selectedGenres.firstOrNull() ?: if (_selectedGenre.value != "ALL") _selectedGenre.value else null
-            val rawSeason = filter.season
-            val season = if (rawSeason?.equals("AUTUMN", ignoreCase = true) == true) "FALL" else rawSeason
-            val year = filter.yearFrom ?: filter.yearTo
-            val apiSort = getAniListSort(filter.sortBy, query.isNotEmpty())
-
-            // 1. Local database search
-            val localList = repository.getAllLocalAnime(query, primaryGenre)
-            val filteredLocal = applyPostFilters(localList, filter)
-            
-            if (filteredLocal.isNotEmpty()) {
-                _searchResults.value = filteredLocal
+            val res = metadataProvider.searchCatalog(
+                query = _searchQuery.value,
+                genre = filters.selectedGenres.firstOrNull(),
+                season = filters.season,
+                seasonYear = filters.yearFrom,
+                status = filters.status,
+                format = filters.format,
+                countryOfOrigin = country,
+                sort = filters.sortBy,
+                page = currentDiscoverPage,
+                perPage = 24
+            )
+            res.onSuccess { (mediaList, hasNext) ->
+                val entities = mediaList.map { media ->
+                    val existing = repository.getAnimeByIdSync(media.id)
+                    AniListMetadataProvider.mapMediaToEntity(media, existing)
+                }.filter { entity ->
+                    val safeOk = !preferences.value.safeModeEnabled || !entity.isAdult
+                    val multiGenreOk = filters.selectedGenres.isEmpty() || filters.selectedGenres.all { g ->
+                        entity.genres.contains(g, ignoreCase = true)
+                    }
+                    safeOk && multiGenreOk
+                }
+                repository.upsertCatalogItems(entities)
+                hasNextDiscoverPage = hasNext
+                if (resetPage) {
+                    _searchResults.value = entities
+                } else {
+                    _searchResults.value = (_searchResults.value + entities).distinctBy { it.id }
+                }
+                if (hasNext) currentDiscoverPage += 1
+            }.onFailure { err ->
+                _searchError.value = ErrorSanitizer.sanitize(err, "Unable to load catalog right now.")
             }
 
-            // 2. AniList API Online Search
-            try {
-                val result = repository.searchAniList(
-                    query = query,
-                    genre = primaryGenre,
-                    season = season,
-                    seasonYear = year,
-                    status = status,
-                    countryOfOrigin = countryCode,
-                    sort = apiSort,
-                    page = 1
-                )
-                if (result.isSuccess) {
-                    val searchRes = result.getOrNull()
-                    val list = searchRes?.items ?: emptyList()
-                    hasNextPage = searchRes?.hasNextPage ?: false
-                    val combinedList = (filteredLocal + list).distinctBy { it.id }
-                    _searchResults.value = applyPostFilters(combinedList, filter)
-                    _searchError.value = null
-                } else {
-                    val exception = result.exceptionOrNull()
-                    if (_searchResults.value.isEmpty()) {
-                        _searchError.value = exception?.message ?: "Unable to fetch catalogue from AniList."
+            _isSearching.value = false
+            _isNextPageLoading.value = false
+        }
+    }
+
+    fun loadNextDiscoverPage() {
+        if (hasNextDiscoverPage && !_isSearching.value && !_isNextPageLoading.value) {
+            performSearch(resetPage = false)
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // DETAIL SCREEN
+    // ------------------------------------------------------------------------
+
+    fun selectAnimeDetail(animeId: Int) {
+        _selectedAnimeId.value = animeId
+        _selectedRichDetail.value = null
+        _animeReviews.value = emptyList()
+        viewModelScope.launch {
+            _isDetailLoading.value = true
+            metadataProvider.getMediaDetails(animeId).onSuccess { media ->
+                if (media != null) {
+                    val existing = repository.getAnimeByIdSync(media.id)
+                    val mapped = AniListMetadataProvider.mapMediaToEntity(media, existing)
+                    repository.upsertCatalogItems(listOf(mapped), keepFullSynopsis = true)
+                    _selectedRichDetail.value = AniListMetadataProvider.mapRichDetail(media)
+                    val enriched = metadataProvider.getRichDetailWithSeasons(media)
+                    if (_selectedAnimeId.value == animeId) {
+                        _selectedRichDetail.value = enriched
                     }
                 }
-            } catch (e: Exception) {
-                if (_searchResults.value.isEmpty()) {
-                    _searchError.value = e.message ?: "Network error while loading catalogue."
-                }
-            } finally {
-                _isSearching.value = false
+            }
+            val session = _authSession.value
+            if (session != null && _userProfile.value?.memberStatus == MemberStatus.ACTIVE) {
+                supabaseDb.fetchCommunityFeed(session, _communityMembers.value, animeIdFilter = animeId)
+                    .onSuccess { (reviews, _) ->
+                        _animeReviews.value = reviews
+                    }
+            }
+            _isDetailLoading.value = false
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // WATCHLIST, PROGRESS, COLLECTIONS
+    // ------------------------------------------------------------------------
+
+    fun addToWatchlist(anime: AnimeEntity, status: WatchStatus = WatchStatus.WATCHING) {
+        viewModelScope.launch {
+            val saved = repository.addToWatchlist(anime, status)
+            syncSingleEntryToCloud(saved)
+            val syncText = if (_authSession.value != null) "Synced" else "Saved"
+            _dynamicIslandFeedback.value = DynamicIslandFeedback(
+                title = "Added • $syncText",
+                subtitle = "${saved.displayTitle} (${status.label})",
+                animeId = saved.id
+            )
+            _userMessage.value = "Added ${saved.displayTitle} to ${status.label}."
+        }
+    }
+
+    fun incrementEpisode(animeId: Int) {
+        viewModelScope.launch {
+            val before = repository.getAnimeByIdSync(animeId) ?: return@launch
+            val prevEpisode = before.watchedEpisodeCount
+            val prevStatus = before.watchStatusEnum
+            val updated = repository.incrementEpisode(animeId) ?: return@launch
+            syncSingleEntryToCloud(updated)
+            val syncText = if (_authSession.value != null) "Synced" else "Saved"
+            _dynamicIslandFeedback.value = DynamicIslandFeedback(
+                title = if (updated.watchStatusEnum == WatchStatus.COMPLETED) {
+                    "Completed • $syncText"
+                } else {
+                    "Ep ${updated.watchedEpisodeCount} Logged • $syncText"
+                },
+                subtitle = updated.displayTitle,
+                animeId = updated.id,
+                previousEpisode = prevEpisode,
+                previousStatus = prevStatus,
+                canUndo = true
+            )
+            _userMessage.value = if (updated.watchStatusEnum == WatchStatus.COMPLETED) {
+                "Completed ${updated.displayTitle}!"
+            } else {
+                "${updated.displayTitle}: Ep ${updated.watchedEpisodeCount}"
             }
         }
     }
 
-    fun removeAnime(
-        anime: AnimeEntity,
-        scope: RemovalScope = RemovalScope.BOTH,
-        listType: String = "WATCHLIST"
+    fun decrementEpisode(animeId: Int) {
+        viewModelScope.launch {
+            val before = repository.getAnimeByIdSync(animeId) ?: return@launch
+            if (before.watchedEpisodeCount <= 0) return@launch
+            val prevEpisode = before.watchedEpisodeCount
+            val prevStatus = before.watchStatusEnum
+            val targetEpisode = (prevEpisode - 1).coerceAtLeast(0)
+            val nextStatus = if (prevStatus == WatchStatus.COMPLETED && (before.totalEpisodes == null || targetEpisode < before.totalEpisodes)) {
+                WatchStatus.WATCHING
+            } else {
+                prevStatus
+            }
+            val updated = repository.updateUserTrackingState(
+                animeId = animeId,
+                status = nextStatus,
+                episodeProgress = targetEpisode,
+                score = before.userScore,
+                notes = before.userNotes,
+                isFavorite = before.isFavorite
+            ) ?: return@launch
+            syncSingleEntryToCloud(updated)
+            val syncText = if (_authSession.value != null) "Synced" else "Saved"
+            _dynamicIslandFeedback.value = DynamicIslandFeedback(
+                title = "Ep ${updated.watchedEpisodeCount} Logged • $syncText",
+                subtitle = updated.displayTitle,
+                animeId = updated.id,
+                previousEpisode = prevEpisode,
+                previousStatus = prevStatus,
+                canUndo = true
+            )
+        }
+    }
+
+    fun setEpisodeProgress(animeId: Int, targetEpisode: Int) {
+        viewModelScope.launch {
+            val before = repository.getAnimeByIdSync(animeId) ?: return@launch
+            val prevEpisode = before.watchedEpisodeCount
+            val prevStatus = before.watchStatusEnum
+            val clamped = com.example.model.ProgressRules.clampEpisodeProgress(targetEpisode, before.totalEpisodes)
+            val nextStatus = when {
+                before.totalEpisodes != null && before.totalEpisodes > 0 && clamped >= before.totalEpisodes -> WatchStatus.COMPLETED
+                !before.inWatchlist || before.watchStatusEnum == WatchStatus.PLAN_TO_WATCH -> WatchStatus.WATCHING
+                else -> before.watchStatusEnum
+            }
+            val updated = repository.updateUserTrackingState(
+                animeId = animeId,
+                status = nextStatus,
+                episodeProgress = clamped,
+                score = before.userScore,
+                notes = before.userNotes,
+                isFavorite = before.isFavorite
+            ) ?: return@launch
+            syncSingleEntryToCloud(updated)
+            val syncText = if (_authSession.value != null) "Synced" else "Saved"
+            _dynamicIslandFeedback.value = DynamicIslandFeedback(
+                title = "Ep ${updated.watchedEpisodeCount} Logged • $syncText",
+                subtitle = updated.displayTitle,
+                animeId = updated.id,
+                previousEpisode = prevEpisode,
+                previousStatus = prevStatus,
+                canUndo = true
+            )
+        }
+    }
+
+    fun undoLastEpisodeAction() {
+        val feedback = _dynamicIslandFeedback.value ?: return
+        val targetId = feedback.animeId ?: return
+        val prevEp = feedback.previousEpisode ?: return
+        val prevStatus = feedback.previousStatus ?: WatchStatus.WATCHING
+        viewModelScope.launch {
+            val current = repository.getAnimeByIdSync(targetId) ?: return@launch
+            val restored = repository.updateUserTrackingState(
+                animeId = targetId,
+                status = prevStatus,
+                episodeProgress = prevEp,
+                score = current.userScore,
+                notes = current.userNotes,
+                isFavorite = current.isFavorite
+            )
+            if (restored != null) {
+                syncSingleEntryToCloud(restored)
+            }
+            _dynamicIslandFeedback.value = DynamicIslandFeedback(
+                title = "Reverted to Ep $prevEp",
+                subtitle = feedback.subtitle,
+                animeId = targetId,
+                canUndo = false
+            )
+        }
+    }
+
+    fun updateTracking(
+        animeId: Int,
+        status: WatchStatus,
+        episodeProgress: Int,
+        scoreTenths: Int?,
+        notes: String,
+        isFavorite: Boolean,
+        seasonNumber: Int? = null
     ) {
         viewModelScope.launch {
-            val title = anime.displayTitle
-            val token = malOAuthManager.getValidAccessToken()
-            when (scope) {
-                RemovalScope.LOCAL_ONLY -> {
-                    if (listType == "WISHLIST") {
-                        repository.removeFromWishlist(anime.id, anime.idMal)
-                        _userMessage.value = "Removed '$title' from Wishlist"
-                    } else if (listType == "ALL") {
-                        repository.deleteAnimeCompletely(anime.id, anime.idMal)
-                        _userMessage.value = "Removed '$title' from AniTrAk"
-                    } else {
-                        repository.removeFromPlanner(anime.id, anime.idMal)
-                        _userMessage.value = "Removed '$title' from Planner"
-                    }
-                }
-                RemovalScope.PROVIDER_ONLY -> {
-                    if (!token.isNullOrBlank()) {
-                        var malId = anime.idMal
-                        if (malId == null || malId <= 0) {
-                            val searchRes = MyAnimeListService.searchMalAnimeByTitle(token, title)
-                            malId = searchRes.getOrNull()
-                        }
-                        if (malId != null && malId > 0) {
-                            val res = MyAnimeListService.deleteAnimeFromMal(token, malId)
-                            if (res.isSuccess) {
-                                _userMessage.value = "Removed '$title' from MyAnimeList"
-                            } else {
-                                _userMessage.value = "Failed to remove '$title' from MyAnimeList"
-                            }
-                        } else {
-                            _userMessage.value = "Could not locate MAL entry for '$title'"
-                        }
-                    } else {
-                        _userMessage.value = "Not connected to MyAnimeList"
-                    }
-                }
-                RemovalScope.BOTH -> {
-                    if (listType == "WISHLIST") {
-                        repository.removeFromWishlist(anime.id, anime.idMal)
-                    } else if (listType == "ALL") {
-                        repository.deleteAnimeCompletely(anime.id, anime.idMal)
-                    } else {
-                        repository.removeFromWatchlist(anime.id, anime.idMal)
-                    }
-                    if (_isMalLoggedIn.value && !token.isNullOrBlank()) {
-                        removeAnimeFromMal(anime)
-                        _userMessage.value = "Removed '$title' from AniTrAk & MyAnimeList"
-                    } else {
-                        _userMessage.value = "Removed '$title' from AniTrAk"
-                    }
-                }
-            }
+            val updated = repository.updateUserTrackingState(
+                animeId = animeId,
+                status = status,
+                episodeProgress = episodeProgress,
+                seasonNumber = seasonNumber,
+                score = scoreTenths,
+                notes = notes,
+                isFavorite = isFavorite
+            ) ?: return@launch
+            syncSingleEntryToCloud(updated)
+            val syncText = if (_authSession.value != null) "Synced" else "Saved"
+            _dynamicIslandFeedback.value = DynamicIslandFeedback(
+                title = "Updated • $syncText",
+                subtitle = "${updated.displayTitle} (S${updated.effectiveSeasonNumber} • ${status.label})",
+                animeId = updated.id
+            )
+            _userMessage.value = "Saved tracking updates for ${updated.displayTitle}."
         }
     }
 
-    fun togglePlanner(anime: AnimeEntity) {
+    fun setSeasonProgress(
+        animeId: Int,
+        seasonNumber: Int,
+        resetEpisodes: Boolean = false
+    ) {
         viewModelScope.launch {
-            val isNowInPlanner = !anime.inWatchlist
-            if (isNowInPlanner) {
-                repository.addToWatchlist(anime)
-                _userMessage.value = "Added '${anime.displayTitle}' to Planner!"
-                if (_isMalLoggedIn.value) {
-                    updateAnimeMalStatus(anime, "watching", showToast = true)
-                }
-            } else {
-                removeAnime(anime, scope = RemovalScope.BOTH, listType = "WATCHLIST")
-            }
+            val updated = repository.updateSeasonProgress(
+                animeId = animeId,
+                seasonNumber = seasonNumber,
+                resetEpisodes = resetEpisodes
+            ) ?: return@launch
+            syncSingleEntryToCloud(updated)
+            val syncText = if (_authSession.value != null) "Synced" else "Saved"
+            _dynamicIslandFeedback.value = DynamicIslandFeedback(
+                title = "Season ${updated.effectiveSeasonNumber} • $syncText",
+                subtitle = if (resetEpisodes) "${updated.displayTitle} • Ready for Ep 1" else updated.displayTitle,
+                animeId = updated.id
+            )
         }
     }
 
-    fun toggleWishlist(anime: AnimeEntity) {
+    fun toggleFavorite(animeId: Int, isFavorite: Boolean) {
         viewModelScope.launch {
-            val isNowWishlist = !anime.isWishlist
-            if (isNowWishlist) {
-                repository.toggleWishlistEntity(anime)
-                _userMessage.value = "Added '${anime.displayTitle}' to Wishlist"
-                if (_isMalLoggedIn.value) {
-                    updateAnimeMalStatus(anime, "plan_to_watch", showToast = true)
-                }
-            } else {
-                removeAnime(anime, scope = RemovalScope.BOTH, listType = "WISHLIST")
-            }
-        }
-    }
-
-    fun toggleWatched(animeId: Int, isWatched: Boolean) {
-        viewModelScope.launch {
-            repository.toggleWatchedStatus(animeId, isWatched)
-        }
-    }
-
-    fun toggleFavorite(anime: AnimeEntity) {
-        viewModelScope.launch {
-            val newStatus = !anime.isFavorite
-            repository.toggleFavorite(anime.id, newStatus)
-            _userMessage.value = if (newStatus) "Added '${anime.displayTitle}' to Favorites" else "Removed from Favorites"
-        }
-    }
-
-    fun togglePinAnime(anime: AnimeEntity) {
-        viewModelScope.launch {
-            val newStatus = !anime.isPinned
-            repository.togglePinned(anime.id, newStatus)
-            _userMessage.value = if (newStatus) "Pinned '${anime.displayTitle}'" else "Unpinned '${anime.displayTitle}'"
-        }
-    }
-
-    fun removeFromPlanner(anime: AnimeEntity) {
-        removeAnime(anime, scope = RemovalScope.BOTH, listType = "WATCHLIST")
-    }
-
-    fun toggleNotification(anime: AnimeEntity) {
-        viewModelScope.launch {
-            val newStatus = !anime.notificationsEnabled
-            repository.toggleNotification(anime.id, newStatus)
-            _userMessage.value = if (newStatus) "Notifications enabled for ${anime.displayTitle}" else "Notifications disabled"
-        }
-    }
-
-    fun toggleAutoIncrementEpisode() {
-        _autoIncrementEpisode.value = !_autoIncrementEpisode.value
-    }
-
-    fun toggleGlobalNotifications() {
-        _globalNotificationsEnabled.value = !_globalNotificationsEnabled.value
-    }
-
-    fun clearWatchHistory() {
-        viewModelScope.launch {
-            repository.clearWatchHistory()
-            _userMessage.value = "Watch history cleared"
-        }
-    }
-
-    fun addToWatchlist(anime: AnimeEntity) {
-        viewModelScope.launch {
-            repository.addToWatchlist(anime)
-            _userMessage.value = "Added '${anime.displayTitle}' to Watchlist!"
-            if (_isMalLoggedIn.value) {
-                updateAnimeMalStatus(anime, "watching", showToast = true)
-            }
+            val updated = repository.toggleFavorite(animeId, isFavorite) ?: return@launch
+            syncSingleEntryToCloud(updated)
+            _dynamicIslandFeedback.value = DynamicIslandFeedback(
+                title = if (isFavorite) "Favorited" else "Removed Favorite",
+                subtitle = updated.displayTitle,
+                animeId = updated.id
+            )
         }
     }
 
     fun removeFromWatchlist(animeId: Int) {
         viewModelScope.launch {
-            val anime = repository.getAnimeByIdSync(animeId)
-            if (anime != null) {
-                removeAnime(anime, scope = RemovalScope.BOTH, listType = "WATCHLIST")
-            } else {
-                repository.removeFromWatchlist(animeId)
-                _userMessage.value = "Removed from Watchlist"
+            repository.removeFromWatchlist(animeId)
+            _searchResults.value = _searchResults.value.map { item ->
+                if (item.id == animeId) {
+                    item.copy(inWatchlist = false, isWishlist = false, isPinned = false, isWatched = false, userStatus = null)
+                } else item
             }
-        }
-    }
-
-    fun refreshSchedule(showToast: Boolean = false) {
-        viewModelScope.launch {
-            _isRefreshing.value = true
-            val result = repository.refreshSchedule(forceRefresh = showToast)
-            _isRefreshing.value = false
-            if (showToast) {
-                if (result.isSuccess) {
-                    _userMessage.value = "Schedule updated from live source!"
-                } else {
-                    _userMessage.value = "Could not update schedule from online source."
-                }
+            val session = _authSession.value
+            if (session != null) {
+                supabaseDb.deleteUserAnimeEntry(session, animeId)
             }
-        }
-    }
-
-    fun selectAnimeDetail(id: Int?) {
-        _selectedAnimeDetailId.value = id
-        _detailAniKotoInfo.value = null
-        _detailAniKotoError.value = null
-        if (id != null) {
-            loadFullDetails(id)
-            viewModelScope.launch(Dispatchers.IO) {
-                val token = malOAuthManager.getValidAccessToken()
-                val updatedAnime = repository.verifyAndSyncSingleAnimeWithMal(id, token) ?: repository.getAnimeByIdSync(id)
-                if (updatedAnime != null) {
-                    val queryTitle = updatedAnime.titleEnglish ?: updatedAnime.titleRomaji
-                    searchYouTubeVideos("$queryTitle trailer", animeTitle = queryTitle)
-                    searchInternetArchive(queryTitle)
-                    loadDetailAniKotoEnrichment(queryTitle)
-                }
-            }
-        }
-    }
-
-    /**
-     * Clears transient API response cache, non-saved catalogue entries, and image caches
-     * while strictly preserving all saved anime, watchlists, wishlists, favorites, history, and preferences.
-     */
-    @OptIn(coil.annotation.ExperimentalCoilApi::class)
-    fun clearMetadataAndApiCache() {
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                repository.clearMetadataAndApiCache()
-                val app = getApplication<Application>()
-                coil.Coil.imageLoader(app).memoryCache?.clear()
-                coil.Coil.imageLoader(app).diskCache?.clear()
-                val savedCount = watchlist.value.size + wishlist.value.size + favorites.value.size
-                _userMessage.value = "Cache cleared! All saved anime, watchlists, favorites ($savedCount items) & history preserved."
-            } catch (e: Exception) {
-                _userMessage.value = "Cache cleared safely (saved anime preserved)."
-            }
-        }
-    }
-
-    /**
-     * Saves an Internet Archive item directly to the user's durable Watchlist or Wishlist
-     * using its stable Internet Archive identifier.
-     */
-    fun saveArchiveItemToWatchlist(item: ArchiveMediaItem, asWishlist: Boolean = false) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val saved = repository.saveArchiveMediaItem(
-                archiveIdentifier = item.identifier,
-                title = item.title,
-                description = item.description,
-                thumbnailUrl = item.thumbnailUrl,
-                year = item.year?.toIntOrNull(),
-                inWatchlist = !asWishlist,
-                isWishlist = asWishlist
+            _dynamicIslandFeedback.value = DynamicIslandFeedback(
+                title = "Removed from List",
+                subtitle = "Watchlist entry cleared",
+                animeId = animeId
             )
-            _userMessage.value = if (asWishlist) {
-                "Saved '${saved.displayTitle}' (Archive ID: ${item.identifier}) to Wishlist"
-            } else {
-                "Saved '${saved.displayTitle}' (Archive ID: ${item.identifier}) to Watchlist"
+            _userMessage.value = "Removed from My List."
+        }
+    }
+
+    private suspend fun syncSingleEntryToCloud(entity: AnimeEntity) {
+        val session = _authSession.value ?: return
+        supabaseDb.upsertUserAnimeEntry(session, entity)
+    }
+
+    fun createCollection(name: String, description: String, visibility: VisibilityLevel) {
+        val session = _authSession.value
+        if (session == null || _userProfile.value == null) {
+            _userMessage.value = "Sign in to create cloud collections."
+            return
+        }
+        if (name.isBlank()) return
+        viewModelScope.launch {
+            supabaseDb.createCollection(session, name, description, visibility).onSuccess { created ->
+                _collections.value = listOf(created) + _collections.value
+                _userMessage.value = "Created collection \"${created.name}\"."
+            }.onFailure { err ->
+                _userMessage.value = ErrorSanitizer.sanitize(err, "Failed to create collection.")
             }
         }
     }
 
-    /**
-     * Exports all saved anime, watchlists, favorites, watch history, and preferences to a JSON backup file.
-     */
-    fun exportBackupToUri(uri: android.net.Uri) {
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val app = getApplication<Application>()
-                val appPrefs = app.getSharedPreferences("anitrack_prefs", android.content.Context.MODE_PRIVATE)
-                val json = repository.exportUserDataJson(appPrefs)
-                app.contentResolver.openOutputStream(uri)?.use { out ->
-                    out.write(json.toByteArray(Charsets.UTF_8))
-                    out.flush()
-                } ?: throw IllegalStateException("Could not open output stream for backup file")
-                _userMessage.value = "Backup exported successfully (${watchlist.value.size} watchlist, ${wishlist.value.size} wishlist, ${favorites.value.size} favorites)!"
-            } catch (e: Exception) {
-                _userMessage.value = "Backup export failed: ${e.localizedMessage ?: "Unknown error"}"
-            }
-        }
-    }
-
-    /**
-     * Imports and merges saved anime, watchlists, favorites, watch history, and preferences from a JSON backup file
-     * without deleting or resetting any existing saved records.
-     */
-    fun importBackupFromUri(uri: android.net.Uri) {
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val app = getApplication<Application>()
-                val appPrefs = app.getSharedPreferences("anitrack_prefs", android.content.Context.MODE_PRIVATE)
-                val json = app.contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
-                    ?: throw IllegalStateException("Could not read selected backup file")
-                val result = repository.importUserDataJson(json, appPrefs)
-                if (result.success) {
-                    _userMessage.value = result.message
-                } else {
-                    _userMessage.value = "Restore error: ${result.message}"
+    fun renameOrUpdateCollection(collectionId: String, name: String, visibility: VisibilityLevel) {
+        val session = _authSession.value ?: return
+        if (name.isBlank()) return
+        viewModelScope.launch {
+            supabaseDb.updateCollection(session, collectionId, name, visibility).onSuccess {
+                _collections.value = _collections.value.map {
+                    if (it.id == collectionId) it.copy(name = name.trim(), visibility = visibility) else it
                 }
-            } catch (e: Exception) {
-                _userMessage.value = "Backup import failed: ${e.localizedMessage ?: "Invalid file"}"
+                _userMessage.value = "Collection updated."
+            }.onFailure { err ->
+                _userMessage.value = ErrorSanitizer.sanitize(err, "Failed to update collection.")
             }
         }
     }
 
-    /**
-     * Validates a downloaded APK file's integrity, package name, versionCode, and signing certificate
-     * before launching Android's authorized PackageInstaller session (preventing INSTALL_FAILED_UPDATE_INCOMPATIBLE).
-     */
-    fun validateAndInstallUpdateApk(uri: android.net.Uri) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val app = getApplication<Application>()
-            val tempApk = java.io.File(app.cacheDir, "pending_update_check.apk")
-            try {
-                app.contentResolver.openInputStream(uri)?.use { input ->
-                    tempApk.outputStream().use { output ->
-                        input.copyTo(output)
+    fun deleteCollection(collectionId: String) {
+        val session = _authSession.value ?: return
+        viewModelScope.launch {
+            supabaseDb.deleteCollection(session, collectionId).onSuccess {
+                _collections.value = _collections.value.filterNot { it.id == collectionId }
+                _userMessage.value = "Collection deleted."
+            }.onFailure { err ->
+                _userMessage.value = ErrorSanitizer.sanitize(err, "Failed to delete collection.")
+            }
+        }
+    }
+
+    fun addAnimeToCollection(collectionId: String, anime: AnimeEntity) {
+        val session = _authSession.value ?: return
+        viewModelScope.launch {
+            supabaseDb.addAnimeToCollection(session, collectionId, anime).onSuccess {
+                _collections.value = _collections.value.map { col ->
+                    if (col.id == collectionId && !col.animeIds.contains(anime.id)) {
+                        col.copy(animeIds = col.animeIds + anime.id)
+                    } else col
+                }
+                _userMessage.value = "Added to collection."
+            }.onFailure { err ->
+                _userMessage.value = ErrorSanitizer.sanitize(err, "Failed to add to collection.")
+            }
+        }
+    }
+
+    fun syncCloudNow() {
+        val session = _authSession.value
+        if (session == null) {
+            _userMessage.value = "Sign in to sync your library to the cloud."
+            return
+        }
+        viewModelScope.launch {
+            supabaseDb.fetchUserWatchlist(session).onSuccess { cloudItems ->
+                repository.syncCloudWatchlistEntries(cloudItems)
+                _userMessage.value = "Library synced cleanly."
+            }.onFailure { err ->
+                _userMessage.value = ErrorSanitizer.sanitize(err, "Unable to sync right now.")
+            }
+        }
+    }
+
+    fun removeAnimeFromCollection(collectionId: String, animeId: Int) {
+        val session = _authSession.value ?: return
+        viewModelScope.launch {
+            supabaseDb.removeAnimeFromCollection(session, collectionId, animeId).onSuccess {
+                _collections.value = _collections.value.map { col ->
+                    if (col.id == collectionId) col.copy(animeIds = col.animeIds.filterNot { it == animeId }) else col
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // COMMUNITY, PROFILE, PRIVACY, INVITATIONS
+    // ------------------------------------------------------------------------
+
+    fun refreshCommunityData() {
+        val session = _authSession.value ?: return
+        if (_userProfile.value?.memberStatus != MemberStatus.ACTIVE) return
+        viewModelScope.launch {
+            _isCommunityLoading.value = true
+            _communityError.value = null
+            supabaseDb.fetchCommunityCapacity(session).onSuccess { _communityCapacity.value = it }
+            val membersRes = supabaseDb.fetchCommunityMembers(session)
+            membersRes.onSuccess { members ->
+                _communityMembers.value = members
+                supabaseDb.fetchCommunityFeed(session, members).onSuccess { (reviews, activity) ->
+                    _communityReviews.value = sortReviews(reviews, _reviewSortOption.value)
+                    _communityActivity.value = activity
+                }.onFailure { err ->
+                    _communityError.value = ErrorSanitizer.sanitize(err, "Unable to load community feed.")
+                }
+            }.onFailure { err ->
+                _communityError.value = ErrorSanitizer.sanitize(err, "Unable to load community members.")
+            }
+            _isCommunityLoading.value = false
+        }
+    }
+
+    fun setReviewSortOption(option: ReviewSortOption) {
+        _reviewSortOption.value = option
+        _communityReviews.value = sortReviews(_communityReviews.value, option)
+    }
+
+    private fun sortReviews(list: List<CommunityReview>, option: ReviewSortOption): List<CommunityReview> {
+        return when (option) {
+            ReviewSortOption.NEWEST -> list.sortedByDescending { it.updatedAt }
+            ReviewSortOption.HIGHEST_RATED -> list.sortedWith(
+                compareByDescending<CommunityReview> { it.rating ?: -1.0 }
+                    .thenByDescending { it.updatedAt }
+            )
+        }
+    }
+
+    fun inspectMemberProfile(member: CommunityMember) {
+        val session = _authSession.value ?: return
+        _inspectedMemberWatchlist.value = emptyList()
+        _inspectedMemberCollections.value = emptyList()
+        viewModelScope.launch {
+            _isMemberInspectLoading.value = true
+            val canViewWatchlist = member.userId == session.userId ||
+                member.privacy.watchlistVisibility == VisibilityLevel.COMMUNITY
+            if (canViewWatchlist) {
+                supabaseDb.fetchUserWatchlist(session, member.userId).onSuccess {
+                    _inspectedMemberWatchlist.value = it
+                }
+            }
+            val canViewCollections = member.userId == session.userId ||
+                member.privacy.collectionsVisibility == VisibilityLevel.COMMUNITY
+            if (canViewCollections) {
+                supabaseDb.fetchCollections(session).onSuccess { allCols ->
+                    _inspectedMemberCollections.value = allCols.filter {
+                        it.creatorId == member.userId && (member.userId == session.userId || it.visibility == VisibilityLevel.COMMUNITY)
                     }
-                } ?: run {
-                    _userMessage.value = "Cannot read selected APK file."
-                    return@launch
                 }
+            }
+            _isMemberInspectLoading.value = false
+        }
+    }
 
-                val validation = com.example.util.ApkUpdateValidator.validateUpdateApk(app, tempApk)
-                if (!validation.isValid) {
-                    tempApk.delete()
-                    _userMessage.value = "Update blocked (${validation.errorCode}): ${validation.userMessage}"
-                    return@launch
-                }
+    fun updateProfile(
+        username: String,
+        avatarKey: String,
+        clearCustomAvatar: Boolean = true,
+        bio: String = "",
+        onSuccess: () -> Unit = {}
+    ) {
+        val session = _authSession.value ?: return
+        val current = _userProfile.value ?: return
+        val cleanName = username.trim()
+        if (cleanName.length !in 2..32) {
+            _profileError.value = "Username must be between 2 and 32 characters."
+            return
+        }
+        if (cleanName.contains("@")) {
+            _profileError.value = "Usernames cannot contain the @ symbol."
+            return
+        }
+        val targetAvatarUrl = if (clearCustomAvatar) null else current.avatarUrl
+        viewModelScope.launch {
+            _isProfileSaving.value = true
+            _profileError.value = null
+            if (!cleanName.equals(current.username, ignoreCase = true) &&
+                supabaseAuth.checkLocalUsernameCooldownSeconds(cleanName) > 0L
+            ) {
+                _profileError.value = "That username was recently deleted and will be available again after 24 hours."
+                _isProfileSaving.value = false
+                return@launch
+            }
+            supabaseDb.updateProfile(session, cleanName, avatarKey, targetAvatarUrl, bio).onSuccess {
+                _userProfile.value = current.copy(
+                    username = cleanName,
+                    avatarKey = avatarKey,
+                    avatarUrl = targetAvatarUrl,
+                    bio = ""
+                )
+                refreshCommunityData()
+                _userMessage.value = "Profile updated."
+                onSuccess()
+            }.onFailure { err ->
+                val clean = ErrorSanitizer.sanitize(err, "Unable to update profile.")
+                _profileError.value = clean
+            }
+            _isProfileSaving.value = false
+        }
+    }
 
-                if (com.example.util.ApkUpdateValidator.canRequestPackageInstalls(app)) {
-                    val launched = com.example.util.ApkUpdateValidator.launchAuthorizedSessionInstall(app, tempApk)
-                    if (launched.isSuccess) {
-                        _userMessage.value = "Verified APK v${validation.versionName} (${validation.versionCode}). Confirm update in system prompt."
-                    } else {
-                        tempApk.delete()
-                        _userMessage.value = "APK Verified (${validation.userMessage})"
-                    }
-                } else {
-                    tempApk.delete()
-                    _userMessage.value = "APK Verified: ${validation.userMessage}"
-                }
-            } catch (e: Exception) {
-                tempApk.delete()
-                _userMessage.value = "APK verification failed: ${e.localizedMessage}"
+    fun updatePrivacySettings(updated: PrivacySettings) {
+        val session = _authSession.value ?: return
+        viewModelScope.launch {
+            val previous = _privacySettings.value
+            _privacySettings.value = updated
+            supabaseDb.savePrivacySettings(session, updated).onSuccess {
+                refreshCommunityData()
+                _userMessage.value = "Privacy settings updated."
+            }.onFailure { err ->
+                _privacySettings.value = previous
+                _userMessage.value = ErrorSanitizer.sanitize(err, "Unable to save privacy settings.")
             }
         }
     }
 
-    fun getSigningDiagnosticsSummary(): String {
-        val app = getApplication<Application>()
-        val sha256 = com.example.util.ApkUpdateValidator.getInstalledSigningSha256(app) ?: "Unknown"
-        val shortSha = if (sha256.length > 23) sha256.take(23) + "..." else sha256
-        val pInfo = app.packageManager.getPackageInfo(app.packageName, 0)
-        val vCode = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) pInfo.longVersionCode else @Suppress("DEPRECATION") pInfo.versionCode.toLong()
-        return "Pkg: ${app.packageName} • v${pInfo.versionName} ($vCode) • Cert SHA-256: $shortSha"
+    fun fetchInvitations() {
+        val session = _authSession.value ?: return
+        if (_userProfile.value?.isInviteCreator != true) return
+        viewModelScope.launch {
+            supabaseDb.fetchInvitations(session).onSuccess { _invitations.value = it }
+        }
     }
 
-    fun clearUserMessage() {
-        _userMessage.value = null
+    fun generateInvitation(maxUses: Int = 1, expiresInHours: Int = 168) {
+        val session = _authSession.value ?: return
+        viewModelScope.launch {
+            supabaseDb.createInvitation(session, maxUses, expiresInHours).onSuccess { invite ->
+                _invitations.value = listOf(invite) + _invitations.value
+                _userMessage.value = "Generated invite code: ${invite.code}"
+            }.onFailure { err ->
+                _userMessage.value = ErrorSanitizer.sanitize(err, "Unable to create invitation.")
+            }
+        }
     }
-}
 
-enum class RemovalScope {
-    LOCAL_ONLY,
-    PROVIDER_ONLY,
-    BOTH
+    fun revokeInvitation(invitationId: String) {
+        val session = _authSession.value ?: return
+        viewModelScope.launch {
+            supabaseDb.revokeInvitation(session, invitationId).onSuccess {
+                _invitations.value = _invitations.value.map {
+                    if (it.id == invitationId) it.copy(isActive = false) else it
+                }
+                _userMessage.value = "Invitation revoked."
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // APP PREFERENCES & BACKUP
+    // ------------------------------------------------------------------------
+
+    fun setThemeMode(mode: ThemeModePreference) = viewModelScope.launch { preferencesRepo.setThemeMode(mode) }
+    fun setAccentTheme(accent: String) = viewModelScope.launch { preferencesRepo.setAccentTheme(accent) }
+    fun setWatchlistLayout(layout: WatchlistLayoutMode) = viewModelScope.launch { preferencesRepo.setWatchlistLayout(layout) }
+    fun setNotificationsEnabled(enabled: Boolean) = viewModelScope.launch { preferencesRepo.setNotificationsEnabled(enabled) }
+    fun setTitleLanguage(lang: String) = viewModelScope.launch { preferencesRepo.setTitleLanguage(lang) }
+    fun setSafeModeEnabled(enabled: Boolean) = viewModelScope.launch {
+        preferencesRepo.setSafeModeEnabled(enabled)
+        performSearch(resetPage = true)
+    }
+
+    fun clearCatalogCache() {
+        viewModelScope.launch {
+            val count = repository.clearMetadataAndApiCache()
+            _userMessage.value = "Cleared $count cached catalog entries. Your saved list is safe."
+        }
+    }
+
+    fun exportBackupToUri(uri: Uri) {
+        viewModelScope.launch {
+            try {
+                val json = repository.exportBackupJson()
+                withContext(Dispatchers.IO) {
+                    getApplication<Application>().contentResolver.openOutputStream(uri)?.use { out ->
+                        out.write(json.toByteArray(Charsets.UTF_8))
+                    }
+                }
+                _userMessage.value = "Backup exported successfully."
+            } catch (e: Exception) {
+                _userMessage.value = "Export failed: ${ErrorSanitizer.sanitize(e, "Unable to write backup file.")}"
+            }
+        }
+    }
+
+    fun importBackupFromUri(uri: Uri) {
+        viewModelScope.launch {
+            try {
+                val json = withContext(Dispatchers.IO) {
+                    getApplication<Application>().contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                } ?: throw IllegalStateException("Unable to read selected file.")
+                val res = repository.importBackupJson(json)
+                _userMessage.value = res.message
+            } catch (e: Exception) {
+                _userMessage.value = "Import failed: ${ErrorSanitizer.sanitize(e, "Unable to read backup file.")}"
+            }
+        }
+    }
 }

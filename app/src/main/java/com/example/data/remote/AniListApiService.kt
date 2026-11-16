@@ -1,5 +1,8 @@
 package com.example.data.remote
 
+import com.example.config.AppConfig
+import com.example.data.local.AnimeEntity
+import com.example.model.AnimeRichDetail
 import com.squareup.moshi.JsonClass
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
@@ -70,16 +73,9 @@ data class AniListFuzzyDate(
 )
 
 @JsonClass(generateAdapter = true)
-data class AniListTrailer(
-    val id: String? = null,
-    val site: String? = null,
-    val thumbnail: String? = null
-)
-
-@JsonClass(generateAdapter = true)
 data class AniListMedia(
     val id: Int = 0,
-    val idMal: Int? = null,
+    val type: String? = null,
     val title: AniListTitle? = null,
     val coverImage: AniListCoverImage? = null,
     val bannerImage: String? = null,
@@ -88,6 +84,7 @@ data class AniListMedia(
     val episodes: Int? = null,
     val genres: List<String>? = emptyList(),
     val averageScore: Int? = null,
+    val popularity: Int? = null,
     val season: String? = null,
     val seasonYear: Int? = null,
     val description: String? = null,
@@ -98,8 +95,7 @@ data class AniListMedia(
     val studios: AniListStudioConnection? = null,
     val characters: AniListCharacterConnection? = null,
     val relations: AniListRelationsConnection? = null,
-    val recommendations: AniListRecommendationsConnection? = null,
-    val trailer: AniListTrailer? = null
+    val recommendations: AniListRecommendationsConnection? = null
 )
 
 @JsonClass(generateAdapter = true)
@@ -188,6 +184,32 @@ data class AniListAiringSchedule(
     val media: AniListMedia? = null
 )
 
+/**
+ * Abstraction layer for public anime metadata so providers can be swapped or extended cleanly.
+ */
+interface AnimeMetadataProvider {
+    suspend fun searchCatalog(
+        query: String?,
+        genre: String?,
+        season: String?,
+        seasonYear: Int?,
+        status: String?,
+        format: String?,
+        countryOfOrigin: String?,
+        sort: String,
+        page: Int,
+        perPage: Int
+    ): Result<Pair<List<AniListMedia>, Boolean>>
+
+    suspend fun getTrendingAnime(page: Int = 1, perPage: Int = 20): Result<List<AniListMedia>>
+    suspend fun getPopularReleasing(page: Int = 1, perPage: Int = 25): Result<List<AniListMedia>>
+    suspend fun getAiringSchedule(startUnix: Int, endUnix: Int, page: Int = 1): Result<List<AniListAiringSchedule>>
+    suspend fun getMediaDetails(anilistId: Int): Result<AniListMedia?>
+    suspend fun getRichDetailWithSeasons(rootMedia: AniListMedia): AnimeRichDetail {
+        return com.example.service.AniListMetadataProvider.mapRichDetail(rootMedia)
+    }
+}
+
 interface AniListApiService {
     @POST("/")
     suspend fun queryMedia(
@@ -205,15 +227,13 @@ interface AniListApiService {
     ): Response<AniListResponseData<AniListSingleMediaData>>
 
     companion object {
-        private const val BASE_URL = "https://graphql.anilist.co"
-
         fun create(): AniListApiService {
             val moshi = Moshi.Builder()
                 .addLast(KotlinJsonAdapterFactory())
                 .build()
 
             val logging = HttpLoggingInterceptor().apply {
-                level = HttpLoggingInterceptor.Level.BODY
+                level = HttpLoggingInterceptor.Level.BASIC
             }
 
             val client = OkHttpClient.Builder()
@@ -223,7 +243,7 @@ interface AniListApiService {
                 .build()
 
             return Retrofit.Builder()
-                .baseUrl(BASE_URL)
+                .baseUrl(AppConfig.ANILIST_GRAPHQL_URL)
                 .client(client)
                 .addConverterFactory(MoshiConverterFactory.create(moshi))
                 .build()
@@ -239,10 +259,11 @@ object AniListQueries {
         hasSeason: Boolean,
         hasSeasonYear: Boolean,
         hasStatus: Boolean,
+        hasFormat: Boolean = false,
         hasCountryOfOrigin: Boolean = false
     ): String {
         val queryArgs = mutableListOf("\$page: Int", "\$perPage: Int", "\$sort: [MediaSort]")
-        val mediaArgs = mutableListOf("type: ANIME", "sort: \$sort")
+        val mediaArgs = mutableListOf("type: ANIME", "isAdult: false", "sort: \$sort")
 
         if (hasSearch) {
             queryArgs.add("\$search: String")
@@ -264,6 +285,10 @@ object AniListQueries {
             queryArgs.add("\$status: MediaStatus")
             mediaArgs.add("status: \$status")
         }
+        if (hasFormat) {
+            queryArgs.add("\$format: MediaFormat")
+            mediaArgs.add("format: \$format")
+        }
         if (hasCountryOfOrigin) {
             queryArgs.add("\$countryOfOrigin: CountryCode")
             mediaArgs.add("countryOfOrigin: \$countryOfOrigin")
@@ -281,7 +306,6 @@ object AniListQueries {
                 }
                 media ($mediaDecl) {
                   id
-                  idMal
                   title {
                     romaji
                     english
@@ -298,11 +322,17 @@ object AniListQueries {
                   episodes
                   genres
                   averageScore
+                  popularity
                   season
                   seasonYear
-                  description
+                  description(asHtml: false)
                   countryOfOrigin
                   synonyms
+                  studios(isMain: true) {
+                    nodes {
+                      name
+                    }
+                  }
                   nextAiringEpisode {
                     id
                     airingAt
@@ -314,24 +344,62 @@ object AniListQueries {
                     month
                     day
                   }
-                  trailer {
-                    id
-                    site
-                    thumbnail
-                  }
                 }
               }
             }
         """.trimIndent()
     }
 
-    val SEARCH_MEDIA_QUERY = buildMediaQuery(
-        hasSearch = true,
-        hasGenre = true,
-        hasSeason = true,
-        hasSeasonYear = true,
-        hasStatus = true
-    )
+    val TRENDING_MEDIA_QUERY = """
+        query (${'$'}page: Int, ${'$'}perPage: Int) {
+          Page (page: ${'$'}page, perPage: ${'$'}perPage) {
+            pageInfo {
+              hasNextPage
+            }
+            media (type: ANIME, isAdult: false, sort: [TRENDING_DESC, POPULARITY_DESC]) {
+              id
+              title {
+                romaji
+                english
+                native
+                userPreferred
+              }
+              coverImage {
+                large
+                extraLarge
+              }
+              bannerImage
+              format
+              status
+              episodes
+              genres
+              averageScore
+              popularity
+              season
+              seasonYear
+              description(asHtml: false)
+              countryOfOrigin
+              synonyms
+              studios(isMain: true) {
+                nodes {
+                  name
+                }
+              }
+              nextAiringEpisode {
+                id
+                airingAt
+                timeUntilAiring
+                episode
+              }
+              startDate {
+                year
+                month
+                day
+              }
+            }
+          }
+        }
+    """.trimIndent()
 
     val POPULAR_RELEASING_MEDIA_QUERY = """
         query (${'$'}page: Int, ${'$'}perPage: Int) {
@@ -339,9 +407,8 @@ object AniListQueries {
             pageInfo {
               hasNextPage
             }
-            media (status: RELEASING, type: ANIME, sort: [POPULARITY_DESC]) {
+            media (status: RELEASING, type: ANIME, isAdult: false, sort: [POPULARITY_DESC]) {
               id
-              idMal
               title {
                 romaji
                 english
@@ -358,108 +425,17 @@ object AniListQueries {
               episodes
               genres
               averageScore
+              popularity
               season
               seasonYear
-              description
+              description(asHtml: false)
               countryOfOrigin
               synonyms
-              nextAiringEpisode {
-                id
-                airingAt
-                timeUntilAiring
-                episode
+              studios(isMain: true) {
+                nodes {
+                  name
+                }
               }
-              startDate {
-                year
-                month
-                day
-              }
-              trailer {
-                id
-                site
-                thumbnail
-              }
-            }
-          }
-        }
-    """.trimIndent()
-
-    val POPULAR_DONGHUA_QUERY = """
-        query (${'$'}page: Int, ${'$'}perPage: Int) {
-          Page (page: ${'$'}page, perPage: ${'$'}perPage) {
-            pageInfo {
-              hasNextPage
-            }
-            media (status: RELEASING, countryOfOrigin: "CN", type: ANIME, sort: [POPULARITY_DESC]) {
-              id
-              idMal
-              title {
-                romaji
-                english
-                native
-                userPreferred
-              }
-              coverImage {
-                large
-                extraLarge
-              }
-              bannerImage
-              format
-              status
-              episodes
-              genres
-              averageScore
-              season
-              seasonYear
-              description
-              countryOfOrigin
-              synonyms
-              nextAiringEpisode {
-                id
-                airingAt
-                timeUntilAiring
-                episode
-              }
-              startDate {
-                year
-                month
-                day
-              }
-            }
-          }
-        }
-    """.trimIndent()
-
-    val UPCOMING_MEDIA_QUERY = """
-        query (${'$'}page: Int, ${'$'}perPage: Int) {
-          Page (page: ${'$'}page, perPage: ${'$'}perPage) {
-            pageInfo {
-              hasNextPage
-            }
-            media (status: NOT_YET_RELEASED, type: ANIME, sort: [POPULARITY_DESC]) {
-              id
-              idMal
-              title {
-                romaji
-                english
-                native
-                userPreferred
-              }
-              coverImage {
-                large
-                extraLarge
-              }
-              bannerImage
-              format
-              status
-              episodes
-              genres
-              averageScore
-              season
-              seasonYear
-              description
-              countryOfOrigin
-              synonyms
               nextAiringEpisode {
                 id
                 airingAt
@@ -489,7 +465,6 @@ object AniListQueries {
               episode
               media {
                 id
-                idMal
                 title {
                   romaji
                   english
@@ -506,11 +481,17 @@ object AniListQueries {
                 episodes
                 genres
                 averageScore
+                popularity
                 season
                 seasonYear
-                description
+                description(asHtml: false)
                 countryOfOrigin
                 synonyms
+                studios(isMain: true) {
+                  nodes {
+                    name
+                  }
+                }
                 nextAiringEpisode {
                   id
                   airingAt
@@ -532,7 +513,6 @@ object AniListQueries {
         query (${'$'}id: Int) {
           Media (id: ${'$'}id, type: ANIME) {
             id
-            idMal
             title {
               romaji
               english
@@ -549,9 +529,10 @@ object AniListQueries {
             episodes
             genres
             averageScore
+            popularity
             season
             seasonYear
-            description
+            description(asHtml: false)
             countryOfOrigin
             synonyms
             nextAiringEpisode {
@@ -565,7 +546,7 @@ object AniListQueries {
                 name
               }
             }
-            characters(perPage: 6, sort: [ROLE, RELEVANCE]) {
+            characters(perPage: 8, sort: [ROLE, RELEVANCE]) {
               nodes {
                 id
                 name {
@@ -581,6 +562,7 @@ object AniListQueries {
                 relationType
                 node {
                   id
+                  type
                   title {
                     romaji
                     english
@@ -592,11 +574,13 @@ object AniListQueries {
                   }
                   format
                   status
+                  episodes
+                  seasonYear
                   averageScore
                 }
               }
             }
-            recommendations(perPage: 6, sort: [RATING_DESC]) {
+            recommendations(perPage: 8, sort: [RATING_DESC]) {
               nodes {
                 mediaRecommendation {
                   id
@@ -614,10 +598,51 @@ object AniListQueries {
                 }
               }
             }
-            trailer {
-              id
-              site
-              thumbnail
+          }
+        }
+    """.trimIndent()
+
+    val MEDIA_SEASON_CHAIN_QUERY = """
+        query (${'$'}id: Int) {
+          Media (id: ${'$'}id, type: ANIME) {
+            id
+            type
+            title {
+              romaji
+              english
+              userPreferred
+            }
+            coverImage {
+              medium
+              large
+            }
+            format
+            status
+            episodes
+            seasonYear
+            averageScore
+            relations {
+              edges {
+                relationType
+                node {
+                  id
+                  type
+                  title {
+                    romaji
+                    english
+                    userPreferred
+                  }
+                  coverImage {
+                    medium
+                    large
+                  }
+                  format
+                  status
+                  episodes
+                  seasonYear
+                  averageScore
+                }
+              }
             }
           }
         }

@@ -10,14 +10,14 @@ interface DeletedAnimeDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertTombstone(tombstone: DeletedAnimeEntity)
 
-    @Query("SELECT * FROM deleted_anime WHERE animeId = :animeId OR (malId IS NOT NULL AND malId = :malId AND :malId > 0) LIMIT 1")
-    suspend fun getTombstone(animeId: Int, malId: Int? = null): DeletedAnimeEntity?
+    @Query("SELECT * FROM deleted_anime WHERE animeId = :animeId LIMIT 1")
+    suspend fun getTombstone(animeId: Int): DeletedAnimeEntity?
 
-    @Query("SELECT EXISTS(SELECT 1 FROM deleted_anime WHERE (animeId = :animeId OR (malId IS NOT NULL AND malId = :malId AND :malId > 0)) AND (listType = 'ALL' OR listType = :listType))")
-    suspend fun isDeleted(animeId: Int, malId: Int? = null, listType: String = "ALL"): Boolean
+    @Query("SELECT EXISTS(SELECT 1 FROM deleted_anime WHERE animeId = :animeId AND (listType = 'ALL' OR listType = :listType))")
+    suspend fun isDeleted(animeId: Int, listType: String = "ALL"): Boolean
 
-    @Query("DELETE FROM deleted_anime WHERE animeId = :animeId OR (malId IS NOT NULL AND malId = :malId AND :malId > 0)")
-    suspend fun removeTombstone(animeId: Int, malId: Int? = null)
+    @Query("DELETE FROM deleted_anime WHERE animeId = :animeId")
+    suspend fun removeTombstone(animeId: Int)
 
     @Query("SELECT * FROM deleted_anime")
     suspend fun getAllTombstones(): List<DeletedAnimeEntity>

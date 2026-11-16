@@ -1,6 +1,7 @@
 package com.example.ui.screens
 
-import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -15,95 +16,102 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Bookmark
-import androidx.compose.material.icons.filled.BookmarkBorder
-import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CollectionsBookmark
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
-import androidx.compose.material.icons.filled.Notifications
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.OpenInNew
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material.icons.filled.Apartment
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.StarBorder
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Remove
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Schedule
-import androidx.compose.material.icons.filled.VideoLibrary
-import com.example.data.repository.YouTubeSearchLink
-import android.content.Intent
-import android.net.Uri
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
-import com.example.data.repository.ArchivePlayableMedia
-import com.example.data.repository.YouTubeVideo
-import com.example.data.repository.YouTubeVideoType
-import com.example.ui.components.ArchiveDirectPlayerDialog
-import com.example.ui.components.EmbeddedYouTubePlayerDialog
-import com.example.ui.components.EpisodeGridSelector
-import com.example.ui.components.EpisodeGridSelectorDialog
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CheckboxDefaults
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
-import com.example.ui.components.CountdownView
+import com.example.model.AnimePartCategory
+import com.example.model.ProgressRules
+import com.example.model.SentimentCategory
+import com.example.model.StarRatingUtils
+import com.example.model.VisibilityLevel
+import com.example.model.WatchStatus
+import com.example.ui.components.formatCompactCountdown
+import com.example.ui.theme.AppRadius
+import com.example.ui.theme.AppSpacing
+import com.example.ui.theme.AppTheme
+import com.example.ui.theme.ChampagneGold
+import com.example.ui.theme.ChampagneGoldSoft
+import com.example.ui.theme.ChampagneOnGold
+import com.example.ui.theme.CormorantDisplayNumeral
+import com.example.ui.theme.CormorantSerifFamily
+import com.example.ui.theme.MicroUpperLabel
+import com.example.ui.theme.TabularNumMedium
+import com.example.ui.theme.TabularNumSmall
+import com.example.ui.widgets.AppCard
+import com.example.ui.widgets.AppPrimaryButton
+import com.example.ui.widgets.AppProgressBar
+import com.example.ui.widgets.AppSecondaryButton
+import com.example.ui.widgets.ObsidianAmbientBackground
+import com.example.ui.widgets.RatingBadge
+import com.example.ui.widgets.ResilientPosterImage
+import com.example.ui.widgets.StarRatingRow
+import com.example.ui.widgets.TrackingEditorDialog
+import com.example.ui.widgets.WatchStatusPill
+import com.example.ui.widgets.badgeColor
+import com.example.ui.widgets.formatLabel
 import com.example.viewmodel.AnimeViewModel
-import com.example.viewmodel.RemovalScope
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.TextButton
-import androidx.compose.ui.text.TextStyle
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -111,1303 +119,776 @@ fun AnimeDetailScreen(
     animeId: Int,
     viewModel: AnimeViewModel,
     onBack: () -> Unit,
-    onOpenPlayer: (animeId: Int, episodeNumber: Int, seasonNumber: Int) -> Unit = { _, _, _ -> },
-    modifier: Modifier = Modifier
+    onSelectAnime: (Int) -> Unit
 ) {
-    val context = LocalContext.current
+    val colors = AppTheme.colors
+    val anime by viewModel.selectedAnimeDetail.collectAsState()
+    val richDetail by viewModel.selectedRichDetail.collectAsState()
+    val isLoading by viewModel.isDetailLoading.collectAsState()
+    val reviews by viewModel.animeReviews.collectAsState()
+    val collections by viewModel.collections.collectAsState()
+    val preferences by viewModel.preferences.collectAsState()
+    val privacy by viewModel.privacySettings.collectAsState()
+    val profile by viewModel.userProfile.collectAsState()
+
+    val ratedAndNotedReviews = remember(reviews) {
+        reviews.filter { (it.rating ?: 0.0) > 0.0 && it.reviewNotes.isNotBlank() }
+    }
+
+    var synopsisExpanded by remember { mutableStateOf(false) }
+    var showTrackingEditor by remember { mutableStateOf(false) }
+    var showCollectionPicker by remember { mutableStateOf(false) }
 
     LaunchedEffect(animeId) {
-        if (viewModel.selectedAnimeDetailId.value != animeId) {
-            viewModel.selectAnimeDetail(animeId)
+        viewModel.selectAnimeDetail(animeId)
+    }
+
+    val current = anime
+    if (current == null) {
+        ObsidianAmbientBackground {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                if (isLoading) {
+                    CircularProgressIndicator(color = colors.accentPrimary)
+                } else {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)) {
+                        Text("Anime details unavailable.", style = MaterialTheme.typography.titleMedium, color = colors.textPrimary)
+                        AppPrimaryButton(text = "Go Back", onClick = onBack)
+                    }
+                }
+            }
+        }
+        return
+    }
+
+    val resolvedTitle = current.getResolvedTitle(preferences.titleLanguage)
+    val studiosList = richDetail?.studios?.takeIf { it.isNotEmpty() }
+        ?: current.studios.split(",").map { it.trim() }.filter { it.isNotBlank() }
+
+    var nowUnix by remember { mutableLongStateOf(System.currentTimeMillis() / 1000) }
+    val nextTime = current.getEffectiveAiringTime(nowUnix)
+    val nextEpNum = current.getEffectiveNextEpisodeNumber(nowUnix)
+    val isFinished = current.status.equals("FINISHED", ignoreCase = true)
+
+    LaunchedEffect(nextTime, isFinished) {
+        if (nextTime == null || nextTime <= 0L || isFinished) return@LaunchedEffect
+        while (true) {
+            nowUnix = System.currentTimeMillis() / 1000
+            val diff = nextTime - nowUnix
+            delay(if (diff > 86400) 30_000L else 1000L)
         }
     }
 
-    val animeState by viewModel.selectedAnimeDetail.collectAsState()
-    val watchlist by viewModel.watchlist.collectAsState()
-    val titlePreference by viewModel.titleLanguagePreference.collectAsState()
-    val anime = animeState ?: return
-
-    val isInWatchlist = watchlist.any { it.id == anime.id }
-    var isSynopsisExpanded by remember { mutableStateOf(false) }
-    var showRemoveScopeDialog by remember { mutableStateOf(false) }
-
-    val youtubeVideos by viewModel.youtubeVideos.collectAsState()
-    val isYouTubeSearching by viewModel.isYouTubeSearching.collectAsState()
-    val isYouTubeQuotaExceeded by viewModel.isYouTubeQuotaExceeded.collectAsState()
-    val isOptionalYouTubeApiEnabled by viewModel.isOptionalYouTubeApiEnabled.collectAsState()
-    val keylessYouTubeSearchLinks by viewModel.keylessYouTubeSearchLinks.collectAsState()
-    val aniListVerifiedTrailer by viewModel.aniListVerifiedTrailer.collectAsState()
-    val archiveVideos by viewModel.archiveVideos.collectAsState()
-    val isArchiveSearching by viewModel.isArchiveSearching.collectAsState()
-    val fullDetails by viewModel.selectedAnimeFullDetails.collectAsState()
-    val isResolvingArchive by viewModel.isResolvingArchiveMedia.collectAsState()
-    val activeSeasons by viewModel.activeDetailSeasons.collectAsState()
-    val selectedSeason by viewModel.selectedDetailSeason.collectAsState()
-    val detailAniKotoInfo by viewModel.detailAniKotoInfo.collectAsState()
-    val isDetailAniKotoLoading by viewModel.isDetailAniKotoLoading.collectAsState()
-    val detailAniKotoError by viewModel.detailAniKotoError.collectAsState()
-
-    var activeYouTubeVideo by remember { mutableStateOf<Pair<String, String>?>(null) }
-    var activeArchiveMedia by remember { mutableStateOf<ArchivePlayableMedia?>(null) }
-    var showNotesDialog by remember { mutableStateOf(false) }
-    var notesInput by remember(anime.userNotes) { mutableStateOf(anime.userNotes ?: "") }
-    var showScoreDialog by remember { mutableStateOf(false) }
-
-    val defaultEpToWatch = (anime.watchedEpisodeCount + 1).coerceIn(1, anime.totalEpisodes ?: maxOf(anime.getAiredEpisodeCount(), 1))
-    var selectedEpisodeToWatch by remember(anime.id, anime.watchedEpisodeCount) { mutableStateOf(defaultEpToWatch) }
-    var showCustomEpisodeSelectDialog by remember { mutableStateOf(false) }
-    var showCustomWatchedInputDialog by remember { mutableStateOf(false) }
-    var episodeSearchQuery by remember { mutableStateOf("") }
-    var selectedRangeBatchIndex by remember { mutableIntStateOf(0) }
-
-    val resolvedTitle = remember(anime, titlePreference) {
-        anime.displayTitle
+    val seasonEntries = remember(richDetail) { richDetail?.seasons.orEmpty() }
+    val activeSeasonEntry = remember(seasonEntries, current.id) {
+        seasonEntries.firstOrNull { it.isCurrent || it.id == current.id }
+    }
+    val seasonIdSet = remember(seasonEntries) {
+        if (seasonEntries.size > 1) seasonEntries.map { it.id }.toSet() else emptySet()
+    }
+    val otherParts = remember(richDetail, seasonIdSet, current.id) {
+        richDetail?.relations.orEmpty()
+            .filter { rel ->
+                rel.id != current.id &&
+                    (rel.mediaType.isNullOrBlank() || rel.mediaType.equals("ANIME", ignoreCase = true)) &&
+                    !seasonIdSet.contains(rel.id)
+            }
+            .distinctBy { it.id }
     }
 
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-    ) {
-        LazyColumn(
+    ObsidianAmbientBackground {
+        Box(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 80.dp)
+            contentAlignment = Alignment.TopCenter
         ) {
-            // Hero Banner & Cover Area
-            item {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(290.dp)
-                ) {
-                    // Background Image
-                    AsyncImage(
-                        model = anime.bannerImage ?: anime.coverImage,
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.matchParentSize()
-                    )
-
-                    // Gradient scrim
+            LazyColumn(
+                modifier = Modifier
+                    .widthIn(max = 980.dp)
+                    .fillMaxSize()
+                    .navigationBarsPadding()
+                    .testTag("anime_detail_screen"),
+                contentPadding = PaddingValues(bottom = 64.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // Cinematic Hero Backdrop fading cleanly into #030304
+                item {
                     Box(
                         modifier = Modifier
-                            .matchParentSize()
-                            .background(
-                                Brush.verticalGradient(
-                                    colors = listOf(
-                                        Color.Black.copy(alpha = 0.4f),
-                                        Color.Transparent,
-                                        MaterialTheme.colorScheme.background
+                            .fillMaxWidth()
+                            .height(312.dp)
+                    ) {
+                        AsyncImage(
+                            model = current.bannerImage?.takeIf { it.isNotBlank() } ?: current.coverImage,
+                            contentDescription = resolvedTitle,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(
+                                    Brush.verticalGradient(
+                                        0f to Color.Black.copy(alpha = 0.45f),
+                                        0.30f to Color.Black.copy(alpha = 0.15f),
+                                        0.68f to colors.backgroundMain.copy(alpha = 0.80f),
+                                        1f to colors.backgroundMain
                                     )
                                 )
-                            )
-                    )
-
-                    // Top Bar Back Button
-                    IconButton(
-                        onClick = onBack,
-                        modifier = Modifier
-                            .padding(16.dp)
-                            .align(Alignment.TopStart)
-                            .clip(CircleShape)
-                            .background(Color.Black.copy(alpha = 0.6f))
-                            .testTag("detail_back_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back",
-                            tint = Color.White
                         )
-                    }
 
-                    // Floating Poster & Main Info
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .align(Alignment.BottomStart)
-                            .padding(horizontal = 20.dp),
-                        verticalAlignment = Alignment.Bottom
-                    ) {
-                        Surface(
-                            shape = RoundedCornerShape(24.dp),
-                            color = MaterialTheme.colorScheme.surface,
-                            shadowElevation = 8.dp,
+                        // Circular Glass Top Buttons (Back & Favorite)
+                        Row(
                             modifier = Modifier
-                                .width(115.dp)
-                                .height(165.dp)
-                                .border(
-                                    1.dp,
-                                    MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
-                                    RoundedCornerShape(24.dp)
-                                )
+                                .fillMaxWidth()
+                                .statusBarsPadding()
+                                .padding(horizontal = AppSpacing.md, vertical = AppSpacing.sm),
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            AsyncImage(
-                                model = anime.coverImage,
-                                contentDescription = anime.titleRomaji,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize()
-                            )
+                            Surface(
+                                shape = CircleShape,
+                                color = Color(0x9908080C),
+                                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.18f)),
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .clip(CircleShape)
+                                    .clickable(onClick = onBack)
+                                    .testTag("detail_back_button")
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                        contentDescription = "Back",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+
+                            Surface(
+                                shape = CircleShape,
+                                color = Color(0x9908080C),
+                                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.18f)),
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .clip(CircleShape)
+                                    .clickable { viewModel.toggleFavorite(current.id, !current.isFavorite) }
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = if (current.isFavorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                                        contentDescription = "Favorite",
+                                        tint = if (current.isFavorite) colors.error else Color.White,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
                         }
 
-                        Spacer(modifier = Modifier.width(16.dp))
-
-                        Column(
-                            modifier = Modifier.weight(1f)
+                        // Cover Inset + Cormorant Serif Title Overlay
+                        Row(
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(horizontal = AppSpacing.md, vertical = AppSpacing.xs),
+                            verticalAlignment = Alignment.Bottom,
+                            horizontalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
-                            if (anime.score != null && anime.score > 0) {
-                                Surface(
-                                    color = Color(0xFFFDCB6E),
-                                    shape = RoundedCornerShape(10.dp)
+                            ResilientPosterImage(
+                                imageUrl = current.coverImage,
+                                contentDescription = resolvedTitle,
+                                shape = RoundedCornerShape(18.dp),
+                                modifier = Modifier
+                                    .width(104.dp)
+                                    .height(152.dp)
+                            )
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Text(
+                                    text = resolvedTitle,
+                                    fontFamily = CormorantSerifFamily,
+                                    fontSize = 30.sp,
+                                    lineHeight = 32.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = colors.textPrimary,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                val subJp = current.titleNative?.takeIf { it.isNotBlank() }
+                                    ?: current.titleRomaji.takeIf { it.isNotBlank() && it != resolvedTitle }
+                                if (!subJp.isNullOrBlank()) {
+                                    Text(
+                                        text = subJp.uppercase(),
+                                        style = MicroUpperLabel.copy(fontSize = 9.5.sp, letterSpacing = 1.4.sp),
+                                        color = colors.textSecondary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Star,
-                                            contentDescription = null,
-                                            tint = Color.Black,
-                                            modifier = Modifier.size(13.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text(
-                                            text = "${anime.score}% Score",
-                                            style = MaterialTheme.typography.labelSmall.copy(
-                                                fontWeight = FontWeight.ExtraBold,
-                                                color = Color.Black
-                                            )
-                                        )
+                                    val userStars = StarRatingUtils.score100ToStars(current.userScore)
+                                    val catalogStars = StarRatingUtils.score100ToStars(current.score)
+                                    val badgeStars = if (userStars > 0f) userStars else catalogStars
+                                    if (badgeStars > 0f) {
+                                        RatingBadge(scoreText = StarRatingUtils.formatStars(badgeStars))
+                                    }
+                                    if (current.inWatchlist) {
+                                        WatchStatusPill(status = current.watchStatusEnum)
                                     }
                                 }
-                                Spacer(modifier = Modifier.height(6.dp))
-                            }
-
-                            Text(
-                                text = resolvedTitle,
-                                style = MaterialTheme.typography.titleLarge.copy(
-                                    fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 20.sp
-                                ),
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                                color = MaterialTheme.colorScheme.onBackground
-                            )
-
-                            val subtitleText = when {
-                                anime.isDonghua && !anime.titlePinyin.isNullOrEmpty() -> "Pinyin: ${anime.titlePinyin}"
-                                !anime.titleNative.isNullOrEmpty() -> anime.titleNative
-                                else -> null
-                            }
-                            if (subtitleText != null) {
-                                Text(
-                                    text = subtitleText,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
                             }
                         }
                     }
                 }
-            }
 
-            // Details Body
-            item {
-                Column(modifier = Modifier.padding(20.dp)) {
-                    // Quick Info Badges Row
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        val airedEpisodes = anime.getAiredEpisodeCount()
-                        val isFinished = anime.status?.uppercase() == "FINISHED" || anime.status == "finished_airing"
-                        val totalValueText = if (isFinished && anime.totalEpisodes != null && anime.totalEpisodes > 0) {
-                            "${anime.totalEpisodes} Ep"
-                        } else if (anime.totalEpisodes != null && anime.totalEpisodes > airedEpisodes) {
-                            "${anime.totalEpisodes} Ep"
-                        } else {
-                            "Ongoing"
-                        }
+                // Editorial Big-Card 1: EPISODE PROGRESS & RATING
+                item {
+                    val total = current.totalEpisodes
+                    val canInc = !current.inWatchlist || total == null || total <= 0 || current.watchedEpisodeCount < total
+                    val canDec = current.inWatchlist && current.watchedEpisodeCount > 0
+                    val isCompleted = current.inWatchlist && (current.watchStatusEnum == WatchStatus.COMPLETED || (total != null && total > 0 && current.watchedEpisodeCount >= total))
 
-                        InfoBadge(
-                            label = "Aired",
-                            value = "$airedEpisodes Ep",
-                            modifier = Modifier.weight(1f)
-                        )
-                        InfoBadge(
-                            label = "Total",
-                            value = totalValueText,
-                            modifier = Modifier.weight(1f)
-                        )
-                        InfoBadge(
-                            label = "Status",
-                            value = anime.status ?: "Airing",
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    // Genres FlowRow
-                    val genresList = remember(anime.genres) {
-                        anime.genres.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-                    }
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        genresList.forEach { genre ->
-                            Surface(
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                                shape = RoundedCornerShape(16.dp)
-                            ) {
-                                Text(
-                                    text = genre,
-                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                                )
-                            }
-                        }
-                    }
-
-                    if (activeSeasons.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text(
-                            text = "AVAILABLE SEASONS",
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = 1.sp
-                            ),
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        LazyRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            items(activeSeasons) { seasonItem ->
-                                val isSelectedSeason = (selectedSeason?.seasonNumber == seasonItem.seasonNumber) ||
-                                        (selectedSeason?.animeId == seasonItem.animeId)
-                                Surface(
-                                    shape = RoundedCornerShape(14.dp),
-                                    color = if (isSelectedSeason) Color(0xFF0284C7) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                                    border = androidx.compose.foundation.BorderStroke(
-                                        1.dp,
-                                        if (isSelectedSeason) Color(0xFF38BDF8) else MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
-                                    ),
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(14.dp))
-                                        .clickable {
-                                            viewModel.selectDetailSeason(seasonItem)
-                                            if (seasonItem.animeId != anime.id) {
-                                                viewModel.selectAnimeDetail(seasonItem.animeId)
-                                            }
-                                            selectedEpisodeToWatch = 1
-                                        }
-                                        .testTag("season_chip_${seasonItem.seasonNumber}")
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(
-                                            text = seasonItem.title.ifBlank { "Season ${seasonItem.seasonNumber}" },
-                                            style = MaterialTheme.typography.labelMedium.copy(
-                                                fontWeight = FontWeight.Bold,
-                                                color = if (isSelectedSeason) Color.White else MaterialTheme.colorScheme.onSurface
-                                            )
-                                        )
-                                        if (seasonItem.totalEpisodes != null && seasonItem.totalEpisodes > 0) {
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text(
-                                                text = "(${seasonItem.totalEpisodes} Ep)",
-                                                style = MaterialTheme.typography.labelSmall.copy(
-                                                    color = if (isSelectedSeason) Color.White.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    // Prominent Watch Button & Custom Episode Selection
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Button(
-                            onClick = { onOpenPlayer(anime.id, selectedEpisodeToWatch, selectedSeason?.seasonNumber ?: 1) },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
-                            shape = RoundedCornerShape(20.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(52.dp)
-                                .testTag("detail_watch_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.PlayArrow,
-                                contentDescription = null,
-                                modifier = Modifier.size(24.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "Watch",
-                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.ExtraBold, color = Color.White)
-                            )
-                        }
-
-                        OutlinedButton(
-                            onClick = { showCustomEpisodeSelectDialog = true },
-                            shape = RoundedCornerShape(20.dp),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF38BDF8)),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF38BDF8)),
-                            modifier = Modifier
-                                .height(52.dp)
-                                .testTag("detail_episode_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Edit,
-                                contentDescription = "Select Episode",
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "Ep $selectedEpisodeToWatch",
-                                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.ExtraBold)
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    // 5-COLUMN EPISODE SELECTOR & RANGE TABS
-                    val totalAnimeEpisodes = (selectedSeason?.totalEpisodes ?: anime.totalEpisodes ?: maxOf(anime.getAiredEpisodeCount(), selectedEpisodeToWatch, 12)).coerceAtLeast(1)
-
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    AppCard(
                         shape = RoundedCornerShape(24.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f), RoundedCornerShape(24.dp))
+                            .padding(horizontal = AppSpacing.md)
                     ) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = "SELECT EPISODE",
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        fontWeight = FontWeight.ExtraBold,
-                                        letterSpacing = 1.sp
-                                    ),
-                                    color = Color(0xFF38BDF8)
-                                )
-                                Surface(
-                                    color = Color(0xFF0284C7).copy(alpha = 0.2f),
-                                    shape = RoundedCornerShape(10.dp)
-                                ) {
-                                    Text(
-                                        text = "$totalAnimeEpisodes Ep Total",
-                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8)),
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                    )
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(12.dp))
-
-                            EpisodeGridSelector(
-                                totalEpisodes = totalAnimeEpisodes,
-                                selectedEpisode = selectedEpisodeToWatch,
-                                watchedEpisodeCount = anime.watchedEpisodeCount,
-                                onEpisodeSelected = { epNum ->
-                                    selectedEpisodeToWatch = epNum
-                                    onOpenPlayer(anime.id, epNum, selectedSeason?.seasonNumber ?: 1)
-                                },
-                                seasons = activeSeasons,
-                                selectedSeasonNumber = selectedSeason?.seasonNumber ?: 1,
-                                onSeasonSelected = { seasonNum ->
-                                    val matched = activeSeasons.firstOrNull { it.seasonNumber == seasonNum }
-                                    if (matched != null) {
-                                        viewModel.selectDetailSeason(matched)
-                                        if (matched.animeId != anime.id) {
-                                            viewModel.selectAnimeDetail(matched.animeId)
-                                        }
-                                        selectedEpisodeToWatch = 1
-                                    }
-                                }
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    // Action Buttons Row (Add to Schedule, Wishlist, Favorite)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Button(
-                            onClick = {
-                                if (isInWatchlist) showRemoveScopeDialog = true
-                                else viewModel.addToWatchlist(anime)
-                            },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isInWatchlist) Color(0xFF00B894) else MaterialTheme.colorScheme.primary
-                            ),
-                            shape = RoundedCornerShape(20.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(48.dp)
-                                .testTag("detail_watchlist_toggle")
+                        Column(
+                            modifier = Modifier.padding(18.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            Icon(
-                                imageVector = if (isInWatchlist) Icons.Default.Check else Icons.Default.Add,
-                                contentDescription = null
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = if (isInWatchlist) "In Schedule" else "Add Schedule",
-                                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
-                            )
-                        }
-
-                        // Wishlist button
-                        OutlinedButton(
-                            onClick = { viewModel.toggleWishlist(anime) },
-                            shape = RoundedCornerShape(20.dp),
-                            modifier = Modifier
-                                .size(48.dp)
-                                .testTag("detail_wishlist_toggle"),
-                            contentPadding = PaddingValues(0.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (anime.isWishlist) Icons.Default.Bookmark else Icons.Default.BookmarkBorder,
-                                contentDescription = "Wishlist",
-                                tint = if (anime.isWishlist) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-
-                        // Favorite button
-                        OutlinedButton(
-                            onClick = { viewModel.toggleFavorite(anime) },
-                            shape = RoundedCornerShape(20.dp),
-                            modifier = Modifier
-                                .size(48.dp)
-                                .testTag("detail_favorite_toggle"),
-                            contentPadding = PaddingValues(0.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (anime.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                                contentDescription = "Favorite",
-                                tint = if (anime.isFavorite) Color(0xFFFD79A8) else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(20.dp))
-
-                    // Multi-Source Airing Verification Card
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
-                        shape = RoundedCornerShape(20.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .border(
-                                1.dp,
-                                MaterialTheme.colorScheme.primary.copy(alpha = 0.3f),
-                                RoundedCornerShape(20.dp)
-                            )
-                    ) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = "LIVE AIRING CONSENSUS ENGINE",
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        fontWeight = FontWeight.ExtraBold,
-                                        letterSpacing = 1.sp
-                                    ),
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                Surface(
-                                    color = MaterialTheme.colorScheme.primaryContainer,
-                                    shape = RoundedCornerShape(12.dp)
-                                ) {
-                                    Text(
-                                        text = "Aired Ep: ${anime.currentEpisode}",
-                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                    )
-                                }
-                            }
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(
-                                text = "Cross-referenced via AniList • MyAnimeList • Jikan",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    // MyAnimeList Library Status Card
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                        shape = RoundedCornerShape(28.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .border(
-                                1.dp,
-                                MaterialTheme.colorScheme.outline.copy(alpha = 0.25f),
-                                RoundedCornerShape(28.dp)
-                            )
-                    ) {
-                        Column(modifier = Modifier.padding(18.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = "MYANIMELIST LIBRARY STATUS",
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        fontWeight = FontWeight.Bold,
-                                        letterSpacing = 1.sp
-                                    ),
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                Text(
-                                    text = if (anime.idMal != null && anime.idMal > 0) "MAL ID: ${anime.idMal}" else "Auto-match",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(10.dp))
-                            val statusOptions = listOf(
-                                "Plan to Watch" to "plan_to_watch",
-                                "Watching" to "watching",
-                                "Completed" to "completed",
-                                "On Hold" to "on_hold",
-                                "Dropped" to "dropped"
-                            )
-                            FlowRow(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                statusOptions.forEach { (label, malValue) ->
-                                    val isSelected = when (malValue) {
-                                        "plan_to_watch" -> anime.isWishlist
-                                        "completed" -> anime.isWatched
-                                        "watching" -> isInWatchlist && !anime.isWatched
-                                        else -> false
-                                    }
-                                    FilterChip(
-                                        selected = isSelected,
-                                        onClick = {
-                                            viewModel.updateAnimeMalStatus(anime, malValue)
-                                        },
-                                        label = { Text(label) },
-                                        leadingIcon = if (isSelected) {
-                                            { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                                        } else null,
-                                        colors = FilterChipDefaults.filterChipColors(
-                                            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                                        )
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(20.dp))
-
-                    // Next Release & Notification Card (Bento Box)
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                        shape = RoundedCornerShape(28.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .border(
-                                1.dp,
-                                MaterialTheme.colorScheme.outline.copy(alpha = 0.25f),
-                                RoundedCornerShape(28.dp)
-                            )
-                    ) {
-                        Column(modifier = Modifier.padding(18.dp)) {
-                            Text(
-                                text = "NEXT EPISODE SCHEDULE",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    letterSpacing = 1.sp
-                                ),
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            val effectiveAiring = anime.getEffectiveAiringTime()
-                            val effectiveNextEp = anime.getEffectiveNextEpisodeNumber()
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                CountdownView(airingTimeUnix = effectiveAiring)
-                                Text(
-                                    text = "Episode $effectiveNextEp",
-                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.ExtraBold)
-                                )
-                            }
-
-                            if (effectiveAiring != null && effectiveAiring > 0) {
-                                Spacer(modifier = Modifier.height(10.dp))
-                                Surface(
-                                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
-                                    shape = RoundedCornerShape(12.dp),
-                                    modifier = Modifier.fillMaxWidth()
+                            if (seasonEntries.size > 1) {
+                                Column(
+                                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.testTag("detail_seasons_section")
                                 ) {
                                     Row(
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Schedule,
-                                            contentDescription = "IST Release Time",
-                                            modifier = Modifier.size(16.dp),
-                                            tint = MaterialTheme.colorScheme.primary
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text(
-                                            text = "Release (IST): ${com.example.util.IstTimeFormatter.formatIstDateTime(effectiveAiring)}",
-                                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
+                                        DetailCardLabel("SEASONS")
+                                        if (activeSeasonEntry != null) {
+                                            val yearText = activeSeasonEntry.seasonYear?.let { " • $it" }.orEmpty()
+                                            Text(
+                                                text = "Season ${activeSeasonEntry.seasonNumber}$yearText",
+                                                style = MicroUpperLabel.copy(fontSize = 8.5.sp, letterSpacing = 1.sp),
+                                                color = colors.textSecondary
+                                            )
+                                        }
+                                    }
+                                    LazyRow(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        items(seasonEntries, key = { it.id }) { s ->
+                                            val isSelected = s.isCurrent || s.id == current.id
+                                            val isUpcoming = s.status.equals("NOT_YET_RELEASED", ignoreCase = true)
+                                            val pillBrush = if (isSelected) {
+                                                if (colors.isDark) Brush.linearGradient(listOf(ChampagneGoldSoft, ChampagneGold))
+                                                else Brush.linearGradient(listOf(colors.accentPrimary, colors.accentSecondary))
+                                            } else {
+                                                Brush.linearGradient(
+                                                    listOf(
+                                                        colors.elevatedSurface.copy(alpha = 0.78f),
+                                                        colors.cardBackground.copy(alpha = 0.92f)
+                                                    )
+                                                )
+                                            }
+                                            Box(
+                                                modifier = Modifier
+                                                    .widthIn(min = 52.dp)
+                                                    .height(48.dp)
+                                                    .pointerHoverIcon(PointerIcon.Hand)
+                                                    .clip(CircleShape)
+                                                    .background(pillBrush)
+                                                    .border(
+                                                        width = 1.dp,
+                                                        color = if (isSelected) Color.Transparent else colors.borderSubtle,
+                                                        shape = CircleShape
+                                                    )
+                                                    .clickable(enabled = !isSelected) { onSelectAnime(s.id) }
+                                                    .padding(horizontal = 16.dp)
+                                                    .testTag("detail_season_pill_${s.seasonNumber}"),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                                ) {
+                                                    Text(
+                                                        text = s.seasonNumber.toString(),
+                                                        style = TabularNumMedium.copy(fontSize = 15.sp, fontWeight = FontWeight.Bold),
+                                                        color = if (isSelected) {
+                                                            if (colors.isDark) ChampagneOnGold else colors.onAccentPrimary
+                                                        } else {
+                                                            colors.textPrimary
+                                                        }
+                                                    )
+                                                    if (isUpcoming && !isSelected) {
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .size(6.dp)
+                                                                .clip(CircleShape)
+                                                                .background(colors.warning)
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
+                                HorizontalDivider(color = colors.borderSubtle, thickness = 1.dp)
                             }
 
-                            Spacer(modifier = Modifier.height(12.dp))
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f))
-                            Spacer(modifier = Modifier.height(12.dp))
+                            DetailCardLabel("EPISODE PROGRESS")
 
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        imageVector = Icons.Default.Notifications,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary
-                                    )
-                                    Spacer(modifier = Modifier.width(10.dp))
-                                    Column {
-                                        Text(
-                                            text = "Release Alerts",
-                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
-                                        )
-                                        Text(
-                                            text = "Notify when new episode airs",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                }
-                                Switch(
-                                    checked = anime.notificationsEnabled,
-                                    onCheckedChange = { viewModel.toggleNotification(anime) },
-                                    colors = SwitchDefaults.colors(
-                                        checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
-                                        checkedTrackColor = MaterialTheme.colorScheme.primary
-                                    ),
-                                    modifier = Modifier.testTag("detail_notification_switch")
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(20.dp))
-
-                    // Synopsis Card
-                    if (!anime.synopsis.isNullOrEmpty()) {
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                            shape = RoundedCornerShape(28.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .border(
-                                    1.dp,
-                                    MaterialTheme.colorScheme.outline.copy(alpha = 0.25f),
-                                    RoundedCornerShape(28.dp)
-                                )
-                        ) {
-                            Column(modifier = Modifier.padding(18.dp)) {
-                                Text(
-                                    text = "SYNOPSIS",
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        fontWeight = FontWeight.Bold,
-                                        letterSpacing = 1.sp
-                                    ),
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text(
-                                    text = anime.synopsis ?: "",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = if (isSynopsisExpanded) Int.MAX_VALUE else 4,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = if (isSynopsisExpanded) "Show Less" else "Read More",
-                                    style = MaterialTheme.typography.labelMedium.copy(
-                                        fontWeight = FontWeight.ExtraBold,
-                                        color = MaterialTheme.colorScheme.primary
-                                    ),
+                            if (!current.inWatchlist) {
+                                AppPrimaryButton(
+                                    text = "Add to My List",
+                                    leadingIcon = Icons.Filled.Add,
+                                    onClick = { viewModel.addToWatchlist(current, WatchStatus.WATCHING) },
                                     modifier = Modifier
-                                        .padding(vertical = 4.dp)
-                                        .clickable { isSynopsisExpanded = !isSynopsisExpanded }
+                                        .fillMaxWidth()
+                                        .testTag("detail_add_to_list")
                                 )
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(20.dp))
-                    }
-
-                    // Episode Tracker Card
-                    val liveAiredCount = anime.getAiredEpisodeCount()
-                    val isShowFinished = anime.status?.uppercase() == "FINISHED" || anime.status == "finished_airing"
-                    val totalEp = if (anime.totalEpisodes != null && anime.totalEpisodes > 0) {
-                        anime.totalEpisodes
-                    } else {
-                        maxOf(liveAiredCount, anime.watchedEpisodeCount + 10, 12)
-                    }
-                    val watchedCount = anime.watchedEpisodeCount
-                    val remainingEp = (totalEp - watchedCount).coerceAtLeast(0)
-
-                    Card(
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (anime.isWatched || watchedCount >= totalEp) Color(0xFF00B894).copy(alpha = 0.15f) else MaterialTheme.colorScheme.surface
-                        ),
-                        shape = RoundedCornerShape(28.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .border(
-                                1.dp,
-                                MaterialTheme.colorScheme.outline.copy(alpha = 0.25f),
-                                RoundedCornerShape(28.dp)
-                            )
-                    ) {
-                        Column(modifier = Modifier.padding(18.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column {
-                                    Text(
-                                        text = "EPISODE TRACKER & SELECTOR",
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            fontWeight = FontWeight.Bold,
-                                            letterSpacing = 1.sp
-                                        ),
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = "Watched Ep $watchedCount of $totalEp",
-                                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.ExtraBold)
-                                    )
-                                    Text(
-                                        text = if (remainingEp == 0) "All $totalEp episodes completed! 🎉" else "$remainingEp episodes left to watch",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = if (remainingEp == 0) Color(0xFF00B894) else MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                Checkbox(
-                                    checked = anime.isWatched || watchedCount >= totalEp,
-                                    onCheckedChange = { checked -> viewModel.toggleWatched(anime.id, checked) },
-                                    colors = CheckboxDefaults.colors(checkedColor = Color(0xFF00B894)),
-                                    modifier = Modifier.testTag("detail_episode_checkbox")
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.height(14.dp))
-
-                            // Interactive Stepper Row
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Button(
-                                    onClick = {
-                                        val newCount = (watchedCount - 1).coerceAtLeast(0)
-                                        viewModel.updateWatchedEpisodeCount(anime.id, newCount)
+                            } else {
+                                DetailEpisodeStepperControl(
+                                    watchedEpisodeCount = current.watchedEpisodeCount,
+                                    totalEpisodes = total,
+                                    subtitle = if (activeSeasonEntry != null && seasonEntries.size > 1) {
+                                        "SEASON ${activeSeasonEntry.seasonNumber} • EPISODES WATCHED"
+                                    } else {
+                                        "EPISODES WATCHED"
                                     },
-                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                                    shape = RoundedCornerShape(16.dp),
-                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Remove,
-                                        contentDescription = "Decrement watched episode",
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = "-1 Ep",
-                                        style = MaterialTheme.typography.labelMedium.copy(
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    )
-                                }
+                                    canDecrement = canDec,
+                                    canIncrement = canInc,
+                                    onDecrement = { viewModel.decrementEpisode(current.id) },
+                                    onIncrement = { viewModel.incrementEpisode(current.id) },
+                                    onSetCustomEpisode = { clamped -> viewModel.setEpisodeProgress(current.id, clamped) }
+                                )
 
+                                // Soft Capsule Edit / Star Rating & Review Studio button
                                 Surface(
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                                    shape = CircleShape,
+                                    color = colors.accentPrimary.copy(alpha = 0.14f),
                                     modifier = Modifier
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .clickable { showCustomWatchedInputDialog = true }
-                                        .testTag("detail_watched_pill")
+                                        .fillMaxWidth()
+                                        .height(48.dp)
+                                        .clip(CircleShape)
+                                        .clickable { showTrackingEditor = true }
+                                        .testTag("detail_edit_tracking")
                                 ) {
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                        horizontalArrangement = Arrangement.Center
                                     ) {
-                                        Text(
-                                            text = "Ep $watchedCount / $totalEp",
-                                            style = MaterialTheme.typography.titleMedium.copy(
-                                                fontWeight = FontWeight.ExtraBold,
-                                                color = MaterialTheme.colorScheme.primary
-                                            )
+                                        Icon(
+                                            imageVector = Icons.Filled.Edit,
+                                            contentDescription = null,
+                                            tint = colors.accentPrimary,
+                                            modifier = Modifier.size(14.dp)
                                         )
                                         Spacer(modifier = Modifier.width(6.dp))
-                                        Icon(
-                                            imageVector = Icons.Default.Edit,
-                                            contentDescription = "Set watched episode",
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(15.dp)
+                                        Text(
+                                            text = "RATE IN STARS, REVIEW & TRACK",
+                                            style = MicroUpperLabel.copy(fontSize = 9.sp, letterSpacing = 1.4.sp),
+                                            color = colors.accentPrimary
                                         )
                                     }
                                 }
 
-                                Button(
-                                    onClick = {
-                                        val newCount = watchedCount + 1
-                                        viewModel.updateWatchedEpisodeCount(anime.id, newCount)
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                                    shape = RoundedCornerShape(16.dp),
-                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
-                                ) {
-                                    Text(
-                                        text = "+1 Ep",
-                                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Icon(
-                                        imageVector = Icons.Default.Add,
-                                        contentDescription = "Increment watched episode"
-                                    )
-                                }
-                            }
+                                val pct = if (total != null && total > 0) {
+                                    (current.watchedEpisodeCount.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+                                } else if (current.watchedEpisodeCount > 0) 0.5f else 0.05f
 
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Button(
-                                onClick = { onOpenPlayer(anime.id, selectedEpisodeToWatch, selectedSeason?.seasonNumber ?: 1) },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE11D48)),
-                                shape = RoundedCornerShape(16.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.PlayArrow,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "Watch Ep $selectedEpisodeToWatch Now",
-                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = Color.White)
+                                AppProgressBar(
+                                    progress = pct,
+                                    isCompleted = isCompleted,
+                                    heightDp = 5
                                 )
                             }
 
-                            val progressFraction = if (totalEp > 0) (watchedCount.toFloat() / totalEp.toFloat()).coerceIn(0f, 1f) else 0f
-                            if (progressFraction > 0f) {
-                                Spacer(modifier = Modifier.height(14.dp))
-                                LinearProgressIndicator(
-                                    progress = { progressFraction },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(6.dp)
-                                        .clip(RoundedCornerShape(3.dp)),
-                                    color = Color(0xFF00B894),
-                                    trackColor = MaterialTheme.colorScheme.surfaceVariant
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Text(
-                                text = "Direct Episode Selection",
-                                style = MaterialTheme.typography.titleSmall.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.White
-                                )
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            EpisodeGridSelector(
-                                totalEpisodes = totalEp,
-                                selectedEpisode = selectedEpisodeToWatch,
-                                watchedEpisodeCount = watchedCount,
-                                onEpisodeSelected = { ep ->
-                                    selectedEpisodeToWatch = ep
-                                    onOpenPlayer(anime.id, ep, selectedSeason?.seasonNumber ?: 1)
-                                },
-                                seasons = activeSeasons,
-                                selectedSeasonNumber = selectedSeason?.seasonNumber ?: 1,
-                                onSeasonSelected = { seasonNum ->
-                                    val matched = activeSeasons.firstOrNull { it.seasonNumber == seasonNum }
-                                    if (matched != null) {
-                                        viewModel.selectDetailSeason(matched)
-                                        if (matched.animeId != anime.id) {
-                                            viewModel.selectAnimeDetail(matched.animeId)
-                                        }
-                                    }
-                                }
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(20.dp))
-
-                    // ========================================================
-                    // SECTION: UNIFIED ANIME TRACKING & PERSONAL NOTES
-                    // ========================================================
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                        shape = RoundedCornerShape(28.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .border(
-                                1.dp,
-                                MaterialTheme.colorScheme.outline.copy(alpha = 0.25f),
-                                RoundedCornerShape(28.dp)
-                            )
-                    ) {
-                        Column(modifier = Modifier.padding(18.dp)) {
+                            // 3-column stats (AIRED | NEXT | AIRS IN)
+                            HorizontalDivider(color = colors.borderSubtle, thickness = 1.dp)
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                Text(
-                                    text = "TRACKING STATUS & RATING",
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        fontWeight = FontWeight.Bold,
-                                        letterSpacing = 1.sp
-                                    ),
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                Surface(
-                                    color = Color(0xFF38BDF8).copy(alpha = 0.15f),
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Text(
-                                        text = anime.trackingStatusDisplay,
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            fontWeight = FontWeight.Bold,
-                                            color = Color(0xFF38BDF8)
-                                        ),
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                    )
+                                val airedText = when {
+                                    isFinished && total != null && total > 0 -> total.toString()
+                                    nextEpNum != null && nextEpNum > 1 -> (nextEpNum - 1).toString()
+                                    else -> maxOf(current.currentEpisode, current.watchedEpisodeCount).toString()
                                 }
+                                val nextText = when {
+                                    isCompleted || isFinished -> "✓"
+                                    nextEpNum != null -> nextEpNum.toString()
+                                    else -> "—"
+                                }
+                                val countdownText = when {
+                                    isCompleted || isFinished -> "Done"
+                                    nextTime != null && nextTime > nowUnix -> formatCompactCountdown(nextTime - nowUnix)
+                                    else -> "TBD"
+                                }
+
+                                DetailStatColumn("AIRED", airedText, colors.textPrimary, Modifier.weight(1f))
+                                DetailStatColumn("NEXT", nextText, colors.highlight, Modifier.weight(1f))
+                                DetailStatColumn("AIRS IN", countdownText, colors.highlight, Modifier.weight(1f))
                             }
 
-                            Spacer(modifier = Modifier.height(12.dp))
-
-                            // Status Chips Flow
-                            FlowRow(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                val statuses = listOf(
-                                    "watching" to "Watching",
-                                    "plan_to_watch" to "Planning",
-                                    "completed" to "Completed",
-                                    "on_hold" to "On Hold",
-                                    "dropped" to "Dropped"
-                                )
-                                statuses.forEach { (statusCode, label) ->
-                                    val isSelected = anime.userStatus?.lowercase() == statusCode ||
-                                            (statusCode == "watching" && anime.userStatus == null && isInWatchlist)
-                                    FilterChip(
-                                        selected = isSelected,
-                                        onClick = {
-                                            viewModel.updateUserTracking(anime.id, status = statusCode)
-                                        },
-                                        label = { Text(label, style = MaterialTheme.typography.labelSmall) },
-                                        leadingIcon = if (isSelected) {
-                                            {
-                                                Icon(
-                                                    imageVector = Icons.Default.Check,
-                                                    contentDescription = null,
-                                                    modifier = Modifier.size(14.dp)
-                                                )
-                                            }
-                                        } else null,
-                                        colors = FilterChipDefaults.filterChipColors(
-                                            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                                        )
-                                    )
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(14.dp))
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f))
-                            Spacer(modifier = Modifier.height(14.dp))
-
-                            // Personal Score & Notes
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        imageVector = Icons.Default.Star,
-                                        contentDescription = null,
-                                        tint = Color(0xFFF59E0B),
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Column {
-                                        Text(
-                                            text = "Personal Score",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                        Text(
-                                            text = if (anime.userScore != null && anime.userScore > 0) "${anime.userScore}/10" else "Not Rated",
-                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
-                                        )
-                                    }
-                                }
-
-                                Button(
-                                    onClick = { showScoreDialog = true },
-                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                                    shape = RoundedCornerShape(12.dp)
-                                ) {
-                                    Text(
-                                        text = if (anime.userScore != null) "Change Score" else "Rate",
-                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(12.dp))
-
-                            // Personal Notes Preview
-                            Surface(
-                                shape = RoundedCornerShape(16.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { showNotesDialog = true }
-                            ) {
+                            if (current.inWatchlist) {
                                 Row(
-                                    modifier = Modifier.padding(14.dp),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Edit,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(18.dp)
+                                    Text(
+                                        text = if (profile != null) "✓ SYNCED TO CLOUD" else "✓ SAVED IN LOCAL VAULT",
+                                        style = MicroUpperLabel.copy(fontSize = 8.5.sp, letterSpacing = 1.sp),
+                                        color = colors.success
                                     )
-                                    Spacer(modifier = Modifier.width(10.dp))
-                                    Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = current.formatLabel(),
+                                        style = MicroUpperLabel.copy(fontSize = 8.5.sp, letterSpacing = 1.sp),
+                                        color = colors.textMuted
+                                    )
+                                }
+                            }
+
+                            if (profile != null) {
+                                AppSecondaryButton(
+                                    text = "Add to Collection",
+                                    leadingIcon = Icons.Filled.CollectionsBookmark,
+                                    onClick = { showCollectionPicker = true },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+
+                            if (current.inWatchlist || current.hasActiveUserState) {
+                                OutlinedButton(
+                                    onClick = { viewModel.removeFromWatchlist(current.id) },
+                                    shape = CircleShape,
+                                    border = BorderStroke(1.dp, colors.error.copy(alpha = 0.55f)),
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        containerColor = colors.error.copy(alpha = 0.08f),
+                                        contentColor = colors.error
+                                    ),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 48.dp)
+                                        .testTag("detail_remove_from_list")
+                                ) {
+                                    Icon(Icons.Filled.DeleteOutline, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Remove from My List", fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+
+                            val myStars = StarRatingUtils.score100ToStars(current.userScore)
+                            if (myStars > 0f || !current.userNotes.isNullOrBlank()) {
+                                Surface(
+                                    shape = RoundedCornerShape(20.dp),
+                                    color = colors.elevatedSurface.copy(alpha = 0.45f),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(20.dp))
+                                        .clickable { showTrackingEditor = true }
+                                ) {
+                                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text("YOUR RATING & REVIEW", style = MicroUpperLabel.copy(fontSize = 8.sp, letterSpacing = 1.4.sp), color = colors.accentPrimary)
+                                            if (myStars > 0f) {
+                                                StarRatingRow(stars = myStars, starSize = 14.dp, showNumeric = true)
+                                            }
+                                        }
+                                        if (!current.userNotes.isNullOrBlank()) {
+                                            Text(
+                                                text = "“${current.userNotes}”",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = colors.textPrimary
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Genres & Metadata
+                item {
+                    Column(
+                        modifier = Modifier.padding(horizontal = AppSpacing.md),
+                        verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+                    ) {
+                        val metaLine = buildList {
+                            add(current.formatLabel())
+                            current.totalEpisodes?.let { add("$it Episodes") }
+                            listOfNotNull(current.season, current.seasonYear?.toString())
+                                .takeIf { it.isNotEmpty() }
+                                ?.let { add(it.joinToString(" ")) }
+                            addAll(studiosList)
+                        }.joinToString(" • ")
+
+                        if (metaLine.isNotBlank()) {
+                            Text(
+                                text = metaLine,
+                                style = TabularNumSmall,
+                                color = colors.textSecondary
+                            )
+                        }
+
+                        val genres = current.genres.split(",").map { it.trim() }.filter { it.isNotBlank() }
+                        if (genres.isNotEmpty()) {
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                genres.forEach { genre ->
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = colors.elevatedSurface.copy(alpha = 0.55f)
+                                    ) {
                                         Text(
-                                            text = "Personal Notes",
-                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
-                                        Text(
-                                            text = if (!anime.userNotes.isNullOrBlank()) anime.userNotes else "Tap to write your thoughts or notes on this anime...",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = if (!anime.userNotes.isNullOrBlank()) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                                            maxLines = 2,
-                                            overflow = TextOverflow.Ellipsis
+                                            text = genre,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = colors.highlight,
+                                            modifier = Modifier.padding(horizontal = 13.dp, vertical = 6.dp)
                                         )
                                     }
                                 }
                             }
                         }
                     }
+                }
 
-                    // ========================================================
-                    // SECTION: STUDIOS, CHARACTERS & RELATIONS
-                    // ========================================================
-                    val studios = fullDetails?.studios?.nodes.orEmpty().filter { !it.name.isNullOrBlank() }
-                    val characters = fullDetails?.characters?.nodes.orEmpty().filter { !it.name?.full.isNullOrBlank() }
-                    val relations = fullDetails?.relations?.edges.orEmpty().filter { it.node?.title != null }
-
-                    if (studios.isNotEmpty() || characters.isNotEmpty() || relations.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(20.dp))
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                            shape = RoundedCornerShape(28.dp),
+                // Synopsis
+                if (!current.synopsis.isNullOrBlank()) {
+                    item {
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .border(
-                                    1.dp,
-                                    MaterialTheme.colorScheme.outline.copy(alpha = 0.25f),
-                                    RoundedCornerShape(28.dp)
-                                )
+                                .padding(horizontal = AppSpacing.md)
+                                .animateContentSize(),
+                            verticalArrangement = Arrangement.spacedBy(AppSpacing.xs)
                         ) {
-                            Column(modifier = Modifier.padding(18.dp)) {
-                                Text(
-                                    text = "CAST, STUDIOS & RELATIONS",
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        fontWeight = FontWeight.Bold,
-                                        letterSpacing = 1.sp
-                                    ),
-                                    color = MaterialTheme.colorScheme.primary
-                                )
+                            Text(
+                                text = "Synopsis",
+                                fontFamily = CormorantSerifFamily,
+                                fontSize = 22.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = colors.textPrimary
+                            )
+                            Text(
+                                text = current.synopsis,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = colors.textSecondary,
+                                maxLines = if (synopsisExpanded) Int.MAX_VALUE else 5,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            TextButton(onClick = { synopsisExpanded = !synopsisExpanded }) {
+                                Text(if (synopsisExpanded) "Show Less" else "Read More", color = colors.accentPrimary)
+                            }
+                            HorizontalDivider(color = colors.borderSubtle, thickness = 1.dp)
+                        }
+                    }
+                }
 
-                                if (studios.isNotEmpty()) {
-                                    Spacer(modifier = Modifier.height(10.dp))
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(
-                                            imageVector = Icons.Default.Apartment,
-                                            contentDescription = null,
-                                            tint = Color(0xFF94A3B8),
-                                            modifier = Modifier.size(16.dp)
+                // Characters
+                val characters = richDetail?.characters.orEmpty()
+                if (characters.isNotEmpty()) {
+                    item {
+                        Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)) {
+                            Text(
+                                text = "Characters",
+                                fontFamily = CormorantSerifFamily,
+                                fontSize = 22.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = colors.textPrimary,
+                                modifier = Modifier.padding(horizontal = AppSpacing.md)
+                            )
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = AppSpacing.md),
+                                horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+                            ) {
+                                items(characters, key = { it.id }) { ch ->
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        modifier = Modifier.width(80.dp)
+                                    ) {
+                                        ResilientPosterImage(
+                                            imageUrl = ch.imageUrl,
+                                            contentDescription = ch.name,
+                                            shape = CircleShape,
+                                            modifier = Modifier.size(68.dp)
                                         )
-                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Spacer(modifier = Modifier.height(4.dp))
                                         Text(
-                                            text = "Studio: " + studios.joinToString(", ") { it.name ?: "" },
-                                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
-                                            color = MaterialTheme.colorScheme.onSurface
+                                            text = ch.name,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = colors.textSecondary,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis,
+                                            textAlign = TextAlign.Center
                                         )
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
 
-                                if (characters.isNotEmpty()) {
-                                    Spacer(modifier = Modifier.height(14.dp))
-                                    Text(
-                                        text = "Characters",
-                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    LazyRow(
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        items(characters.take(10)) { charItem ->
-                                            Column(
-                                                horizontalAlignment = Alignment.CenterHorizontally,
-                                                modifier = Modifier.width(64.dp)
+                // Other Parts of Same Anime (Movies, Spin-Offs, Side Stories, OVAs, Specials, Summaries)
+                if (otherParts.isNotEmpty()) {
+                    item {
+                        val availableCategories = remember(otherParts) {
+                            val present = otherParts.map { AnimePartCategory.classify(it.relationType, it.format) }.toSet()
+                            buildList {
+                                add(AnimePartCategory.ALL)
+                                AnimePartCategory.entries
+                                    .filter { it != AnimePartCategory.ALL && present.contains(it) }
+                                    .forEach { add(it) }
+                            }
+                        }
+                        var selectedCategory by rememberSaveable(current.id) {
+                            mutableStateOf(AnimePartCategory.ALL)
+                        }
+                        val displayedParts = remember(otherParts, selectedCategory) {
+                            if (selectedCategory == AnimePartCategory.ALL) otherParts
+                            else otherParts.filter { AnimePartCategory.classify(it.relationType, it.format) == selectedCategory }
+                        }
+
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(AppSpacing.sm),
+                            modifier = Modifier.testTag("detail_other_parts_section")
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = AppSpacing.md),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Other Parts & Spin-Offs",
+                                    fontFamily = CormorantSerifFamily,
+                                    fontSize = 22.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = colors.textPrimary
+                                )
+                                Text(
+                                    text = "${otherParts.size} PARTS",
+                                    style = MicroUpperLabel.copy(fontSize = 9.sp, letterSpacing = 1.2.sp),
+                                    color = colors.accentPrimary
+                                )
+                            }
+
+                            if (availableCategories.size > 2) {
+                                LazyRow(
+                                    contentPadding = PaddingValues(horizontal = AppSpacing.md),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    items(availableCategories, key = { it.name }) { cat ->
+                                        val isSelected = selectedCategory == cat
+                                        val count = if (cat == AnimePartCategory.ALL) otherParts.size
+                                        else otherParts.count { AnimePartCategory.classify(it.relationType, it.format) == cat }
+                                        Surface(
+                                            shape = CircleShape,
+                                            color = if (isSelected) colors.accentPrimary.copy(alpha = 0.20f) else colors.elevatedSurface.copy(alpha = 0.58f),
+                                            border = BorderStroke(
+                                                1.dp,
+                                                if (isSelected) colors.accentPrimary.copy(alpha = 0.72f) else colors.borderSubtle
+                                            ),
+                                            modifier = Modifier
+                                                .heightIn(min = 40.dp)
+                                                .pointerHoverIcon(PointerIcon.Hand)
+                                                .clip(CircleShape)
+                                                .clickable { selectedCategory = cat }
+                                        ) {
+                                            Box(
+                                                contentAlignment = Alignment.Center,
+                                                modifier = Modifier.padding(horizontal = 13.dp, vertical = 8.dp)
                                             ) {
-                                                Box(
-                                                    modifier = Modifier
-                                                        .size(54.dp)
-                                                        .clip(CircleShape)
-                                                        .background(Color(0xFF1E293B)),
-                                                    contentAlignment = Alignment.Center
-                                                ) {
-                                                    if (charItem.image?.medium != null) {
-                                                        AsyncImage(
-                                                            model = charItem.image.medium,
-                                                            contentDescription = charItem.name?.full,
-                                                            contentScale = ContentScale.Crop,
-                                                            modifier = Modifier.fillMaxSize()
-                                                        )
-                                                    } else {
-                                                        Icon(
-                                                            imageVector = Icons.Default.Person,
-                                                            contentDescription = null,
-                                                            tint = Color.White.copy(alpha = 0.5f)
-                                                        )
-                                                    }
-                                                }
-                                                Spacer(modifier = Modifier.height(4.dp))
                                                 Text(
-                                                    text = charItem.name?.full ?: "",
-                                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis,
-                                                    color = MaterialTheme.colorScheme.onSurface
+                                                    text = "${cat.filterLabel} ($count)",
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    color = if (isSelected) colors.highlight else colors.textSecondary
                                                 )
                                             }
                                         }
                                     }
                                 }
+                            }
 
-                                if (relations.isNotEmpty()) {
-                                    Spacer(modifier = Modifier.height(14.dp))
-                                    Text(
-                                        text = "Related Anime / Sequels",
-                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    FlowRow(
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                                        modifier = Modifier.fillMaxWidth()
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = AppSpacing.md),
+                                horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+                            ) {
+                                items(displayedParts, key = { "${it.id}_${it.relationType}" }) { part ->
+                                    val partBadge = remember(part) {
+                                        AnimePartCategory.badgeLabel(part.relationType, part.format)
+                                    }
+                                    val partStars = remember(part.averageScore) {
+                                        StarRatingUtils.score100ToStars(part.averageScore)
+                                    }
+                                    val subParts = remember(part) {
+                                        buildList {
+                                            part.format?.takeIf { it.isNotBlank() }?.let { add(it.replace('_', ' ')) }
+                                            part.episodes?.takeIf { it > 0 }?.let { add("$it ep") }
+                                            part.seasonYear?.let { add(it.toString()) }
+                                        }.joinToString(" • ")
+                                    }
+                                    AppCard(
+                                        shape = RoundedCornerShape(20.dp),
+                                        onClick = { onSelectAnime(part.id) },
+                                        modifier = Modifier.width(142.dp)
                                     ) {
-                                        relations.take(6).forEach { relation ->
-                                            val node = relation.node ?: return@forEach
-                                            val relationType = relation.relationType ?: "RELATED"
-                                            val title = node.title?.english ?: node.title?.romaji ?: "Anime"
-                                            Surface(
-                                                shape = RoundedCornerShape(12.dp),
-                                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                                                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.15f)),
-                                                modifier = Modifier.clickable {
-                                                    viewModel.selectAnimeDetail(node.id)
+                                        Column {
+                                            Box {
+                                                ResilientPosterImage(
+                                                    imageUrl = part.coverImage,
+                                                    contentDescription = part.title,
+                                                    shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .height(172.dp)
+                                                )
+                                                if (partStars > 0f) {
+                                                    RatingBadge(
+                                                        scoreText = StarRatingUtils.formatStars(partStars),
+                                                        modifier = Modifier
+                                                            .align(Alignment.TopEnd)
+                                                            .padding(6.dp)
+                                                    )
                                                 }
+                                            }
+                                            Column(
+                                                modifier = Modifier.padding(10.dp),
+                                                verticalArrangement = Arrangement.spacedBy(3.dp)
                                             ) {
-                                                Row(
-                                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                                    verticalAlignment = Alignment.CenterVertically
-                                                ) {
-                                                    Surface(
-                                                        color = Color(0xFF38BDF8).copy(alpha = 0.2f),
-                                                        shape = RoundedCornerShape(4.dp)
-                                                    ) {
-                                                        Text(
-                                                            text = relationType.replace("_", " "),
-                                                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8)),
-                                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                                        )
-                                                    }
-                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                Text(
+                                                    text = partBadge,
+                                                    style = MicroUpperLabel.copy(fontSize = 8.sp, letterSpacing = 0.8.sp),
+                                                    color = colors.accentPrimary,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Text(
+                                                    text = part.title,
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = colors.textPrimary,
+                                                    maxLines = 2,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                if (subParts.isNotBlank()) {
                                                     Text(
-                                                        text = title,
-                                                        style = MaterialTheme.typography.labelSmall,
+                                                        text = subParts,
+                                                        style = TabularNumSmall.copy(fontSize = 10.sp),
+                                                        color = colors.textMuted,
                                                         maxLines = 1,
                                                         overflow = TextOverflow.Ellipsis
                                                     )
@@ -1419,443 +900,432 @@ fun AnimeDetailScreen(
                             }
                         }
                     }
+                }
 
-                    // ========================================================
-                    // SECTION: INTERNET ARCHIVE FULL EPISODE & MOVIE STREAMS
-                    // ========================================================
-                    Spacer(modifier = Modifier.height(20.dp))
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                        shape = RoundedCornerShape(28.dp),
+                // Recommendations
+                val recommendations = richDetail?.recommendations.orEmpty()
+                if (recommendations.isNotEmpty()) {
+                    item {
+                        Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)) {
+                            Text(
+                                text = "Recommended Next",
+                                fontFamily = CormorantSerifFamily,
+                                fontSize = 22.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = colors.textPrimary,
+                                modifier = Modifier.padding(horizontal = AppSpacing.md)
+                            )
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = AppSpacing.md),
+                                horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+                            ) {
+                                items(recommendations, key = { it.id }) { rec ->
+                                    AppCard(
+                                        shape = RoundedCornerShape(20.dp),
+                                        onClick = { onSelectAnime(rec.id) },
+                                        modifier = Modifier.width(126.dp)
+                                    ) {
+                                        Column {
+                                            ResilientPosterImage(
+                                                imageUrl = rec.coverImage,
+                                                contentDescription = rec.title,
+                                                shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+                                                modifier = Modifier.fillMaxWidth().height(158.dp)
+                                            )
+                                            Column(modifier = Modifier.padding(AppSpacing.xs)) {
+                                                Text(
+                                                    text = rec.title,
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    color = colors.textPrimary,
+                                                    maxLines = 2,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Editorial Big-Card 2: COMMUNITY REVIEWS (Rated & Noted Only)
+                item {
+                    AppCard(
+                        shape = RoundedCornerShape(24.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .border(
-                                1.dp,
-                                Color(0xFF38BDF8).copy(alpha = 0.3f),
-                                RoundedCornerShape(28.dp)
-                            )
+                            .padding(horizontal = AppSpacing.md)
                     ) {
-                        Column(modifier = Modifier.padding(18.dp)) {
+                        Column(
+                            modifier = Modifier.padding(18.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            DetailCardLabel("COMMUNITY REVIEWS")
+
+                            // 5-Column Sentiment Tally Strip
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                SentimentCategory.entries.forEach { cat ->
+                                    val count = ratedAndNotedReviews.count { SentimentCategory.fromRating10(it.rating) == cat }
+                                    val catColor = cat.badgeColor()
                                     Surface(
-                                        color = Color(0xFF0284C7).copy(alpha = 0.25f),
-                                        shape = RoundedCornerShape(4.dp)
+                                        shape = RoundedCornerShape(16.dp),
+                                        color = colors.elevatedSurface.copy(alpha = 0.50f),
+                                        modifier = Modifier.weight(1f)
                                     ) {
-                                        Text(
-                                            text = "ANIKOTO API",
-                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8)),
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                        )
-                                    }
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        text = "FULL EPISODE & ANIME STREAMS",
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            fontWeight = FontWeight.Bold,
-                                            letterSpacing = 1.sp
-                                        ),
-                                        color = Color(0xFF38BDF8)
-                                    )
-                                }
-                                if (isArchiveSearching || isResolvingArchive) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(16.dp),
-                                        strokeWidth = 2.dp,
-                                        color = Color(0xFF38BDF8)
-                                    )
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(12.dp))
-
-                            if (archiveVideos.isNotEmpty()) {
-                                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    archiveVideos.take(4).forEach { archiveItem ->
-                                        Surface(
-                                            shape = RoundedCornerShape(14.dp),
-                                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-                                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.2f)),
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clickable {
-                                                    viewModel.resolveArchiveMedia(archiveItem.identifier) { playable ->
-                                                        activeArchiveMedia = playable
-                                                    }
-                                                }
+                                        Column(
+                                            modifier = Modifier.padding(vertical = 10.dp, horizontal = 3.dp),
+                                            horizontalAlignment = Alignment.CenterHorizontally
                                         ) {
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(10.dp),
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Box(
-                                                    modifier = Modifier
-                                                        .size(width = 70.dp, height = 50.dp)
-                                                        .clip(RoundedCornerShape(8.dp))
-                                                        .background(Color(0xFF0F172A)),
-                                                    contentAlignment = Alignment.Center
-                                                ) {
-                                                    AsyncImage(
-                                                        model = archiveItem.thumbnailUrl,
-                                                        contentDescription = archiveItem.title,
-                                                        contentScale = ContentScale.Crop,
-                                                        modifier = Modifier.fillMaxSize()
-                                                    )
-                                                    Icon(
-                                                        imageVector = Icons.Default.PlayArrow,
-                                                        contentDescription = "Play",
-                                                        tint = Color(0xFF38BDF8),
-                                                        modifier = Modifier.size(20.dp)
-                                                    )
-                                                }
-
-                                                Spacer(modifier = Modifier.width(10.dp))
-
-                                                Column(modifier = Modifier.weight(1f)) {
-                                                    Text(
-                                                        text = archiveItem.title,
-                                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                                                        maxLines = 1,
-                                                        overflow = TextOverflow.Ellipsis
-                                                    )
-                                                    Spacer(modifier = Modifier.height(2.dp))
-                                                    Text(
-                                                        text = listOfNotNull(archiveItem.creator, archiveItem.year).joinToString(" • ").ifBlank { "Full video stream on Internet Archive" },
-                                                        style = MaterialTheme.typography.labelSmall,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                    )
-                                                }
-                                            }
+                                            Text(
+                                                text = count.toString(),
+                                                fontFamily = CormorantSerifFamily,
+                                                fontSize = 20.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = catColor,
+                                                lineHeight = 20.sp
+                                            )
+                                            Spacer(modifier = Modifier.height(3.dp))
+                                            Text(
+                                                text = cat.shortLabel.uppercase(),
+                                                style = MicroUpperLabel.copy(fontSize = 7.sp, letterSpacing = 0.6.sp),
+                                                color = catColor,
+                                                maxLines = 1
+                                            )
                                         }
                                     }
                                 }
-                            } else if (!isArchiveSearching) {
+                            }
+
+                            HorizontalDivider(color = colors.borderSubtle.copy(alpha = 0.5f), thickness = 1.dp)
+
+                            if (ratedAndNotedReviews.isEmpty()) {
                                 Text(
-                                    text = "Tap 'Watch Episode' above to stream directly in the unified ExoPlayer, or 'Can't find' will be displayed if unavailable on Internet Archive.",
+                                    text = if (profile == null) "Sign in to view rated & noted community reviews for this anime."
+                                    else "No rated & noted community reviews for this anime yet.",
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = colors.textSecondary
                                 )
+                            } else {
+                                ratedAndNotedReviews.forEach { rev ->
+                                    EditorialCommunityNoteCard(
+                                        review = rev,
+                                        onClick = { onSelectAnime(rev.animeId) },
+                                        showAnimeHeader = false
+                                    )
+                                }
                             }
                         }
                     }
-
-                    // ========================================================
-                    // SECTION: ANIKOTO API METADATA & EPISODE INDEX
-                    // ========================================================
-                    Spacer(modifier = Modifier.height(20.dp))
-                    com.example.ui.components.AniKotoDetailEnrichmentCard(
-                        detail = detailAniKotoInfo,
-                        isLoading = isDetailAniKotoLoading,
-                        errorMessage = detailAniKotoError,
-                        onRetry = {
-                            viewModel.loadDetailAniKotoEnrichment(
-                                titleOrSlug = anime.titleEnglish ?: anime.titleRomaji,
-                                forceRefresh = true
-                            )
-                        },
-                        onSelectEpisode = { epNum ->
-                            selectedEpisodeToWatch = epNum
-                            onOpenPlayer(anime.id, epNum, selectedSeason?.seasonNumber ?: 1)
-                        }
-                    )
                 }
             }
         }
+    }
 
-        // ========================================================
-        // PLAYBACK & INTERACTION DIALOGS
-        // ========================================================
-        activeArchiveMedia?.let { playable ->
-            ArchiveDirectPlayerDialog(
-                playable = playable,
-                isLoading = isResolvingArchive,
-                unavailableReason = null,
-                onDismiss = { activeArchiveMedia = null },
-                onConfirmWatched = {
-                    viewModel.confirmEpisodeCompletion(anime.id, anime.watchedEpisodeCount + 1)
-                }
-            )
-        }
-
-        if (showScoreDialog) {
-            AlertDialog(
-                onDismissRequest = { showScoreDialog = false },
-                shape = RoundedCornerShape(24.dp),
-                containerColor = Color(0xFF090E1A),
-                title = {
-                    Text(
-                        text = "Rate '${anime.displayTitle}'",
-                        style = TextStyle(fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White)
+    if (showTrackingEditor) {
+        TrackingEditorDialog(
+            anime = current,
+            onDismiss = { showTrackingEditor = false },
+            onSave = { status, progress, seasonNumber, score, notes, fav ->
+                viewModel.updateTracking(
+                    animeId = current.id,
+                    status = status,
+                    episodeProgress = progress,
+                    scoreTenths = score,
+                    notes = notes,
+                    isFavorite = fav,
+                    seasonNumber = seasonNumber
+                )
+                showTrackingEditor = false
+            },
+            onRemove = {
+                viewModel.removeFromWatchlist(current.id)
+                showTrackingEditor = false
+            },
+            shareReviewsWithCommunity = if (profile != null) {
+                privacy.reviewsVisibility == VisibilityLevel.COMMUNITY
+            } else null,
+            onToggleShareReviews = if (profile != null) {
+                { share ->
+                    viewModel.updatePrivacySettings(
+                        privacy.copy(reviewsVisibility = if (share) VisibilityLevel.COMMUNITY else VisibilityLevel.PRIVATE)
                     )
-                },
-                text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(
-                            text = "Select your score from 1 (Appalling) to 10 (Masterpiece):",
-                            color = Color(0xFF94A3B8),
-                            fontSize = 13.sp
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            (1..10).forEach { scoreVal ->
-                                val isSelected = anime.userScore == scoreVal
-                                Surface(
-                                    shape = RoundedCornerShape(10.dp),
-                                    color = if (isSelected) Color(0xFFF59E0B) else Color(0xFF1E293B),
-                                    modifier = Modifier.clickable {
-                                        viewModel.updateUserTracking(anime.id, score = scoreVal)
-                                        showScoreDialog = false
+                }
+            } else null
+        )
+    }
+
+    if (showCollectionPicker) {
+        AlertDialog(
+            onDismissRequest = { showCollectionPicker = false },
+            shape = RoundedCornerShape(AppRadius.xl),
+            containerColor = colors.backgroundSecondary,
+            title = { Text("Add to Collection", fontWeight = FontWeight.Bold, color = colors.textPrimary) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.xs)) {
+                    if (collections.isEmpty()) {
+                        Text("Create a collection from the Library tab first.", color = colors.textSecondary)
+                    } else {
+                        collections.forEach { col ->
+                            val alreadyIn = col.animeIds.contains(current.id)
+                            AppSecondaryButton(
+                                text = if (alreadyIn) "${col.name} (Added)" else col.name,
+                                onClick = {
+                                    if (!alreadyIn) {
+                                        viewModel.addAnimeToCollection(col.id, current)
                                     }
-                                ) {
-                                    Text(
-                                        text = "$scoreVal ★",
-                                        style = MaterialTheme.typography.labelMedium.copy(
-                                            fontWeight = FontWeight.Bold,
-                                            color = if (isSelected) Color.Black else Color.White
-                                        ),
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                },
-                confirmButton = {},
-                dismissButton = {
-                    TextButton(onClick = { showScoreDialog = false }) {
-                        Text("Cancel", color = Color(0xFF94A3B8))
-                    }
-                }
-            )
-        }
-
-        if (showNotesDialog) {
-            AlertDialog(
-                onDismissRequest = { showNotesDialog = false },
-                shape = RoundedCornerShape(24.dp),
-                containerColor = Color(0xFF090E1A),
-                title = {
-                    Text(
-                        text = "Personal Notes",
-                        style = TextStyle(fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                    )
-                },
-                text = {
-                    Column {
-                        Text(
-                            text = "Save personal notes, thoughts, or viewing notes for this anime:",
-                            color = Color(0xFF94A3B8),
-                            fontSize = 13.sp
-                        )
-                        Spacer(modifier = Modifier.height(10.dp))
-                        OutlinedTextField(
-                            value = notesInput,
-                            onValueChange = { notesInput = it },
-                            placeholder = { Text("Write your thoughts here...", color = Color(0xFF64748B)) },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(120.dp),
-                            maxLines = 5,
-                            shape = RoundedCornerShape(12.dp),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color.White,
-                                focusedBorderColor = Color(0xFF38BDF8),
-                                unfocusedBorderColor = Color(0xFF334155)
+                                    showCollectionPicker = false
+                                },
+                                modifier = Modifier.fillMaxWidth()
                             )
-                        )
-                    }
-                },
-                confirmButton = {
-                    Button(
-                        onClick = {
-                            viewModel.updateUserTracking(anime.id, notes = notesInput.trim())
-                            showNotesDialog = false
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF38BDF8))
-                    ) {
-                        Text("Save Notes", color = Color.Black, fontWeight = FontWeight.Bold)
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showNotesDialog = false }) {
-                        Text("Cancel", color = Color(0xFF94A3B8))
-                    }
-                }
-            )
-        }
-
-        if (showCustomEpisodeSelectDialog) {
-            val totalEpDialog = (selectedSeason?.totalEpisodes ?: anime.totalEpisodes ?: maxOf(anime.getAiredEpisodeCount(), selectedEpisodeToWatch, 12)).coerceAtLeast(1)
-            EpisodeGridSelectorDialog(
-                animeTitle = resolvedTitle,
-                totalEpisodes = totalEpDialog,
-                currentEpisode = selectedEpisodeToWatch,
-                watchedEpisodeCount = anime.watchedEpisodeCount,
-                onDismissRequest = { showCustomEpisodeSelectDialog = false },
-                onWatchEpisode = { ep ->
-                    selectedEpisodeToWatch = ep
-                    showCustomEpisodeSelectDialog = false
-                    onOpenPlayer(anime.id, ep, selectedSeason?.seasonNumber ?: 1)
-                },
-                onSetWatchedCount = { ep ->
-                    selectedEpisodeToWatch = ep
-                    viewModel.updateWatchedEpisodeCount(anime.id, ep)
-                    showCustomEpisodeSelectDialog = false
-                },
-                seasons = activeSeasons,
-                selectedSeasonNumber = selectedSeason?.seasonNumber ?: 1,
-                onSeasonSelected = { sNum ->
-                    val matched = activeSeasons.firstOrNull { it.seasonNumber == sNum }
-                    if (matched != null) {
-                        viewModel.selectDetailSeason(matched)
-                        if (matched.animeId != anime.id) {
-                            viewModel.selectAnimeDetail(matched.animeId)
                         }
                     }
                 }
-            )
-        }
-
-        if (showCustomWatchedInputDialog) {
-            val totalEpDialog = (selectedSeason?.totalEpisodes ?: anime.totalEpisodes ?: maxOf(anime.getAiredEpisodeCount(), selectedEpisodeToWatch, 12)).coerceAtLeast(1)
-            EpisodeGridSelectorDialog(
-                animeTitle = resolvedTitle,
-                totalEpisodes = totalEpDialog,
-                currentEpisode = anime.watchedEpisodeCount.coerceAtLeast(1),
-                watchedEpisodeCount = anime.watchedEpisodeCount,
-                onDismissRequest = { showCustomWatchedInputDialog = false },
-                onWatchEpisode = { ep ->
-                    viewModel.updateWatchedEpisodeCount(anime.id, ep)
-                    selectedEpisodeToWatch = ep
-                    showCustomWatchedInputDialog = false
-                    onOpenPlayer(anime.id, ep, selectedSeason?.seasonNumber ?: 1)
-                },
-                onSetWatchedCount = { ep ->
-                    viewModel.updateWatchedEpisodeCount(anime.id, ep)
-                    showCustomWatchedInputDialog = false
-                },
-                seasons = activeSeasons,
-                selectedSeasonNumber = selectedSeason?.seasonNumber ?: 1,
-                onSeasonSelected = { sNum ->
-                    val matched = activeSeasons.firstOrNull { it.seasonNumber == sNum }
-                    if (matched != null) {
-                        viewModel.selectDetailSeason(matched)
-                        if (matched.animeId != anime.id) {
-                            viewModel.selectAnimeDetail(matched.animeId)
-                        }
-                    }
-                }
-            )
-        }
-
-        if (showRemoveScopeDialog) {
-            AlertDialog(
-                onDismissRequest = { showRemoveScopeDialog = false },
-                shape = RoundedCornerShape(24.dp),
-                containerColor = Color(0xFF090E1A),
-                title = {
-                    Text(
-                        text = "Remove Anime Options",
-                        style = TextStyle(fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                    )
-                },
-                text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(
-                            text = "Choose how to remove '${anime.displayTitle}':",
-                            color = Color(0xFF94A3B8),
-                            fontSize = 13.sp
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Button(
-                            onClick = {
-                                viewModel.removeAnime(anime, RemovalScope.LOCAL_ONLY, "WATCHLIST")
-                                showRemoveScopeDialog = false
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B)),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("Remove from AniTrAk Only", color = Color.White)
-                        }
-                        Button(
-                            onClick = {
-                                viewModel.removeAnime(anime, RemovalScope.PROVIDER_ONLY, "WATCHLIST")
-                                showRemoveScopeDialog = false
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B)),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("Remove from MyAnimeList Only", color = Color.White)
-                        }
-                        Button(
-                            onClick = {
-                                viewModel.removeAnime(anime, RemovalScope.BOTH, "WATCHLIST")
-                                showRemoveScopeDialog = false
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444)),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("Remove from Both", color = Color.White, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                },
-                confirmButton = {},
-                dismissButton = {
-                    TextButton(onClick = { showRemoveScopeDialog = false }) {
-                        Text("Cancel", color = Color(0xFF94A3B8))
-                    }
-                }
-            )
-        }
+            },
+            confirmButton = {
+                TextButton(onClick = { showCollectionPicker = false }) { Text("Close", color = colors.accentPrimary) }
+            }
+        )
     }
 }
 
 @Composable
-private fun InfoBadge(
-    label: String,
-    value: String,
-    modifier: Modifier = Modifier
+internal fun DetailEpisodeStepperControl(
+    watchedEpisodeCount: Int,
+    totalEpisodes: Int?,
+    subtitle: String,
+    canDecrement: Boolean,
+    canIncrement: Boolean,
+    onDecrement: () -> Unit,
+    onIncrement: () -> Unit,
+    onSetCustomEpisode: (Int) -> Unit
 ) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        shape = RoundedCornerShape(20.dp),
-        modifier = modifier.border(
-            1.dp,
-            MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
-            RoundedCornerShape(20.dp)
-        )
+    val colors = AppTheme.colors
+    var showCustomEpisodeDialog by remember { mutableStateOf(false) }
+    var episodeInput by remember(watchedEpisodeCount) {
+        mutableStateOf(watchedEpisodeCount.toString())
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        Surface(
+            shape = CircleShape,
+            color = colors.elevatedSurface.copy(alpha = if (canDecrement) 0.90f else 0.40f),
+            modifier = Modifier
+                .size(52.dp)
+                .clip(CircleShape)
+                .clickable(enabled = canDecrement, onClick = onDecrement)
+                .testTag("detail_decrement_ep")
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text(
+                    text = "−",
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Light,
+                    color = if (canDecrement) colors.textPrimary else colors.textMuted
+                )
+            }
+        }
+
         Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 12.dp, horizontal = 8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+                .weight(1f)
+                .heightIn(min = 52.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .pointerHoverIcon(PointerIcon.Hand)
+                .clickable {
+                    episodeInput = watchedEpisodeCount.toString()
+                    showCustomEpisodeDialog = true
+                }
+                .padding(vertical = 4.dp)
+                .testTag("detail_episode_center"),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
         ) {
             Text(
-                text = label.uppercase(),
-                style = MaterialTheme.typography.labelSmall.copy(
-                    fontSize = 9.sp,
-                    fontWeight = FontWeight.Bold
-                ),
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                text = buildAnnotatedString {
+                    append("$watchedEpisodeCount")
+                    withStyle(
+                        SpanStyle(
+                            color = colors.textMuted,
+                            fontSize = 22.sp
+                        )
+                    ) {
+                        append(" / ${totalEpisodes?.takeIf { it > 0 }?.toString() ?: "∞"}")
+                    }
+                },
+                style = CormorantDisplayNumeral,
+                color = colors.textPrimary
             )
-            Spacer(modifier = Modifier.height(2.dp))
             Text(
-                text = value,
-                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.ExtraBold),
-                color = MaterialTheme.colorScheme.onSurface
+                text = subtitle,
+                style = MicroUpperLabel.copy(fontSize = 8.sp, letterSpacing = 1.6.sp),
+                color = colors.textSecondary
             )
         }
+
+        Surface(
+            shape = CircleShape,
+            color = if (canIncrement) colors.accentPrimary else colors.elevatedSurface.copy(alpha = 0.40f),
+            modifier = Modifier
+                .size(52.dp)
+                .clip(CircleShape)
+                .clickable(enabled = canIncrement, onClick = onIncrement)
+                .testTag("detail_increment_ep")
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text(
+                    text = "+",
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = if (canIncrement) colors.onAccentPrimary else colors.textMuted
+                )
+            }
+        }
+    }
+
+    if (showCustomEpisodeDialog) {
+        val commitCustomEpisode = {
+            val parsed = episodeInput.toIntOrNull()
+            if (parsed != null) {
+                onSetCustomEpisode(ProgressRules.clampEpisodeProgress(parsed, totalEpisodes))
+            }
+            showCustomEpisodeDialog = false
+        }
+        AlertDialog(
+            onDismissRequest = { showCustomEpisodeDialog = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+            shape = RoundedCornerShape(AppRadius.xl),
+            containerColor = colors.backgroundSecondary,
+            modifier = Modifier
+                .fillMaxWidth()
+                .widthIn(max = 400.dp)
+                .padding(horizontal = 24.dp)
+                .testTag("detail_custom_episode_dialog"),
+            title = {
+                Text(
+                    text = "Set Episode",
+                    fontFamily = CormorantSerifFamily,
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.textPrimary
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)) {
+                    Text(
+                        text = if (totalEpisodes != null && totalEpisodes > 0) {
+                            "Enter any episode number between 0 and $totalEpisodes."
+                        } else {
+                            "Enter your watched episode number."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.textSecondary
+                    )
+                    OutlinedTextField(
+                        value = episodeInput,
+                        onValueChange = { raw ->
+                            episodeInput = raw.filter { it.isDigit() }.take(5)
+                        },
+                        label = { Text("Episode #") },
+                        singleLine = true,
+                        textStyle = TabularNumMedium.copy(
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = colors.textPrimary
+                        ),
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Number,
+                            imeAction = ImeAction.Done
+                        ),
+                        keyboardActions = KeyboardActions(
+                            onDone = { commitCustomEpisode() }
+                        ),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = colors.elevatedSurface.copy(alpha = 0.65f),
+                            unfocusedContainerColor = colors.elevatedSurface.copy(alpha = 0.45f),
+                            focusedBorderColor = colors.accentPrimary,
+                            unfocusedBorderColor = colors.borderSubtle
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("detail_episode_input")
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { commitCustomEpisode() },
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("detail_set_episode_button")
+                ) {
+                    Text("Set Episode", color = colors.accentPrimary, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showCustomEpisodeDialog = false },
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) {
+                    Text("Cancel", color = colors.textSecondary)
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun DetailCardLabel(text: String) {
+    val colors = AppTheme.colors
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .width(14.dp)
+                .height(1.dp)
+                .background(Brush.horizontalGradient(listOf(Color.Transparent, colors.accentPrimary)))
+        )
+        Text(
+            text = text,
+            style = MicroUpperLabel.copy(fontSize = 8.5.sp, letterSpacing = 2.6.sp),
+            color = colors.accentPrimary
+        )
+    }
+}
+
+@Composable
+private fun DetailStatColumn(
+    label: String,
+    value: String,
+    valueColor: Color,
+    modifier: Modifier = Modifier
+) {
+    val colors = AppTheme.colors
+    Column(modifier = modifier) {
+        Text(
+            text = label,
+            style = MicroUpperLabel.copy(fontSize = 7.5.sp, letterSpacing = 1.8.sp),
+            color = colors.textMuted
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = value,
+            fontFamily = CormorantSerifFamily,
+            fontSize = 20.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = valueColor,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }

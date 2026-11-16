@@ -19,6 +19,9 @@ interface ApiCacheDao {
     @Query("DELETE FROM api_cache WHERE expiresAt < :now")
     suspend fun deleteExpiredCache(now: Long = System.currentTimeMillis())
 
+    @Query("DELETE FROM api_cache WHERE cacheKey NOT IN (SELECT cacheKey FROM api_cache ORDER BY expiresAt DESC LIMIT :maxEntries)")
+    suspend fun pruneToMaxEntries(maxEntries: Int = 20): Int
+
     @Query("DELETE FROM api_cache")
     suspend fun clearAllCache()
 }

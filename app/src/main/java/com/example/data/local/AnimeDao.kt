@@ -33,9 +33,6 @@ interface AnimeDao {
     @Query("SELECT * FROM anime WHERE id = :id")
     suspend fun getAnimeByIdSync(id: Int): AnimeEntity?
 
-    @Query("SELECT * FROM anime WHERE idMal = :idMal LIMIT 1")
-    suspend fun getAnimeByMalIdSync(idMal: Int): AnimeEntity?
-
     @Query("SELECT * FROM anime WHERE inWatchlist = 1 AND (titleRomaji LIKE '%' || :query || '%' OR titleEnglish LIKE '%' || :query || '%' OR titleNative LIKE '%' || :query || '%')")
     fun searchWatchlist(query: String): Flow<List<AnimeEntity>>
 
@@ -82,9 +79,6 @@ interface AnimeDao {
     @Query("UPDATE anime SET userNotes = :notes WHERE id = :id")
     suspend fun updateUserNotes(id: Int, notes: String?)
 
-    @Query("UPDATE anime SET idMal = :idMal WHERE id = :id")
-    suspend fun updateMalId(id: Int, idMal: Int?)
-
     @Query("UPDATE anime SET isFavorite = :isFavorite WHERE id = :id")
     suspend fun updateFavoriteStatus(id: Int, isFavorite: Boolean)
 
@@ -103,11 +97,8 @@ interface AnimeDao {
     @Query("SELECT * FROM anime WHERE UPPER(status) = 'RELEASING' OR UPPER(status) = 'CURRENTLY_AIRING' OR UPPER(status) = 'AIRING' ORDER BY airingDayOfWeek ASC, airingTimeUnix ASC")
     fun getAllOngoingAnime(): Flow<List<AnimeEntity>>
 
-    @Query("SELECT * FROM anime WHERE (UPPER(status) = 'RELEASING' OR UPPER(status) = 'CURRENTLY_AIRING' OR UPPER(status) = 'AIRING') AND (countryOfOrigin = 'CN' OR genres LIKE '%Donghua%' OR genres LIKE '%Chinese%' OR titlePinyin IS NOT NULL) ORDER BY airingDayOfWeek ASC, airingTimeUnix ASC")
+    @Query("SELECT * FROM anime WHERE (UPPER(status) = 'RELEASING' OR UPPER(status) = 'CURRENTLY_AIRING' OR UPPER(status) = 'AIRING') AND (countryOfOrigin = 'CN' OR genres LIKE '%Donghua%' OR titlePinyin IS NOT NULL) ORDER BY airingDayOfWeek ASC, airingTimeUnix ASC")
     fun getOngoingDonghua(): Flow<List<AnimeEntity>>
-
-    @Query("SELECT * FROM anime WHERE UPPER(status) = 'RELEASING' OR UPPER(status) = 'CURRENTLY_AIRING' OR UPPER(status) = 'AIRING'")
-    suspend fun getAllOngoingAnimeSync(): List<AnimeEntity>
 
     @Query("SELECT * FROM anime")
     suspend fun getAllAnimeSync(): List<AnimeEntity>
@@ -115,23 +106,8 @@ interface AnimeDao {
     @Query("SELECT * FROM anime WHERE (titleRomaji LIKE '%' || :query || '%' OR titleEnglish LIKE '%' || :query || '%' OR genres LIKE '%' || :query || '%')")
     suspend fun searchAllAnimeSync(query: String): List<AnimeEntity>
 
-    @Query("SELECT * FROM anime WHERE LOWER(titleRomaji) = LOWER(:title) OR LOWER(titleEnglish) = LOWER(:title) OR LOWER(titleNative) = LOWER(:title) LIMIT 1")
-    suspend fun getAnimeByExactTitleSync(title: String): AnimeEntity?
-
     @Query("SELECT * FROM anime WHERE id IN (:ids)")
     suspend fun getAnimeByIdsSync(ids: List<Int>): List<AnimeEntity>
-
-    @Query("SELECT * FROM anime WHERE season = :season AND seasonYear = :seasonYear ORDER BY score DESC")
-    suspend fun getCachedAnimeBySeasonSync(season: String, seasonYear: Int): List<AnimeEntity>
-
-    @Query("SELECT * FROM anime WHERE genres LIKE '%' || :genre || '%' ORDER BY score DESC LIMIT :limit")
-    suspend fun getCachedAnimeByGenreSync(genre: String, limit: Int = 50): List<AnimeEntity>
-
-    @Query("UPDATE anime SET lastCachedAt = :cachedAt WHERE id = :id")
-    suspend fun updateLastCachedTime(id: Int, cachedAt: Long = System.currentTimeMillis())
-
-    @Query("SELECT * FROM anime WHERE archiveIdentifier = :archiveIdentifier AND :archiveIdentifier != '' LIMIT 1")
-    suspend fun getAnimeByArchiveIdentifierSync(archiveIdentifier: String): AnimeEntity?
 
     @Query("DELETE FROM anime WHERE id IN (:ids)")
     suspend fun deleteAnimeList(ids: List<Int>)
@@ -145,7 +121,39 @@ interface AnimeDao {
           AND watchedEpisodeCount <= 0
           AND (userStatus IS NULL OR userStatus = '')
           AND (userNotes IS NULL OR userNotes = '')
-          AND (archiveIdentifier IS NULL OR archiveIdentifier = '')
     """)
     suspend fun clearUnusedCatalogCache(): Int
+
+    @Query("""
+        DELETE FROM anime
+        WHERE inWatchlist = 0
+          AND isWishlist = 0
+          AND isFavorite = 0
+          AND isPinned = 0
+          AND watchedEpisodeCount <= 0
+          AND (userStatus IS NULL OR userStatus = '')
+          AND (userNotes IS NULL OR userNotes = '')
+          AND (
+              lastCachedAt < :staleBeforeEpochMs
+              OR id NOT IN (
+                  SELECT id FROM anime
+                  WHERE inWatchlist = 0
+                    AND isWishlist = 0
+                    AND isFavorite = 0
+                    AND isPinned = 0
+                    AND watchedEpisodeCount <= 0
+                    AND (userStatus IS NULL OR userStatus = '')
+                    AND (userNotes IS NULL OR userNotes = '')
+                  ORDER BY lastCachedAt DESC
+                  LIMIT :maxUntrackedRows
+              )
+          )
+    """)
+    suspend fun pruneUntrackedCatalogCache(
+        staleBeforeEpochMs: Long,
+        maxUntrackedRows: Int = 80
+    ): Int
+
+    @Query("DELETE FROM anime")
+    suspend fun clearAllAnime()
 }
