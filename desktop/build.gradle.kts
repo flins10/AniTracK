@@ -168,14 +168,14 @@ compose.desktop {
                 TargetFormat.Msi,
                 TargetFormat.Dmg
             )
-            packageName = "AuraLog"
+            packageName = "AnimeUniverse"
             packageVersion = "2.1.0"
-            description = "AuraLog — Anime & Donghua Vault"
-            vendor = "AuraLog"
+            description = "Anime Universe — Track Anime & Share Taste"
+            vendor = "Anime Universe"
             includeAllModules = true
 
             windows {
-                menuGroup = "AuraLog"
+                menuGroup = "Anime Universe"
                 shortcut = true
                 dirChooser = true
                 upgradeUuid = "2f12567d-9632-4773-a78c-6168c8cde47c"
@@ -183,7 +183,7 @@ compose.desktop {
 
             macOS {
                 bundleID = "com.aistudio.anitrack.knyw.desktop"
-                dockName = "AuraLog"
+                dockName = "Anime Universe"
             }
         }
     }

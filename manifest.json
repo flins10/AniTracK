@@ -1,13 +1,13 @@
 {
-  "name": "AuraLog — Anime & Donghua Vault",
-  "short_name": "AuraLog",
-  "description": "Track anime and donghua, rate with 5-star precision, and share editorial review notes with your community.",
+  "name": "Anime Universe",
+  "short_name": "Anime Universe",
+  "description": "Track anime & share taste. Private, cloud-synced anime and donghua vault powered by AniList and Supabase.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#06070B",
-  "theme_color": "#06070B",
+  "background_color": "#0C0E14",
+  "theme_color": "#0C0E14",
   "categories": ["entertainment", "lifestyle"],
   "icons": [
     {

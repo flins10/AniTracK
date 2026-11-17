@@ -47,14 +47,14 @@ jobs:
             find desktop/build -maxdepth 5 || true
             exit 1
           fi
-          cp "${EXE_FILE}" dist-win/AuraLog-Windows-Setup.exe
-          ls -lh dist-win/AuraLog-Windows-Setup.exe
+          cp "${EXE_FILE}" dist-win/AnimeUniverse-Windows-Setup.exe
+          ls -lh dist-win/AnimeUniverse-Windows-Setup.exe
 
       - name: Upload Windows .exe Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AuraLog-Windows-exe
-          path: dist-win/AuraLog-Windows-Setup.exe
+          name: AnimeUniverse-Windows-exe
+          path: dist-win/AnimeUniverse-Windows-Setup.exe
           if-no-files-found: error
 
       - name: Publish Windows .exe to GitHub Releases
@@ -64,13 +64,13 @@ jobs:
         run: |
           set -e
           RELEASE_TAG="desktop-build-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
-          RELEASE_TITLE="Desktop Installers (.exe & .dmg) Build #${GITHUB_RUN_NUMBER}"
-          NOTES="Automatically generated Windows (.exe) and macOS (.dmg) desktop installers for AuraLog."
+          RELEASE_TITLE="Anime Universe Desktop Installers (.exe & .dmg) Build #${GITHUB_RUN_NUMBER}"
+          NOTES="Automatically generated Windows (.exe) and macOS (.dmg) desktop installers for Anime Universe."
 
           if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release upload "${RELEASE_TAG}" dist-win/AuraLog-Windows-Setup.exe --clobber --repo "${GITHUB_REPOSITORY}"
+            gh release upload "${RELEASE_TAG}" dist-win/AnimeUniverse-Windows-Setup.exe --clobber --repo "${GITHUB_REPOSITORY}"
           else
-            gh release create "${RELEASE_TAG}" dist-win/AuraLog-Windows-Setup.exe \
+            gh release create "${RELEASE_TAG}" dist-win/AnimeUniverse-Windows-Setup.exe \
               --repo "${GITHUB_REPOSITORY}" \
               --title "${RELEASE_TITLE}" \
               --notes "${NOTES}" \
@@ -78,7 +78,7 @@ jobs:
               --latest=false
           fi
 
-          DIRECT_EXE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/AuraLog-Windows-Setup.exe"
+          DIRECT_EXE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/AnimeUniverse-Windows-Setup.exe"
           RELEASE_PAGE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
 
           {
@@ -86,7 +86,7 @@ jobs:
             echo "${DIRECT_EXE_URL}"
             echo ""
             echo "- **Release Page:** ${RELEASE_PAGE_URL}"
-            echo "- **Filename:** \`AuraLog-Windows-Setup.exe\`"
+            echo "- **Filename:** \`AnimeUniverse-Windows-Setup.exe\`"
           } >> "${GITHUB_STEP_SUMMARY}"
 
   build-macos-dmg:
@@ -126,14 +126,14 @@ jobs:
             find desktop/build -maxdepth 5 || true
             exit 1
           fi
-          cp "${DMG_FILE}" dist-mac/AuraLog-macOS-Installer.dmg
-          ls -lh dist-mac/AuraLog-macOS-Installer.dmg
+          cp "${DMG_FILE}" dist-mac/AnimeUniverse-macOS-Installer.dmg
+          ls -lh dist-mac/AnimeUniverse-macOS-Installer.dmg
 
       - name: Upload macOS .dmg Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AuraLog-macOS-dmg
-          path: dist-mac/AuraLog-macOS-Installer.dmg
+          name: AnimeUniverse-macOS-dmg
+          path: dist-mac/AnimeUniverse-macOS-Installer.dmg
           if-no-files-found: error
 
       - name: Publish macOS .dmg to GitHub Releases
@@ -143,13 +143,13 @@ jobs:
         run: |
           set -e
           RELEASE_TAG="desktop-build-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
-          RELEASE_TITLE="Desktop Installers (.exe & .dmg) Build #${GITHUB_RUN_NUMBER}"
-          NOTES="Automatically generated Windows (.exe) and macOS (.dmg) desktop installers for AuraLog."
+          RELEASE_TITLE="Anime Universe Desktop Installers (.exe & .dmg) Build #${GITHUB_RUN_NUMBER}"
+          NOTES="Automatically generated Windows (.exe) and macOS (.dmg) desktop installers for Anime Universe."
 
           if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release upload "${RELEASE_TAG}" dist-mac/AuraLog-macOS-Installer.dmg --clobber --repo "${GITHUB_REPOSITORY}"
+            gh release upload "${RELEASE_TAG}" dist-mac/AnimeUniverse-macOS-Installer.dmg --clobber --repo "${GITHUB_REPOSITORY}"
           else
-            gh release create "${RELEASE_TAG}" dist-mac/AuraLog-macOS-Installer.dmg \
+            gh release create "${RELEASE_TAG}" dist-mac/AnimeUniverse-macOS-Installer.dmg \
               --repo "${GITHUB_REPOSITORY}" \
               --title "${RELEASE_TITLE}" \
               --notes "${NOTES}" \
@@ -157,7 +157,7 @@ jobs:
               --latest=false
           fi
 
-          DIRECT_DMG_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/AuraLog-macOS-Installer.dmg"
+          DIRECT_DMG_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/AnimeUniverse-macOS-Installer.dmg"
           RELEASE_PAGE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
 
           {
@@ -165,5 +165,5 @@ jobs:
             echo "${DIRECT_DMG_URL}"
             echo ""
             echo "- **Release Page:** ${RELEASE_PAGE_URL}"
-            echo "- **Filename:** \`AuraLog-macOS-Installer.dmg\`"
+            echo "- **Filename:** \`AnimeUniverse-macOS-Installer.dmg\`"
           } >> "${GITHUB_STEP_SUMMARY}"

@@ -47,14 +47,14 @@ jobs:
             find desktop/build -maxdepth 5 || true
             exit 1
           fi
-          cp "${DMG_FILE}" dist-mac/AuraLog-macOS-Installer.dmg
-          ls -lh dist-mac/AuraLog-macOS-Installer.dmg
+          cp "${DMG_FILE}" dist-mac/AnimeUniverse-macOS-Installer.dmg
+          ls -lh dist-mac/AnimeUniverse-macOS-Installer.dmg
 
       - name: Upload macOS .dmg Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AuraLog-macOS-dmg
-          path: dist-mac/AuraLog-macOS-Installer.dmg
+          name: AnimeUniverse-macOS-dmg
+          path: dist-mac/AnimeUniverse-macOS-Installer.dmg
           if-no-files-found: error
 
       - name: Publish macOS .dmg to GitHub Releases
@@ -64,17 +64,17 @@ jobs:
         run: |
           set -e
           RELEASE_TAG="macos-dmg-build-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
-          RELEASE_TITLE="macOS DMG Installer Build #${GITHUB_RUN_NUMBER}"
-          NOTES="Automatically generated macOS (.dmg) desktop installer for AuraLog."
+          RELEASE_TITLE="Anime Universe macOS DMG Installer Build #${GITHUB_RUN_NUMBER}"
+          NOTES="Automatically generated macOS (.dmg) desktop installer for Anime Universe."
 
-          gh release create "${RELEASE_TAG}" dist-mac/AuraLog-macOS-Installer.dmg \
+          gh release create "${RELEASE_TAG}" dist-mac/AnimeUniverse-macOS-Installer.dmg \
             --repo "${GITHUB_REPOSITORY}" \
             --title "${RELEASE_TITLE}" \
             --notes "${NOTES}" \
             --target "${GITHUB_SHA}" \
             --latest=false
 
-          DIRECT_DMG_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/AuraLog-macOS-Installer.dmg"
+          DIRECT_DMG_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/AnimeUniverse-macOS-Installer.dmg"
           RELEASE_PAGE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
 
           {
@@ -83,5 +83,5 @@ jobs:
             echo ""
             echo "- **Release Tag:** \`${RELEASE_TAG}\`"
             echo "- **Release Page:** ${RELEASE_PAGE_URL}"
-            echo "- **Filename:** \`AuraLog-macOS-Installer.dmg\`"
+            echo "- **Filename:** \`AnimeUniverse-macOS-Installer.dmg\`"
           } >> "${GITHUB_STEP_SUMMARY}"
