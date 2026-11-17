@@ -8,10 +8,6 @@ plugins {
 
 kotlin {
     jvmToolchain(17)
-    sourceSets.getByName("main") {
-        kotlin.srcDir("../app/src/main/java")
-        resources.srcDir("../app/src/main/res")
-    }
 }
 
 dependencies {
@@ -19,7 +15,6 @@ dependencies {
     implementation(compose.material3)
     implementation(compose.materialIconsExtended)
     implementation(libs.kotlinx.coroutines.core)
-    implementation(libs.kotlinx.coroutines.android)
     implementation(libs.retrofit)
     implementation(libs.converter.gson)
     implementation(libs.converter.moshi)
@@ -27,13 +22,12 @@ dependencies {
     implementation(libs.logging.interceptor)
     implementation(libs.moshi.kotlin)
     implementation(libs.coil.compose)
-    implementation(libs.androidx.datastore.preferences)
     implementation("org.xerial:sqlite-jdbc:3.45.1.0")
 }
 
 compose.desktop {
     application {
-        mainClass = "com.example.desktop.MainDesktopKt"
+        mainClass = "com.example.desktop.MainKt"
 
         nativeDistributions {
             targetFormats(
