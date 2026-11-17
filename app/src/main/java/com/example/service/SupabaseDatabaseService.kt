@@ -8,9 +8,11 @@ import com.example.model.CommunityActivityItem
 import com.example.model.CommunityCapacity
 import com.example.model.CommunityMember
 import com.example.model.CommunityReview
+import com.example.model.DatabaseStorageStats
 import com.example.model.InvitationCode
 import com.example.model.MemberStatus
 import com.example.model.PrivacySettings
+import com.example.model.TableStorageStat
 import com.example.model.UserProfile
 import com.example.model.VisibilityLevel
 import com.example.model.WatchStatus
@@ -996,6 +998,7 @@ class SupabaseDatabaseService {
             val clampedSeason = com.example.model.SeasonRules.clampSeason(anime.effectiveSeasonNumber)
 
             fun buildPayload(includeSeason: Boolean): JSONObject {
+                val compactNotes = (anime.userNotes ?: "").trim().take(500)
                 return JSONObject()
                     .put("user_id", session.userId)
                     .put("anime_id", anime.id)
@@ -1003,7 +1006,7 @@ class SupabaseDatabaseService {
                     .put("episode_progress", clampedProgress)
                     .put("total_episodes", anime.totalEpisodes ?: JSONObject.NULL)
                     .put("personal_rating", anime.userScore?.let { it / 10.0 } ?: JSONObject.NULL)
-                    .put("review_notes", anime.userNotes ?: "")
+                    .put("review_notes", compactNotes)
                     .put("is_favorite", anime.isFavorite)
                     .apply {
                         if (includeSeason) put("user_season", clampedSeason)
@@ -1379,87 +1382,269 @@ class SupabaseDatabaseService {
     suspend fun fetchCommunityFeed(
         session: AuthSession,
         members: List<CommunityMember>,
-        animeIdFilter: Int? = null
+        animeIdFilter: Int? = null,
+        limit: Int = 60,
+        offset: Int = 0
     ): Result<Pair<List<CommunityReview>, List<CommunityActivityItem>>> = withContext(Dispatchers.IO) {
         if (!AppConfig.isSupabaseConfigured) return@withContext Result.failure(Exception("Supabase not configured"))
         try {
             val memberById = members.associateBy { it.userId }
             val animeFilterQuery = if (animeIdFilter != null) "&anime_id=eq.$animeIdFilter" else ""
+            val compactFeedSelect = "id,user_id,anime_id,status,episode_progress,personal_rating,review_notes,updated_at," +
+                "anime(anilist_id,title_english,title_romaji,cover_image,episodes)"
             val req = requestBuilder(
-                "/rest/v1/user_anime?select=*,anime(*)$animeFilterQuery&order=updated_at.desc&limit=100",
+                "/rest/v1/user_anime?select=$compactFeedSelect$animeFilterQuery&order=updated_at.desc&limit=${limit.coerceIn(10, 100)}&offset=${offset.coerceAtLeast(0)}",
                 session.accessToken
             ).get().build()
 
-            client.newCall(req).execute().use { resp ->
+            val arr = client.newCall(req).execute().use { resp ->
                 val body = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) return@withContext Result.failure(Exception(parsePostgrestError(body, "Failed to load community feed")))
-                val arr = JSONArray(body)
-                val reviews = mutableListOf<CommunityReview>()
-                val activity = mutableListOf<CommunityActivityItem>()
+                JSONArray(body)
+            }
 
-                for (i in 0 until arr.length()) {
-                    val row = arr.getJSONObject(i)
-                    val uid = row.getString("user_id")
-                    val member = memberById[uid] ?: continue
-                    if (member.status != MemberStatus.ACTIVE) continue
-                    val anime = row.optJSONObject("anime") ?: continue
-                    val animeId = anime.getInt("anilist_id")
-                    val animeTitle = anime.optString("title_english").takeIf { it.isNotBlank() && it != "null" }
-                        ?: anime.optString("title_romaji", "Untitled Anime")
-                    val coverImage = anime.optString("cover_image", "")
-                    val rating = if (row.isNull("personal_rating")) null else row.optDouble("personal_rating")
-                    val notes = row.optString("review_notes", "").trim()
-                    val status = WatchStatus.fromDbValue(row.optString("status"))
-                    val progress = row.optInt("episode_progress", 0)
-                    val totalEps = if (anime.isNull("episodes")) null else anime.optInt("episodes")
-                    val updatedAt = row.optString("updated_at", "")
-
-                    val canShowReview = uid == session.userId || member.privacy.reviewsVisibility == VisibilityLevel.COMMUNITY
-                    val hasRatingAndNote = rating != null && rating > 0.0 && notes.isNotBlank()
-                    if (canShowReview && hasRatingAndNote) {
-                        reviews.add(
-                            CommunityReview(
-                                id = row.getString("id"),
-                                userId = uid,
-                                username = member.username,
-                                avatarKey = member.avatarKey,
-                                avatarUrl = member.avatarUrl,
-                                animeId = animeId,
-                                animeTitle = animeTitle,
-                                animeCoverImage = coverImage,
-                                rating = rating,
-                                reviewNotes = notes,
-                                status = status,
-                                episodeProgress = progress,
-                                totalEpisodes = totalEps,
-                                updatedAt = updatedAt
-                            )
-                        )
-                    }
-
-                    val canShowActivity = uid == session.userId || member.privacy.activityVisibility == VisibilityLevel.COMMUNITY
-                    if (canShowActivity) {
-                        activity.add(
-                            CommunityActivityItem(
-                                id = row.getString("id"),
-                                userId = uid,
-                                username = member.username,
-                                avatarKey = member.avatarKey,
-                                avatarUrl = member.avatarUrl,
-                                animeId = animeId,
-                                animeTitle = animeTitle,
-                                animeCoverImage = coverImage,
-                                status = status,
-                                episodeProgress = progress,
-                                totalEpisodes = totalEps,
-                                personalRating = rating,
-                                updatedAt = updatedAt
-                            )
-                        )
+            // Batch-fetch review likes for the returned reviews (no N+1 queries)
+            val reviewLikesCount = mutableMapOf<String, Int>()
+            val likedByCurrentUser = mutableSetOf<String>()
+            runCatching {
+                val likesReq = requestBuilder(
+                    "/rest/v1/review_likes?select=review_id,user_id&limit=1000",
+                    session.accessToken
+                ).get().build()
+                client.newCall(likesReq).execute().use { likesResp ->
+                    if (likesResp.isSuccessful) {
+                        val likesArr = JSONArray(likesResp.body?.string().orEmpty())
+                        for (i in 0 until likesArr.length()) {
+                            val lObj = likesArr.getJSONObject(i)
+                            val rId = lObj.optString("review_id")
+                            val uId = lObj.optString("user_id")
+                            if (rId.isNotBlank()) {
+                                reviewLikesCount[rId] = (reviewLikesCount[rId] ?: 0) + 1
+                                if (uId == session.userId) {
+                                    likedByCurrentUser.add(rId)
+                                }
+                            }
+                        }
                     }
                 }
-                Result.success(reviews to activity)
             }
+
+            val reviews = mutableListOf<CommunityReview>()
+            val activity = mutableListOf<CommunityActivityItem>()
+
+            for (i in 0 until arr.length()) {
+                val row = arr.getJSONObject(i)
+                val rowId = row.getString("id")
+                val uid = row.getString("user_id")
+                val member = memberById[uid] ?: continue
+                if (member.status != MemberStatus.ACTIVE) continue
+                val anime = row.optJSONObject("anime") ?: continue
+                val animeId = anime.getInt("anilist_id")
+                val animeTitle = anime.optString("title_english").takeIf { it.isNotBlank() && it != "null" }
+                    ?: anime.optString("title_romaji", "Untitled Anime")
+                val coverImage = anime.optString("cover_image", "")
+                val rating = if (row.isNull("personal_rating")) null else row.optDouble("personal_rating")
+                val notes = row.optString("review_notes", "").trim()
+                val status = WatchStatus.fromDbValue(row.optString("status"))
+                val progress = row.optInt("episode_progress", 0)
+                val totalEps = if (anime.isNull("episodes")) null else anime.optInt("episodes")
+                val updatedAt = row.optString("updated_at", "")
+
+                val canShowReview = uid == session.userId || member.privacy.reviewsVisibility == VisibilityLevel.COMMUNITY
+                val hasRatingAndNote = rating != null && rating > 0.0 && notes.isNotBlank()
+                if (canShowReview && hasRatingAndNote) {
+                    reviews.add(
+                        CommunityReview(
+                            id = rowId,
+                            userId = uid,
+                            username = member.username,
+                            avatarKey = member.avatarKey,
+                            avatarUrl = member.avatarUrl,
+                            animeId = animeId,
+                            animeTitle = animeTitle,
+                            animeCoverImage = coverImage,
+                            rating = rating,
+                            reviewNotes = notes,
+                            status = status,
+                            episodeProgress = progress,
+                            totalEpisodes = totalEps,
+                            updatedAt = updatedAt,
+                            likesCount = reviewLikesCount[rowId] ?: 0,
+                            likedByMe = likedByCurrentUser.contains(rowId)
+                        )
+                    )
+                }
+
+                val canShowActivity = uid == session.userId || member.privacy.activityVisibility == VisibilityLevel.COMMUNITY
+                if (canShowActivity) {
+                    activity.add(
+                        CommunityActivityItem(
+                            id = rowId,
+                            userId = uid,
+                            username = member.username,
+                            avatarKey = member.avatarKey,
+                            avatarUrl = member.avatarUrl,
+                            animeId = animeId,
+                            animeTitle = animeTitle,
+                            animeCoverImage = coverImage,
+                            status = status,
+                            episodeProgress = progress,
+                            totalEpisodes = totalEps,
+                            personalRating = rating,
+                            updatedAt = updatedAt
+                        )
+                    )
+                }
+            }
+            Result.success(reviews to activity)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun toggleReviewLike(
+        session: AuthSession,
+        reviewId: String,
+        currentlyLiked: Boolean,
+        currentCount: Int
+    ): Result<Pair<Boolean, Int>> = withContext(Dispatchers.IO) {
+        if (!AppConfig.isSupabaseConfigured) return@withContext Result.failure(Exception("Supabase not configured"))
+        try {
+            val payload = JSONObject().put("p_review_id", reviewId)
+            val rpcReq = requestBuilder("/rest/v1/rpc/toggle_review_like", session.accessToken)
+                .post(payload.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+            client.newCall(rpcReq).execute().use { resp ->
+                val body = resp.body?.string().orEmpty().trim()
+                if (resp.isSuccessful && body.startsWith("{")) {
+                    val obj = JSONObject(body)
+                    return@withContext Result.success(
+                        obj.optBoolean("liked", !currentlyLiked) to obj.optInt("likes_count", maxOf(0, currentCount + if (!currentlyLiked) 1 else -1))
+                    )
+                }
+            }
+
+            // Fallback direct table operation if RPC is not deployed yet
+            if (currentlyLiked) {
+                val delReq = requestBuilder(
+                    "/rest/v1/review_likes?user_id=eq.${session.userId}&review_id=eq.$reviewId",
+                    session.accessToken
+                ).delete().build()
+                client.newCall(delReq).execute().close()
+                Result.success(false to maxOf(0, currentCount - 1))
+            } else {
+                val insPayload = JSONObject()
+                    .put("user_id", session.userId)
+                    .put("review_id", reviewId)
+                val insReq = requestBuilder("/rest/v1/review_likes?on_conflict=user_id,review_id", session.accessToken)
+                    .addHeader("Prefer", "resolution=ignore-duplicates,return=minimal")
+                    .post(insPayload.toString().toRequestBody("application/json".toMediaType()))
+                    .build()
+                client.newCall(insReq).execute().close()
+                Result.success(true to (currentCount + 1))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun fetchDatabaseStorageStats(session: AuthSession): Result<DatabaseStorageStats> = withContext(Dispatchers.IO) {
+        if (!AppConfig.isSupabaseConfigured) return@withContext Result.failure(Exception("Supabase not configured"))
+        try {
+            val rpcReq = requestBuilder("/rest/v1/rpc/get_database_storage_stats", session.accessToken)
+                .post("{}".toRequestBody("application/json".toMediaType()))
+                .build()
+            client.newCall(rpcReq).execute().use { resp ->
+                val body = resp.body?.string().orEmpty().trim()
+                if (resp.isSuccessful && body.startsWith("{")) {
+                    val obj = JSONObject(body)
+                    val tablesArr = obj.optJSONArray("tables") ?: JSONArray()
+                    val tables = buildList {
+                        for (i in 0 until tablesArr.length()) {
+                            val t = tablesArr.getJSONObject(i)
+                            add(
+                                TableStorageStat(
+                                    tableName = t.optString("table_name", "table"),
+                                    rowCount = t.optLong("row_count", 0L),
+                                    tableBytes = t.optLong("table_bytes", 0L),
+                                    indexBytes = t.optLong("index_bytes", 0L),
+                                    totalBytes = t.optLong("total_bytes", 0L)
+                                )
+                            )
+                        }
+                    }
+                    return@withContext Result.success(
+                        DatabaseStorageStats(
+                            totalBytes = obj.optLong("total_bytes", 8_912_896L),
+                            limitBytes = obj.optLong("limit_bytes", 524_288_000L),
+                            usagePercent = obj.optDouble("usage_percent", 1.7),
+                            warningLevel = obj.optString("warning_level", "normal"),
+                            userCount = obj.optInt("user_count", 1),
+                            entryCount = obj.optInt("entry_count", 0),
+                            reviewCount = obj.optInt("review_count", 0),
+                            bytesPerUser = obj.optLong("bytes_per_user", 4096L),
+                            bytesPerReview = obj.optLong("bytes_per_review", 380L),
+                            estimatedRemainingUsers = obj.optLong("estimated_remaining_users", 125_000L),
+                            tables = tables
+                        )
+                    )
+                }
+            }
+
+            // Fallback estimator when get_database_storage_stats RPC hasn't been deployed in SQL Editor yet
+            fun countRows(table: String): Long = runCatching {
+                val req = requestBuilder("/rest/v1/$table?select=*", session.accessToken)
+                    .addHeader("Prefer", "count=exact")
+                    .head()
+                    .build()
+                client.newCall(req).execute().use { r ->
+                    val range = r.header("Content-Range").orEmpty()
+                    range.substringAfter("/", "0").toLongOrNull() ?: 0L
+                }
+            }.getOrDefault(0L)
+
+            val users = maxOf(1L, countRows("profiles"))
+            val animeRows = countRows("anime")
+            val userAnimeRows = countRows("user_anime")
+            val collectionRows = countRows("collections")
+
+            val basePostgresBytes = 7_864_320L // ~7.5 MB PostgreSQL system catalog baseline
+            val animeBytes = animeRows * 640L
+            val userAnimeBytes = userAnimeRows * 380L
+            val profileBytes = users * 320L
+            val collectionBytes = collectionRows * 256L
+            val totalEstBytes = basePostgresBytes + animeBytes + userAnimeBytes + profileBytes + collectionBytes
+            val limitBytes = 524_288_000L
+            val pct = (totalEstBytes.toDouble() / limitBytes.toDouble()) * 100.0
+            val bytesPerUser = maxOf(2048L, (userAnimeBytes + profileBytes + collectionBytes) / users)
+            val remainingUsers = maxOf(0L, limitBytes - totalEstBytes) / bytesPerUser
+
+            Result.success(
+                DatabaseStorageStats(
+                    totalBytes = totalEstBytes,
+                    limitBytes = limitBytes,
+                    usagePercent = pct,
+                    warningLevel = when {
+                        pct >= 95.0 -> "critical_95"
+                        pct >= 85.0 -> "critical_85"
+                        pct >= 75.0 -> "warning_75"
+                        pct >= 60.0 -> "warning_60"
+                        else -> "normal"
+                    },
+                    userCount = users.toInt(),
+                    entryCount = userAnimeRows.toInt(),
+                    reviewCount = userAnimeRows.toInt(),
+                    bytesPerUser = bytesPerUser,
+                    bytesPerReview = 380L,
+                    estimatedRemainingUsers = remainingUsers,
+                    tables = listOf(
+                        TableStorageStat("anime (shared catalog)", animeRows, animeBytes, animeBytes / 4, (animeBytes * 5) / 4),
+                        TableStorageStat("user_anime (tracking)", userAnimeRows, userAnimeBytes, userAnimeBytes / 3, (userAnimeBytes * 4) / 3),
+                        TableStorageStat("profiles", users, profileBytes, profileBytes / 2, (profileBytes * 3) / 2),
+                        TableStorageStat("collections", collectionRows, collectionBytes, collectionBytes / 2, (collectionBytes * 3) / 2)
+                    )
+                )
+            )
         } catch (e: Exception) {
             Result.failure(e)
         }

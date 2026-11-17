@@ -54,6 +54,7 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -62,6 +63,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -83,6 +85,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.config.AppConfig
+import com.example.model.DatabaseStorageStats
 import com.example.model.ThemeModePreference
 import com.example.model.WatchlistLayoutMode
 import com.example.ui.theme.AppRadius
@@ -121,6 +124,8 @@ fun SettingsScreen(
     val isDeletingAccount by viewModel.isDeletingAccount.collectAsState()
     val deleteAccountError by viewModel.deleteAccountError.collectAsState()
     val isCheckingUpdate by viewModel.isCheckingUpdate.collectAsState()
+    val storageStats by viewModel.storageStats.collectAsState()
+    val isStorageStatsLoading by viewModel.isStorageStatsLoading.collectAsState()
 
     var selectedCategory by rememberSaveable { mutableStateOf<SettingsCategory?>(null) }
     var showPrivacyPolicyDialog by remember { mutableStateOf(false) }
@@ -501,6 +506,11 @@ fun SettingsScreen(
                         }
 
                         SettingsCategory.ABOUT -> {
+                            LaunchedEffect(profile?.id) {
+                                if (profile != null) {
+                                    viewModel.refreshStorageStats()
+                                }
+                            }
                             LazyColumn(
                                 contentPadding = PaddingValues(
                                     start = AppSpacing.md,
@@ -535,6 +545,101 @@ fun SettingsScreen(
                                             TextButton(onClick = { showTermsDialog = true }) {
                                                 Text("Community Guidelines", color = colors.accentPrimary)
                                             }
+                                        }
+                                    }
+                                }
+
+                                if (profile != null) {
+                                    item {
+                                        SettingsSectionCard(title = "Cloud Storage & 500 MB Quota Monitor", icon = Icons.Filled.Tune) {
+                                            val stats = storageStats ?: DatabaseStorageStats()
+                                            val pctFloat = (stats.usagePercent.toFloat() / 100f).coerceIn(0.01f, 1f)
+                                            val barColor = when {
+                                                stats.usagePercent >= 85.0 -> colors.error
+                                                stats.usagePercent >= 60.0 -> Color(0xFFFFB74D)
+                                                else -> colors.accentPrimary
+                                            }
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text(
+                                                    text = "${DatabaseStorageStats.formatBytes(stats.totalBytes)} / 500.00 MB",
+                                                    style = MaterialTheme.typography.titleSmall,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = colors.textPrimary
+                                                )
+                                                Text(
+                                                    text = "${"%.2f".format(stats.usagePercent)}% Used",
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    color = barColor
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.height(8.dp))
+                                            LinearProgressIndicator(
+                                                progress = { pctFloat },
+                                                color = barColor,
+                                                trackColor = colors.borderSubtle,
+                                                modifier = Modifier.fillMaxWidth().height(8.dp)
+                                            )
+                                            stats.warningBannerText?.let { warning ->
+                                                Spacer(modifier = Modifier.height(8.dp))
+                                                Surface(
+                                                    shape = RoundedCornerShape(12.dp),
+                                                    color = barColor.copy(alpha = 0.14f),
+                                                    border = BorderStroke(1.dp, barColor.copy(alpha = 0.5f)),
+                                                    modifier = Modifier.fillMaxWidth()
+                                                ) {
+                                                    Text(
+                                                        text = warning,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = barColor,
+                                                        modifier = Modifier.padding(10.dp)
+                                                    )
+                                                }
+                                            }
+                                            Spacer(modifier = Modifier.height(10.dp))
+                                            Text(
+                                                text = "Avg per User: ${DatabaseStorageStats.formatBytes(stats.bytesPerUser)} • Avg per Review: ${DatabaseStorageStats.formatBytes(stats.bytesPerReview)}",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = colors.textSecondary
+                                            )
+                                            Text(
+                                                text = "Estimated Remaining Capacity: ~${stats.estimatedRemainingUsers} additional users",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = colors.accentPrimary
+                                            )
+                                            if (stats.tables.isNotEmpty()) {
+                                                Spacer(modifier = Modifier.height(10.dp))
+                                                HorizontalDivider(color = colors.borderSubtle, thickness = 1.dp)
+                                                Spacer(modifier = Modifier.height(8.dp))
+                                                stats.tables.take(6).forEach { tbl ->
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                                                        horizontalArrangement = Arrangement.SpaceBetween
+                                                    ) {
+                                                        Text(
+                                                            text = "${tbl.tableName} (${tbl.rowCount} rows)",
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = colors.textSecondary
+                                                        )
+                                                        Text(
+                                                            text = DatabaseStorageStats.formatBytes(tbl.totalBytes),
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            fontWeight = FontWeight.Medium,
+                                                            color = colors.textPrimary
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                            Spacer(modifier = Modifier.height(8.dp))
+                                            AppSecondaryButton(
+                                                text = if (isStorageStatsLoading) "Refreshing Storage Metrics..." else "Refresh Storage Diagnostics",
+                                                enabled = !isStorageStatsLoading,
+                                                onClick = { viewModel.refreshStorageStats() },
+                                                modifier = Modifier.fillMaxWidth()
+                                            )
                                         }
                                     }
                                 }

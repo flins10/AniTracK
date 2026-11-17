@@ -157,8 +157,55 @@ data class CommunityReview(
     val status: WatchStatus,
     val episodeProgress: Int,
     val totalEpisodes: Int?,
-    val updatedAt: String
+    val updatedAt: String,
+    val likesCount: Int = 0,
+    val likedByMe: Boolean = false
 )
+
+data class TableStorageStat(
+    val tableName: String,
+    val rowCount: Long,
+    val tableBytes: Long,
+    val indexBytes: Long,
+    val totalBytes: Long
+)
+
+data class DatabaseStorageStats(
+    val totalBytes: Long = 0L,
+    val limitBytes: Long = 524_288_000L, // 500 MB
+    val usagePercent: Double = 0.0,
+    val warningLevel: String = "normal", // normal, warning_60, warning_75, critical_85, critical_95
+    val userCount: Int = 1,
+    val entryCount: Int = 0,
+    val reviewCount: Int = 0,
+    val bytesPerUser: Long = 2048L,
+    val bytesPerReview: Long = 380L,
+    val estimatedRemainingUsers: Long = 200_000L,
+    val tables: List<TableStorageStat> = emptyList()
+) {
+    val warningBannerText: String?
+        get() = when {
+            usagePercent >= 95.0 || warningLevel == "critical_95" ->
+                "CRITICAL (95%+ Quota): Database is at ${"%.1f".format(usagePercent)}% of the 500 MB limit. Archive obsolete records immediately."
+            usagePercent >= 85.0 || warningLevel == "critical_85" ->
+                "HIGH ALERT (85%+ Quota): Database has reached ${"%.1f".format(usagePercent)}% of the 500 MB limit."
+            usagePercent >= 75.0 || warningLevel == "warning_75" ->
+                "WARNING (75%+ Quota): Database is at ${"%.1f".format(usagePercent)}% of the 500 MB limit."
+            usagePercent >= 60.0 || warningLevel == "warning_60" ->
+                "NOTICE (60%+ Quota): Database has crossed 60% (${"%.1f".format(usagePercent)}%) of the 500 MB limit."
+            else -> null
+        }
+
+    companion object {
+        fun formatBytes(bytes: Long): String {
+            if (bytes < 1024L) return "$bytes B"
+            val kb = bytes / 1024.0
+            if (kb < 1024.0) return "${"%.1f".format(kb)} KB"
+            val mb = kb / 1024.0
+            return "${"%.2f".format(mb)} MB"
+        }
+    }
+}
 
 data class CommunityActivityItem(
     val id: String,

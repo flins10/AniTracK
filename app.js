@@ -163,7 +163,20 @@ const state = {
   // Community State
   communityReviews: [],
   communitySentimentFilter: null,
-  communitySort: 'RECENT', // 'RECENT' | 'HIGHEST' | 'LOWEST'
+  communitySort: 'RECENT', // 'RECENT' | 'MOST_LIKED' | 'HIGHEST' | 'LOWEST'
+
+  // 500 MB Storage Quota Monitor State
+  storageStats: {
+    totalBytes: 0,
+    limitBytes: 524288000,
+    usagePercent: 0,
+    warningLevel: 'normal',
+    bytesPerUser: 2200,
+    bytesPerReview: 180,
+    estimatedRemainingUsers: 230000,
+    tables: []
+  },
+  storageStatsLoading: false,
 
   // Modals & Detail View
   detailAnime: null,
@@ -175,6 +188,24 @@ const state = {
   toastMessage: null,
   availableUpdate: null
 };
+
+const syncedCatalogHashes = new Map();
+
+function formatStorageBytes(bytes) {
+  const b = Number(bytes || 0);
+  if (b <= 0) return '0 KB';
+  const mb = b / (1024 * 1024);
+  if (mb >= 1) return `${mb.toFixed(2)} MB`;
+  return `${(b / 1024).toFixed(1)} KB`;
+}
+
+function getStorageWarningBanner(level) {
+  if (level === 'critical_95') return 'CRITICAL (95%+ Quota): Database storage is nearly full. Run cleanup or archive old logs immediately.';
+  if (level === 'critical_85') return 'HIGH ALERT (85%+ Quota): Database storage exceeded 85% of the 500 MB limit.';
+  if (level === 'warning_75') return 'WARNING (75%+ Quota): Database storage has reached 75% of the 500 MB budget.';
+  if (level === 'warning_60') return 'NOTICE (60%+ Quota): Database storage passed 60% of the 500 MB capacity.';
+  return null;
+}
 
 function applyTheme() {
   const mode = state.prefs.themeMode;
@@ -337,13 +368,50 @@ async function loadCloudData() {
   if (!state.session) return;
   try {
     const uid = encodeURIComponent(state.session.userId);
-    const [rows, prof] = await Promise.all([
+    const [normRows, legacyRows, prof, cmRows] = await Promise.all([
+      supabaseRequest(
+        `/rest/v1/user_anime?user_id=eq.${uid}&select=id,user_id,anime_id,status,episode_progress,user_season,total_episodes,personal_rating,review_notes,is_favorite,updated_at,anime(*)&order=updated_at.desc`
+      ).catch(() => []),
       supabaseRequest(`/rest/v1/user_anime_entries?user_id=eq.${uid}&order=updated_at.desc`).catch(() => []),
-      supabaseRequest(`/rest/v1/profiles?id=eq.${uid}&select=*`).catch(() => [])
+      supabaseRequest(`/rest/v1/profiles?id=eq.${uid}&select=*`).catch(() => []),
+      supabaseRequest(`/rest/v1/community_members?user_id=eq.${uid}&select=status`).catch(() => [])
     ]);
 
-    if (Array.isArray(rows) && rows.length > 0) {
-      state.vault = rows.map((r) => {
+    if (Array.isArray(normRows) && normRows.length > 0) {
+      state.vault = normRows.map((r) => {
+        const anime = r.anime || {};
+        const existingLocal = state.vault.find((v) => v.animeId === r.anime_id) || {};
+        const eng = anime.title_english || existingLocal.titleEnglish || '';
+        const rom = anime.title_romaji || existingLocal.titleRomaji || '';
+        return {
+          animeId: r.anime_id,
+          title: eng || rom || existingLocal.title || `Anime #${r.anime_id}`,
+          titleEnglish: eng || rom || 'Anime',
+          titleRomaji: rom || eng || 'Anime',
+          titleNative: anime.title_native || existingLocal.titleNative || '',
+          coverImage: anime.cover_image || existingLocal.coverImage || '',
+          bannerImage: anime.banner_image || existingLocal.bannerImage || '',
+          format: anime.format || existingLocal.format || 'TV',
+          mediaStatus: anime.status || existingLocal.mediaStatus || 'RELEASING',
+          countryOfOrigin: existingLocal.countryOfOrigin || 'JP',
+          airingDayOfWeek: existingLocal.airingDayOfWeek || ((r.anime_id % 7) + 1),
+          airingTimeUnix: existingLocal.airingTimeUnix || null,
+          nextEpisodeNumber: existingLocal.nextEpisodeNumber || null,
+          status: r.status || 'watching',
+          season: r.user_season || existingLocal.season || 1,
+          watchedEpisodes: r.episode_progress || 0,
+          totalEpisodes: r.total_episodes || anime.episodes || existingLocal.totalEpisodes || null,
+          rating10: r.personal_rating || null,
+          reviewNotes: r.review_notes || '',
+          isPinned: Boolean(existingLocal.isPinned),
+          isFavorite: Boolean(r.is_favorite ?? existingLocal.isFavorite),
+          genres: Array.isArray(anime.genres) ? anime.genres : existingLocal.genres || [],
+          synopsis: anime.description || existingLocal.synopsis || ''
+        };
+      });
+      saveLocalVault();
+    } else if (Array.isArray(legacyRows) && legacyRows.length > 0) {
+      state.vault = legacyRows.map((r) => {
         const existingLocal = state.vault.find((v) => v.animeId === r.anime_id) || {};
         return {
           animeId: r.anime_id,
@@ -373,33 +441,153 @@ async function loadCloudData() {
       saveLocalVault();
     }
 
+    const cmStatus = Array.isArray(cmRows) && cmRows.length > 0 ? cmRows[0].status : '';
     if (Array.isArray(prof) && prof.length > 0) {
       const p = prof[0];
       state.profile = {
         username: p.username || state.session.username || 'Member',
-        avatarKey: p.avatar_key || 'avatar_1',
+        avatarKey: p.avatar_key || p.avatar_url || 'avatar_1',
         bio: p.bio || '',
-        memberStatus: p.member_status || 'pending'
+        memberStatus: cmStatus || p.member_status || 'pending'
       };
     } else {
       state.profile.username = state.session.username || 'Member';
+      if (cmStatus) state.profile.memberStatus = cmStatus;
     }
 
     if (state.profile.memberStatus === 'active') {
       await loadCommunityReviews();
     }
+    loadStorageStats();
     renderApp();
   } catch (_) {}
 }
 
 async function loadCommunityReviews() {
   try {
-    const rows = await supabaseRequest('/rest/v1/community_reviews?order=updated_at.desc&limit=120');
+    const normRows = await supabaseRequest(
+      '/rest/v1/user_anime?select=id,user_id,anime_id,status,episode_progress,user_season,total_episodes,personal_rating,review_notes,updated_at,anime(anilist_id,title_english,title_romaji,cover_image)&personal_rating=not.is.null&review_notes=neq.&order=updated_at.desc&limit=60'
+    ).catch(() => []);
+
+    if (Array.isArray(normRows) && normRows.length > 0) {
+      const valid = normRows.filter((r) => (r.personal_rating || 0) > 0 && String(r.review_notes || '').trim().length > 0);
+      const userIds = Array.from(new Set(valid.map((r) => r.user_id).filter(Boolean)));
+      const reviewIds = Array.from(new Set(valid.map((r) => r.id).filter(Boolean)));
+
+      const [profRows, likeRows] = await Promise.all([
+        userIds.length > 0
+          ? supabaseRequest(`/rest/v1/profiles?id=in.(${userIds.join(',')})&select=id,username,avatar_key,avatar_url`).catch(() => [])
+          : Promise.resolve([]),
+        reviewIds.length > 0
+          ? supabaseRequest(`/rest/v1/review_likes?review_id=in.(${reviewIds.join(',')})&select=review_id,user_id`).catch(() => [])
+          : Promise.resolve([])
+      ]);
+
+      const profMap = {};
+      if (Array.isArray(profRows)) {
+        profRows.forEach((p) => {
+          profMap[p.id] = {
+            username: p.username || 'Member',
+            avatar_key: p.avatar_key || p.avatar_url || 'avatar_1'
+          };
+        });
+      }
+
+      const likesCountMap = {};
+      const likedByMeSet = new Set();
+      if (Array.isArray(likeRows)) {
+        likeRows.forEach((l) => {
+          if (!l.review_id) return;
+          likesCountMap[l.review_id] = (likesCountMap[l.review_id] || 0) + 1;
+          if (state.session && l.user_id === state.session.userId) {
+            likedByMeSet.add(l.review_id);
+          }
+        });
+      }
+
+      state.communityReviews = valid.map((r) => {
+        const anime = r.anime || {};
+        const prof = profMap[r.user_id] || { username: 'Member', avatar_key: 'avatar_1' };
+        return {
+          id: r.id,
+          user_id: r.user_id,
+          username: prof.username,
+          avatar_key: prof.avatar_key,
+          anime_id: r.anime_id,
+          anime_title: anime.title_english || anime.title_romaji || 'Anime',
+          anime_cover_image: anime.cover_image || '',
+          rating: r.personal_rating,
+          review_notes: r.review_notes,
+          updated_at: r.updated_at,
+          likes_count: likesCountMap[r.id] || 0,
+          liked_by_me: likedByMeSet.has(r.id)
+        };
+      });
+      renderApp();
+      return;
+    }
+
+    const rows = await supabaseRequest('/rest/v1/community_reviews?order=updated_at.desc&limit=80').catch(() => []);
     if (Array.isArray(rows)) {
-      state.communityReviews = rows.filter((r) => (r.rating || 0) > 0 && (r.review_notes || '').trim().length > 0);
+      state.communityReviews = rows
+        .filter((r) => (r.rating || 0) > 0 && (r.review_notes || '').trim().length > 0)
+        .map((r) => ({ ...r, likes_count: r.likes_count || 0, liked_by_me: Boolean(r.liked_by_me) }));
       renderApp();
     }
   } catch (_) {}
+}
+
+async function toggleReviewLike(reviewId) {
+  if (!state.session || !reviewId) return;
+  const target = state.communityReviews.find((r) => String(r.id) === String(reviewId));
+  if (!target) return;
+  const optimisticLiked = !target.liked_by_me;
+  target.liked_by_me = optimisticLiked;
+  target.likes_count = Math.max(0, (target.likes_count || 0) + (optimisticLiked ? 1 : -1));
+  renderApp();
+
+  try {
+    const res = await supabaseRequest('/rest/v1/rpc/toggle_review_like', 'POST', { p_review_id: reviewId });
+    if (res && typeof res.liked === 'boolean') {
+      target.liked_by_me = res.liked;
+      renderApp();
+      return;
+    }
+  } catch (_) {
+    try {
+      const uid = encodeURIComponent(state.session.userId);
+      const rid = encodeURIComponent(reviewId);
+      if (optimisticLiked) {
+        await supabaseRequest('/rest/v1/review_likes', 'POST', { user_id: state.session.userId, review_id: reviewId }, 'return=minimal');
+      } else {
+        await supabaseRequest(`/rest/v1/review_likes?user_id=eq.${uid}&review_id=eq.${rid}`, 'DELETE');
+      }
+    } catch (_) {}
+  }
+}
+
+async function loadStorageStats() {
+  state.storageStatsLoading = true;
+  renderApp();
+  try {
+    const res = await supabaseRequest('/rest/v1/rpc/get_database_storage_stats', 'POST', {});
+    if (res && typeof res === 'object' && res.limit_bytes) {
+      state.storageStats = {
+        totalBytes: Number(res.total_bytes || 0),
+        limitBytes: Number(res.limit_bytes || 524288000),
+        usagePercent: Number(res.usage_percent || 0),
+        warningLevel: res.warning_level || 'normal',
+        bytesPerUser: Number(res.bytes_per_user || 2200),
+        bytesPerReview: Number(res.bytes_per_review || 180),
+        estimatedRemainingUsers: Number(res.estimated_remaining_users || 230000),
+        tables: Array.isArray(res.tables) ? res.tables : []
+      };
+    }
+  } catch (_) {
+  } finally {
+    state.storageStatsLoading = false;
+    renderApp();
+  }
 }
 
 async function fetchDiscoverCatalog() {
@@ -643,20 +831,46 @@ async function saveVaultEntry(item) {
   saveLocalVault();
   if (!state.session) return;
   try {
+    // 1. Sync shared anime metadata once into public.anime (avoids duplicating anime rows per user)
+    const catalogKey = `${item.titleEnglish || item.title}|${item.coverImage}|${item.totalEpisodes || 0}`;
+    if (syncedCatalogHashes.get(item.animeId) !== catalogKey) {
+      const safeCover = String(item.coverImage || '').startsWith('data:image') ? '' : item.coverImage || '';
+      const safeBanner = String(item.bannerImage || '').startsWith('data:image') ? '' : item.bannerImage || '';
+      await supabaseRequest(
+        '/rest/v1/anime?on_conflict=anilist_id',
+        'POST',
+        {
+          anilist_id: item.animeId,
+          title_english: String(item.titleEnglish || item.title || 'Anime').slice(0, 200),
+          title_romaji: String(item.titleRomaji || item.title || 'Anime').slice(0, 200),
+          title_native: String(item.titleNative || '').slice(0, 200),
+          cover_image: safeCover,
+          banner_image: safeBanner,
+          episodes: item.totalEpisodes || null,
+          status: item.mediaStatus || 'RELEASING',
+          format: item.format || 'TV',
+          genres: Array.isArray(item.genres) ? item.genres.slice(0, 8) : [],
+          description: String(item.synopsis || '').slice(0, 360)
+        },
+        'resolution=merge-duplicates,return=minimal'
+      ).catch(() => {});
+      syncedCatalogHashes.set(item.animeId, catalogKey);
+    }
+
+    // 2. Upsert compact per-user record into public.user_anime (review_notes capped at 500 chars)
     await supabaseRequest(
-      '/rest/v1/user_anime_entries?on_conflict=user_id,anime_id',
+      '/rest/v1/user_anime?on_conflict=user_id,anime_id',
       'POST',
       {
         user_id: state.session.userId,
         anime_id: item.animeId,
-        anime_title: item.titleEnglish || item.title || 'Anime',
-        anime_cover_image: item.coverImage,
-        watch_status: item.status,
-        watched_episodes: item.watchedEpisodes,
-        total_episodes: item.totalEpisodes,
-        rating: item.rating10,
-        review_notes: item.reviewNotes,
-        visibility: state.prefs.reviewsVisibility || 'community'
+        status: item.status,
+        episode_progress: Math.max(0, Number(item.watchedEpisodes || 0)),
+        user_season: Math.max(1, Number(item.season || 1)),
+        total_episodes: item.totalEpisodes || null,
+        personal_rating: item.rating10 ? Math.min(10, Math.max(1, Math.round(item.rating10))) : null,
+        review_notes: String(item.reviewNotes || '').trim().slice(0, 500),
+        is_favorite: Boolean(item.isFavorite)
       },
       'resolution=merge-duplicates,return=minimal'
     );
@@ -1061,6 +1275,11 @@ function renderCommunityScreen() {
       return s && s.key === state.communitySentimentFilter;
     })
     .sort((a, b) => {
+      if (state.communitySort === 'MOST_LIKED') {
+        const diff = (b.likes_count || 0) - (a.likes_count || 0);
+        if (diff !== 0) return diff;
+        return (b.rating || 0) - (a.rating || 0);
+      }
       if (state.communitySort === 'HIGHEST') return (b.rating || 0) - (a.rating || 0);
       if (state.communitySort === 'LOWEST') return (a.rating || 0) - (b.rating || 0);
       return String(b.updated_at || '').localeCompare(String(a.updated_at || ''));
@@ -1090,6 +1309,7 @@ function renderCommunityScreen() {
     <div class="capsule-row">
       ${[
         { k: 'RECENT', label: 'Recent' },
+        { k: 'MOST_LIKED', label: 'Most Liked ♥' },
         { k: 'HIGHEST', label: 'Highest Rated' },
         { k: 'LOWEST', label: 'Lowest Rated' }
       ]
@@ -1108,6 +1328,8 @@ function renderCommunityScreen() {
               .map((rev) => {
                 const stars = ((rev.rating || 0) / 2).toFixed(1);
                 const sentiment = sentimentFromRating10(rev.rating);
+                const liked = Boolean(rev.liked_by_me);
+                const likesCount = Number(rev.likes_count || 0);
                 return `
                   <div class="stat-box" data-open-detail="${rev.anime_id}" style="text-align:left; cursor:pointer; display:flex; flex-direction:column; gap:12px;">
                     <div style="display:flex; gap:14px;">
@@ -1123,8 +1345,11 @@ function renderCommunityScreen() {
                       <div style="display:flex; align-items:center; gap:8px;">
                         ${getAvatarBadgeHtml(rev.avatar_key || 'avatar_1', rev.username, 26)}
                         <span>${escapeHtml(rev.username || 'Member')}</span>
+                        <span class="tabular-num" style="color:var(--text-muted);">• ${escapeHtml(String(rev.updated_at || '').slice(0, 10))}</span>
                       </div>
-                      <span class="tabular-num">${escapeHtml(String(rev.updated_at || '').slice(0, 10))}</span>
+                      <button class="capsule-pill ${liked ? 'active' : ''}" data-like-review="${escapeHtml(rev.id)}" style="padding:4px 11px; font-size:0.76rem;">
+                        ${liked ? '♥' : '♡'} ${likesCount > 0 ? likesCount : 'Like'}
+                      </button>
                     </div>
                   </div>
                 `;
@@ -1240,6 +1465,62 @@ function renderSettingsScreen() {
             <input type="file" id="inp-import-json" accept="application/json" style="display:none;" />
           </label>
         </div>
+      </div>
+
+      <div class="stat-box" style="text-align:left; display:flex; flex-direction:column; gap:12px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+          <div>
+            <h3 class="serif-heading" style="font-size:1.4rem;">Cloud Storage &amp; 500 MB Quota</h3>
+            <div class="micro-label" style="color:var(--text-secondary);">Normalized Schema • Shared Anime Metadata</div>
+          </div>
+          <button class="btn-secondary" id="btn-refresh-storage" style="padding:6px 12px; font-size:0.78rem;">
+            ${state.storageStatsLoading ? 'Refreshing...' : '↻ Refresh'}
+          </button>
+        </div>
+        <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.88rem; font-weight:700;">
+          <span style="color:var(--accent-primary);">${formatStorageBytes(state.storageStats.totalBytes)} / ${formatStorageBytes(state.storageStats.limitBytes)}</span>
+          <span>${Number(state.storageStats.usagePercent || 0).toFixed(2)}% used</span>
+        </div>
+        <div class="progress-track" style="height:8px;">
+          <div class="progress-fill" style="width:${Math.max(1, Math.min(100, Number(state.storageStats.usagePercent || 0)))}%;"></div>
+        </div>
+        ${
+          getStorageWarningBanner(state.storageStats.warningLevel)
+            ? `<div style="padding:10px 12px; border-radius:10px; border:1px solid var(--error); color:var(--error); font-size:0.8rem; font-weight:600;">
+                ${escapeHtml(getStorageWarningBanner(state.storageStats.warningLevel))}
+              </div>`
+            : ''
+        }
+        <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; font-size:0.78rem;">
+          <div style="padding:8px; border-radius:10px; background:var(--bg-elevated);">
+            <div style="color:var(--text-muted);">Avg / User</div>
+            <div style="font-weight:700; color:var(--accent-primary);">~${(Number(state.storageStats.bytesPerUser || 2200) / 1024).toFixed(1)} KB</div>
+          </div>
+          <div style="padding:8px; border-radius:10px; background:var(--bg-elevated);">
+            <div style="color:var(--text-muted);">Avg / Review</div>
+            <div style="font-weight:700; color:var(--accent-primary);">~${Number(state.storageStats.bytesPerReview || 180)} B</div>
+          </div>
+          <div style="padding:8px; border-radius:10px; background:var(--bg-elevated);">
+            <div style="color:var(--text-muted);">Capacity</div>
+            <div style="font-weight:700; color:var(--accent-primary);">~${Number(state.storageStats.estimatedRemainingUsers || 230000).toLocaleString()}</div>
+          </div>
+        </div>
+        ${
+          Array.isArray(state.storageStats.tables) && state.storageStats.tables.length > 0
+            ? `<div style="display:flex; flex-direction:column; gap:4px; font-size:0.76rem; color:var(--text-secondary); padding-top:4px; border-top:1px solid var(--border-subtle);">
+                ${state.storageStats.tables
+                  .slice(0, 6)
+                  .map(
+                    (t) => `
+                  <div style="display:flex; justify-content:space-between;">
+                    <span>public.${escapeHtml(t.table)}</span>
+                    <span class="tabular-num">${Number(t.rows || 0)} rows • ${formatStorageBytes(t.bytes)}</span>
+                  </div>`
+                  )
+                  .join('')}
+              </div>`
+            : ''
+        }
       </div>
 
       <div class="stat-box" style="text-align:left; display:flex; flex-direction:column; gap:12px;">
@@ -1921,8 +2202,21 @@ function bindWorkspaceEvents() {
   if (btnJoin) {
     btnJoin.onclick = async () => {
       try {
-        await supabaseRequest('/rest/v1/rpc/join_community_with_invite', 'POST', { p_invite_code: '' });
-      } catch (_) {}
+        await supabaseRequest('/rest/v1/rpc/join_community', 'POST', {
+          p_username: state.profile.username || 'Member',
+          p_avatar_key: state.profile.avatarKey || 'avatar_1',
+          p_code: ''
+        });
+      } catch (_) {
+        if (state.session) {
+          await supabaseRequest(
+            '/rest/v1/community_members?on_conflict=user_id',
+            'POST',
+            { user_id: state.session.userId, status: 'active', role: 'member' },
+            'resolution=merge-duplicates,return=minimal'
+          ).catch(() => {});
+        }
+      }
       state.profile.memberStatus = 'active';
       await loadCommunityReviews();
       renderApp();
@@ -1945,6 +2239,19 @@ function bindWorkspaceEvents() {
       renderApp();
     };
   });
+
+  document.querySelectorAll('[data-like-review]').forEach((btn) => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const reviewId = btn.getAttribute('data-like-review');
+      if (reviewId) await toggleReviewLike(reviewId);
+    };
+  });
+
+  const btnRefreshStorage = document.getElementById('btn-refresh-storage');
+  if (btnRefreshStorage) {
+    btnRefreshStorage.onclick = () => loadStorageStats();
+  }
 
   const openAv1 = document.getElementById('btn-open-avatar-modal');
   const openAv2 = document.getElementById('btn-open-avatar-modal-2');
@@ -2041,9 +2348,10 @@ function bindWorkspaceEvents() {
       if (!confirm('Permanently delete your Anime Universe account, library, and community reviews? This cannot be undone.')) return;
       try {
         const uid = encodeURIComponent(state.session.userId);
+        await supabaseRequest('/rest/v1/rpc/delete_my_account', 'POST', {}).catch(() => {});
+        await supabaseRequest(`/rest/v1/user_anime?user_id=eq.${uid}`, 'DELETE').catch(() => {});
         await supabaseRequest(`/rest/v1/user_anime_entries?user_id=eq.${uid}`, 'DELETE').catch(() => {});
         await supabaseRequest(`/rest/v1/profiles?id=eq.${uid}`, 'DELETE').catch(() => {});
-        await supabaseRequest('/rest/v1/rpc/delete_own_account', 'POST', {}).catch(() => {});
         const rnd = Array.from(crypto.getRandomValues(new Uint8Array(16)))
           .map((b) => b.toString(16).padStart(2, '0'))
           .join('');
@@ -2096,7 +2404,7 @@ function bindWorkspaceEvents() {
       const season = Math.max(1, parseInt(document.getElementById('detail-season').value || '1', 10));
       const eps = Math.max(0, parseInt(document.getElementById('detail-eps').value || '0', 10));
       const stars = Math.min(5, Math.max(0, parseFloat(document.getElementById('detail-stars').value || '0')));
-      const notes = document.getElementById('detail-notes').value.trim();
+      const notes = document.getElementById('detail-notes').value.trim().slice(0, 500);
 
       const updated = {
         ...state.detailAnime,
@@ -2120,7 +2428,7 @@ function bindWorkspaceEvents() {
       renderApp();
       if (state.session) {
         const uid = encodeURIComponent(state.session.userId);
-        await supabaseRequest(`/rest/v1/profiles?id=eq.${uid}`, 'PATCH', { avatar_key: key }).catch(() => {});
+        await supabaseRequest(`/rest/v1/profiles?id=eq.${uid}`, 'PATCH', { avatar_key: key, avatar_url: key }).catch(() => {});
       }
     };
   });
@@ -2128,8 +2436,8 @@ function bindWorkspaceEvents() {
   const btnSaveProf = document.getElementById('btn-save-profile');
   if (btnSaveProf) {
     btnSaveProf.onclick = async () => {
-      const uname = document.getElementById('inp-prof-username').value.trim() || state.profile.username;
-      const bio = document.getElementById('inp-prof-bio').value.trim();
+      const uname = (document.getElementById('inp-prof-username').value.trim() || state.profile.username).slice(0, 40);
+      const bio = document.getElementById('inp-prof-bio').value.trim().slice(0, 160);
       state.profile.username = uname;
       state.profile.bio = bio;
       state.showProfileEditModal = false;
@@ -2173,6 +2481,7 @@ function bindWorkspaceEvents() {
 
 renderApp();
 fetchDiscoverCatalog();
+loadStorageStats();
 if (state.session) {
   loadCloudData();
 }

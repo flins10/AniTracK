@@ -22,6 +22,7 @@ import com.example.model.CommunityActivityItem
 import com.example.model.CommunityCapacity
 import com.example.model.CommunityMember
 import com.example.model.CommunityReview
+import com.example.model.DatabaseStorageStats
 import com.example.model.InvitationCode
 import com.example.model.MemberStatus
 import com.example.model.PrivacySettings
@@ -52,7 +53,8 @@ import java.time.LocalDate
 
 enum class ReviewSortOption(val label: String) {
     NEWEST("Newest"),
-    HIGHEST_RATED("Highest Rated")
+    HIGHEST_RATED("Highest Rated"),
+    MOST_LIKED("Most Liked")
 }
 
 enum class OnboardingStage {
@@ -272,9 +274,15 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     private val _isMemberInspectLoading = MutableStateFlow(false)
     val isMemberInspectLoading = _isMemberInspectLoading.asStateFlow()
 
-    // Admin Invitations
+    // Admin Invitations & 500 MB Storage Monitoring
     private val _invitations = MutableStateFlow<List<InvitationCode>>(emptyList())
     val invitations = _invitations.asStateFlow()
+
+    private val _storageStats = MutableStateFlow<DatabaseStorageStats?>(null)
+    val storageStats = _storageStats.asStateFlow()
+
+    private val _isStorageStatsLoading = MutableStateFlow(false)
+    val isStorageStatsLoading = _isStorageStatsLoading.asStateFlow()
 
     init {
         restoreSessionAndInitialData()
@@ -1637,6 +1645,45 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                 compareByDescending<CommunityReview> { it.rating ?: -1.0 }
                     .thenByDescending { it.updatedAt }
             )
+            ReviewSortOption.MOST_LIKED -> list.sortedWith(
+                compareByDescending<CommunityReview> { it.likesCount }
+                    .thenByDescending { it.rating ?: -1.0 }
+                    .thenByDescending { it.updatedAt }
+            )
+        }
+    }
+
+    fun toggleReviewLike(review: CommunityReview) {
+        val session = _authSession.value ?: return
+        val optimisticLiked = !review.likedByMe
+        val optimisticCount = maxOf(0, review.likesCount + if (optimisticLiked) 1 else -1)
+        _communityReviews.value = _communityReviews.value.map {
+            if (it.id == review.id) it.copy(likedByMe = optimisticLiked, likesCount = optimisticCount) else it
+        }
+        _animeReviews.value = _animeReviews.value.map {
+            if (it.id == review.id) it.copy(likedByMe = optimisticLiked, likesCount = optimisticCount) else it
+        }
+        viewModelScope.launch {
+            supabaseDb.toggleReviewLike(session, review.id, review.likedByMe, review.likesCount)
+                .onSuccess { (liked, count) ->
+                    _communityReviews.value = _communityReviews.value.map {
+                        if (it.id == review.id) it.copy(likedByMe = liked, likesCount = count) else it
+                    }
+                    _animeReviews.value = _animeReviews.value.map {
+                        if (it.id == review.id) it.copy(likedByMe = liked, likesCount = count) else it
+                    }
+                }
+        }
+    }
+
+    fun refreshStorageStats() {
+        val session = _authSession.value ?: return
+        viewModelScope.launch {
+            _isStorageStatsLoading.value = true
+            supabaseDb.fetchDatabaseStorageStats(session).onSuccess { stats ->
+                _storageStats.value = stats
+            }
+            _isStorageStatsLoading.value = false
         }
     }
 

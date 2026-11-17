@@ -26,6 +26,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.GroupAdd
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.RateReview
@@ -460,10 +462,12 @@ fun CommunityScreen(
                                     key = { row -> row.joinToString("_") { it.id } }
                                 ) { rowItems ->
                                     if (columns == 1) {
+                                        val firstRev = rowItems.first()
                                         Box(modifier = Modifier.fillMaxWidth().animateItem()) {
                                             EditorialCommunityNoteCard(
-                                                review = rowItems.first(),
-                                                onClick = { onSelectAnime(rowItems.first().animeId) }
+                                                review = firstRev,
+                                                onClick = { onSelectAnime(firstRev.animeId) },
+                                                onToggleLike = { viewModel.toggleReviewLike(firstRev) }
                                             )
                                         }
                                     } else {
@@ -476,7 +480,8 @@ fun CommunityScreen(
                                                 Box(modifier = Modifier.weight(1f)) {
                                                     EditorialCommunityNoteCard(
                                                         review = rev,
-                                                        onClick = { onSelectAnime(rev.animeId) }
+                                                        onClick = { onSelectAnime(rev.animeId) },
+                                                        onToggleLike = { viewModel.toggleReviewLike(rev) }
                                                     )
                                                 }
                                             }
@@ -504,7 +509,8 @@ fun CommunityScreen(
 internal fun EditorialCommunityNoteCard(
     review: CommunityReview,
     onClick: () -> Unit,
-    showAnimeHeader: Boolean = true
+    showAnimeHeader: Boolean = true,
+    onToggleLike: (() -> Unit)? = null
 ) {
     val colors = AppTheme.colors
     val formattedDate = remember(review.updatedAt) { formatCommunityTimestamp(review.updatedAt) }
@@ -606,7 +612,7 @@ internal fun EditorialCommunityNoteCard(
                 }
             }
 
-            // Minimal reviewer attribution footer
+            // Minimal reviewer attribution footer + Like button
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -627,13 +633,41 @@ internal fun EditorialCommunityNoteCard(
                         style = MaterialTheme.typography.labelMedium,
                         color = colors.textSecondary
                     )
+                    if (formattedDate.isNotBlank()) {
+                        Text(
+                            text = "• $formattedDate",
+                            style = TabularNumSmall.copy(fontSize = 10.sp),
+                            color = colors.textMuted
+                        )
+                    }
                 }
-                if (formattedDate.isNotBlank()) {
-                    Text(
-                        text = formattedDate,
-                        style = TabularNumSmall.copy(fontSize = 10.sp),
-                        color = colors.textMuted
-                    )
+
+                Surface(
+                    shape = CircleShape,
+                    color = if (review.likedByMe) colors.accentPrimary.copy(alpha = 0.2f) else colors.elevatedSurface.copy(alpha = 0.65f),
+                    border = if (review.likedByMe) BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.6f)) else null,
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .clickable(enabled = onToggleLike != null) { onToggleLike?.invoke() }
+                        .testTag("like_review_${review.id}")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (review.likedByMe) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                            contentDescription = if (review.likedByMe) "Unlike review" else "Like review",
+                            tint = if (review.likedByMe) colors.accentPrimary else colors.textSecondary,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Text(
+                            text = "${review.likesCount}",
+                            style = TabularNumSmall.copy(fontSize = 11.sp, fontWeight = FontWeight.SemiBold),
+                            color = if (review.likedByMe) colors.highlight else colors.textSecondary
+                        )
+                    }
                 }
             }
         }

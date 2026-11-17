@@ -63,13 +63,12 @@ jobs:
             printf "84831b9409646a918e30573bab4c9c91346d8abd\n504667f4c0de7af1a06de9f4b1727b84351f2910\n" > "${SDK_ROOT}/licenses/android-sdk-preview-license"
             printf "859f317696f67ef3d7f30a50a5560e7834b43903\n" > "${SDK_ROOT}/licenses/android-sdk-arm-dbt-license"
           fi
-          if [ ! -f ".env" ] && [ -f ".env.example" ]; then
+          if [ -n "${SUPABASE_URL:-}" ] && [ -n "${SUPABASE_ANON_KEY:-}" ]; then
+            printf "SUPABASE_URL=%s\nSUPABASE_ANON_KEY=%s\n" "${SUPABASE_URL}" "${SUPABASE_ANON_KEY}" > .env
+          elif [ ! -f ".env" ] && [ -f ".env.example" ]; then
             cp .env.example .env
           elif [ ! -f ".env" ]; then
             touch .env
-          fi
-          if [ ! -f "./debug.keystore" ] && [ -f "./debug.keystore.base64" ]; then
-            base64 -d ./debug.keystore.base64 > ./debug.keystore
           fi
           if [ ! -f "./debug.keystore" ]; then
             "${JAVA_HOME}/bin/keytool" -genkeypair \
@@ -87,6 +86,9 @@ jobs:
             echo "ERROR: ./debug.keystore could not be created."
             exit 1
           fi
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
 
       - name: Build debug APK
         env:
