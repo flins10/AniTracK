@@ -42,6 +42,7 @@ credentials = "1.5.0"
 googleid = "1.1.1"
 workmanager = "2.10.0"
 media3 = "1.5.1"
+composeMultiplatform = "1.7.3"
 
 
 [libraries]
@@ -105,3 +106,4 @@ android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 google-devtools-ksp = { id = "com.google.devtools.ksp", version.ref = "googleDevtoolsKsp" }
 secrets = { id = "com.google.android.libraries.mapsplatform.secrets-gradle-plugin", version.ref = "secretsGradlePlugin" }
+jetbrains-compose = { id = "org.jetbrains.compose", version.ref = "composeMultiplatform" }
