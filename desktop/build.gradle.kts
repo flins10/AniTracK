@@ -23,19 +23,33 @@ sourceSets {
     }
 }
 
-tasks.register<Copy>("syncRootWebMirror") {
-    from("../public") {
-        include("index.html", "app.js", "styles.css", "sw.js", "manifest.json", "downloads-config.json")
+tasks.register("syncWebAssets") {
+    doLast {
+        project.copy {
+            from("../app/src/main/res/drawable") {
+                include("*.png")
+            }
+            into("../public/assets")
+        }
+        project.copy {
+            from("../app/src/main/res/drawable") {
+                include("*.png")
+            }
+            into("../assets")
+        }
+        project.copy {
+            from("../app/src/main/res/drawable") {
+                include("*.png")
+            }
+            into("src/main/resources/drawable")
+        }
+        project.copy {
+            from("../public") {
+                include("index.html", "app.js", "styles.css", "sw.js", "manifest.json", "downloads-config.json")
+            }
+            into("..")
+        }
     }
-    into("..")
-}
-
-tasks.register<Copy>("syncWebAssets") {
-    dependsOn("syncRootWebMirror")
-    from("../app/src/main/res/drawable") {
-        include("*.png")
-    }
-    into("../public/assets")
 }
 
 dependencies {

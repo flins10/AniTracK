@@ -328,24 +328,15 @@ fun ObsidianTopBar(
                     .testTag("profile_nav_button"),
                 contentAlignment = Alignment.Center
             ) {
-                if (userProfile != null) {
-                    val preset = BuiltInAvatar.fromKey(userProfile.avatarKey)
-                    Image(
-                        painter = painterResource(id = preset.drawableRes()),
-                        contentDescription = "Open Profile",
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize().clip(CircleShape)
-                    )
-                } else {
-                    val initial = userProfile?.username?.firstOrNull()?.uppercaseChar()?.toString() ?: "A"
-                    Text(
-                        text = initial,
-                        fontFamily = CormorantSerifFamily,
-                        fontSize = 19.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = colors.onAccentPrimary
-                    )
-                }
+                val preset = BuiltInAvatar.fromKey(
+                    userProfile?.avatarKey?.takeIf { it.isNotBlank() } ?: userProfile?.avatarUrl
+                )
+                Image(
+                    painter = painterResource(id = preset.drawableRes()),
+                    contentDescription = "Open Profile",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize().clip(CircleShape)
+                )
             }
         }
     }

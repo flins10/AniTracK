@@ -80,7 +80,12 @@ fun MemberAvatar(
     size: Dp = 48.dp,
     modifier: Modifier = Modifier
 ) {
-    val preset = BuiltInAvatar.fromKey(avatarKey)
+    val effectiveKey = avatarKey?.takeIf { it.isNotBlank() && it != "null" }
+        ?: avatarUrl?.takeIf { !it.startsWith("http", ignoreCase = true) }
+    val preset = BuiltInAvatar.fromKey(effectiveKey)
+    val validRemoteUrl = avatarUrl?.trim()?.takeIf {
+        it.startsWith("https://", ignoreCase = true) || it.startsWith("http://", ignoreCase = true)
+    }
     Box(
         modifier = modifier
             .size(size)
@@ -93,19 +98,18 @@ fun MemberAvatar(
             .border(1.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f), CircleShape),
         contentAlignment = Alignment.Center
     ) {
-        if (!avatarUrl.isNullOrBlank()) {
+        Image(
+            painter = painterResource(id = preset.drawableRes()),
+            contentDescription = "$username avatar (${preset.displayName})",
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize().clip(CircleShape)
+        )
+        if (validRemoteUrl != null) {
             AsyncImage(
-                model = avatarUrl,
+                model = validRemoteUrl,
                 contentDescription = "$username avatar",
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
-            )
-        } else {
-            Image(
-                painter = painterResource(id = preset.drawableRes()),
-                contentDescription = "$username avatar (${preset.displayName})",
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.fillMaxSize().clip(CircleShape)
             )
         }
     }

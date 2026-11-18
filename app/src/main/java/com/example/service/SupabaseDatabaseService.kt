@@ -776,8 +776,12 @@ class SupabaseDatabaseService {
                     id = p.getString("id"),
                     email = session.email,
                     username = p.optString("username", "Member"),
-                    avatarKey = p.optString("avatar_key", "avatar_1"),
-                    avatarUrl = p.optString("avatar_url").takeIf { it.isNotBlank() && it != "null" },
+                    avatarKey = p.optString("avatar_key").takeIf { it.isNotBlank() && it != "null" }
+                        ?: p.optString("avatar_url").takeIf { it.startsWith("avatar_") }
+                        ?: "avatar_1",
+                    avatarUrl = p.optString("avatar_url").takeIf {
+                        it.startsWith("https://", ignoreCase = true) || it.startsWith("http://", ignoreCase = true)
+                    },
                     bio = p.optString("bio", ""),
                     role = p.optString("role", "member"),
                     canGenerateInvites = p.optBoolean("can_generate_invites", false),
@@ -814,10 +818,13 @@ class SupabaseDatabaseService {
                 .put("username", cleanName)
                 .put("avatar_key", avatarKey)
                 .put("bio", bio.trim())
-            if (avatarUrl.isNullOrBlank()) {
+            val validHttpAvatarUrl = avatarUrl?.trim()?.takeIf {
+                it.startsWith("https://", ignoreCase = true) || it.startsWith("http://", ignoreCase = true)
+            }
+            if (validHttpAvatarUrl == null) {
                 payload.put("avatar_url", JSONObject.NULL)
             } else {
-                payload.put("avatar_url", avatarUrl)
+                payload.put("avatar_url", validHttpAvatarUrl)
             }
 
             val req = requestBuilder("/rest/v1/profiles?id=eq.${session.userId}", session.accessToken)
@@ -1370,8 +1377,12 @@ class SupabaseDatabaseService {
                         CommunityMember(
                             userId = uid,
                             username = p.optString("username", "Member"),
-                            avatarKey = p.optString("avatar_key", "avatar_1"),
-                            avatarUrl = p.optString("avatar_url").takeIf { it.isNotBlank() && it != "null" },
+                            avatarKey = p.optString("avatar_key").takeIf { it.isNotBlank() && it != "null" }
+                                ?: p.optString("avatar_url").takeIf { it.startsWith("avatar_") }
+                                ?: "avatar_1",
+                            avatarUrl = p.optString("avatar_url").takeIf {
+                                it.startsWith("https://", ignoreCase = true) || it.startsWith("http://", ignoreCase = true)
+                            },
                             bio = p.optString("bio", ""),
                             role = p.optString("role", m.optString("role", "member")),
                             status = MemberStatus.fromDbValue(m.optString("status")),

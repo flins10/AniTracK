@@ -144,19 +144,121 @@ private val SUPABASE_ANON_KEY: String by lazy {
         ?: reconstructVault(K0, K1, K2, 46, 0x6B).trim()
 }
 
-enum class DesktopAvatar(val key: String, val displayName: String, val resPath: String) {
-    AVATAR_1("avatar_1", "Crimson Wolf", "drawable/avatar_1.png"),
-    AVATAR_2("avatar_2", "Azure Sovereign", "drawable/avatar_2.png"),
-    AVATAR_3("avatar_3", "Amethyst Dragon", "drawable/avatar_3.png"),
-    AVATAR_4("avatar_4", "Frost Empress", "drawable/avatar_4.png"),
-    AVATAR_5("avatar_5", "Emerald Flora", "drawable/avatar_5.png"),
-    AVATAR_6("avatar_6", "Amber Scholar", "drawable/avatar_6.png"),
-    AVATAR_7("avatar_7", "Autumn Vanguard", "drawable/avatar_7.png"),
-    AVATAR_8("avatar_8", "Indigo Flame", "drawable/avatar_8.png"),
-    AVATAR_9("avatar_9", "Solar Halo", "drawable/avatar_9.png");
+enum class DesktopAvatar(
+    val key: String,
+    val displayName: String,
+    val fileName: String,
+    val resPath: String,
+    val primaryColor: Color,
+    val secondaryColor: Color
+) {
+    AVATAR_1("avatar_1", "Crimson Wolf", "avatar_1.png", "drawable/avatar_1.png", Color(0xFF9F1239), Color(0xFF334155)),
+    AVATAR_2("avatar_2", "Azure Sovereign", "avatar_2.png", "drawable/avatar_2.png", Color(0xFF0284C7), Color(0xFF6366F1)),
+    AVATAR_3("avatar_3", "Amethyst Dragon", "avatar_3.png", "drawable/avatar_3.png", Color(0xFFA855F7), Color(0xFFE11D48)),
+    AVATAR_4("avatar_4", "Frost Empress", "avatar_4.png", "drawable/avatar_4.png", Color(0xFF38BDF8), Color(0xFF818CF8)),
+    AVATAR_5("avatar_5", "Emerald Flora", "avatar_5.png", "drawable/avatar_5.png", Color(0xFF10B981), Color(0xFF38BDF8)),
+    AVATAR_6("avatar_6", "Amber Scholar", "avatar_6.png", "drawable/avatar_6.png", Color(0xFFF59E0B), Color(0xFF92400E)),
+    AVATAR_7("avatar_7", "Autumn Vanguard", "avatar_7.png", "drawable/avatar_7.png", Color(0xFFEA580C), Color(0xFF06B6D4)),
+    AVATAR_8("avatar_8", "Indigo Flame", "avatar_8.png", "drawable/avatar_8.png", Color(0xFF4F46E5), Color(0xFF0EA5E9)),
+    AVATAR_9("avatar_9", "Solar Halo", "avatar_9.png", "drawable/avatar_9.png", Color(0xFFFBBF24), Color(0xFF64748B));
 
     companion object {
-        fun fromKey(k: String?): DesktopAvatar = entries.firstOrNull { it.key == k } ?: AVATAR_3
+        fun fromKey(k: String?, fallbackUrl: String? = null): DesktopAvatar {
+            val candidates = listOfNotNull(k, fallbackUrl).map { it.trim() }.filter { it.isNotEmpty() && it != "null" }
+            for (raw in candidates) {
+                val lower = raw.lowercase()
+                entries.firstOrNull { it.key == lower || it.displayName.lowercase() == lower }?.let { return it }
+                val match = Regex("""avatar[_-]?([1-9])""").find(lower)
+                    ?: Regex("""^([1-9])$""").find(lower)
+                val idx = match?.groupValues?.getOrNull(1)?.toIntOrNull()
+                if (idx != null && idx in 1..9) {
+                    return entries[idx - 1]
+                }
+            }
+            return AVATAR_1
+        }
+    }
+}
+
+private fun loadLocalDrawableBitmap(fileName: String): ImageBitmap? {
+    val cacheKey = "local:$fileName"
+    imageCache[cacheKey]?.let { return it }
+    val streamPaths = listOf(
+        "/drawable/$fileName",
+        "drawable/$fileName",
+        "/$fileName",
+        fileName
+    )
+    for (p in streamPaths) {
+        val bytes = runCatching {
+            DesktopAvatar::class.java.getResourceAsStream(p)?.use { it.readBytes() }
+                ?: Thread.currentThread().contextClassLoader?.getResourceAsStream(p.removePrefix("/"))?.use { it.readBytes() }
+        }.getOrNull()
+        if (bytes != null && bytes.isNotEmpty()) {
+            val bmp = runCatching { SkiaImage.makeFromEncoded(bytes).toComposeImageBitmap() }.getOrNull()
+            if (bmp != null) {
+                imageCache[cacheKey] = bmp
+                return bmp
+            }
+        }
+    }
+    val fileCandidates = listOf(
+        File("desktop/src/main/resources/drawable/$fileName"),
+        File("src/main/resources/drawable/$fileName"),
+        File("app/src/main/res/drawable/$fileName"),
+        File("../app/src/main/res/drawable/$fileName"),
+        File("public/assets/$fileName"),
+        File("../public/assets/$fileName"),
+        File("assets/$fileName")
+    )
+    for (f in fileCandidates) {
+        if (f.exists() && f.isFile) {
+            val bmp = runCatching { SkiaImage.makeFromEncoded(f.readBytes()).toComposeImageBitmap() }.getOrNull()
+            if (bmp != null) {
+                imageCache[cacheKey] = bmp
+                return bmp
+            }
+        }
+    }
+    return null
+}
+
+@Composable
+private fun DesktopAvatarImage(
+    avatarKey: String?,
+    username: String = "A",
+    modifier: Modifier = Modifier
+) {
+    val preset = DesktopAvatar.fromKey(avatarKey)
+    val bitmap = remember(preset.fileName) { loadLocalDrawableBitmap(preset.fileName) }
+    Box(
+        modifier = modifier.background(
+            Brush.linearGradient(listOf(preset.primaryColor, preset.secondaryColor))
+        ),
+        contentAlignment = Alignment.Center
+    ) {
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap,
+                contentDescription = preset.displayName,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            runCatching { painterResource(preset.resPath) }.getOrNull()?.let { painter ->
+                Image(
+                    painter = painter,
+                    contentDescription = preset.displayName,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } ?: Text(
+                text = username.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "A",
+                fontFamily = FontFamily.Serif,
+                fontWeight = FontWeight.Bold,
+                color = IvoryText
+            )
+        }
     }
 }
 
@@ -433,10 +535,13 @@ private suspend fun signInSupabase(identifier: String, password: String): Result
     }
 }
 
+private class OtpVerificationRequiredException(val email: String) :
+    Exception("Enter the 8-digit verification code sent to $email")
+
 private suspend fun signUpSupabase(emailInput: String, password: String): Result<DesktopPersistedState> = withContext(Dispatchers.IO) {
     runCatching {
-        val email = emailInput.trim()
-        if (!email.contains("@")) {
+        val email = emailInput.trim().lowercase()
+        if (!email.contains("@") || !email.contains(".")) {
             throw IllegalArgumentException("Please enter a valid email address to create an account.")
         }
         val payload = JsonObject().apply {
@@ -463,9 +568,13 @@ private suspend fun signUpSupabase(emailInput: String, password: String): Result
             val refresh = obj.get("refresh_token").asStringOrNull().orEmpty()
             val expiresIn = obj.get("expires_in").asLongOrNull() ?: 3600L
             val userObj = obj.getAsJsonObject("user") ?: obj
+            val identities = userObj.getAsJsonArray("identities")
+            if (identities != null && identities.size() == 0) {
+                throw IllegalArgumentException("An account with this email already exists. Please Sign In instead.")
+            }
             val userId = userObj.get("id").asStringOrNull().orEmpty()
             if (token.isBlank()) {
-                return@runCatching signInSupabase(email, password).getOrThrow()
+                throw OtpVerificationRequiredException(email)
             }
             DesktopPersistedState(
                 accessToken = token,
@@ -474,10 +583,77 @@ private suspend fun signUpSupabase(emailInput: String, password: String): Result
                 userId = userId,
                 email = email,
                 username = email.substringBefore("@"),
-                avatarKey = DesktopAvatar.AVATAR_3.key,
+                avatarKey = DesktopAvatar.AVATAR_1.key,
                 isGuest = false
             )
         }
+    }
+}
+
+private suspend fun verifySignupOtpSupabase(emailInput: String, otpCode: String): Result<DesktopPersistedState> = withContext(Dispatchers.IO) {
+    runCatching {
+        val cleanEmail = emailInput.trim().lowercase()
+        val cleanOtp = otpCode.filter { it.isDigit() }
+        if (cleanOtp.length < 6) {
+            throw IllegalArgumentException("Please enter the verification code from your email.")
+        }
+        val payload = JsonObject().apply {
+            addProperty("email", cleanEmail)
+            addProperty("token", cleanOtp)
+            addProperty("type", "signup")
+        }
+        val req = Request.Builder()
+            .url("$SUPABASE_URL/auth/v1/verify")
+            .addHeader("apikey", SUPABASE_ANON_KEY)
+            .addHeader("Content-Type", "application/json")
+            .post(gson.toJson(payload).toRequestBody("application/json".toMediaType()))
+            .build()
+        httpClient.newCall(req).execute().use { resp ->
+            val text = resp.body?.string().orEmpty()
+            val obj = gson.fromJson(text, JsonObject::class.java) ?: JsonObject()
+            if (!resp.isSuccessful) {
+                val msg = obj.get("msg").asStringOrNull()
+                    ?: obj.get("error_description").asStringOrNull()
+                    ?: obj.get("message").asStringOrNull()
+                    ?: "Invalid or expired verification code."
+                throw IllegalArgumentException(msg)
+            }
+            val token = obj.get("access_token").asStringOrNull().orEmpty()
+            val refresh = obj.get("refresh_token").asStringOrNull().orEmpty()
+            val expiresIn = obj.get("expires_in").asLongOrNull() ?: 3600L
+            val userObj = obj.getAsJsonObject("user") ?: obj
+            val userId = userObj.get("id").asStringOrNull().orEmpty()
+            if (token.isBlank() || userId.isBlank()) {
+                throw IllegalArgumentException("Verification failed. Please check the code and try again.")
+            }
+            DesktopPersistedState(
+                accessToken = token,
+                refreshToken = refresh,
+                expiresAt = (System.currentTimeMillis() / 1000L) + expiresIn,
+                userId = userId,
+                email = cleanEmail,
+                username = cleanEmail.substringBefore("@"),
+                avatarKey = DesktopAvatar.AVATAR_1.key,
+                isGuest = false
+            )
+        }
+    }
+}
+
+private suspend fun resendSignupOtpSupabase(emailInput: String): Result<Unit> = withContext(Dispatchers.IO) {
+    runCatching {
+        val cleanEmail = emailInput.trim().lowercase()
+        val payload = JsonObject().apply {
+            addProperty("type", "signup")
+            addProperty("email", cleanEmail)
+        }
+        val req = Request.Builder()
+            .url("$SUPABASE_URL/auth/v1/resend")
+            .addHeader("apikey", SUPABASE_ANON_KEY)
+            .addHeader("Content-Type", "application/json")
+            .post(gson.toJson(payload).toRequestBody("application/json".toMediaType()))
+            .build()
+        httpClient.newCall(req).execute().close()
     }
 }
 
@@ -620,7 +796,10 @@ private suspend fun fetchFullCloudSnapshot(session: DesktopPersistedState): Clou
                     val prof = arr?.firstOrNull()?.asJsonObject
                     if (prof != null) {
                         resolvedUsername = prof.get("username").asStringOrNull()?.takeIf { it.isNotBlank() }
-                        resolvedAvatar = prof.get("avatar_key").asStringOrNull()?.takeIf { it.isNotBlank() }
+                        resolvedAvatar = DesktopAvatar.fromKey(
+                            prof.get("avatar_key").asStringOrNull(),
+                            prof.get("avatar_url").asStringOrNull()
+                        ).key
                     }
                 }
             }
@@ -632,7 +811,7 @@ private suspend fun fetchFullCloudSnapshot(session: DesktopPersistedState): Clou
     runCatching {
         val profMap = mutableMapOf<String, Pair<String, String>>()
         val profReq = Request.Builder()
-            .url("$SUPABASE_URL/rest/v1/profiles?select=id,username,avatar_key&limit=200")
+            .url("$SUPABASE_URL/rest/v1/profiles?select=id,username,avatar_key,avatar_url&limit=200")
             .addHeader("apikey", SUPABASE_ANON_KEY)
             .addHeader("Authorization", "Bearer $bearer")
             .build()
@@ -643,7 +822,10 @@ private suspend fun fetchFullCloudSnapshot(session: DesktopPersistedState): Clou
                     val o = el.asJsonObject
                     val pid = o.get("id").asStringOrNull() ?: return@forEach
                     val uname = o.get("username").asStringOrNull() ?: "Reviewer"
-                    val av = o.get("avatar_key").asStringOrNull() ?: DesktopAvatar.AVATAR_3.key
+                    val av = DesktopAvatar.fromKey(
+                        o.get("avatar_key").asStringOrNull(),
+                        o.get("avatar_url").asStringOrNull()
+                    ).key
                     profMap[pid] = uname to av
                 }
             }
@@ -1449,11 +1631,16 @@ private fun DesktopAuthScreen(
 ) {
     val scope = rememberCoroutineScope()
     var isSignUp by remember { mutableStateOf(false) }
+    var awaitingOtp by remember { mutableStateOf(false) }
+    var pendingEmail by remember { mutableStateOf("") }
+    var otpCode by remember { mutableStateOf("") }
     var identifier by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var infoMessage by remember { mutableStateOf<String?>(null) }
+    val mascotBitmap = remember { loadLocalDrawableBitmap("img_login_mascot.png") }
 
     Box(
         modifier = Modifier
@@ -1474,7 +1661,6 @@ private fun DesktopAuthScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp, vertical = 24.dp)
         ) {
-            // Mascot sitting directly on top of the dark rounded card (no header text above mascot)
             Box(modifier = Modifier.fillMaxWidth()) {
                 Surface(
                     shape = RoundedCornerShape(28.dp),
@@ -1484,192 +1670,329 @@ private fun DesktopAuthScreen(
                         .fillMaxWidth()
                         .padding(top = 158.dp)
                 ) {
-                    Column(
-                        modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 36.dp, bottom = 26.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp)
-                    ) {
-                        Text(
-                            text = if (isSignUp) "Email Address" else "Email or Username",
-                            color = IvoryText,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-
-                        // Input 1: Email or Username
-                        Surface(
-                            shape = RoundedCornerShape(16.dp),
-                            color = Color(0xFF151823),
-                            border = BorderStroke(1.dp, Color(0xFF2A2F3F)),
-                            modifier = Modifier.fillMaxWidth().height(54.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                Icon(
-                                    Icons.Filled.Person,
-                                    contentDescription = null,
-                                    tint = ChampagneGold,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-                                    if (identifier.isEmpty()) {
-                                        Text(
-                                            if (isSignUp) "you@example.com" else "you@example.com or username",
-                                            color = AshMuted,
-                                            fontSize = 15.sp
-                                        )
-                                    }
-                                    androidx.compose.foundation.text.BasicTextField(
-                                        value = identifier,
-                                        onValueChange = {
-                                            identifier = it
-                                            errorMessage = null
-                                        },
-                                        singleLine = true,
-                                        textStyle = androidx.compose.ui.text.TextStyle(
-                                            color = IvoryText,
-                                            fontSize = 15.sp
-                                        ),
-                                        modifier = Modifier.fillMaxWidth()
-                                    )
-                                }
-                            }
-                        }
-
-                        Text(
-                            text = "Password",
-                            color = IvoryText,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-
-                        // Input 2: Password with key icon & eye toggle
-                        Surface(
-                            shape = RoundedCornerShape(16.dp),
-                            color = Color(0xFF151823),
-                            border = BorderStroke(1.dp, Color(0xFF2A2F3F)),
-                            modifier = Modifier.fillMaxWidth().height(54.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                Icon(
-                                    Icons.Filled.VpnKey,
-                                    contentDescription = null,
-                                    tint = ChampagneGold,
-                                    modifier = Modifier.size(19.dp)
-                                )
-                                Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-                                    if (password.isEmpty()) {
-                                        Text("••••••••", color = AshMuted, fontSize = 15.sp)
-                                    }
-                                    androidx.compose.foundation.text.BasicTextField(
-                                        value = password,
-                                        onValueChange = {
-                                            password = it
-                                            errorMessage = null
-                                        },
-                                        singleLine = true,
-                                        visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
-                                        textStyle = androidx.compose.ui.text.TextStyle(
-                                            color = IvoryText,
-                                            fontSize = 15.sp
-                                        ),
-                                        modifier = Modifier.fillMaxWidth()
-                                    )
-                                }
-                                IconButton(onClick = { showPassword = !showPassword }) {
-                                    Icon(
-                                        if (showPassword) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                                        contentDescription = "Toggle password visibility",
-                                        tint = WarmSilver,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-                            }
-                        }
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.End
+                    if (awaitingOtp) {
+                        Column(
+                            modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 36.dp, bottom = 26.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Text(
-                                "Forgot Password?",
+                                text = "Check Your Inbox",
+                                fontFamily = FontFamily.Serif,
+                                fontSize = 26.sp,
+                                color = IvoryText
+                            )
+                            Text(
+                                text = "Enter the 8-digit verification code sent to $pendingEmail",
                                 color = WarmSilver,
                                 fontSize = 13.sp,
-                                modifier = Modifier.clickable {
-                                    errorMessage = "Enter your email above and contact support or reset via Supabase."
+                                textAlign = TextAlign.Center
+                            )
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = Color(0xFF151823),
+                                border = BorderStroke(1.dp, Color(0xFF2A2F3F)),
+                                modifier = Modifier.fillMaxWidth().height(54.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    Icon(Icons.Filled.VpnKey, contentDescription = null, tint = ChampagneGold, modifier = Modifier.size(19.dp))
+                                    Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                                        if (otpCode.isEmpty()) {
+                                            Text("ex-12345678", color = AshMuted, fontSize = 15.sp)
+                                        }
+                                        androidx.compose.foundation.text.BasicTextField(
+                                            value = otpCode,
+                                            onValueChange = { raw ->
+                                                otpCode = raw.filter { it.isDigit() }.take(8)
+                                                errorMessage = null
+                                            },
+                                            singleLine = true,
+                                            textStyle = androidx.compose.ui.text.TextStyle(
+                                                color = IvoryText,
+                                                fontSize = 16.sp,
+                                                fontWeight = FontWeight.Bold
+                                            ),
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+                                    }
                                 }
-                            )
-                        }
-
-                        if (!errorMessage.isNullOrBlank()) {
-                            Text(
-                                text = errorMessage!!,
-                                color = CrimsonWaste,
-                                fontSize = 12.5.sp,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        }
-
-                        // Gold Gradient Pill Button: SIGN IN
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(56.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    Brush.horizontalGradient(
-                                        colors = listOf(Color(0xFFF3E2BA), Color(0xFFDFB870))
-                                    )
+                            }
+                            if (!errorMessage.isNullOrBlank()) {
+                                Text(errorMessage!!, color = CrimsonWaste, fontSize = 12.5.sp)
+                            }
+                            if (!infoMessage.isNullOrBlank()) {
+                                Text(infoMessage!!, color = ChampagneGold, fontSize = 12.5.sp)
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(54.dp)
+                                    .clip(CircleShape)
+                                    .background(Brush.horizontalGradient(listOf(Color(0xFFF3E2BA), Color(0xFFDFB870))))
+                                    .clickable(enabled = !isLoading) {
+                                        isLoading = true
+                                        errorMessage = null
+                                        scope.launch {
+                                            val res = verifySignupOtpSupabase(pendingEmail, otpCode)
+                                            isLoading = false
+                                            res.onSuccess { state -> onAuthenticated(state) }
+                                                .onFailure { err -> errorMessage = err.message ?: "Invalid code" }
+                                        }
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    if (isLoading) "VERIFYING..." else "CONFIRM & CONTINUE",
+                                    color = ChampagneOnGold,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    letterSpacing = 1.6.sp
                                 )
-                                .clickable(enabled = !isLoading) {
-                                    if (identifier.isBlank() || password.isBlank()) {
-                                        errorMessage = "Please enter your email/username and password."
-                                        return@clickable
-                                    }
-                                    isLoading = true
-                                    errorMessage = null
-                                    scope.launch {
-                                        val res = if (isSignUp) {
-                                            signUpSupabase(identifier, password)
-                                        } else {
-                                            signInSupabase(identifier, password)
-                                        }
-                                        isLoading = false
-                                        res.onSuccess { state ->
-                                            onAuthenticated(state)
-                                        }.onFailure { err ->
-                                            errorMessage = err.message ?: "Authentication failed"
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    "Resend Code",
+                                    color = ChampagneGold,
+                                    fontSize = 13.sp,
+                                    modifier = Modifier.clickable {
+                                        scope.launch {
+                                            resendSignupOtpSupabase(pendingEmail)
+                                            infoMessage = "Fresh 8-digit code sent to $pendingEmail"
                                         }
                                     }
-                                },
-                            contentAlignment = Alignment.Center
+                                )
+                                Text(
+                                    "Change Email",
+                                    color = WarmSilver,
+                                    fontSize = 13.sp,
+                                    modifier = Modifier.clickable {
+                                        awaitingOtp = false
+                                        otpCode = ""
+                                        errorMessage = null
+                                        infoMessage = null
+                                    }
+                                )
+                            }
+                        }
+                    } else {
+                        Column(
+                            modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 36.dp, bottom = 26.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
                             Text(
-                                text = if (isLoading) "SIGNING IN..." else if (isSignUp) "CREATE ACCOUNT" else "SIGN IN",
-                                color = ChampagneOnGold,
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                letterSpacing = 2.sp
+                                text = if (isSignUp) "Email Address" else "Email or Username",
+                                color = IvoryText,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Medium
                             )
+
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = Color(0xFF151823),
+                                border = BorderStroke(1.dp, Color(0xFF2A2F3F)),
+                                modifier = Modifier.fillMaxWidth().height(54.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Filled.Person,
+                                        contentDescription = null,
+                                        tint = ChampagneGold,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                                        if (identifier.isEmpty()) {
+                                            Text(
+                                                if (isSignUp) "you@example.com" else "you@example.com or username",
+                                                color = AshMuted,
+                                                fontSize = 15.sp
+                                            )
+                                        }
+                                        androidx.compose.foundation.text.BasicTextField(
+                                            value = identifier,
+                                            onValueChange = {
+                                                identifier = it
+                                                errorMessage = null
+                                            },
+                                            singleLine = true,
+                                            textStyle = androidx.compose.ui.text.TextStyle(
+                                                color = IvoryText,
+                                                fontSize = 15.sp
+                                            ),
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+                                    }
+                                }
+                            }
+
+                            Text(
+                                text = "Password",
+                                color = IvoryText,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = Color(0xFF151823),
+                                border = BorderStroke(1.dp, Color(0xFF2A2F3F)),
+                                modifier = Modifier.fillMaxWidth().height(54.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Filled.VpnKey,
+                                        contentDescription = null,
+                                        tint = ChampagneGold,
+                                        modifier = Modifier.size(19.dp)
+                                    )
+                                    Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                                        if (password.isEmpty()) {
+                                            Text("••••••••", color = AshMuted, fontSize = 15.sp)
+                                        }
+                                        androidx.compose.foundation.text.BasicTextField(
+                                            value = password,
+                                            onValueChange = {
+                                                password = it
+                                                errorMessage = null
+                                            },
+                                            singleLine = true,
+                                            visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                                            textStyle = androidx.compose.ui.text.TextStyle(
+                                                color = IvoryText,
+                                                fontSize = 15.sp
+                                            ),
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+                                    }
+                                    IconButton(onClick = { showPassword = !showPassword }) {
+                                        Icon(
+                                            if (showPassword) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                            contentDescription = "Toggle password visibility",
+                                            tint = WarmSilver,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                }
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                Text(
+                                    "Forgot Password?",
+                                    color = WarmSilver,
+                                    fontSize = 13.sp,
+                                    modifier = Modifier.clickable {
+                                        errorMessage = "Enter your email above or reset via the Web application."
+                                    }
+                                )
+                            }
+
+                            if (!errorMessage.isNullOrBlank()) {
+                                Text(
+                                    text = errorMessage!!,
+                                    color = CrimsonWaste,
+                                    fontSize = 12.5.sp,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(56.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        Brush.horizontalGradient(
+                                            colors = listOf(Color(0xFFF3E2BA), Color(0xFFDFB870))
+                                        )
+                                    )
+                                    .clickable(enabled = !isLoading) {
+                                        if (identifier.isBlank() || password.isBlank()) {
+                                            errorMessage = "Please enter your email/username and password."
+                                            return@clickable
+                                        }
+                                        isLoading = true
+                                        errorMessage = null
+                                        scope.launch {
+                                            val res = if (isSignUp) {
+                                                signUpSupabase(identifier, password)
+                                            } else {
+                                                signInSupabase(identifier, password)
+                                            }
+                                            isLoading = false
+                                            res.onSuccess { state ->
+                                                onAuthenticated(state)
+                                            }.onFailure { err ->
+                                                if (err is OtpVerificationRequiredException) {
+                                                    pendingEmail = err.email
+                                                    awaitingOtp = true
+                                                    otpCode = ""
+                                                    infoMessage = "We sent an 8-digit verification code to ${err.email}"
+                                                } else if ((err.message ?: "").contains("not confirmed", ignoreCase = true)) {
+                                                    val em = identifier.trim().lowercase()
+                                                    pendingEmail = em
+                                                    awaitingOtp = true
+                                                    otpCode = ""
+                                                    resendSignupOtpSupabase(em)
+                                                    infoMessage = "Enter the 8-digit verification code sent to $em"
+                                                } else {
+                                                    errorMessage = err.message ?: "Authentication failed"
+                                                }
+                                            }
+                                        }
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = if (isLoading) "PLEASE WAIT..." else if (isSignUp) "CREATE ACCOUNT" else "SIGN IN",
+                                    color = ChampagneOnGold,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    letterSpacing = 2.sp
+                                )
+                            }
                         }
                     }
                 }
 
                 // Purple witch mascot perched atop the card
-                Image(
-                    painter = painterResource("drawable/img_login_mascot.png"),
-                    contentDescription = "Anime Universe Mascot",
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier
-                        .size(width = 210.dp, height = 200.dp)
-                        .align(Alignment.TopCenter)
-                )
+                if (mascotBitmap != null) {
+                    Image(
+                        bitmap = mascotBitmap,
+                        contentDescription = "Anime Universe Mascot",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .size(width = 210.dp, height = 200.dp)
+                            .align(Alignment.TopCenter)
+                    )
+                } else {
+                    runCatching { painterResource("drawable/img_login_mascot.png") }.getOrNull()?.let { painter ->
+                        Image(
+                            painter = painter,
+                            contentDescription = "Anime Universe Mascot",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .size(width = 210.dp, height = 200.dp)
+                                .align(Alignment.TopCenter)
+                        )
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(22.dp))
@@ -1690,7 +2013,9 @@ private fun DesktopAuthScreen(
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.clickable {
                         isSignUp = !isSignUp
+                        awaitingOtp = false
                         errorMessage = null
+                        infoMessage = null
                     }
                 )
             }
@@ -2723,10 +3048,9 @@ private fun DesktopCommunityScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Image(
-                                painter = painterResource(avatarPreset.resPath),
-                                contentDescription = rev.username,
-                                contentScale = ContentScale.Crop,
+                            DesktopAvatarImage(
+                                avatarKey = avatarPreset.key,
+                                username = rev.username,
                                 modifier = Modifier.size(30.dp).clip(CircleShape)
                             )
                             Text(rev.username, fontSize = 14.sp, color = WarmSilver)
@@ -2874,11 +3198,8 @@ private fun AvatarCircleButton(
     avatarKey: String,
     onClick: () -> Unit
 ) {
-    val preset = DesktopAvatar.fromKey(avatarKey)
-    Image(
-        painter = painterResource(preset.resPath),
-        contentDescription = "Open Profile",
-        contentScale = ContentScale.Crop,
+    DesktopAvatarImage(
+        avatarKey = avatarKey,
         modifier = Modifier
             .size(44.dp)
             .clip(CircleShape)
@@ -2925,10 +3246,9 @@ private fun DesktopProfileScreen(
                     horizontalArrangement = Arrangement.spacedBy(18.dp)
                 ) {
                     val preset = DesktopAvatar.fromKey(selectedAvatar)
-                    Image(
-                        painter = painterResource(preset.resPath),
-                        contentDescription = preset.displayName,
-                        contentScale = ContentScale.Crop,
+                    DesktopAvatarImage(
+                        avatarKey = preset.key,
+                        username = session.username,
                         modifier = Modifier
                             .size(88.dp)
                             .clip(CircleShape)
@@ -2968,10 +3288,9 @@ private fun DesktopProfileScreen(
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(DesktopAvatar.entries) { av ->
                         val isSel = av.key == selectedAvatar
-                        Image(
-                            painter = painterResource(av.resPath),
-                            contentDescription = av.displayName,
-                            contentScale = ContentScale.Crop,
+                        DesktopAvatarImage(
+                            avatarKey = av.key,
+                            username = av.displayName,
                             modifier = Modifier
                                 .size(58.dp)
                                 .clip(CircleShape)

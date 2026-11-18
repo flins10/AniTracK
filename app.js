@@ -175,10 +175,16 @@ const state = {
   },
 
   // Auth State
-  authMode: 'signin', // 'signin' | 'signup' | 'forgot' | 'onboard_username' | 'onboard_avatar'
+  authMode: 'signin', // 'signin' | 'signup' | 'verify_otp' | 'forgot_otp' | 'onboard_username' | 'onboard_avatar'
   identifier: '',
   password: '',
+  confirmPassword: '',
   showPassword: false,
+  pendingVerifyEmail: '',
+  pendingVerifyPassword: '',
+  signupOtpCode: '',
+  resetOtpCode: '',
+  resetNewPassword: '',
   onboardUsername: '',
   onboardAvatarKey: 'avatar_1',
   authError: '',
@@ -352,18 +358,52 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
-function getAvatarImgUrl(avatarKey) {
-  const av = BUILT_IN_AVATARS.find((a) => a.key === avatarKey) || BUILT_IN_AVATARS[0];
-  return av.img;
+const AVATAR_IMG_ONERROR =
+  "if(!this.dataset.fb){this.dataset.fb='1';const s=this.getAttribute('src')||'';this.src=s.startsWith('/public/')?s.replace('/public/','/'):('/public'+s);}else{this.style.opacity='0';}";
+
+function normalizeAvatarKey(rawKey, rawUrl = '') {
+  const candidates = [rawKey, rawUrl].map((v) => String(v || '').trim()).filter((v) => v && v !== 'null');
+  for (const c of candidates) {
+    const lower = c.toLowerCase();
+    const exact = BUILT_IN_AVATARS.find((a) => a.key === lower || a.name.toLowerCase() === lower);
+    if (exact) return exact.key;
+    const m = lower.match(/avatar[_-]?([1-9])/) || lower.match(/^([1-9])$/);
+    if (m && m[1]) return `avatar_${m[1]}`;
+  }
+  return 'avatar_1';
 }
 
-function renderAvatarCircle(avatarKey, username = 'A', sizePx = 28) {
-  const av = BUILT_IN_AVATARS.find((a) => a.key === avatarKey) || BUILT_IN_AVATARS[0];
+function getAvatarPreset(avatarKey, avatarUrl = '') {
+  const norm = normalizeAvatarKey(avatarKey, avatarUrl);
+  return BUILT_IN_AVATARS.find((a) => a.key === norm) || BUILT_IN_AVATARS[0];
+}
+
+function getAvatarImgUrl(avatarKey, avatarUrl = '') {
+  return getAvatarPreset(avatarKey, avatarUrl).img;
+}
+
+function renderAvatarCircle(avatarKey, username = 'A', sizePx = 28, avatarUrl = '') {
+  const av = getAvatarPreset(avatarKey, avatarUrl);
+  const initial = String(username || 'A').trim().charAt(0).toUpperCase() || 'A';
   return `
-    <div style="width:${sizePx}px;height:${sizePx}px;border-radius:50%;overflow:hidden;border:1.5px solid rgba(255,255,255,0.32);background:linear-gradient(135deg,${av.c1},${av.c2});flex-shrink:0;">
-      <img src="${av.img}" alt="${escapeHtml(username)}" style="width:100%;height:100%;object-fit:cover;display:block;" />
+    <div style="position:relative;width:${sizePx}px;height:${sizePx}px;border-radius:50%;overflow:hidden;border:1.5px solid rgba(255,255,255,0.32);background:linear-gradient(135deg,${av.c1},${av.c2});flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;">
+      <span style="position:absolute;color:#FFF;font-size:${Math.max(10, Math.round(sizePx * 0.44))}px;font-weight:700;pointer-events:none;">${escapeHtml(initial)}</span>
+      <img src="${av.img}" alt="${escapeHtml(username)}" onerror="${AVATAR_IMG_ONERROR}" style="position:relative;z-index:1;width:100%;height:100%;object-fit:cover;display:block;border-radius:50%;" />
     </div>
   `;
+}
+
+function maskEmailAddress(email) {
+  const clean = String(email || '').trim();
+  const atIdx = clean.indexOf('@');
+  if (atIdx <= 0) return clean;
+  const local = clean.slice(0, atIdx);
+  const domain = clean.slice(atIdx + 1);
+  const maskedLocal =
+    local.length <= 2
+      ? `${local.charAt(0)}*`
+      : `${local.slice(0, 2)}${'*'.repeat(Math.min(5, Math.max(2, local.length - 3)))}${local.slice(-1)}`;
+  return `${maskedLocal}@${domain}`;
 }
 
 // Refresh JWT Access Token if expired or on 401
@@ -565,7 +605,7 @@ async function loadCloudData(silent = false) {
       const p = prof[0];
       state.profile = {
         username: p.username || state.session.username || 'Member',
-        avatarKey: p.avatar_key || p.avatar_url || 'avatar_1',
+        avatarKey: normalizeAvatarKey(p.avatar_key, p.avatar_url),
         bio: p.bio || '',
         memberStatus: cmStatus || p.member_status || 'active',
         isAdmin: Boolean(p.is_admin)
@@ -611,7 +651,7 @@ async function loadCommunityReviews() {
         profRows.forEach((p) => {
           profMap[p.id] = {
             username: p.username || 'Member',
-            avatar_key: p.avatar_key || p.avatar_url || 'avatar_1'
+            avatar_key: normalizeAvatarKey(p.avatar_key, p.avatar_url)
           };
         });
       }
@@ -956,11 +996,13 @@ async function removeFromVault(animeId) {
 // SHARED WIDGETS: OBSIDIAN TOP BAR & POSTER TRACKER CARD
 // ============================================================================
 
-function renderObsidianTopBar({ title, accentTitleTail = null, subtitle, showBrandMonogram = false, actionsHtml = '' }) {
-  const avatarImg = getAvatarImgUrl(state.profile.avatarKey);
+function renderObsidianTopBar({ title, accentTitleTail = null, subtitle, showBrandMonogram = false, leftActionHtml = '', actionsHtml = '' }) {
+  const av = getAvatarPreset(state.profile.avatarKey);
+  const initial = String(state.profile.username || 'A').trim().charAt(0).toUpperCase() || 'A';
   return `
     <header class="obsidian-topbar">
       <div class="topbar-left">
+        ${leftActionHtml}
         ${showBrandMonogram ? `<div class="brand-monogram">A</div>` : ''}
         <div style="min-width:0;">
           ${
@@ -973,8 +1015,9 @@ function renderObsidianTopBar({ title, accentTitleTail = null, subtitle, showBra
       </div>
       <div class="topbar-right">
         ${actionsHtml}
-        <button class="profile-avatar-btn" data-nav="profile" title="Open Profile">
-          <img src="${avatarImg}" alt="Profile" />
+        <button class="profile-avatar-btn" data-nav="profile" title="Open Profile" style="position:relative;background:linear-gradient(135deg,${av.c1},${av.c2});display:inline-flex;align-items:center;justify-content:center;">
+          <span style="position:absolute;color:#FFF;font-size:15px;font-weight:700;pointer-events:none;">${escapeHtml(initial)}</span>
+          <img src="${av.img}" alt="Profile" onerror="${AVATAR_IMG_ONERROR}" style="position:relative;z-index:1;width:100%;height:100%;object-fit:cover;border-radius:50%;display:block;" />
         </button>
       </div>
     </header>
@@ -1096,7 +1139,10 @@ function renderHomeScreen() {
     accentTitleTail: 'UNIVERSE',
     subtitle: 'WEEKLY SCHEDULE',
     showBrandMonogram: true,
-    actionsHtml: `<button class="app-icon-btn" id="btn-open-quick-search" title="Quick Search">${SVG_ICONS.search}</button>`
+    actionsHtml: `
+      <button class="app-icon-btn" data-nav="downloads" title="Download Applications">${SVG_ICONS.download}</button>
+      <button class="app-icon-btn" id="btn-open-quick-search" title="Quick Search">${SVG_ICONS.search}</button>
+    `
   });
 
   const weekStripHtml = `
@@ -1523,7 +1569,8 @@ function renderProfileScreen() {
       ? `★ ${(ratedItems.reduce((acc, v) => acc + (rating10ToStars(v.rating10) || 0), 0) / ratedItems.length).toFixed(1)}`
       : '—';
   const favorites = state.vault.filter((v) => v.isFavorite);
-  const avatarImg = getAvatarImgUrl(state.profile.avatarKey);
+  const avPreset = getAvatarPreset(state.profile.avatarKey);
+  const avatarImg = avPreset.img;
 
   return `
     <div style="max-width:760px;margin:0 auto;">
@@ -1535,8 +1582,8 @@ function renderProfileScreen() {
 
       <div style="display:flex;flex-direction:column;align-items:center;gap:8px;padding:12px 0 18px;">
         <div id="btn-open-avatar-modal" style="position:relative;width:108px;height:108px;cursor:pointer;" title="Tap to change portrait">
-          <div style="width:104px;height:104px;border-radius:50%;padding:3px;background:linear-gradient(135deg,var(--accent-primary),var(--accent-secondary));box-shadow:0 12px 32px var(--accent-soft);">
-            <img src="${avatarImg}" alt="Avatar" style="width:100%;height:100%;border-radius:50%;object-fit:cover;border:2.5px solid var(--bg-main);" />
+          <div style="width:104px;height:104px;border-radius:50%;padding:3px;background:linear-gradient(135deg,${avPreset.c1},${avPreset.c2});box-shadow:0 12px 32px var(--accent-soft);">
+            <img src="${avatarImg}" alt="Avatar" onerror="${AVATAR_IMG_ONERROR}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;border:2.5px solid var(--bg-main);display:block;" />
           </div>
           <div style="position:absolute;bottom:2px;right:2px;width:28px;height:28px;border-radius:50%;background:var(--accent-primary);color:var(--on-accent);border:2px solid var(--bg-main);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;">✎</div>
         </div>
@@ -1623,7 +1670,6 @@ function renderSettingsScreen() {
                 { id: 'ACCOUNT', title: 'Account', sub: state.session ? `Signed in as ${state.profile.username} • Auto-Sync Active` : 'Local Preview Mode • Sign in' },
                 { id: 'APPEARANCE', title: 'Appearance', sub: `Theme (${state.prefs.themeMode}) • Accent (${state.prefs.accentTheme}) • Layout (${state.prefs.watchlistLayout})` },
                 { id: 'PREFERENCES', title: 'Preferences', sub: `Title Language (${state.prefs.titleLanguage}) • Safe Mode • JSON Backup` },
-                { id: 'DOWNLOADS_LINK', title: 'Download Applications', sub: 'Official Native Builds for Android (.apk), Windows (.exe) & macOS (.dmg)' },
                 { id: 'ABOUT', title: 'About', sub: 'Anime Universe v2.1.0 • Architecture & Credits' }
               ]
                 .map(
@@ -1861,10 +1907,78 @@ function renderAuthScreen() {
   return `
     <div class="auth-viewport">
       <div class="auth-mascot-stack">
-        <img class="auth-mascot-img" src="/assets/img_login_mascot.png" alt="Anime Universe Mascot" />
+        <img class="auth-mascot-img" src="/assets/img_login_mascot.png" alt="Anime Universe Mascot" onerror="${AVATAR_IMG_ONERROR}" />
         <div class="glass-auth-card">
           ${
-            state.authMode === 'onboard_username'
+            state.authMode === 'verify_otp'
+              ? `
+                <div style="display:flex;flex-direction:column;align-items:center;gap:12px;">
+                  <div style="width:48px;height:48px;border-radius:50%;background:rgba(216,183,120,0.14);border:1px solid var(--accent-border);display:flex;align-items:center;justify-content:center;color:var(--accent-primary);">
+                    <svg viewBox="0 0 24 24" fill="currentColor" style="width:22px;height:22px;"><path d="M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>
+                  </div>
+                  <h2 class="serif-heading" style="font-size:28px;text-align:center;">Check Your Inbox</h2>
+                  <div style="padding:5px 14px;border-radius:999px;background:rgba(216,183,120,0.12);border:1px solid var(--accent-border);color:var(--highlight);font-size:12.5px;font-weight:600;">
+                    ${escapeHtml(maskEmailAddress(state.pendingVerifyEmail || state.identifier))}
+                  </div>
+                  <p style="font-size:13px;color:var(--text-secondary);text-align:center;line-height:1.5;">
+                    Enter the 8-digit verification code from your email to continue.
+                  </p>
+                </div>
+
+                ${state.authError ? `<div style="color:var(--error);font-size:12.5px;text-align:center;">${escapeHtml(state.authError)}</div>` : ''}
+                ${state.authInfo ? `<div style="color:var(--accent-primary);font-size:12.5px;text-align:center;">${escapeHtml(state.authInfo)}</div>` : ''}
+
+                <label class="auth-field-label">8-Digit Verification Code</label>
+                <div class="auth-input-wrap">
+                  <span class="auth-input-icon">${SVG_ICONS.key}</span>
+                  <input
+                    id="inp-signup-otp"
+                    class="auth-input with-left-icon tabular-num"
+                    type="text"
+                    inputmode="numeric"
+                    maxlength="8"
+                    placeholder="ex-12345678"
+                    value="${escapeHtml(state.signupOtpCode)}"
+                    style="letter-spacing:3px;font-weight:700;font-size:16px;"
+                  />
+                </div>
+
+                <button class="btn-primary" id="btn-verify-signup-otp" style="width:100%;margin-top:4px;" ${state.loading ? 'disabled' : ''}>
+                  ${state.loading ? 'VERIFYING...' : 'CONFIRM & CONTINUE'}
+                </button>
+
+                <div style="display:flex;gap:10px;width:100%;">
+                  <button type="button" class="btn-secondary" id="btn-resend-signup-otp" style="flex:1;height:42px;font-size:12.5px;" ${state.loading ? 'disabled' : ''}>
+                    Resend Code
+                  </button>
+                  <button type="button" class="btn-secondary" id="btn-change-signup-email" style="flex:1;height:42px;font-size:12.5px;" ${state.loading ? 'disabled' : ''}>
+                    Change Email
+                  </button>
+                </div>
+              `
+              : state.authMode === 'forgot_otp'
+              ? `
+                <h2 class="serif-heading" style="font-size:26px;text-align:center;">Reset Password</h2>
+                <p style="font-size:12.5px;color:var(--text-secondary);text-align:center;line-height:1.5;">
+                  Enter the 8-digit recovery code sent to <strong>${escapeHtml(maskEmailAddress(state.pendingVerifyEmail || state.identifier))}</strong> and choose a new password.
+                </p>
+                ${state.authError ? `<div style="color:var(--error);font-size:12.5px;text-align:center;">${escapeHtml(state.authError)}</div>` : ''}
+                ${state.authInfo ? `<div style="color:var(--accent-primary);font-size:12.5px;text-align:center;">${escapeHtml(state.authInfo)}</div>` : ''}
+
+                <label class="auth-field-label">8-Digit Recovery Code</label>
+                <input id="inp-reset-otp" class="auth-input tabular-num" type="text" inputmode="numeric" maxlength="8" placeholder="ex-12345678" value="${escapeHtml(state.resetOtpCode)}" style="letter-spacing:3px;font-weight:700;" />
+
+                <label class="auth-field-label">New Password (8+ characters)</label>
+                <input id="inp-reset-new-pass" class="auth-input" type="password" placeholder="••••••••" value="${escapeHtml(state.resetNewPassword)}" />
+
+                <button class="btn-primary" id="btn-confirm-reset-otp" style="width:100%;margin-top:4px;" ${state.loading ? 'disabled' : ''}>
+                  ${state.loading ? 'UPDATING...' : 'VERIFY & UPDATE PASSWORD'}
+                </button>
+                <button type="button" class="btn-secondary" id="btn-cancel-reset-otp" style="width:100%;height:42px;font-size:12.5px;">
+                  Back to Sign In
+                </button>
+              `
+              : state.authMode === 'onboard_username'
               ? `
                 <div class="micro-label" style="color:var(--accent-primary);text-align:center;">STEP 1 OF 2 • IDENTITY</div>
                 <h2 class="serif-heading" style="font-size:26px;text-align:center;">Claim Your Identity</h2>
@@ -1881,8 +1995,8 @@ function renderAuthScreen() {
                   ${BUILT_IN_AVATARS.map(
                     (av) => `
                     <div class="avatar-carousel-item ${state.onboardAvatarKey === av.key ? 'selected' : ''}" data-onboard-avatar="${av.key}">
-                      <div class="avatar-ring-wrap">
-                        <img src="${av.img}" alt="${escapeHtml(av.name)}" />
+                      <div class="avatar-ring-wrap" style="background:linear-gradient(135deg,${av.c1},${av.c2});">
+                        <img src="${av.img}" alt="${escapeHtml(av.name)}" onerror="${AVATAR_IMG_ONERROR}" />
                         ${state.onboardAvatarKey === av.key ? `<div class="avatar-check-badge">✓</div>` : ''}
                       </div>
                       <span style="font-size:11px;color:${state.onboardAvatarKey === av.key ? 'var(--highlight)' : 'var(--text-secondary)'};text-align:center;">
@@ -1913,17 +2027,23 @@ function renderAuthScreen() {
                 </div>
 
                 ${
-                  !isSignup
+                  isSignup
                     ? `
+                      <label class="auth-field-label">Confirm Password</label>
+                      <div class="auth-input-wrap">
+                        <span class="auth-input-icon">${SVG_ICONS.key}</span>
+                        <input id="inp-confirm-pass" class="auth-input with-left-icon" type="${state.showPassword ? 'text' : 'password'}" placeholder="Re-enter password" value="${escapeHtml(state.confirmPassword)}" />
+                      </div>
+                    `
+                    : `
                       <div class="auth-forgot-row">
                         <button type="button" class="auth-forgot-btn" id="btn-forgot-pass">Forgot Password?</button>
                       </div>
                     `
-                    : ''
                 }
 
                 <button class="btn-primary" id="btn-auth-submit" style="width:100%;margin-top:4px;" ${state.loading ? 'disabled' : ''}>
-                  ${state.loading ? 'PLEASE WAIT...' : isSignup ? 'SIGN UP' : 'SIGN IN'}
+                  ${state.loading ? 'PLEASE WAIT...' : isSignup ? 'CREATE ACCOUNT' : 'SIGN IN'}
                 </button>
               `
           }
@@ -1941,10 +2061,6 @@ function renderAuthScreen() {
                 </div>
                 <button type="button" id="btn-guest-preview" style="background:none;border:none;color:var(--text-secondary);font-size:13.5px;cursor:pointer;font-family:inherit;">
                   Continue without an account
-                </button>
-                <button type="button" id="btn-auth-open-downloads" style="background:rgba(216,183,120,0.12);border:1px solid var(--accent-border);border-radius:999px;padding:8px 18px;color:var(--highlight);font-size:12px;font-weight:700;letter-spacing:1px;cursor:pointer;font-family:inherit;display:inline-flex;align-items:center;gap:8px;">
-                  <span style="width:15px;height:15px;display:inline-flex;">${SVG_ICONS.download}</span>
-                  <span>DOWNLOAD ANDROID / PC / MAC APPS</span>
                 </button>
               </div>
             `
@@ -2286,12 +2402,7 @@ function renderDownloadsScreen() {
   const topBar = renderObsidianTopBar({
     title: 'Downloads',
     subtitle: 'OFFICIAL NATIVE APPLICATIONS',
-    actionsHtml: `
-      <button class="capsule-pill" id="btn-open-downloads-admin" title="Configure Download URLs, Versions & Release Notes">
-        <span style="width:15px;height:15px;display:inline-flex;">${SVG_ICONS.settings}</span>
-        <span>CONFIGURE RELEASES</span>
-      </button>
-    `
+    leftActionHtml: `<button class="app-icon-btn" data-nav="home" title="Back to Home" style="margin-right:6px;">${SVG_ICONS.back}</button>`
   });
 
   const platformOrder = [
@@ -2302,31 +2413,6 @@ function renderDownloadsScreen() {
 
   return `
     ${topBar}
-
-    <!-- Hero Banner -->
-    <div class="downloads-hero-card">
-      <div style="max-width:680px;">
-        <div class="downloads-hero-badge">
-          <span style="width:14px;height:14px;display:inline-flex;">${SVG_ICONS.shield}</span>
-          <span>HTTPS VERIFIED PACKAGES • AUTO CLOUD SYNC</span>
-        </div>
-        <h2 class="serif-heading" style="font-size:32px;line-height:36px;color:var(--text-primary);margin-bottom:8px;">
-          Anime Universe Across Every Screen
-        </h2>
-        <p style="font-size:14px;color:var(--text-secondary);line-height:1.6;">
-          Install the native application for Android, Windows, or macOS. Your watchlist, episode progress, custom collections, and community reviews synchronize automatically in the background across all devices.
-        </p>
-      </div>
-      <div style="display:flex;flex-direction:column;gap:8px;align-items:flex-start;">
-        <div class="micro-label" style="color:var(--accent-primary);">LATEST STABLE RELEASE</div>
-        <div class="serif-heading tabular-num" style="font-size:28px;color:var(--highlight);">
-          ${escapeHtml(currentRel.version || 'v2.1.0')}
-        </div>
-        <div style="font-size:12px;color:var(--text-secondary);">
-          Published ${escapeHtml(currentRel.releaseDate || cfg.lastUpdated || 'Nov 18, 2026')}
-        </div>
-      </div>
-    </div>
 
     <!-- Three Platform Download Cards (Android APK, Windows EXE, macOS DMG) -->
     <div class="downloads-cards-grid">
@@ -2549,80 +2635,7 @@ function renderDownloadsScreen() {
   `;
 }
 
-function renderDownloadsAdminModal() {
-  const cfg = state.downloadsConfig || {};
-  const p = cfg.platforms || {};
-  const rel = cfg.currentRelease || {};
-  const highlightsText = (rel.highlights || []).map((h) => `${h.tag || 'UPDATE'}: ${h.text || ''}`).join('\n');
 
-  return `
-    <div class="modal-backdrop" id="modal-backdrop">
-      <div class="modal-sheet" style="max-width:680px;" onclick="event.stopPropagation()">
-        <div style="display:flex;justify-content:space-between;align-items:center;">
-          <div>
-            <div class="micro-label" style="color:var(--accent-primary);">ADMIN CONFIGURATION SYSTEM</div>
-            <h3 class="serif-heading" style="font-size:26px;">Manage Releases &amp; Download URLs</h3>
-          </div>
-          <button class="app-icon-btn" id="btn-close-modal" title="Close">✕</button>
-        </div>
-
-        <p style="font-size:12.5px;color:var(--text-secondary);line-height:1.5;">
-          Update download URLs (HTTPS required), versions, file sizes, availability, and release notes below, or edit <code>/public/downloads-config.json</code> directly without modifying any frontend code.
-        </p>
-
-        <!-- GitHub Repository Auto-Sync Box -->
-        <div style="background:var(--elevated-surface);border:1px solid var(--border-strong);border-radius:18px;padding:14px;display:flex;flex-direction:column;gap:8px;">
-          <div class="micro-label" style="color:var(--accent-primary);">AUTO-FETCH FROM GITHUB RELEASES (OPTIONAL)</div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;">
-            <input id="cfg-github-repo" class="auth-input" style="flex:1;min-width:200px;height:44px;" placeholder="owner/repository (e.g. username/AniTracK)" value="${escapeHtml(cfg.githubRepo || '')}" />
-            <button class="btn-secondary" id="btn-sync-github-releases" style="height:44px;">Sync GitHub Releases</button>
-          </div>
-          ${state.githubSyncMessage ? `<div style="font-size:12px;color:var(--highlight);">${escapeHtml(state.githubSyncMessage)}</div>` : ''}
-        </div>
-
-        <!-- Three Platform Editors -->
-        ${['android', 'windows', 'macos']
-          .map((key) => {
-            const plat = p[key] || {};
-            return `
-              <div style="background:var(--elevated-surface);border:1px solid rgba(255,255,255,0.07);border-radius:18px;padding:14px;display:flex;flex-direction:column;gap:10px;">
-                <div style="display:flex;justify-content:space-between;align-items:center;">
-                  <span class="serif-heading" style="font-size:20px;color:var(--highlight);">${escapeHtml(plat.platformName || key.toUpperCase())}</span>
-                  <label style="display:inline-flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text-primary);cursor:pointer;">
-                    <input type="checkbox" id="cfg-${key}-avail" ${plat.available ? 'checked' : ''} />
-                    <span>Build Available (uncheck for "Coming Soon")</span>
-                  </label>
-                </div>
-                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
-                  <input id="cfg-${key}-ver" class="auth-input" style="height:42px;font-size:13px;" placeholder="Version (v2.1.0)" value="${escapeHtml(plat.version || '')}" />
-                  <input id="cfg-${key}-size" class="auth-input" style="height:42px;font-size:13px;" placeholder="Size (25.4 MB)" value="${escapeHtml(plat.fileSize || '')}" />
-                  <input id="cfg-${key}-date" class="auth-input" style="height:42px;font-size:13px;" placeholder="Date (Nov 18, 2026)" value="${escapeHtml(plat.releaseDate || '')}" />
-                </div>
-                <input id="cfg-${key}-os" class="auth-input" style="height:42px;font-size:13px;" placeholder="Supported OS" value="${escapeHtml(plat.osSupported || '')}" />
-                <input id="cfg-${key}-url" class="auth-input" style="height:42px;font-size:13px;" placeholder="https://github.com/owner/repo/releases/download/..." value="${escapeHtml(plat.downloadUrl || '')}" />
-              </div>
-            `;
-          })
-          .join('')}
-
-        <!-- Release Notes Editor -->
-        <div style="background:var(--elevated-surface);border:1px solid rgba(255,255,255,0.07);border-radius:18px;padding:14px;display:flex;flex-direction:column;gap:8px;">
-          <div class="micro-label" style="color:var(--accent-primary);">CURRENT RELEASE NOTES</div>
-          <div style="display:grid;grid-template-columns:1fr 2fr;gap:8px;">
-            <input id="cfg-rel-ver" class="auth-input" style="height:42px;font-size:13px;" placeholder="Release Version" value="${escapeHtml(rel.version || '')}" />
-            <input id="cfg-rel-title" class="auth-input" style="height:42px;font-size:13px;" placeholder="Release Headline" value="${escapeHtml(rel.title || '')}" />
-          </div>
-          <textarea id="cfg-rel-highlights" class="auth-input" style="height:88px;padding:10px;font-size:12.5px;" placeholder="TAG: Highlight description (one per line)">${escapeHtml(highlightsText)}</textarea>
-        </div>
-
-        <div style="display:flex;gap:10px;flex-wrap:wrap;">
-          <button class="btn-secondary" id="btn-export-downloads-json" style="flex:1;">Export downloads-config.json</button>
-          <button class="btn-primary" id="btn-save-downloads-admin" style="flex:1;">SAVE CONFIGURATION</button>
-        </div>
-      </div>
-    </div>
-  `;
-}
 
 // ============================================================================
 // MODALS: QUICK CONTEXT EDIT, COLLECTION MODAL & AVATAR CAROUSEL MODAL
@@ -2699,8 +2712,8 @@ function renderModals() {
             ${BUILT_IN_AVATARS.map(
               (av) => `
               <div class="avatar-carousel-item ${state.profile.avatarKey === av.key ? 'selected' : ''}" data-pick-avatar="${av.key}">
-                <div class="avatar-ring-wrap">
-                  <img src="${av.img}" alt="${escapeHtml(av.name)}" />
+                <div class="avatar-ring-wrap" style="background:linear-gradient(135deg,${av.c1},${av.c2});">
+                  <img src="${av.img}" alt="${escapeHtml(av.name)}" onerror="${AVATAR_IMG_ONERROR}" />
                   ${state.profile.avatarKey === av.key ? `<div class="avatar-check-badge">✓</div>` : ''}
                 </div>
                 <span style="font-size:11px;color:var(--text-secondary);">${escapeHtml(av.name)}</span>
@@ -2728,10 +2741,6 @@ function renderModals() {
     `;
   }
 
-  if (state.showDownloadsAdminModal) {
-    return renderDownloadsAdminModal();
-  }
-
   return '';
 }
 
@@ -2754,7 +2763,6 @@ function renderApp() {
     { id: 'discover', title: 'Explore', icon: SVG_ICONS.explore },
     { id: 'mylist', title: 'Library', icon: SVG_ICONS.library },
     { id: 'community', title: 'Community', icon: SVG_ICONS.community },
-    { id: 'downloads', title: 'Downloads', icon: SVG_ICONS.download },
     { id: 'profile', title: 'Profile', icon: SVG_ICONS.profile }
   ];
 
@@ -2762,8 +2770,7 @@ function renderApp() {
     { id: 'home', title: 'Home', icon: SVG_ICONS.home },
     { id: 'discover', title: 'Explore', icon: SVG_ICONS.explore },
     { id: 'mylist', title: 'Library', icon: SVG_ICONS.library },
-    { id: 'community', title: 'Community', icon: SVG_ICONS.community },
-    { id: 'downloads', title: 'Apps', icon: SVG_ICONS.download }
+    { id: 'community', title: 'Community', icon: SVG_ICONS.community }
   ];
 
   let screenHtml = '';
@@ -2820,7 +2827,7 @@ function renderApp() {
 
       <!-- MidnightBottomNavigationBar (<600px, 4 Capsule Tabs) -->
       ${
-        state.tab !== 'detail' && state.tab !== 'profile' && state.tab !== 'settings'
+        state.tab !== 'detail' && state.tab !== 'profile' && state.tab !== 'settings' && state.tab !== 'downloads'
           ? `
             <div class="midnight-bottom-dock-wrap">
               <nav class="midnight-bottom-dock">
@@ -2848,10 +2855,17 @@ function renderApp() {
 function bindAuthEvents() {
   const inpIdentifier = document.getElementById('inp-identifier');
   const inpPass = document.getElementById('inp-pass');
+  const inpConfirmPass = document.getElementById('inp-confirm-pass');
   if (inpIdentifier) inpIdentifier.oninput = (e) => { state.identifier = e.target.value; };
   if (inpPass) {
     inpPass.oninput = (e) => { state.password = e.target.value; };
     inpPass.onkeydown = (e) => {
+      if (e.key === 'Enter' && state.authMode !== 'signup') document.getElementById('btn-auth-submit')?.click();
+    };
+  }
+  if (inpConfirmPass) {
+    inpConfirmPass.oninput = (e) => { state.confirmPassword = e.target.value; };
+    inpConfirmPass.onkeydown = (e) => {
       if (e.key === 'Enter') document.getElementById('btn-auth-submit')?.click();
     };
   }
@@ -2884,11 +2898,81 @@ function bindAuthEvents() {
       }
       state.loading = true;
       state.authError = '';
+      state.authInfo = '';
       renderApp();
       try {
         const targetEmail = await resolveLoginIdentifier(state.identifier);
         await supabaseRequest('/auth/v1/recover', 'POST', { email: targetEmail });
-        state.authInfo = `Password reset link sent to ${targetEmail}.`;
+        state.pendingVerifyEmail = targetEmail;
+        state.resetOtpCode = '';
+        state.resetNewPassword = '';
+        state.authMode = 'forgot_otp';
+        state.authInfo = `Recovery code sent to ${maskEmailAddress(targetEmail)}.`;
+      } catch (err) {
+        state.authError = err.message;
+      } finally {
+        state.loading = false;
+        renderApp();
+      }
+    };
+  }
+
+  const inpResetOtp = document.getElementById('inp-reset-otp');
+  const inpResetNewPass = document.getElementById('inp-reset-new-pass');
+  if (inpResetOtp) {
+    inpResetOtp.oninput = (e) => {
+      const clean = e.target.value.replace(/\D/g, '').slice(0, 8);
+      state.resetOtpCode = clean;
+      if (e.target.value !== clean) e.target.value = clean;
+    };
+  }
+  if (inpResetNewPass) {
+    inpResetNewPass.oninput = (e) => { state.resetNewPassword = e.target.value; };
+  }
+  const btnCancelResetOtp = document.getElementById('btn-cancel-reset-otp');
+  if (btnCancelResetOtp) {
+    btnCancelResetOtp.onclick = () => {
+      state.authMode = 'signin';
+      state.authError = '';
+      state.authInfo = '';
+      renderApp();
+    };
+  }
+  const btnConfirmResetOtp = document.getElementById('btn-confirm-reset-otp');
+  if (btnConfirmResetOtp) {
+    btnConfirmResetOtp.onclick = async () => {
+      const cleanOtp = String(state.resetOtpCode || '').replace(/\D/g, '');
+      if (cleanOtp.length < 6) {
+        state.authError = 'Enter the verification code from your email.';
+        renderApp();
+        return;
+      }
+      if (!state.resetNewPassword || state.resetNewPassword.length < 8) {
+        state.authError = 'New password must be at least 8 characters.';
+        renderApp();
+        return;
+      }
+      state.loading = true;
+      state.authError = '';
+      renderApp();
+      try {
+        const targetEmail = state.pendingVerifyEmail || state.identifier.trim().toLowerCase();
+        const verifyData = await supabaseRequest('/auth/v1/verify', 'POST', {
+          email: targetEmail,
+          token: cleanOtp,
+          type: 'recovery'
+        });
+        if (!verifyData.access_token) throw new Error('Invalid or expired recovery code.');
+        saveSession({
+          accessToken: verifyData.access_token,
+          refreshToken: verifyData.refresh_token || '',
+          expiresAt: Math.floor(Date.now() / 1000) + (verifyData.expires_in || 3600),
+          userId: verifyData.user?.id,
+          email: verifyData.user?.email || targetEmail,
+          username: verifyData.user?.user_metadata?.username || targetEmail.split('@')[0]
+        });
+        await supabaseRequest('/auth/v1/user', 'PUT', { password: state.resetNewPassword });
+        await loadCloudData();
       } catch (err) {
         state.authError = err.message;
       } finally {
@@ -2902,15 +2986,98 @@ function bindAuthEvents() {
   if (btnGuest) {
     btnGuest.onclick = () => {
       state.isGuestMode = true;
+      localStorage.removeItem('anime_universe_guest');
       localStorage.setItem('anime_universe_guest', 'true');
       renderApp();
     };
   }
 
-  const btnAuthOpenDownloads = document.getElementById('btn-auth-open-downloads');
-  if (btnAuthOpenDownloads) {
-    btnAuthOpenDownloads.onclick = () => {
-      state.tab = 'downloads';
+  // Sign-Up 8-Digit OTP Verification bindings
+  const inpSignupOtp = document.getElementById('inp-signup-otp');
+  if (inpSignupOtp) {
+    inpSignupOtp.oninput = (e) => {
+      const clean = e.target.value.replace(/\D/g, '').slice(0, 8);
+      state.signupOtpCode = clean;
+      if (e.target.value !== clean) e.target.value = clean;
+    };
+    inpSignupOtp.onkeydown = (e) => {
+      if (e.key === 'Enter') document.getElementById('btn-verify-signup-otp')?.click();
+    };
+  }
+
+  const btnVerifySignupOtp = document.getElementById('btn-verify-signup-otp');
+  if (btnVerifySignupOtp) {
+    btnVerifySignupOtp.onclick = async () => {
+      const cleanOtp = String(state.signupOtpCode || '').replace(/\D/g, '');
+      if (cleanOtp.length < 6) {
+        state.authError = 'Please enter the verification code from your email.';
+        renderApp();
+        return;
+      }
+      state.loading = true;
+      state.authError = '';
+      state.authInfo = '';
+      renderApp();
+      try {
+        const targetEmail = (state.pendingVerifyEmail || state.identifier).trim().toLowerCase();
+        const data = await supabaseRequest('/auth/v1/verify', 'POST', {
+          email: targetEmail,
+          token: cleanOtp,
+          type: 'signup'
+        });
+        if (!data || !data.access_token) {
+          throw new Error('Invalid or expired verification code. Please check your inbox or tap Resend Code.');
+        }
+        saveSession({
+          accessToken: data.access_token,
+          refreshToken: data.refresh_token || '',
+          expiresAt: Math.floor(Date.now() / 1000) + (data.expires_in || 3600),
+          userId: data.user?.id,
+          email: data.user?.email || targetEmail,
+          username: targetEmail.split('@')[0]
+        });
+        state.onboardUsername = targetEmail.split('@')[0];
+        state.authMode = 'onboard_username';
+      } catch (err) {
+        state.authError = err.message || 'Invalid or expired verification code.';
+      } finally {
+        state.loading = false;
+        renderApp();
+      }
+    };
+  }
+
+  const btnResendSignupOtp = document.getElementById('btn-resend-signup-otp');
+  if (btnResendSignupOtp) {
+    btnResendSignupOtp.onclick = async () => {
+      const targetEmail = (state.pendingVerifyEmail || state.identifier).trim().toLowerCase();
+      if (!targetEmail) return;
+      state.loading = true;
+      state.authError = '';
+      state.authInfo = '';
+      renderApp();
+      try {
+        await supabaseRequest('/auth/v1/resend', 'POST', {
+          type: 'signup',
+          email: targetEmail
+        });
+        state.authInfo = 'A fresh 8-digit verification code has been sent to your email.';
+      } catch (err) {
+        state.authError = err.message || 'Could not resend verification code.';
+      } finally {
+        state.loading = false;
+        renderApp();
+      }
+    };
+  }
+
+  const btnChangeSignupEmail = document.getElementById('btn-change-signup-email');
+  if (btnChangeSignupEmail) {
+    btnChangeSignupEmail.onclick = () => {
+      state.authMode = 'signup';
+      state.signupOtpCode = '';
+      state.authError = '';
+      state.authInfo = '';
       renderApp();
     };
   }
@@ -2929,12 +3096,26 @@ function bindAuthEvents() {
       renderApp();
       try {
         if (state.authMode === 'signup') {
-          const email = state.identifier.trim();
+          const email = state.identifier.trim().toLowerCase();
+          if (!email.includes('@') || !email.includes('.')) {
+            throw new Error('Please enter a valid email address.');
+          }
+          if (state.password.length < 8) {
+            throw new Error('Password must be at least 8 characters.');
+          }
+          if (state.confirmPassword && state.password !== state.confirmPassword) {
+            throw new Error('Passwords do not match.');
+          }
           const data = await supabaseRequest('/auth/v1/signup', 'POST', {
             email,
             password: state.password
           });
-          if (data.access_token) {
+          // Supabase returns an empty identities array if the email is already registered
+          const identities = data?.user?.identities || data?.identities;
+          if (Array.isArray(identities) && identities.length === 0) {
+            throw new Error('An account with this email already exists. Please Sign In instead.');
+          }
+          if (data && data.access_token) {
             saveSession({
               accessToken: data.access_token,
               refreshToken: data.refresh_token || '',
@@ -2946,24 +3127,44 @@ function bindAuthEvents() {
             state.authMode = 'onboard_username';
             state.onboardUsername = email.split('@')[0];
           } else {
-            state.authInfo = 'Check your email to confirm your account, then sign in.';
-            state.authMode = 'signin';
+            state.pendingVerifyEmail = email;
+            state.pendingVerifyPassword = state.password;
+            state.signupOtpCode = '';
+            state.authMode = 'verify_otp';
+            state.authInfo = 'We sent an 8-digit verification code to your email.';
           }
         } else {
           const resolvedEmail = await resolveLoginIdentifier(state.identifier);
-          const data = await supabaseRequest('/auth/v1/token?grant_type=password', 'POST', {
-            email: resolvedEmail,
-            password: state.password
-          });
-          saveSession({
-            accessToken: data.access_token,
-            refreshToken: data.refresh_token || '',
-            expiresAt: Math.floor(Date.now() / 1000) + (data.expires_in || 3600),
-            userId: data.user?.id,
-            email: data.user?.email || resolvedEmail,
-            username: data.user?.user_metadata?.username || resolvedEmail.split('@')[0]
-          });
-          await loadCloudData();
+          try {
+            const data = await supabaseRequest('/auth/v1/token?grant_type=password', 'POST', {
+              email: resolvedEmail,
+              password: state.password
+            });
+            saveSession({
+              accessToken: data.access_token,
+              refreshToken: data.refresh_token || '',
+              expiresAt: Math.floor(Date.now() / 1000) + (data.expires_in || 3600),
+              userId: data.user?.id,
+              email: data.user?.email || resolvedEmail,
+              username: data.user?.user_metadata?.username || resolvedEmail.split('@')[0]
+            });
+            await loadCloudData();
+          } catch (signInErr) {
+            const msg = String(signInErr.message || '');
+            if (msg.toLowerCase().includes('not confirmed') || msg.toLowerCase().includes('email_not_confirmed')) {
+              await supabaseRequest('/auth/v1/resend', 'POST', {
+                type: 'signup',
+                email: resolvedEmail
+              }).catch(() => {});
+              state.pendingVerifyEmail = resolvedEmail;
+              state.pendingVerifyPassword = state.password;
+              state.signupOtpCode = '';
+              state.authMode = 'verify_otp';
+              state.authInfo = 'Your email is not verified yet. Enter the 8-digit code sent to your inbox.';
+            } else {
+              throw signInErr;
+            }
+          }
         }
       } catch (err) {
         state.authError = err.message;
@@ -2985,6 +3186,7 @@ function bindAuthEvents() {
         renderApp();
         return;
       }
+      state.authError = '';
       state.authMode = 'onboard_avatar';
       renderApp();
     };
@@ -3001,7 +3203,7 @@ function bindAuthEvents() {
   if (btnOnboardFinish) {
     btnOnboardFinish.onclick = async () => {
       state.profile.username = state.onboardUsername.trim();
-      state.profile.avatarKey = state.onboardAvatarKey;
+      state.profile.avatarKey = normalizeAvatarKey(state.onboardAvatarKey);
       saveProfileCache();
       state.authMode = 'signin';
       if (state.session) {
@@ -3012,7 +3214,17 @@ function bindAuthEvents() {
             id: state.session.userId,
             username: state.profile.username,
             avatar_key: state.profile.avatarKey,
-            avatar_url: state.profile.avatarKey
+            avatar_url: null
+          },
+          'resolution=merge-duplicates,return=minimal'
+        ).catch(() => {});
+        await supabaseRequest(
+          '/rest/v1/community_members?on_conflict=user_id',
+          'POST',
+          {
+            user_id: state.session.userId,
+            role: 'member',
+            status: 'active'
           },
           'resolution=merge-duplicates,return=minimal'
         ).catch(() => {});
@@ -3394,13 +3606,12 @@ function bindAppEvents() {
     state.showAvatarModal = false;
     state.showProfileEditModal = false;
     state.showCreateCollectionModal = false;
-    state.showDownloadsAdminModal = false;
     renderApp();
   };
   if (backdrop) backdrop.onclick = closeModals;
   if (btnClose) btnClose.onclick = closeModals;
 
-  // Download Center & Admin Configuration events
+  // Download Center events
   document.querySelectorAll('[data-trigger-download]').forEach((btn) => {
     btn.onclick = () => {
       const taskKey = btn.getAttribute('data-trigger-download');
@@ -3409,81 +3620,6 @@ function bindAppEvents() {
       startPlatformDownload(taskKey, dlUrl, dlFile);
     };
   });
-
-  const btnOpenDownloadsAdmin = document.getElementById('btn-open-downloads-admin');
-  if (btnOpenDownloadsAdmin) {
-    btnOpenDownloadsAdmin.onclick = () => {
-      state.githubSyncMessage = '';
-      state.showDownloadsAdminModal = true;
-      renderApp();
-    };
-  }
-
-  const btnSyncGithub = document.getElementById('btn-sync-github-releases');
-  if (btnSyncGithub) {
-    btnSyncGithub.onclick = async () => {
-      const repoInput = document.getElementById('cfg-github-repo')?.value || '';
-      await syncReleasesFromGitHub(repoInput, false);
-    };
-  }
-
-  const readAdminModalIntoConfig = () => {
-    const cfg = JSON.parse(JSON.stringify(state.downloadsConfig || {}));
-    cfg.githubRepo = (document.getElementById('cfg-github-repo')?.value || '').trim();
-    ['android', 'windows', 'macos'].forEach((key) => {
-      if (!cfg.platforms[key]) cfg.platforms[key] = { id: key };
-      cfg.platforms[key].available = Boolean(document.getElementById(`cfg-${key}-avail`)?.checked);
-      cfg.platforms[key].version = (document.getElementById(`cfg-${key}-ver`)?.value || '').trim();
-      cfg.platforms[key].fileSize = (document.getElementById(`cfg-${key}-size`)?.value || '').trim();
-      cfg.platforms[key].releaseDate = (document.getElementById(`cfg-${key}-date`)?.value || '').trim();
-      cfg.platforms[key].osSupported = (document.getElementById(`cfg-${key}-os`)?.value || '').trim();
-      cfg.platforms[key].downloadUrl = (document.getElementById(`cfg-${key}-url`)?.value || '').trim();
-    });
-    if (!cfg.currentRelease) cfg.currentRelease = {};
-    cfg.currentRelease.version = (document.getElementById('cfg-rel-ver')?.value || '').trim();
-    cfg.currentRelease.title = (document.getElementById('cfg-rel-title')?.value || '').trim();
-    const rawLines = (document.getElementById('cfg-rel-highlights')?.value || '')
-      .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean);
-    cfg.currentRelease.highlights = rawLines.map((line) => {
-      const colonIdx = line.indexOf(':');
-      if (colonIdx > 0 && colonIdx < 18) {
-        return { tag: line.slice(0, colonIdx).trim().toUpperCase(), text: line.slice(colonIdx + 1).trim() };
-      }
-      return { tag: 'UPDATE', text: line };
-    });
-    return cfg;
-  };
-
-  const btnSaveDownloadsAdmin = document.getElementById('btn-save-downloads-admin');
-  if (btnSaveDownloadsAdmin) {
-    btnSaveDownloadsAdmin.onclick = () => {
-      const updated = readAdminModalIntoConfig();
-      state.downloadsConfig = updated;
-      localStorage.setItem('anime_universe_downloads_admin_override', JSON.stringify(updated));
-      state.showDownloadsAdminModal = false;
-      renderApp();
-    };
-  }
-
-  const btnExportDownloadsJson = document.getElementById('btn-export-downloads-json');
-  if (btnExportDownloadsJson) {
-    btnExportDownloadsJson.onclick = () => {
-      const updated = readAdminModalIntoConfig();
-      state.downloadsConfig = updated;
-      localStorage.setItem('anime_universe_downloads_admin_override', JSON.stringify(updated));
-      const blob = new Blob([JSON.stringify(updated, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'downloads-config.json';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
-    };
-  }
 
   const btnSaveCollection = document.getElementById('btn-save-collection');
   if (btnSaveCollection) {
@@ -3531,13 +3667,13 @@ function bindAppEvents() {
 
   document.querySelectorAll('[data-pick-avatar]').forEach((el) => {
     el.onclick = async () => {
-      const key = el.getAttribute('data-pick-avatar');
+      const key = normalizeAvatarKey(el.getAttribute('data-pick-avatar'));
       state.profile.avatarKey = key;
       saveProfileCache();
       renderApp();
       if (state.session) {
         const uid = encodeURIComponent(state.session.userId);
-        await supabaseRequest(`/rest/v1/profiles?id=eq.${uid}`, 'PATCH', { avatar_key: key, avatar_url: key }).catch(() => {});
+        await supabaseRequest(`/rest/v1/profiles?id=eq.${uid}`, 'PATCH', { avatar_key: key, avatar_url: null }).catch(() => {});
       }
     };
   });
@@ -3615,12 +3751,39 @@ if (state.session) {
   loadCloudData(false);
 }
 
-// Automatic background sync every 15 seconds + on tab focus/visibility
-setInterval(() => {
+// Automatic background sync every 15 seconds + silent OTP email verification check
+setInterval(async () => {
   if (state.session && !document.hidden) {
     loadCloudData(true);
+  } else if (
+    !state.session &&
+    state.authMode === 'verify_otp' &&
+    state.pendingVerifyEmail &&
+    state.pendingVerifyPassword &&
+    !state.loading &&
+    !document.hidden
+  ) {
+    try {
+      const data = await supabaseRequest('/auth/v1/token?grant_type=password', 'POST', {
+        email: state.pendingVerifyEmail,
+        password: state.pendingVerifyPassword
+      });
+      if (data && data.access_token) {
+        saveSession({
+          accessToken: data.access_token,
+          refreshToken: data.refresh_token || '',
+          expiresAt: Math.floor(Date.now() / 1000) + (data.expires_in || 3600),
+          userId: data.user?.id,
+          email: data.user?.email || state.pendingVerifyEmail,
+          username: state.pendingVerifyEmail.split('@')[0]
+        });
+        state.onboardUsername = state.pendingVerifyEmail.split('@')[0];
+        state.authMode = 'onboard_username';
+        renderApp();
+      }
+    } catch (_) {}
   }
-}, 15000);
+}, 4000);
 
 window.addEventListener('focus', () => {
   if (state.session) loadCloudData(true);

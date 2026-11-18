@@ -70,7 +70,16 @@ enum class BuiltInAvatar(
 
     companion object {
         fun fromKey(key: String?): BuiltInAvatar {
-            return entries.firstOrNull { it.key == key } ?: AVATAR_1
+            if (key.isNullOrBlank()) return AVATAR_1
+            val cleaned = key.trim().lowercase()
+            entries.firstOrNull { it.key == cleaned || it.displayName.lowercase() == cleaned }?.let { return it }
+            val match = Regex("""avatar[_-]?([1-9])""").find(cleaned)
+                ?: Regex("""^([1-9])$""").find(cleaned)
+            val idx = match?.groupValues?.getOrNull(1)?.toIntOrNull()
+            if (idx != null && idx in 1..9) {
+                return entries[idx - 1]
+            }
+            return AVATAR_1
         }
     }
 }

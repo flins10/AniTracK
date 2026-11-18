@@ -1,4 +1,4 @@
-const CACHE_NAME = 'anime-universe-pwa-v2.2.0';
+const CACHE_NAME = 'anime-universe-pwa-v2.5.0';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -6,7 +6,17 @@ const STATIC_ASSETS = [
   '/app.js',
   '/manifest.json',
   '/icon-192.png',
-  '/icon-512.png'
+  '/icon-512.png',
+  '/assets/img_login_mascot.png',
+  '/assets/avatar_1.png',
+  '/assets/avatar_2.png',
+  '/assets/avatar_3.png',
+  '/assets/avatar_4.png',
+  '/assets/avatar_5.png',
+  '/assets/avatar_6.png',
+  '/assets/avatar_7.png',
+  '/assets/avatar_8.png',
+  '/assets/avatar_9.png'
 ];
 
 self.addEventListener('install', (event) => {
@@ -32,7 +42,12 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET') return;
 
   const url = new URL(request.url);
-  if (url.pathname.startsWith('/api/') || url.hostname.includes('supabase.co') || url.hostname.includes('anilist.co')) {
+  if (
+    url.pathname.startsWith('/api/') ||
+    url.pathname.startsWith('/downloads/') ||
+    url.hostname.includes('supabase.co') ||
+    url.hostname.includes('anilist.co')
+  ) {
     return;
   }
 
@@ -40,8 +55,12 @@ self.addEventListener('fetch', (event) => {
     fetch(request)
       .then((networkResponse) => {
         if (networkResponse && networkResponse.status === 200 && url.origin === self.location.origin) {
-          const clone = networkResponse.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, clone)).catch(() => {});
+          const ct = (networkResponse.headers.get('content-type') || '').toLowerCase();
+          const isAssetPath = /\.(png|jpg|jpeg|webp|svg|gif|css|js|json|woff2?)$/i.test(url.pathname);
+          if (!(isAssetPath && ct.includes('text/html'))) {
+            const clone = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(request, clone)).catch(() => {});
+          }
         }
         return networkResponse;
       })
