@@ -69,6 +69,8 @@ class SupabaseAuthService(context: Context) {
         .readTimeout(20, TimeUnit.SECONDS)
         .build()
 
+    private val fastPrefs = appContext.getSharedPreferences("anime_universe_fast_auth", Context.MODE_PRIVATE)
+
     private object Keys {
         val ACCESS_TOKEN = stringPreferencesKey("access_token")
         val REFRESH_TOKEN = stringPreferencesKey("refresh_token")
@@ -76,11 +78,77 @@ class SupabaseAuthService(context: Context) {
         val EMAIL = stringPreferencesKey("email")
         val EXPIRES_AT = longPreferencesKey("expires_at")
         val ONBOARDING_COMPLETED = booleanPreferencesKey("onboarding_completed")
+        val PENDING_USERNAME = stringPreferencesKey("pending_username")
+        val PENDING_AVATAR_KEY = stringPreferencesKey("pending_avatar_key")
         val DELETED_EMAIL_COOLDOWNS = stringPreferencesKey("deleted_email_cooldowns")
         val DELETED_USERNAME_COOLDOWNS = stringPreferencesKey("deleted_username_cooldowns")
     }
 
+    fun getFastCachedSession(): AuthSession? {
+        return try {
+            val storedToken = fastPrefs.getString("access_token", null) ?: return null
+            val token = SecureStorageCodec.decrypt(storedToken)
+            if (token.isBlank()) return null
+            val refresh = SecureStorageCodec.decrypt(fastPrefs.getString("refresh_token", "").orEmpty())
+            val userId = fastPrefs.getString("user_id", null) ?: return null
+            val email = SecureStorageCodec.decrypt(fastPrefs.getString("email", "").orEmpty())
+            val expiresAt = fastPrefs.getLong("expires_at", 0L)
+            val onboardingCompleted = fastPrefs.getBoolean("onboarding_completed", true)
+            val username = fastPrefs.getString("pending_username", "").orEmpty()
+            val avatarKey = fastPrefs.getString("pending_avatar_key", "avatar_1").orEmpty().ifBlank { "avatar_1" }
+            AuthSession(
+                accessToken = token,
+                refreshToken = refresh,
+                userId = userId,
+                email = email,
+                expiresAtEpochSec = expiresAt,
+                pendingUsername = username,
+                pendingAvatarKey = avatarKey,
+                onboardingCompleted = onboardingCompleted
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun mirrorToFastPrefs(session: AuthSession) {
+        try {
+            val existingUsername = fastPrefs.getString("pending_username", "").orEmpty()
+            val existingAvatar = fastPrefs.getString("pending_avatar_key", "avatar_1").orEmpty()
+            val finalUsername = session.pendingUsername.ifBlank { existingUsername }
+            val finalAvatar = session.pendingAvatarKey.ifBlank { existingAvatar.ifBlank { "avatar_1" } }
+            fastPrefs.edit()
+                .putString("access_token", SecureStorageCodec.encrypt(session.accessToken))
+                .putString("refresh_token", SecureStorageCodec.encrypt(session.refreshToken))
+                .putString("user_id", session.userId)
+                .putString("email", SecureStorageCodec.encrypt(session.email))
+                .putLong("expires_at", session.expiresAtEpochSec)
+                .putBoolean("onboarding_completed", session.onboardingCompleted)
+                .putString("pending_username", finalUsername)
+                .putString("pending_avatar_key", finalAvatar)
+                .apply()
+        } catch (_: Exception) {
+        }
+    }
+
+    suspend fun cacheProfileSnapshot(username: String, avatarKey: String) {
+        val cleanName = username.trim()
+        val cleanAvatar = avatarKey.trim().ifBlank { "avatar_1" }
+        try {
+            fastPrefs.edit()
+                .putString("pending_username", cleanName)
+                .putString("pending_avatar_key", cleanAvatar)
+                .apply()
+        } catch (_: Exception) {
+        }
+        appContext.authDataStore.edit { prefs ->
+            if (cleanName.isNotBlank()) prefs[Keys.PENDING_USERNAME] = cleanName
+            prefs[Keys.PENDING_AVATAR_KEY] = cleanAvatar
+        }
+    }
+
     suspend fun getSavedSession(): AuthSession? {
+        getFastCachedSession()?.let { return it }
         val prefs = appContext.authDataStore.data.first()
         val storedToken = prefs[Keys.ACCESS_TOKEN] ?: return null
         val token = SecureStorageCodec.decrypt(storedToken)
@@ -90,17 +158,24 @@ class SupabaseAuthService(context: Context) {
         val email = SecureStorageCodec.decrypt(prefs[Keys.EMAIL].orEmpty())
         val expiresAt = prefs[Keys.EXPIRES_AT] ?: 0L
         val onboardingCompleted = prefs[Keys.ONBOARDING_COMPLETED] ?: true
-        return AuthSession(
+        val username = prefs[Keys.PENDING_USERNAME].orEmpty()
+        val avatarKey = prefs[Keys.PENDING_AVATAR_KEY].orEmpty().ifBlank { "avatar_1" }
+        val session = AuthSession(
             accessToken = token,
             refreshToken = refresh,
             userId = userId,
             email = email,
             expiresAtEpochSec = expiresAt,
+            pendingUsername = username,
+            pendingAvatarKey = avatarKey,
             onboardingCompleted = onboardingCompleted
         )
+        mirrorToFastPrefs(session)
+        return session
     }
 
     internal suspend fun saveSession(session: AuthSession) {
+        mirrorToFastPrefs(session)
         appContext.authDataStore.edit { prefs ->
             prefs[Keys.ACCESS_TOKEN] = SecureStorageCodec.encrypt(session.accessToken)
             prefs[Keys.REFRESH_TOKEN] = SecureStorageCodec.encrypt(session.refreshToken)
@@ -108,10 +183,20 @@ class SupabaseAuthService(context: Context) {
             prefs[Keys.EMAIL] = SecureStorageCodec.encrypt(session.email)
             prefs[Keys.EXPIRES_AT] = session.expiresAtEpochSec
             prefs[Keys.ONBOARDING_COMPLETED] = session.onboardingCompleted
+            if (session.pendingUsername.isNotBlank()) {
+                prefs[Keys.PENDING_USERNAME] = session.pendingUsername
+            }
+            if (session.pendingAvatarKey.isNotBlank()) {
+                prefs[Keys.PENDING_AVATAR_KEY] = session.pendingAvatarKey
+            }
         }
     }
 
     suspend fun clearSession() {
+        try {
+            fastPrefs.edit().clear().apply()
+        } catch (_: Exception) {
+        }
         appContext.authDataStore.edit { prefs ->
             prefs.remove(Keys.ACCESS_TOKEN)
             prefs.remove(Keys.REFRESH_TOKEN)
@@ -119,6 +204,8 @@ class SupabaseAuthService(context: Context) {
             prefs.remove(Keys.EMAIL)
             prefs.remove(Keys.EXPIRES_AT)
             prefs.remove(Keys.ONBOARDING_COMPLETED)
+            prefs.remove(Keys.PENDING_USERNAME)
+            prefs.remove(Keys.PENDING_AVATAR_KEY)
         }
     }
 
@@ -364,15 +451,22 @@ class SupabaseAuthService(context: Context) {
             client.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
-                    return@withContext Result.failure(Exception("Your session expired. Please sign in again."))
+                    if (response.code == 400 || response.code == 401) {
+                        return@withContext Result.failure(Exception("Your session expired. Please sign in again."))
+                    }
+                    return@withContext Result.success(current)
                 }
                 val json = JSONObject(body)
-                val refreshed = parseSession(json, current.email)
+                val parsed = parseSession(json, current.email)
+                val refreshed = parsed.copy(
+                    pendingUsername = parsed.pendingUsername.ifBlank { current.pendingUsername },
+                    pendingAvatarKey = parsed.pendingAvatarKey.ifBlank { current.pendingAvatarKey }
+                )
                 saveSession(refreshed)
                 Result.success(refreshed)
             }
-        } catch (e: Exception) {
-            Result.failure(Exception(ErrorSanitizer.sanitize(e, "Unable to refresh your session. Please sign in again.")))
+        } catch (_: Exception) {
+            Result.success(current)
         }
     }
 

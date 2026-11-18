@@ -111,14 +111,30 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // Auth & Membership State
-    private val _authSession = MutableStateFlow<AuthSession?>(null)
+    // Auth & Membership State (synchronously hydrated from fastPrefs to eliminate startup login flash)
+    private val initialFastSession = supabaseAuth.getFastCachedSession()
+    private val _authSession = MutableStateFlow<AuthSession?>(initialFastSession)
     val authSession = _authSession.asStateFlow()
+
+    private val _isRestoringSession = MutableStateFlow(initialFastSession == null)
+    val isRestoringSession = _isRestoringSession.asStateFlow()
 
     private val _isLocalPreviewMode = MutableStateFlow(false)
     val isLocalPreviewMode = _isLocalPreviewMode.asStateFlow()
 
-    private val _userProfile = MutableStateFlow<UserProfile?>(null)
+    private val _userProfile = MutableStateFlow<UserProfile?>(
+        if (initialFastSession != null && initialFastSession.onboardingCompleted) {
+            UserProfile(
+                id = initialFastSession.userId,
+                email = initialFastSession.email,
+                username = initialFastSession.pendingUsername.ifBlank {
+                    initialFastSession.email.substringBefore("@").ifBlank { "Member" }
+                },
+                avatarKey = initialFastSession.pendingAvatarKey.ifBlank { BuiltInAvatar.AVATAR_1.key },
+                memberStatus = MemberStatus.ACTIVE
+            )
+        } else null
+    )
     val userProfile = _userProfile.asStateFlow()
 
     private val _isAuthLoading = MutableStateFlow(false)
@@ -284,36 +300,72 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     private val _isStorageStatsLoading = MutableStateFlow(false)
     val isStorageStatsLoading = _isStorageStatsLoading.asStateFlow()
 
+    private var hasTriggeredInitialAuthRestore = false
+
     init {
         restoreSessionAndInitialData()
+        startAutoCloudSyncLoop()
+    }
+
+    private fun buildOptimisticProfile(session: AuthSession): UserProfile {
+        return _userProfile.value ?: UserProfile(
+            id = session.userId,
+            email = session.email,
+            username = session.pendingUsername.ifBlank {
+                session.email.substringBefore("@").ifBlank { "Member" }
+            },
+            avatarKey = session.pendingAvatarKey.ifBlank { BuiltInAvatar.AVATAR_1.key },
+            memberStatus = MemberStatus.ACTIVE
+        )
     }
 
     private fun restoreSessionAndInitialData() {
         viewModelScope.launch {
+            // Read saved session from DataStore immediately before any network calls
+            val saved = supabaseAuth.getSavedSession()
+            if (saved != null) {
+                _authSession.value = saved
+                if (saved.onboardingCompleted && _userProfile.value == null) {
+                    _userProfile.value = buildOptimisticProfile(saved)
+                }
+            }
+            _isRestoringSession.value = false
+
             preferencesRepo.preferencesFlow.collect { prefs ->
                 AppConfig.updateRuntimeSupabaseConfig(prefs.supabaseUrl, prefs.supabaseAnonKey)
                 val ready = AppConfig.isSupabaseConfigured
                 _isSupabaseReady.value = ready
-                if (ready && _authSession.value == null) {
-                    val saved = supabaseAuth.getSavedSession()
-                    if (saved != null) {
-                        val refreshed = supabaseAuth.refreshSessionIfNeeded(saved)
+                if (ready && !hasTriggeredInitialAuthRestore) {
+                    hasTriggeredInitialAuthRestore = true
+                    val currentSaved = _authSession.value ?: supabaseAuth.getSavedSession()
+                    if (currentSaved != null) {
+                        if (currentSaved.onboardingCompleted && _userProfile.value == null) {
+                            _userProfile.value = buildOptimisticProfile(currentSaved)
+                        }
+                        val refreshed = supabaseAuth.refreshSessionIfNeeded(currentSaved)
                         if (refreshed.isSuccess) {
                             val activeSession = refreshed.getOrThrow()
                             _authSession.value = activeSession
                             val loaded = supabaseDb.fetchCurrentProfile(activeSession).getOrNull()
+                            if (loaded != null) {
+                                supabaseAuth.cacheProfileSnapshot(loaded.username, loaded.avatarKey)
+                            }
                             val needsOnboarding = !activeSession.onboardingCompleted ||
-                                loaded == null ||
-                                loaded.username.startsWith("traveler_", ignoreCase = true)
+                                (loaded != null && loaded.username.startsWith("traveler_", ignoreCase = true))
                             if (needsOnboarding) {
                                 _userProfile.value = loaded
                                 _onboardingStage.value = OnboardingStage.USERNAME
                             } else {
                                 _onboardingStage.value = OnboardingStage.NONE
+                                if (loaded != null) {
+                                    _userProfile.value = loaded
+                                }
                                 loadAuthenticatedWorkspace(activeSession)
                             }
                         } else {
                             supabaseAuth.clearSession()
+                            _authSession.value = null
+                            _userProfile.value = null
                         }
                     }
                 }
@@ -324,6 +376,40 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             repository.pruneAndCompactStorage()
             refreshHome()
             checkForUpdates(manual = false)
+        }
+    }
+
+    private fun startAutoCloudSyncLoop() {
+        viewModelScope.launch {
+            while (isActive) {
+                delay(20_000L)
+                triggerSilentCloudSync()
+            }
+        }
+    }
+
+    fun triggerSilentCloudSync() {
+        val current = _authSession.value ?: return
+        if (_onboardingStage.value != OnboardingStage.NONE || !current.onboardingCompleted) return
+        viewModelScope.launch {
+            val activeSession = supabaseAuth.refreshSessionIfNeeded(current).getOrDefault(current)
+            if (activeSession.accessToken != current.accessToken) {
+                _authSession.value = activeSession
+            }
+            supabaseDb.fetchUserWatchlist(activeSession).onSuccess { cloudItems ->
+                repository.syncCloudWatchlistEntries(cloudItems)
+            }
+            supabaseDb.fetchCollections(activeSession).onSuccess { _collections.value = it }
+            if (_userProfile.value?.memberStatus == MemberStatus.ACTIVE) {
+                val membersRes = supabaseDb.fetchCommunityMembers(activeSession)
+                membersRes.onSuccess { members ->
+                    _communityMembers.value = members
+                    supabaseDb.fetchCommunityFeed(activeSession, members).onSuccess { (reviews, activity) ->
+                        _communityReviews.value = sortReviews(reviews, _reviewSortOption.value)
+                        _communityActivity.value = activity
+                    }
+                }
+            }
         }
     }
 
@@ -623,6 +709,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     _onboardingStage.value = OnboardingStage.NONE
                     _userProfile.value = existingProfile
+                    supabaseAuth.cacheProfileSnapshot(existingProfile.username, existingProfile.avatarKey)
                     pendingSignUpEmail = null
                     pendingSignUpPassword = null
                     loadAuthenticatedWorkspace(session)
@@ -1128,6 +1215,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                 ?: supabaseDb.ensurePersonalProfile(session).getOrNull()
             if (loaded != null) {
                 _userProfile.value = loaded
+                supabaseAuth.cacheProfileSnapshot(loaded.username, loaded.avatarKey)
                 _needsInviteRedemption.value = false
                 supabaseDb.fetchPrivacySettings(session).onSuccess { _privacySettings.value = it }
                 supabaseDb.fetchUserWatchlist(session).onSuccess { cloudItems ->
@@ -1749,6 +1837,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                     avatarUrl = targetAvatarUrl,
                     bio = ""
                 )
+                supabaseAuth.cacheProfileSnapshot(cleanName, avatarKey)
                 refreshCommunityData()
                 _userMessage.value = "Profile updated."
                 onSuccess()

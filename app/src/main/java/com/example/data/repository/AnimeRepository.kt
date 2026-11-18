@@ -323,7 +323,7 @@ class AnimeRepository(
                 item.copy(
                     isPinned = existing.isPinned,
                     notificationsEnabled = existing.notificationsEnabled,
-                    airingDayOfWeek = existing.airingDayOfWeek,
+                    airingDayOfWeek = if (item.airingTimeUnix != null) item.airingDayOfWeek else existing.airingDayOfWeek,
                     airingTimeUnix = item.airingTimeUnix ?: existing.airingTimeUnix,
                     nextEpisodeNumber = item.nextEpisodeNumber ?: existing.nextEpisodeNumber,
                     userSeason = maxOf(item.userSeason, existing.userSeason)

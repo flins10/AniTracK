@@ -1089,6 +1089,15 @@ class SupabaseDatabaseService {
                             }
                         }.joinToString(", ")
 
+                        val nextAiringAt = if (a.isNull("next_airing_at")) null else a.optLong("next_airing_at")
+                        val resolvedDayOfWeek = if (nextAiringAt != null && nextAiringAt > 0L) {
+                            java.time.Instant.ofEpochSecond(nextAiringAt)
+                                .atZone(java.time.ZoneId.systemDefault())
+                                .dayOfWeek.value
+                        } else {
+                            ((a.getInt("anilist_id").coerceAtLeast(1) % 7) + 1)
+                        }
+
                         add(
                             AnimeEntity(
                                 id = a.getInt("anilist_id"),
@@ -1105,8 +1114,8 @@ class SupabaseDatabaseService {
                                 userSeason = row.optInt("user_season", 1).coerceIn(1, 99),
                                 userStatus = watchStatus.dbValue,
                                 userScore = personalRating,
-                                airingDayOfWeek = 1,
-                                airingTimeUnix = if (a.isNull("next_airing_at")) null else a.optLong("next_airing_at"),
+                                airingDayOfWeek = resolvedDayOfWeek,
+                                airingTimeUnix = nextAiringAt,
                                 nextEpisodeNumber = if (a.isNull("next_episode_number")) null else a.optInt("next_episode_number"),
                                 genres = genres,
                                 studios = studios,

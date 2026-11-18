@@ -152,7 +152,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val preferences by viewModel.preferences.collectAsState()
             val authSession by viewModel.authSession.collectAsState()
-            val userProfile by viewModel.userProfile.collectAsState()
+            val isRestoringSession by viewModel.isRestoringSession.collectAsState()
             val needsInviteRedemption by viewModel.needsInviteRedemption.collectAsState()
             val onboardingStage by viewModel.onboardingStage.collectAsState()
             val isLocalPreviewMode by viewModel.isLocalPreviewMode.collectAsState()
@@ -181,7 +181,6 @@ class MainActivity : ComponentActivity() {
                 }
 
                 val hasSignedInAccount = authSession != null &&
-                    userProfile != null &&
                     !needsInviteRedemption &&
                     onboardingStage == OnboardingStage.NONE &&
                     authSession!!.onboardingCompleted
@@ -192,16 +191,16 @@ class MainActivity : ComponentActivity() {
                         .fillMaxSize()
                         .background(colors.backgroundMain)
                 ) {
-                    if (!showWorkspace) {
+                    if (showWorkspace) {
+                        AnimeUniverseMainScaffold(
+                            viewModel = viewModel,
+                            snackbarHostState = snackbarHostState
+                        )
+                    } else if (!isRestoringSession) {
                         AuthScreen(
                             viewModel = viewModel,
                             onboardingStage = onboardingStage,
                             needsInviteOnlyGate = authSession != null && needsInviteRedemption
-                        )
-                    } else {
-                        AnimeUniverseMainScaffold(
-                            viewModel = viewModel,
-                            snackbarHostState = snackbarHostState
                         )
                     }
 
@@ -353,7 +352,7 @@ class MainActivity : ComponentActivity() {
                     }
 
                     AnimatedVisibility(
-                        visible = showSplash,
+                        visible = showSplash || isRestoringSession,
                         enter = fadeIn(),
                         exit = fadeOut(animationSpec = tween(260))
                     ) {
@@ -362,6 +361,11 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        viewModel.triggerSilentCloudSync()
     }
 
     override fun onNewIntent(intent: Intent) {

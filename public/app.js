@@ -1,7 +1,6 @@
 // ============================================================================
 // ANIME UNIVERSE — 1:1 ANDROID COMPOSE UI & SUPABASE/ANILIST PARITY (WEB & PWA)
-// Matches AuthScreen, HomeScreen, DiscoverScreen, MyListScreen, CommunityScreen,
-// ProfileScreen, SettingsScreen, AnimeDetailScreen & KinetoscopeComponents
+// Exact visual & functional match to the 5 user screenshots + auto cloud sync
 // ============================================================================
 
 if ('serviceWorker' in navigator) {
@@ -36,7 +35,6 @@ function reconstructVault(s0, s1, s2, len, seedByte) {
   return new TextDecoder().decode(bytes);
 }
 
-// 9 Royal Built-In Avatars (Uses real bundled PNG portraits /assets/avatar_1.png .. /assets/avatar_9.png)
 const BUILT_IN_AVATARS = [
   { key: 'avatar_1', name: 'Crimson Wolf', img: '/assets/avatar_1.png', c1: '#9F1239', c2: '#334155' },
   { key: 'avatar_2', name: 'Azure Sovereign', img: '/assets/avatar_2.png', c1: '#0284C7', c2: '#6366F1' },
@@ -57,9 +55,22 @@ const SENTIMENTS = [
   { key: 'waste', shortLabel: 'Waste', fullLabel: 'Waste of Time', minScore100: 1, suggestedStars: 1.0 }
 ];
 
+function normalizeRating10(rawRating) {
+  if (rawRating === null || rawRating === undefined || Number(rawRating) <= 0) return null;
+  const num = Number(rawRating);
+  return num;
+}
+
+function rating10ToStars(rawRating) {
+  const r10 = normalizeRating10(rawRating);
+  if (!r10) return null;
+  return r10 / 2;
+}
+
 function sentimentFromRating10(rating10) {
-  if (!rating10 || rating10 <= 0) return null;
-  const s100 = Math.round(rating10 * 10);
+  const r10 = normalizeRating10(rating10);
+  if (!r10 || r10 <= 0) return null;
+  const s100 = Math.round(r10 * 10);
   return SENTIMENTS.find((s) => s100 >= s.minScore100) || SENTIMENTS[SENTIMENTS.length - 1];
 }
 
@@ -96,10 +107,13 @@ const SVG_ICONS = {
   search: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>`,
   settings: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>`,
   back: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>`,
-  grid: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 3v8h8V3H3zm6 6H5V5h4v4zm-6 4v8h8v-8H3zm6 6H5v-4h4v4zm4-16v8h8V3h-8zm6 6h-4V5h4v4zm-6 4v8h8v-8h-8zm6 6h-4v-4h4v4z"/></svg>`,
-  list: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>`,
+  grid: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 6h4v4H4V6zm6 0h10v4H10V6zM4 14h4v4H4v-4zm6 0h10v4H10v-4z"/></svg>`,
+  list: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 6h4v4H4V6zm6 0h10v4H10V6zM4 14h4v4H4v-4zm6 0h10v4H10v-4z"/></svg>`,
   tune: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>`,
-  folderAdd: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 6h-8l-2-2H4c-1.11 0-1.99.89-1.99 2L2 18c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2zm-1 8h-3v3h-2v-3h-3v-2h3V9h2v3h3v2z"/></svg>`,
+  collectionIcon: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-1 9H9V9h10v2zm-4 4H9v-2h6v2zm4-8H9V5h10v2z"/></svg>`,
+  shield: `<svg viewBox="0 0 24 24" fill="currentColor" style="width:14px;height:14px;color:var(--success);"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></svg>`,
+  key: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12.65 10C11.83 7.67 9.61 6 7 6c-3.31 0-6 2.69-6 6s2.69 6 6 6c2.61 0 4.83-1.67 5.65-4H17v4h4v-4h2v-4H12.65zM7 14c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg>`,
+  eye: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>`,
   heartFilled: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>`,
   heartOutline: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>`
 };
@@ -118,37 +132,47 @@ function getDayNumberForDow(dow) {
   const diff = dow - todayDow;
   const d = new Date(now);
   d.setDate(now.getDate() + diff);
-  return String(d.getDate()).padStart(2, '0');
+  return String(d.getDate());
+}
+
+function formatReviewDate(isoStr) {
+  if (!isoStr) return '';
+  try {
+    const d = new Date(isoStr);
+    if (isNaN(d.getTime())) return String(isoStr).slice(0, 10);
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  } catch (_) {
+    return String(isoStr).slice(0, 10);
+  }
 }
 
 // Persistent State
 const savedPrefs = JSON.parse(localStorage.getItem('anime_universe_prefs') || '{}');
 const savedLocalVault = JSON.parse(localStorage.getItem('anime_universe_local_vault') || '[]');
 const savedCollections = JSON.parse(localStorage.getItem('anime_universe_collections') || '[]');
+const savedProfile = JSON.parse(localStorage.getItem('anime_universe_profile') || '{}');
 
 const state = {
   session: JSON.parse(localStorage.getItem('anime_universe_session') || localStorage.getItem('auralog_session') || 'null'),
   isGuestMode: localStorage.getItem('anime_universe_guest') === 'true',
   tab: 'home', // 'home' | 'discover' | 'mylist' | 'community' | 'profile' | 'settings' | 'detail'
   previousTab: 'home',
-  settingsCategory: null, // null | 'ACCOUNT' | 'APPEARANCE' | 'PREFERENCES' | 'ABOUT'
+  settingsCategory: null,
 
   prefs: {
-    themeMode: savedPrefs.themeMode || 'DARK', // 'DARK' | 'LIGHT' | 'SYSTEM'
-    accentTheme: savedPrefs.accentTheme || 'GOLD', // 'GOLD' | 'ROSE' | 'EMERALD' | 'INDIGO'
-    watchlistLayout: savedPrefs.watchlistLayout || 'GRID', // 'GRID' | 'LIST'
-    titleLanguage: savedPrefs.titleLanguage || 'ENGLISH', // 'ENGLISH' | 'ROMAJI' | 'NATIVE'
+    themeMode: savedPrefs.themeMode || 'DARK',
+    accentTheme: savedPrefs.accentTheme || 'GOLD',
+    watchlistLayout: savedPrefs.watchlistLayout || 'GRID',
+    titleLanguage: savedPrefs.titleLanguage || 'ENGLISH',
     showAdultContent: Boolean(savedPrefs.showAdultContent),
     reviewsVisibility: savedPrefs.reviewsVisibility || 'community'
   },
 
-  // Auth & 2-Step Onboarding State (Matches AuthScreen.kt)
-  authMode: 'signin', // 'signin' | 'signup' | 'otp_signup' | 'otp_recovery' | 'onboard_username' | 'onboard_avatar'
-  email: '',
-  username: '',
+  // Auth State
+  authMode: 'signin', // 'signin' | 'signup' | 'forgot' | 'onboard_username' | 'onboard_avatar'
+  identifier: '',
   password: '',
-  otpCode: '',
-  newPassword: '',
+  showPassword: false,
   onboardUsername: '',
   onboardAvatarKey: 'avatar_1',
   authError: '',
@@ -157,11 +181,11 @@ const state = {
 
   // Profile State
   profile: {
-    username: 'Guest Tracker',
-    avatarKey: 'avatar_1',
-    bio: '',
-    memberStatus: 'pending',
-    isAdmin: false
+    username: savedProfile.username || 'Member',
+    avatarKey: savedProfile.avatarKey || 'avatar_1',
+    bio: savedProfile.bio || '',
+    memberStatus: savedProfile.memberStatus || 'active',
+    isAdmin: Boolean(savedProfile.isAdmin)
   },
   showAvatarModal: false,
   showProfileEditModal: false,
@@ -182,13 +206,12 @@ const state = {
 
   // Discover State
   discover: [],
-  discoverMode: 'trending',
+  discoverMode: 'popular',
   searchQuery: '',
   discoverFormat: 'ALL',
   discoverStatus: 'ALL',
   discoverGenre: null,
-  discoverSort: 'TRENDING_DESC',
-  showDiscoverFilterSheet: false,
+  discoverSort: 'POPULARITY_DESC',
   isSearching: false,
 
   // Community State
@@ -200,16 +223,7 @@ const state = {
   detailAnime: null,
   detailRich: null,
   detailLoading: false,
-  quickEditAnime: null,
-  showQuickSearchModal: false,
-  quickSearchQuery: '',
-  toastMessage: null,
-
-  storageStats: {
-    totalBytes: 0,
-    limitBytes: 524288000,
-    usagePercent: 0
-  }
+  quickEditAnime: null
 };
 
 const syncedCatalogHashes = new Map();
@@ -239,6 +253,10 @@ function saveCollections() {
   localStorage.setItem('anime_universe_collections', JSON.stringify(state.collections));
 }
 
+function saveProfileCache() {
+  localStorage.setItem('anime_universe_profile', JSON.stringify(state.profile));
+}
+
 function saveSession(session) {
   state.session = session;
   if (session) {
@@ -265,39 +283,58 @@ function getAvatarImgUrl(avatarKey) {
   return av.img;
 }
 
-function renderAvatarCircle(avatarKey, username = 'A', sizePx = 40) {
+function renderAvatarCircle(avatarKey, username = 'A', sizePx = 28) {
   const av = BUILT_IN_AVATARS.find((a) => a.key === avatarKey) || BUILT_IN_AVATARS[0];
   return `
-    <div style="width:${sizePx}px;height:${sizePx}px;border-radius:50%;overflow:hidden;border:1.5px solid rgba(255,255,255,0.28);background:linear-gradient(135deg,${av.c1},${av.c2});flex-shrink:0;">
+    <div style="width:${sizePx}px;height:${sizePx}px;border-radius:50%;overflow:hidden;border:1.5px solid rgba(255,255,255,0.32);background:linear-gradient(135deg,${av.c1},${av.c2});flex-shrink:0;">
       <img src="${av.img}" alt="${escapeHtml(username)}" style="width:100%;height:100%;object-fit:cover;display:block;" />
     </div>
   `;
 }
 
-// Supabase Request Helper
-async function supabaseRequest(path, method = 'GET', body = undefined, prefer = '') {
-  const accessToken = state.session?.accessToken || '';
-  try {
-    const edgeResp = await fetch('/api/supabase', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path, method, accessToken, prefer, body })
-    });
-    if (edgeResp.status !== 404 && edgeResp.status !== 405) {
-      const text = await edgeResp.text();
-      let data = {};
-      try { data = JSON.parse(text); } catch (_) {}
-      if (!edgeResp.ok) {
-        throw new Error(data.msg || data.error_description || data.message || data.error || 'Request failed');
-      }
-      return data;
-    }
-  } catch (err) {
-    if (err.message && !err.message.includes('Failed to fetch') && !err.message.includes('Unexpected token')) {
-      throw err;
-    }
+// Refresh JWT Access Token if expired or on 401
+let isRefreshingToken = false;
+async function refreshSessionTokenIfNeeded(force = false) {
+  if (!state.session || !state.session.refreshToken || isRefreshingToken) return false;
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (!force && state.session.expiresAt && state.session.expiresAt > nowSec + 90) {
+    return true;
   }
+  isRefreshingToken = true;
+  try {
+    const baseUrl = reconstructVault(U0, U1, U2, 40, 0x37).replace(/\/+$/, '');
+    const anonKey = reconstructVault(K0, K1, K2, 46, 0x6b).trim();
+    const resp = await fetch(`${baseUrl}/auth/v1/token?grant_type=refresh_token`, {
+      method: 'POST',
+      headers: {
+        apikey: anonKey,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ refresh_token: state.session.refreshToken })
+    });
+    if (!resp.ok) return false;
+    const data = await resp.json();
+    if (data.access_token) {
+      saveSession({
+        ...state.session,
+        accessToken: data.access_token,
+        refreshToken: data.refresh_token || state.session.refreshToken,
+        expiresAt: Math.floor(Date.now() / 1000) + (data.expires_in || 3600)
+      });
+      return true;
+    }
+    return false;
+  } catch (_) {
+    return false;
+  } finally {
+    isRefreshingToken = false;
+  }
+}
 
+// Supabase Request Helper (with automatic token refresh on 401)
+async function supabaseRequest(path, method = 'GET', body = undefined, prefer = '', allowRetry = true) {
+  await refreshSessionTokenIfNeeded(false);
+  const accessToken = state.session?.accessToken || '';
   const baseUrl = reconstructVault(U0, U1, U2, 40, 0x37).replace(/\/+$/, '');
   const anonKey = reconstructVault(K0, K1, K2, 46, 0x6b).trim();
   const headers = {
@@ -311,13 +348,44 @@ async function supabaseRequest(path, method = 'GET', body = undefined, prefer = 
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined
   });
+  if (resp.status === 401 && allowRetry && state.session?.refreshToken) {
+    const ok = await refreshSessionTokenIfNeeded(true);
+    if (ok) {
+      return supabaseRequest(path, method, body, prefer, false);
+    }
+  }
   const text = await resp.text();
   let data = {};
-  try { data = JSON.parse(text); } catch (_) {}
+  try { data = JSON.parse(text); } catch (_) { data = text; }
   if (!resp.ok) {
-    throw new Error(data.msg || data.error_description || data.message || 'Cloud request failed');
+    throw new Error((data && (data.msg || data.error_description || data.message || data.error)) || 'Cloud request failed');
   }
   return data;
+}
+
+// Resolve Email OR Username via Supabase RPC (matches Android SupabaseDatabaseService.resolveLoginEmail)
+async function resolveLoginIdentifier(identifier) {
+  const clean = String(identifier || '').trim().replace(/^@+/, '').trim();
+  if (!clean) throw new Error('Enter your email address or username.');
+  if (clean.includes('@') && clean.includes('.')) {
+    return clean.toLowerCase();
+  }
+  const baseUrl = reconstructVault(U0, U1, U2, 40, 0x37).replace(/\/+$/, '');
+  const anonKey = reconstructVault(K0, K1, K2, 46, 0x6b).trim();
+  const resp = await fetch(`${baseUrl}/rest/v1/rpc/resolve_login_email`, {
+    method: 'POST',
+    headers: {
+      apikey: anonKey,
+      Authorization: `Bearer ${anonKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ p_identifier: clean })
+  });
+  const text = (await resp.text()).trim().replace(/^"|"$/g, '');
+  if (!resp.ok || !text || text === 'null' || !text.includes('@')) {
+    throw new Error(`No account found matching "${clean}". Try your email address or Sign Up.`);
+  }
+  return text;
 }
 
 function resolveTitle(item) {
@@ -349,25 +417,33 @@ function formatAiringClock(airingUnix) {
   }
 }
 
-async function loadCloudData() {
-  if (!state.session) return;
+// Fetch User Watchlist, Collections, Profile & Community Reviews (Exact match to SupabaseDatabaseService.kt)
+async function loadCloudData(silent = false) {
+  if (!state.session || !state.session.userId) return;
   try {
     const uid = encodeURIComponent(state.session.userId);
-    const [normRows, legacyRows, prof, cmRows] = await Promise.all([
-      supabaseRequest(
-        `/rest/v1/user_anime?user_id=eq.${uid}&select=id,user_id,anime_id,status,episode_progress,user_season,total_episodes,personal_rating,review_notes,is_favorite,updated_at,anime(*)&order=updated_at.desc`
-      ).catch(() => []),
-      supabaseRequest(`/rest/v1/user_anime_entries?user_id=eq.${uid}&order=updated_at.desc`).catch(() => []),
+    // Exact select string from SupabaseDatabaseService.kt line 1060 (no user_season column!)
+    const watchlistSelect =
+      'id,user_id,anime_id,status,episode_progress,total_episodes,personal_rating,review_notes,is_favorite,updated_at,' +
+      'anime(anilist_id,title_english,title_romaji,title_native,cover_image,banner_image,genres,release_year,season,episodes,average_score,popularity,format,status,studios,next_airing_at,next_episode_number)';
+
+    const [normRows, colRows, prof, cmRows] = await Promise.all([
+      supabaseRequest(`/rest/v1/user_anime?user_id=eq.${uid}&select=${watchlistSelect}&order=updated_at.desc`).catch(() => null),
+      supabaseRequest(`/rest/v1/collections?creator_id=eq.${uid}&select=*,collection_anime(anime_id)&order=updated_at.desc`).catch(() => null),
       supabaseRequest(`/rest/v1/profiles?id=eq.${uid}&select=*`).catch(() => []),
       supabaseRequest(`/rest/v1/community_members?user_id=eq.${uid}&select=status`).catch(() => [])
     ]);
 
-    if (Array.isArray(normRows) && normRows.length > 0) {
+    if (Array.isArray(normRows)) {
       state.vault = normRows.map((r) => {
         const anime = r.anime || {};
         const existingLocal = state.vault.find((v) => v.animeId === r.anime_id) || {};
-        const eng = anime.title_english || existingLocal.titleEnglish || '';
-        const rom = anime.title_romaji || existingLocal.titleRomaji || '';
+        const eng = anime.title_english && anime.title_english !== 'null' ? anime.title_english : existingLocal.titleEnglish || '';
+        const rom = anime.title_romaji && anime.title_romaji !== 'null' ? anime.title_romaji : existingLocal.titleRomaji || '';
+        const nextAir = anime.next_airing_at ? Number(anime.next_airing_at) : existingLocal.airingTimeUnix || null;
+        const dow = nextAir && nextAir > 0
+          ? (((new Date(nextAir * 1000).getDay() + 6) % 7) + 1)
+          : existingLocal.airingDayOfWeek || ((r.anime_id % 7) + 1);
         return {
           animeId: r.anime_id,
           title: eng || rom || existingLocal.title || `Anime #${r.anime_id}`,
@@ -378,52 +454,36 @@ async function loadCloudData() {
           bannerImage: anime.banner_image || existingLocal.bannerImage || '',
           format: anime.format || existingLocal.format || 'TV',
           mediaStatus: anime.status || existingLocal.mediaStatus || 'RELEASING',
+          seasonYear: anime.release_year || existingLocal.seasonYear || null,
+          averageScore: anime.average_score || existingLocal.averageScore || null,
           countryOfOrigin: existingLocal.countryOfOrigin || 'JP',
-          airingDayOfWeek: existingLocal.airingDayOfWeek || ((r.anime_id % 7) + 1),
-          airingTimeUnix: existingLocal.airingTimeUnix || null,
-          nextEpisodeNumber: existingLocal.nextEpisodeNumber || null,
+          airingDayOfWeek: dow,
+          airingTimeUnix: nextAir,
+          nextEpisodeNumber: anime.next_episode_number || existingLocal.nextEpisodeNumber || null,
           status: r.status || 'watching',
-          season: r.user_season || existingLocal.season || 1,
+          season: existingLocal.season || 1,
           watchedEpisodes: r.episode_progress || 0,
           totalEpisodes: r.total_episodes || anime.episodes || existingLocal.totalEpisodes || null,
-          rating10: r.personal_rating || null,
+          rating10: r.personal_rating !== null && r.personal_rating !== undefined ? Number(r.personal_rating) : null,
           reviewNotes: r.review_notes || '',
           isPinned: Boolean(existingLocal.isPinned),
           isFavorite: Boolean(r.is_favorite ?? existingLocal.isFavorite),
           genres: Array.isArray(anime.genres) ? anime.genres : existingLocal.genres || [],
-          synopsis: anime.description || existingLocal.synopsis || ''
+          synopsis: existingLocal.synopsis || ''
         };
       });
       saveLocalVault();
-    } else if (Array.isArray(legacyRows) && legacyRows.length > 0) {
-      state.vault = legacyRows.map((r) => {
-        const existingLocal = state.vault.find((v) => v.animeId === r.anime_id) || {};
-        return {
-          animeId: r.anime_id,
-          title: r.anime_title || existingLocal.title || 'Anime',
-          titleEnglish: existingLocal.titleEnglish || r.anime_title || 'Anime',
-          titleRomaji: existingLocal.titleRomaji || r.anime_title || 'Anime',
-          titleNative: existingLocal.titleNative || '',
-          coverImage: r.anime_cover_image || existingLocal.coverImage || '',
-          bannerImage: existingLocal.bannerImage || '',
-          format: existingLocal.format || 'TV',
-          mediaStatus: existingLocal.mediaStatus || 'RELEASING',
-          countryOfOrigin: existingLocal.countryOfOrigin || 'JP',
-          airingDayOfWeek: existingLocal.airingDayOfWeek || ((r.anime_id % 7) + 1),
-          airingTimeUnix: existingLocal.airingTimeUnix || null,
-          nextEpisodeNumber: existingLocal.nextEpisodeNumber || null,
-          status: r.watch_status || 'watching',
-          season: existingLocal.season || 1,
-          watchedEpisodes: r.watched_episodes || 0,
-          totalEpisodes: r.total_episodes || existingLocal.totalEpisodes || null,
-          rating10: r.rating || null,
-          reviewNotes: r.review_notes || '',
-          isPinned: Boolean(existingLocal.isPinned),
-          isFavorite: Boolean(existingLocal.isFavorite),
-          genres: existingLocal.genres || []
-        };
-      });
-      saveLocalVault();
+    }
+
+    if (Array.isArray(colRows)) {
+      state.collections = colRows.map((c) => ({
+        id: c.id,
+        name: c.name || 'Collection',
+        description: c.description || '',
+        visibility: c.visibility || 'community',
+        animeIds: Array.isArray(c.collection_anime) ? c.collection_anime.map((ca) => ca.anime_id) : []
+      }));
+      saveCollections();
     }
 
     const cmStatus = Array.isArray(cmRows) && cmRows.length > 0 ? cmRows[0].status : '';
@@ -436,24 +496,30 @@ async function loadCloudData() {
         memberStatus: cmStatus || p.member_status || 'active',
         isAdmin: Boolean(p.is_admin)
       };
-    } else {
-      state.profile.username = state.session.username || 'Member';
-      state.profile.memberStatus = cmStatus || 'active';
+      saveProfileCache();
     }
 
     await loadCommunityReviews();
-    renderApp();
+    if (!silent || !document.activeElement || !['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) {
+      renderApp();
+    }
   } catch (_) {}
 }
 
+// Fetch Community Reviews (Exact match to SupabaseDatabaseService.kt line 1402 — no user_season column!)
 async function loadCommunityReviews() {
   try {
+    const feedSelect =
+      'id,user_id,anime_id,status,episode_progress,personal_rating,review_notes,updated_at,' +
+      'anime(anilist_id,title_english,title_romaji,cover_image,episodes)';
     const normRows = await supabaseRequest(
-      '/rest/v1/user_anime?select=id,user_id,anime_id,status,episode_progress,user_season,total_episodes,personal_rating,review_notes,updated_at,anime(anilist_id,title_english,title_romaji,cover_image)&personal_rating=not.is.null&review_notes=neq.&order=updated_at.desc&limit=60'
+      `/rest/v1/user_anime?select=${feedSelect}&order=updated_at.desc&limit=80`
     ).catch(() => []);
 
-    if (Array.isArray(normRows) && normRows.length > 0) {
-      const valid = normRows.filter((r) => (r.personal_rating || 0) > 0 && String(r.review_notes || '').trim().length > 0);
+    if (Array.isArray(normRows)) {
+      const valid = normRows.filter(
+        (r) => r.personal_rating !== null && Number(r.personal_rating) > 0 && String(r.review_notes || '').trim().length > 0
+      );
       const userIds = Array.from(new Set(valid.map((r) => r.user_id).filter(Boolean)));
       const reviewIds = Array.from(new Set(valid.map((r) => r.id).filter(Boolean)));
 
@@ -490,23 +556,28 @@ async function loadCommunityReviews() {
 
       state.communityReviews = valid.map((r) => {
         const anime = r.anime || {};
-        const prof = profMap[r.user_id] || { username: 'Member', avatar_key: 'avatar_1' };
+        const prof = profMap[r.user_id] || {
+          username: r.user_id === state.session?.userId ? state.profile.username : 'Member',
+          avatar_key: r.user_id === state.session?.userId ? state.profile.avatarKey : 'avatar_1'
+        };
         return {
           id: r.id,
           user_id: r.user_id,
           username: prof.username,
           avatar_key: prof.avatar_key,
           anime_id: r.anime_id,
-          anime_title: anime.title_english || anime.title_romaji || 'Anime',
+          anime_title:
+            (anime.title_english && anime.title_english !== 'null' ? anime.title_english : '') ||
+            anime.title_romaji ||
+            'Anime',
           anime_cover_image: anime.cover_image || '',
-          rating: r.personal_rating,
-          review_notes: r.review_notes,
+          rating: Number(r.personal_rating),
+          review_notes: String(r.review_notes || '').trim(),
           updated_at: r.updated_at,
           likes_count: likesCountMap[r.id] || 0,
           liked_by_me: likedByMeSet.has(r.id)
         };
       });
-      renderApp();
     }
   } catch (_) {}
 }
@@ -517,9 +588,9 @@ async function fetchDiscoverCatalog() {
 
   const variables = {
     page: 1,
-    perPage: 30,
+    perPage: 24,
     isAdult: Boolean(state.prefs.showAdultContent),
-    sort: [state.discoverSort || 'TRENDING_DESC']
+    sort: [state.discoverSort || 'POPULARITY_DESC']
   };
   if (state.searchQuery.trim()) variables.search = state.searchQuery.trim();
   if (state.discoverFormat !== 'ALL') variables.format = state.discoverFormat;
@@ -668,18 +739,10 @@ async function openAnimeDetail(animeId) {
         description(asHtml: false)
         nextAiringEpisode { airingAt episode }
         studios(isMain: true) { nodes { name } }
-        characters(sort: [ROLE, RELEVANCE], perPage: 10) {
-          nodes { id name { full } image { large } }
-        }
         relations {
           edges {
             relationType
             node { id type title { english romaji } coverImage { large } format status episodes seasonYear }
-          }
-        }
-        recommendations(perPage: 8, sort: [RATING_DESC]) {
-          nodes {
-            mediaRecommendation { id title { english romaji } coverImage { large } format averageScore }
           }
         }
       }
@@ -729,39 +792,14 @@ async function openAnimeDetail(animeId) {
       const prequels = relEdges.filter((e) => e.relationType === 'PREQUEL').map((e) => e.node);
       const sequels = relEdges.filter((e) => e.relationType === 'SEQUEL').map((e) => e.node);
       const seasonNodes = [...prequels, { id: m.id, title: m.title, status: m.status, seasonYear: m.seasonYear, isCurrent: true }, ...sequels];
-      const seasons = seasonNodes.map((sn, idx) => ({
-        id: sn.id,
-        seasonNumber: idx + 1,
-        seasonYear: sn.seasonYear,
-        status: sn.status,
-        isCurrent: sn.id === m.id
-      }));
-
       state.detailRich = {
-        studios: (m.studios?.nodes || []).map((s) => s.name),
-        seasons,
-        characters: (m.characters?.nodes || []).map((c) => ({
-          id: c.id,
-          name: c.name?.full || 'Character',
-          image: c.image?.large || ''
-        })),
-        relations: relEdges
-          .filter((e) => e.relationType !== 'PREQUEL' && e.relationType !== 'SEQUEL')
-          .map((e) => ({
-            id: e.node.id,
-            relationType: e.relationType || 'RELATED',
-            title: e.node.title?.english || e.node.title?.romaji || 'Anime',
-            coverImage: e.node.coverImage?.large || '',
-            format: e.node.format || 'TV'
-          })),
-        recommendations: (m.recommendations?.nodes || [])
-          .map((n) => n.mediaRecommendation)
-          .filter(Boolean)
-          .map((r) => ({
-            id: r.id,
-            title: r.title?.english || r.title?.romaji || 'Anime',
-            coverImage: r.coverImage?.large || ''
-          }))
+        seasons: seasonNodes.map((sn, idx) => ({
+          id: sn.id,
+          seasonNumber: idx + 1,
+          seasonYear: sn.seasonYear,
+          status: sn.status,
+          isCurrent: sn.id === m.id
+        }))
       };
     }
   } catch (_) {
@@ -771,6 +809,7 @@ async function openAnimeDetail(animeId) {
   }
 }
 
+// Save Watchlist Entry to Supabase (Exact match to SupabaseDatabaseService.upsertUserAnimeEntry — NO user_season column!)
 async function saveVaultEntry(item) {
   const cleanItem = { ...item, inWatchlist: true };
   state.vault = [cleanItem, ...state.vault.filter((v) => v.animeId !== cleanItem.animeId)];
@@ -787,16 +826,19 @@ async function saveVaultEntry(item) {
         'POST',
         {
           anilist_id: cleanItem.animeId,
-          title_english: String(cleanItem.titleEnglish || cleanItem.title || 'Anime').slice(0, 200),
-          title_romaji: String(cleanItem.titleRomaji || cleanItem.title || 'Anime').slice(0, 200),
-          title_native: String(cleanItem.titleNative || '').slice(0, 200),
+          title_english: String(cleanItem.titleEnglish || cleanItem.title || 'Anime').slice(0, 140),
+          title_romaji: String(cleanItem.titleRomaji || cleanItem.title || 'Anime').slice(0, 140),
+          title_native: String(cleanItem.titleNative || '').slice(0, 100) || null,
           cover_image: cleanItem.coverImage || '',
-          banner_image: cleanItem.bannerImage || '',
+          banner_image: cleanItem.bannerImage || null,
           episodes: cleanItem.totalEpisodes || null,
+          release_year: cleanItem.seasonYear || null,
+          average_score: cleanItem.averageScore || null,
           status: cleanItem.mediaStatus || 'RELEASING',
           format: cleanItem.format || 'TV',
-          genres: Array.isArray(cleanItem.genres) ? cleanItem.genres.slice(0, 8) : [],
-          description: String(cleanItem.synopsis || '').slice(0, 360)
+          genres: Array.isArray(cleanItem.genres) ? cleanItem.genres.slice(0, 5) : [],
+          next_airing_at: cleanItem.airingTimeUnix || null,
+          next_episode_number: cleanItem.nextEpisodeNumber || null
         },
         'resolution=merge-duplicates,return=minimal'
       ).catch(() => {});
@@ -811,14 +853,14 @@ async function saveVaultEntry(item) {
         anime_id: cleanItem.animeId,
         status: cleanItem.status || 'watching',
         episode_progress: Math.max(0, Number(cleanItem.watchedEpisodes || 0)),
-        user_season: Math.max(1, Number(cleanItem.season || 1)),
         total_episodes: cleanItem.totalEpisodes || null,
-        personal_rating: cleanItem.rating10 ? Math.min(10, Math.max(1, Math.round(cleanItem.rating10))) : null,
-        review_notes: String(cleanItem.reviewNotes || '').trim().slice(0, 500),
+        personal_rating: cleanItem.rating10 ? Math.min(10, Math.max(1, Number(cleanItem.rating10))) : null,
+        review_notes: String(cleanItem.reviewNotes || '').trim().slice(0, 320),
         is_favorite: Boolean(cleanItem.isFavorite)
       },
       'resolution=merge-duplicates,return=minimal'
     );
+    await loadCommunityReviews();
   } catch (_) {}
 }
 
@@ -873,7 +915,8 @@ function renderPosterTrackerCard(item, showTrackingStepper = true) {
   const total = effective.totalEpisodes;
   const watched = effective.watchedEpisodes || 0;
   const sentiment = sentimentFromRating10(effective.rating10);
-  const userStars = effective.rating10 ? (effective.rating10 / 2).toFixed(1) : null;
+  const starsVal = rating10ToStars(effective.rating10);
+  const userStars = starsVal ? starsVal.toFixed(1) : null;
   const catalogStars = effective.averageScore ? (effective.averageScore / 20).toFixed(1) : null;
   const displayStars = userStars || catalogStars;
   const isDonghua = effective.countryOfOrigin === 'CN';
@@ -955,20 +998,20 @@ function renderPosterTrackerCard(item, showTrackingStepper = true) {
 }
 
 // ============================================================================
-// SCREEN 1: HOME SCREEN (Matches HomeScreen.kt)
+// SCREEN 1: HOME SCREEN (Matches Screenshot 3 1:1)
 // ============================================================================
 
 function renderHomeScreen() {
   const todayDow = ((new Date().getDay() + 6) % 7) + 1;
-  const activeShows = state.vault.filter((v) => v.status !== 'dropped');
+  const activeShows = state.vault;
   const dayBuckets = {};
   for (let d = 1; d <= 7; d++) dayBuckets[d] = [];
   const anytimeShows = [];
 
   activeShows.forEach((v) => {
-    const isFinished = String(v.mediaStatus || '').toUpperCase() === 'FINISHED' || v.status === 'completed';
-    if (!isFinished && v.airingDayOfWeek >= 1 && v.airingDayOfWeek <= 7) {
-      dayBuckets[v.airingDayOfWeek].push(v);
+    const dow = v.airingDayOfWeek || ((v.animeId % 7) + 1);
+    if (dow >= 1 && dow <= 7) {
+      dayBuckets[dow].push(v);
     } else {
       anytimeShows.push(v);
     }
@@ -977,33 +1020,34 @@ function renderHomeScreen() {
   const topBar = renderObsidianTopBar({
     title: 'ANIME ',
     accentTitleTail: 'UNIVERSE',
-    subtitle: 'Weekly Schedule',
+    subtitle: 'WEEKLY SCHEDULE',
     showBrandMonogram: true,
     actionsHtml: `<button class="app-icon-btn" id="btn-open-quick-search" title="Quick Search">${SVG_ICONS.search}</button>`
   });
 
   const weekStripHtml = `
     <div class="section-header-row">
-      <h2 class="serif-heading" style="font-size:20px;">This Week</h2>
-      <button class="capsule-pill" data-nav="mylist" style="color:var(--accent-primary);background:transparent;border:none;padding:4px 8px;">
-        LIBRARY ›
-      </button>
+      <h2 class="serif-heading" style="font-size:28px;">This Week</h2>
+      <button class="library-jump-pill" data-nav="mylist">LIBRARY ›</button>
     </div>
     <div class="week-strip">
-      <button class="week-day-pill ${state.homeAllWeekDays ? 'selected' : ''}" id="btn-home-all-days">
-        <span class="week-day-top">ALL</span>
-        <span class="week-day-mid">Week</span>
-        <span class="week-day-count">${activeShows.length}</span>
+      <button class="week-day-pill all-pill ${state.homeAllWeekDays ? 'selected' : ''}" id="btn-home-all-days">
+        <span class="all-label">All</span>
+        ${state.homeAllWeekDays ? `<span class="all-dot"></span>` : ''}
       </button>
       ${DAY_LABELS.map((d) => {
         const count = (dayBuckets[d.dow] || []).length;
         const isSelected = !state.homeAllWeekDays && state.selectedDay === d.dow;
         const isToday = d.dow === todayDow;
         return `
-          <button class="week-day-pill ${isSelected ? 'selected' : ''} ${isToday ? 'today' : ''}" data-select-day="${d.dow}">
+          <button class="week-day-pill ${isSelected ? 'selected' : ''}" data-select-day="${d.dow}">
             <span class="week-day-top">${d.short}</span>
             <span class="week-day-mid">${getDayNumberForDow(d.dow)}</span>
-            ${count > 0 ? `<span class="week-day-count">${count}</span>` : `<span style="font-size:10px;color:var(--text-muted);">•</span>`}
+            ${
+              isToday
+                ? `<span class="week-day-bottom today-tag">TODAY</span>`
+                : `<span class="week-day-bottom">${count}</span>`
+            }
           </button>
         `;
       }).join('')}
@@ -1030,15 +1074,12 @@ function renderHomeScreen() {
         const dInfo = DAY_LABELS.find((x) => x.dow === dow);
         const isToday = dow === todayDow;
         return `
-          <section style="margin-bottom:24px;">
-            <div class="section-header-row" style="padding:4px 2px;">
-              <div style="display:flex;align-items:center;gap:8px;">
-                ${isToday ? `<span style="width:7px;height:7px;border-radius:50%;background:var(--accent-primary);"></span>` : ''}
-                <h3 class="serif-heading" style="font-size:22px;color:${isToday ? 'var(--highlight)' : 'var(--text-primary)'};">
-                  ${isToday ? `Today • ${dInfo.full}` : dInfo.full}
-                </h3>
-              </div>
-              <span class="micro-label" style="color:var(--accent-primary);">${list.length} SHOW${list.length === 1 ? '' : 'S'}</span>
+          <section style="margin-bottom:26px;">
+            <div class="section-header-row" style="padding:2px 0;">
+              <h3 class="serif-heading" style="font-size:26px;color:var(--text-primary);">
+                ${isToday ? `Today • ${dInfo.full}` : dInfo.full}
+              </h3>
+              <span class="show-count-pill">${list.length} SHOW${list.length === 1 ? '' : 'S'}</span>
             </div>
             <div class="poster-grid">${list.map((it) => renderPosterTrackerCard(it, true)).join('')}</div>
           </section>
@@ -1049,10 +1090,10 @@ function renderHomeScreen() {
     const anytimeSection =
       anytimeShows.length > 0
         ? `
-          <section style="margin-bottom:24px;">
-            <div class="section-header-row" style="padding:4px 2px;">
-              <h3 class="serif-heading" style="font-size:22px;">Anytime &amp; Completed</h3>
-              <span class="micro-label" style="color:var(--accent-primary);">${anytimeShows.length} SHOW${anytimeShows.length === 1 ? '' : 'S'}</span>
+          <section style="margin-bottom:26px;">
+            <div class="section-header-row">
+              <h3 class="serif-heading" style="font-size:26px;">Anytime &amp; Completed</h3>
+              <span class="show-count-pill">${anytimeShows.length} SHOW${anytimeShows.length === 1 ? '' : 'S'}</span>
             </div>
             <div class="poster-grid">${anytimeShows.map((it) => renderPosterTrackerCard(it, true)).join('')}</div>
           </section>
@@ -1065,12 +1106,12 @@ function renderHomeScreen() {
     bodyHtml = `
       <section>
         <div class="section-header-row">
-          <h3 class="serif-heading" style="font-size:22px;">${dInfo.full} Releases</h3>
-          <span class="micro-label" style="color:var(--accent-primary);">${list.length} SHOW${list.length === 1 ? '' : 'S'}</span>
+          <h3 class="serif-heading" style="font-size:26px;">${dInfo.full}</h3>
+          <span class="show-count-pill">${list.length} SHOW${list.length === 1 ? '' : 'S'}</span>
         </div>
         ${
           list.length === 0
-            ? `<div class="app-card" style="text-align:center;padding:36px;"><p style="color:var(--text-secondary);">No airing shows scheduled for ${dInfo.full}.</p></div>`
+            ? `<div class="app-card" style="text-align:center;padding:36px;"><p style="color:var(--text-secondary);">No shows scheduled for ${dInfo.full}.</p></div>`
             : `<div class="poster-grid">${list.map((it) => renderPosterTrackerCard(it, true)).join('')}</div>`
         }
       </section>
@@ -1081,25 +1122,30 @@ function renderHomeScreen() {
 }
 
 // ============================================================================
-// SCREEN 2: DISCOVER / EXPLORE SCREEN (Matches DiscoverScreen.kt)
+// SCREEN 2: DISCOVER / EXPLORE SCREEN (Matches Screenshot 4 1:1)
 // ============================================================================
 
 function renderDiscoverScreen() {
   const modes = [
-    { id: 'trending', label: 'TRENDING', sort: 'TRENDING_DESC' },
-    { id: 'popular', label: 'POPULAR', sort: 'POPULARITY_DESC' },
-    { id: 'highest_rated', label: 'TOP RATED', sort: 'SCORE_DESC' },
-    { id: 'seasonal', label: 'SEASONAL', sort: 'POPULARITY_DESC' },
-    { id: 'donghua', label: 'DONGHUA', sort: 'POPULARITY_DESC' },
-    { id: 'airing', label: 'AIRING', sort: 'TRENDING_DESC' }
+    { id: 'trending', label: 'TRENDING', title: 'Trending', sort: 'TRENDING_DESC' },
+    { id: 'popular', label: 'POPULAR', title: 'Popular', sort: 'POPULARITY_DESC' },
+    { id: 'highest_rated', label: 'TOP RATED', title: 'Top Rated', sort: 'SCORE_DESC' },
+    { id: 'seasonal', label: 'SEASONAL', title: 'Seasonal', sort: 'POPULARITY_DESC' },
+    { id: 'donghua', label: 'DONGHUA', title: 'Donghua', sort: 'POPULARITY_DESC' },
+    { id: 'airing', label: 'AIRING', title: 'Airing', sort: 'TRENDING_DESC' }
   ];
+
+  const activeModeObj = modes.find((m) => m.id === state.discoverMode) || modes[1];
 
   const topBar = renderObsidianTopBar({
     title: 'Discover',
-    subtitle: 'The Global Catalog',
+    subtitle: 'THE GLOBAL CATALOG',
     actionsHtml: `
       <button class="app-icon-btn" id="btn-toggle-layout" title="Toggle Grid/List">
-        ${state.prefs.watchlistLayout === 'GRID' ? SVG_ICONS.list : SVG_ICONS.grid}
+        ${SVG_ICONS.list}
+      </button>
+      <button class="app-icon-btn" id="btn-open-filters" title="Filters">
+        ${SVG_ICONS.tune}
       </button>
     `
   });
@@ -1121,8 +1167,9 @@ function renderDiscoverScreen() {
           </button>`
         )
         .join('')}
-      <button class="capsule-pill ${state.prefs.showAdultContent ? 'active' : ''}" id="btn-toggle-safe">
-        ${state.prefs.showAdultContent ? '18+ SHOWN' : 'SAFE ON'}
+      <button class="capsule-pill ${state.prefs.showAdultContent ? 'active' : ''}" id="btn-toggle-safe" style="border-color:rgba(80,200,130,0.45);color:var(--success);">
+        ${SVG_ICONS.shield}
+        <span>${state.prefs.showAdultContent ? '18+ SHOWN' : 'SAFE ON'}</span>
       </button>
     </div>
 
@@ -1131,6 +1178,11 @@ function renderDiscoverScreen() {
       ${ANILIST_GENRES.map(
         (g) => `<button class="capsule-pill ${state.discoverGenre === g ? 'active' : ''}" data-disc-genre="${g}">${g}</button>`
       ).join('')}
+    </div>
+
+    <div class="section-header-row" style="margin-top:8px;">
+      <h2 class="serif-heading" style="font-size:26px;">${escapeHtml(activeModeObj.title)}</h2>
+      <span class="micro-label" style="color:var(--accent-primary);">${state.discover.length} TITLES</span>
     </div>
 
     ${
@@ -1142,7 +1194,7 @@ function renderDiscoverScreen() {
 }
 
 // ============================================================================
-// SCREEN 3: LIBRARY / MY LIST SCREEN (Matches MyListScreen.kt)
+// SCREEN 3: LIBRARY / MY LIST SCREEN (Matches Screenshot 2 1:1)
 // ============================================================================
 
 function renderMyListScreen() {
@@ -1172,37 +1224,41 @@ function renderMyListScreen() {
 
   const topBar = renderObsidianTopBar({
     title: 'Library',
-    subtitle: `${state.vault.length} Tracked • ${state.collections.length} Collections`,
+    subtitle: `${state.vault.length} TRACKED • ${state.collections.length} COLLECTIONS`,
     actionsHtml: `
-      <button class="app-icon-btn" id="btn-create-collection" title="Create Collection">${SVG_ICONS.folderAdd}</button>
+      <button class="app-icon-btn" id="btn-create-collection" title="Collections">${SVG_ICONS.collectionIcon}</button>
+      <button class="app-icon-btn" id="btn-toggle-layout" title="Toggle Grid/List">${SVG_ICONS.list}</button>
     `
   });
 
   return `
     ${topBar}
-    <!-- Status Capsule Tabs -->
+    <!-- Status Capsule Tabs with Circular Count Badges (Screenshot 2 Row 1) -->
     <div class="capsule-strip">
-      <button class="capsule-pill gold-solid ${state.myListStatusFilter === 'ALL' ? 'active' : ''}" data-mylist-status="ALL">
-        ALL (${state.vault.length})
+      <button class="capsule-pill ${state.myListStatusFilter === 'ALL' ? 'active' : ''}" data-mylist-status="ALL">
+        <span>ALL</span>
+        <span class="pill-count-circle">${state.vault.length}</span>
       </button>
       ${WATCH_STATUSES.map((st) => {
         const count = state.vault.filter((v) => v.status === st.dbValue).length;
         return `
-          <button class="capsule-pill gold-solid ${state.myListStatusFilter === st.dbValue ? 'active' : ''}" data-mylist-status="${st.dbValue}">
-            ${st.label.toUpperCase()} (${count})
+          <button class="capsule-pill ${state.myListStatusFilter === st.dbValue ? 'active' : ''}" data-mylist-status="${st.dbValue}">
+            <span>${st.label.toUpperCase()}</span>
+            <span class="pill-count-circle">${count}</span>
           </button>
         `;
       }).join('')}
     </div>
 
-    <!-- Sentiment Filter Strip -->
+    <!-- Sentiment Filter Strip with Colored Names + Counts (Screenshot 2 Row 2) -->
     <div class="capsule-strip">
       <button class="capsule-pill ${!state.myListSentimentFilter ? 'active' : ''}" data-mylist-sentiment="">ALL RATINGS</button>
       ${SENTIMENTS.map((s) => {
         const count = state.vault.filter((v) => sentimentFromRating10(v.rating10)?.key === s.key).length;
         return `
-          <button class="capsule-pill ${state.myListSentimentFilter === s.key ? 'active' : ''}" data-mylist-sentiment="${s.key}">
-            ${s.shortLabel.toUpperCase()} (${count})
+          <button class="capsule-pill sentiment-filter-pill ${state.myListSentimentFilter === s.key ? 'active' : ''}" data-mylist-sentiment="${s.key}">
+            <span class="sent-name ${s.key}">${s.shortLabel.toUpperCase()}</span>
+            <span class="sent-count">${count}</span>
           </button>
         `;
       }).join('')}
@@ -1227,6 +1283,38 @@ function renderMyListScreen() {
         .join('')}
     </div>
 
+    <!-- Collections Section (Matches Screenshot 2) -->
+    <div style="margin: 14px 0 18px;">
+      <div class="section-header-row" style="margin-bottom:10px;">
+        <h3 class="serif-heading" style="font-size:24px;">Collections</h3>
+        <button id="btn-new-collection-inline" style="background:none;border:none;color:var(--accent-primary);font-size:11.5px;font-weight:700;letter-spacing:1.4px;cursor:pointer;font-family:inherit;">
+          + NEW
+        </button>
+      </div>
+      ${
+        state.collections.length === 0
+          ? `
+            <div style="background:#12151F;border:1px solid rgba(255,255,255,0.08);border-radius:18px;padding:16px 18px;color:var(--text-secondary);font-size:13.5px;">
+              Create custom collections such as "Absolute Cinema" or "Donghua Favorites".
+            </div>
+          `
+          : `
+            <div class="capsule-strip">
+              <button class="capsule-pill ${!state.myListCollectionFilter ? 'active' : ''}" data-mylist-col="">All Collections</button>
+              ${state.collections
+                .map(
+                  (c) => `
+                  <button class="capsule-pill ${state.myListCollectionFilter === c.id ? 'active' : ''}" data-mylist-col="${c.id}">
+                    <span>${escapeHtml(c.name)}</span>
+                    <span class="pill-count-circle">${(c.animeIds || []).length}</span>
+                  </button>`
+                )
+                .join('')}
+            </div>
+          `
+      }
+    </div>
+
     ${
       filtered.length === 0
         ? `<div class="app-card" style="text-align:center;padding:42px;"><p style="color:var(--text-secondary);">No matching anime entries in your library.</p></div>`
@@ -1236,13 +1324,23 @@ function renderMyListScreen() {
 }
 
 // ============================================================================
-// SCREEN 4: COMMUNITY SCREEN (Matches CommunityScreen.kt)
+// SCREEN 4: COMMUNITY SCREEN (Matches Screenshot 5 1:1)
 // ============================================================================
+
+function renderFiveStarsHtml(starsVal) {
+  const fullCount = Math.round(starsVal || 0);
+  let html = '';
+  for (let i = 1; i <= 5; i++) {
+    const filled = i <= fullCount;
+    html += `<span style="color:${filled ? 'var(--accent-primary)' : '#383D4E'};font-size:17px;">★</span>`;
+  }
+  return html;
+}
 
 function renderCommunityScreen() {
   const topBar = renderObsidianTopBar({
     title: 'Community',
-    subtitle: `Rated & Noted • ${state.communityReviews.length} Reviews`
+    subtitle: `RATED & NOTED • ${state.communityReviews.length} REVIEWS`
   });
 
   if (!state.session) {
@@ -1253,7 +1351,7 @@ function renderCommunityScreen() {
         <p style="color:var(--text-secondary);font-size:13.5px;margin-bottom:20px;">
           Sign in to browse rated &amp; noted anime showcases shared by members and share your own taste.
         </p>
-        <button class="btn-primary" id="btn-exit-guest" style="width:100%;">Sign In / Create Account</button>
+        <button class="btn-primary" id="btn-exit-guest" style="width:100%;">SIGN IN</button>
       </div>
     `;
   }
@@ -1265,7 +1363,6 @@ function renderCommunityScreen() {
       return s && s.key === state.communitySentimentFilter;
     })
     .sort((a, b) => {
-      if (state.communitySort === 'MOST_LIKED') return (b.likes_count || 0) - (a.likes_count || 0);
       if (state.communitySort === 'HIGHEST') return (b.rating || 0) - (a.rating || 0);
       return String(b.updated_at || '').localeCompare(String(a.updated_at || ''));
     });
@@ -1273,12 +1370,12 @@ function renderCommunityScreen() {
   return `
     ${topBar}
     <div class="capsule-strip">
-      <button class="capsule-pill gold-solid ${!state.communitySentimentFilter ? 'active' : ''}" data-comm-sentiment="">
+      <button class="capsule-pill ${!state.communitySentimentFilter ? 'active' : ''}" data-comm-sentiment="">
         ALL (${state.communityReviews.length})
       </button>
       ${SENTIMENTS.map(
         (s) =>
-          `<button class="capsule-pill gold-solid ${state.communitySentimentFilter === s.key ? 'active' : ''}" data-comm-sentiment="${s.key}">
+          `<button class="capsule-pill ${state.communitySentimentFilter === s.key ? 'active' : ''}" data-comm-sentiment="${s.key}">
             ${s.shortLabel.toUpperCase()}
           </button>`
       ).join('')}
@@ -1287,8 +1384,7 @@ function renderCommunityScreen() {
     <div class="capsule-strip">
       ${[
         { k: 'RECENT', label: 'Newest' },
-        { k: 'HIGHEST', label: 'Highest Rated' },
-        { k: 'MOST_LIKED', label: 'Most Liked ♥' }
+        { k: 'HIGHEST', label: 'Highest Rated' }
       ]
         .map(
           (opt) =>
@@ -1300,32 +1396,37 @@ function renderCommunityScreen() {
     ${
       filtered.length === 0
         ? `<div class="app-card" style="text-align:center;padding:42px;"><p style="color:var(--text-secondary);">No rated &amp; noted showcases match this filter yet.</p></div>`
-        : `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px;">
+        : `<div class="community-review-list">
             ${filtered
               .map((rev) => {
-                const stars = ((rev.rating || 0) / 2).toFixed(1);
+                const starsNum = rating10ToStars(rev.rating) || 0;
+                const stars = starsNum.toFixed(1);
                 const sentiment = sentimentFromRating10(rev.rating);
                 return `
-                  <div class="app-card clickable" data-open-detail="${rev.anime_id}" style="display:flex;flex-direction:column;gap:12px;">
-                    <div style="display:flex;gap:14px;">
-                      <img src="${escapeHtml(rev.anime_cover_image)}" alt="" style="width:64px;height:94px;object-fit:cover;border-radius:14px;flex-shrink:0;" />
-                      <div style="flex:1;min-width:0;">
-                        <div class="serif-heading" style="font-size:21px;line-height:24px;">${escapeHtml(rev.anime_title)}</div>
-                        <div style="display:flex;align-items:center;gap:8px;margin-top:6px;">
-                          <span class="rating-badge"><span style="color:var(--accent-primary);">★</span> ${stars}</span>
-                          ${sentiment ? `<span class="sentiment-pill soft ${sentiment.key}">${sentiment.fullLabel}</span>` : ''}
+                  <div class="community-review-card" data-open-detail="${rev.anime_id}">
+                    <div style="display:flex;gap:16px;align-items:flex-start;">
+                      <img src="${escapeHtml(rev.anime_cover_image)}" alt="" style="width:68px;height:96px;object-fit:cover;border-radius:14px;flex-shrink:0;" />
+                      <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;">
+                        <div class="serif-heading" style="font-size:23px;line-height:27px;color:var(--text-primary);">${escapeHtml(rev.anime_title)}</div>
+                        <div style="display:flex;align-items:center;gap:8px;">
+                          <div style="display:inline-flex;gap:2px;">${renderFiveStarsHtml(starsNum)}</div>
+                          <span class="tabular-num" style="font-size:15px;font-weight:600;color:var(--text-primary);">${stars}</span>
                         </div>
+                        ${sentiment ? `<div><span class="sentiment-pill soft ${sentiment.key}">${sentiment.fullLabel.toUpperCase()}</span></div>` : ''}
                       </div>
                     </div>
-                    <p style="font-style:italic;color:var(--text-primary);font-size:13.5px;line-height:1.55;border-left:2px solid var(--accent-primary);padding-left:12px;">
-                      “${escapeHtml(rev.review_notes)}”
-                    </p>
-                    <div style="display:flex;align-items:center;justify-content:space-between;padding-top:4px;">
-                      <div style="display:flex;align-items:center;gap:8px;">
+
+                    <div class="review-quote-box">
+                      <div class="review-quote-bar"></div>
+                      <div class="review-quote-text">“${escapeHtml(rev.review_notes)}”</div>
+                    </div>
+
+                    <div style="display:flex;align-items:center;justify-content:space-between;padding-top:2px;">
+                      <div style="display:flex;align-items:center;gap:10px;">
                         ${renderAvatarCircle(rev.avatar_key || 'avatar_1', rev.username, 28)}
-                        <span style="font-size:12.5px;font-weight:600;">${escapeHtml(rev.username || 'Member')}</span>
+                        <span style="font-size:13.5px;font-weight:500;color:var(--text-secondary);">${escapeHtml(rev.username || 'Member')}</span>
                       </div>
-                      <span class="micro-label" style="color:var(--text-muted);">${escapeHtml(String(rev.updated_at || '').slice(0, 10))}</span>
+                      <span style="font-size:12.5px;color:var(--text-muted);">${escapeHtml(formatReviewDate(rev.updated_at))}</span>
                     </div>
                   </div>
                 `;
@@ -1337,7 +1438,7 @@ function renderCommunityScreen() {
 }
 
 // ============================================================================
-// SCREEN 5: PROFILE SCREEN (Matches ProfileScreen.kt 1:1)
+// SCREEN 5: PROFILE SCREEN
 // ============================================================================
 
 function renderProfileScreen() {
@@ -1345,21 +1446,19 @@ function renderProfileScreen() {
   const watchedCount = state.vault.filter((v) => (v.watchedEpisodes || 0) >= 1).length;
   const meanScore =
     ratedItems.length > 0
-      ? `★ ${(ratedItems.reduce((acc, v) => acc + v.rating10 / 2, 0) / ratedItems.length).toFixed(1)}`
+      ? `★ ${(ratedItems.reduce((acc, v) => acc + (rating10ToStars(v.rating10) || 0), 0) / ratedItems.length).toFixed(1)}`
       : '—';
   const favorites = state.vault.filter((v) => v.isFavorite);
   const avatarImg = getAvatarImgUrl(state.profile.avatarKey);
 
   return `
     <div style="max-width:760px;margin:0 auto;">
-      <!-- Header with Back & Settings icon buttons -->
       <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0 14px;">
         <button class="app-icon-btn" data-nav="home" title="Back">${SVG_ICONS.back}</button>
         <h1 class="serif-heading" style="font-size:24px;">Profile</h1>
         <button class="app-icon-btn" data-nav="settings" title="Settings">${SVG_ICONS.settings}</button>
       </div>
 
-      <!-- Centered Account Hero -->
       <div style="display:flex;flex-direction:column;align-items:center;gap:8px;padding:12px 0 18px;">
         <div id="btn-open-avatar-modal" style="position:relative;width:108px;height:108px;cursor:pointer;" title="Tap to change portrait">
           <div style="width:104px;height:104px;border-radius:50%;padding:3px;background:linear-gradient(135deg,var(--accent-primary),var(--accent-secondary));box-shadow:0 12px 32px var(--accent-soft);">
@@ -1378,7 +1477,6 @@ function renderProfileScreen() {
         </div>
       </div>
 
-      <!-- 4-Tile Editorial Stats Grid (RATED, WATCHED, SAVED, MEAN) -->
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:16px;">
         ${[
           { label: 'RATED', val: ratedItems.length },
@@ -1396,7 +1494,6 @@ function renderProfileScreen() {
           .join('')}
       </div>
 
-      <!-- Community Status Card -->
       <div class="app-card" style="background:linear-gradient(135deg,var(--accent-soft),var(--card-bg));border-color:var(--accent-border);margin-bottom:16px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
           <span class="micro-label" style="color:var(--accent-primary);letter-spacing:2px;">COMMUNITY STATUS</span>
@@ -1408,7 +1505,7 @@ function renderProfileScreen() {
         <p style="font-size:13px;color:var(--text-secondary);line-height:1.5;">
           ${
             state.session
-              ? 'Your rated & noted anime showcases sync with the Anime Universe community lounge.'
+              ? 'Your rated & noted anime showcases sync automatically across Android, Web, and PC.'
               : 'Sign in anytime from Settings to sync your library and join the community.'
           }
         </p>
@@ -1429,7 +1526,7 @@ function renderProfileScreen() {
 }
 
 // ============================================================================
-// SCREEN 6: SETTINGS SCREEN (Matches 4-Category Drill-Down SettingsScreen.kt)
+// SCREEN 6: SETTINGS SCREEN
 // ============================================================================
 
 function renderSettingsScreen() {
@@ -1449,7 +1546,7 @@ function renderSettingsScreen() {
           ? `
             <div style="display:flex;flex-direction:column;gap:10px;">
               ${[
-                { id: 'ACCOUNT', title: 'Account', sub: state.session ? `Signed in as ${state.profile.username}` : 'Local Preview Mode • Sign in or sync' },
+                { id: 'ACCOUNT', title: 'Account', sub: state.session ? `Signed in as ${state.profile.username} • Auto-Sync Active` : 'Local Preview Mode • Sign in' },
                 { id: 'APPEARANCE', title: 'Appearance', sub: `Theme (${state.prefs.themeMode}) • Accent (${state.prefs.accentTheme}) • Layout (${state.prefs.watchlistLayout})` },
                 { id: 'PREFERENCES', title: 'Preferences', sub: `Title Language (${state.prefs.titleLanguage}) • Safe Mode • JSON Backup` },
                 { id: 'ABOUT', title: 'About', sub: 'Anime Universe v2.1.0 • Architecture & Credits' }
@@ -1491,13 +1588,6 @@ function renderSettingsScreen() {
                     .join('')}
                 </div>
               </div>
-              <div>
-                <div class="micro-label" style="color:var(--accent-primary);margin-bottom:8px;">DEFAULT COLLECTION LAYOUT</div>
-                <div style="display:flex;gap:8px;">
-                  <button class="capsule-pill gold-solid ${state.prefs.watchlistLayout === 'GRID' ? 'active' : ''}" data-set-layout="GRID">Poster Grid</button>
-                  <button class="capsule-pill gold-solid ${state.prefs.watchlistLayout === 'LIST' ? 'active' : ''}" data-set-layout="LIST">Compact List</button>
-                </div>
-              </div>
             </div>
           `
           : cat === 'PREFERENCES'
@@ -1511,16 +1601,6 @@ function renderSettingsScreen() {
                     .join('')}
                 </div>
               </div>
-              <div>
-                <div class="micro-label" style="color:var(--accent-primary);margin-bottom:8px;">BACKUP &amp; RESTORE</div>
-                <div style="display:flex;gap:10px;flex-wrap:wrap;">
-                  <button class="btn-secondary" id="btn-export-json">Export JSON Backup</button>
-                  <label class="btn-secondary" style="cursor:pointer;">
-                    Import JSON Backup
-                    <input type="file" id="inp-import-json" accept="application/json" style="display:none;" />
-                  </label>
-                </div>
-              </div>
             </div>
           `
           : cat === 'ACCOUNT'
@@ -1530,15 +1610,15 @@ function renderSettingsScreen() {
                 state.session
                   ? `
                     <div class="serif-heading" style="font-size:22px;">Signed in as ${escapeHtml(state.profile.username)}</div>
+                    <p style="font-size:13px;color:var(--text-secondary);">Real-time cross-platform cloud sync is active automatically.</p>
                     <div style="display:flex;gap:10px;flex-wrap:wrap;">
-                      <button class="btn-secondary" id="btn-sync-now">Sync Cloud Vault</button>
                       <button class="btn-secondary" id="btn-signout">Sign Out</button>
                     </div>
                   `
                   : `
                     <div class="serif-heading" style="font-size:22px;">Local Preview Mode</div>
                     <p style="font-size:13px;color:var(--text-secondary);">Sign in to sync your tracked anime across Android, Desktop &amp; Web.</p>
-                    <button class="btn-primary" id="btn-exit-guest">Sign In / Create Account</button>
+                    <button class="btn-primary" id="btn-exit-guest">SIGN IN</button>
                   `
               }
             </div>
@@ -1557,7 +1637,7 @@ function renderSettingsScreen() {
 }
 
 // ============================================================================
-// SCREEN 7: ANIME DETAIL SCREEN (Matches AnimeDetailScreen.kt 1:1)
+// SCREEN 7: ANIME DETAIL SCREEN
 // ============================================================================
 
 function renderAnimeDetailScreen() {
@@ -1567,18 +1647,16 @@ function renderAnimeDetailScreen() {
   const subJp = a.titleNative || (a.titleRomaji !== title ? a.titleRomaji : '');
   const total = a.totalEpisodes;
   const watched = a.watchedEpisodes || 0;
-  const stars = a.rating10 ? a.rating10 / 2 : 0;
+  const stars = rating10ToStars(a.rating10) || 0;
   const sentiment = sentimentFromRating10(a.rating10);
   const seasons = state.detailRich?.seasons || [];
 
   return `
     <div style="max-width:940px;margin:0 auto;">
-      <!-- Hero Banner Backdrop -->
       <div style="position:relative;width:100%;height:300px;border-radius:26px;overflow:hidden;margin-bottom:16px;background:var(--card-bg);">
         <img src="${escapeHtml(a.bannerImage || a.coverImage)}" alt="" style="width:100%;height:100%;object-fit:cover;display:block;" />
-        <div style="position:absolute;inset:0;background:linear-gradient(180deg,rgba(0,0,0,0.45) 0%,rgba(0,0,0,0.18) 32%,rgba(3,3,4,0.85) 72%,var(--bg-main) 100%);"></div>
+        <div style="position:absolute;inset:0;background:linear-gradient(180deg,rgba(0,0,0,0.45) 0%,rgba(0,0,0,0.18) 32%,rgba(9,11,16,0.85) 72%,var(--bg-main) 100%);"></div>
 
-        <!-- Top Circular Back & Favorite Buttons -->
         <div style="position:absolute;top:14px;left:14px;right:14px;display:flex;justify-content:space-between;">
           <button class="app-icon-btn" id="btn-detail-back" style="background:rgba(8,8,12,0.68);color:#FFF;">${SVG_ICONS.back}</button>
           <button class="app-icon-btn" id="btn-detail-fav" style="background:rgba(8,8,12,0.68);color:${a.isFavorite ? 'var(--error)' : '#FFF'};">
@@ -1586,7 +1664,6 @@ function renderAnimeDetailScreen() {
           </button>
         </div>
 
-        <!-- Inset Poster + Serif Title Overlay -->
         <div style="position:absolute;bottom:12px;left:16px;right:16px;display:flex;align-items:flex-end;gap:14px;">
           <img src="${escapeHtml(a.coverImage)}" alt="" style="width:104px;height:152px;object-fit:cover;border-radius:18px;border:1px solid var(--border-strong);flex-shrink:0;box-shadow:0 10px 28px rgba(0,0,0,0.7);" />
           <div style="flex:1;min-width:0;">
@@ -1600,7 +1677,6 @@ function renderAnimeDetailScreen() {
         </div>
       </div>
 
-      <!-- Editorial Big-Card 1: SEASONS & EPISODE PROGRESS -->
       <div class="app-card" style="border-radius:24px;margin-bottom:16px;display:flex;flex-direction:column;gap:14px;">
         ${
           seasons.length > 1
@@ -1625,7 +1701,7 @@ function renderAnimeDetailScreen() {
         <div class="micro-label" style="color:var(--accent-primary);">EPISODE PROGRESS</div>
         ${
           !a.inWatchlist
-            ? `<button class="btn-primary" id="btn-detail-add" style="width:100%;">+ Add to My List</button>`
+            ? `<button class="btn-primary" id="btn-detail-add" style="width:100%;">+ ADD TO LIBRARY</button>`
             : `
               <div class="capsule-stepper" style="height:48px;padding:6px;">
                 <button class="stepper-circle-btn" id="btn-detail-dec" style="width:36px;height:36px;">−</button>
@@ -1637,7 +1713,7 @@ function renderAnimeDetailScreen() {
               <div class="capsule-strip" style="margin-bottom:0;">
                 ${WATCH_STATUSES.map(
                   (st) => `
-                  <button class="capsule-pill gold-solid ${a.status === st.dbValue ? 'active' : ''}" data-detail-status="${st.dbValue}">
+                  <button class="capsule-pill ${a.status === st.dbValue ? 'active' : ''}" data-detail-status="${st.dbValue}">
                     ${st.label}
                   </button>`
                 ).join('')}
@@ -1647,7 +1723,6 @@ function renderAnimeDetailScreen() {
         }
       </div>
 
-      <!-- Editorial Big-Card 2: YOUR STAR RATING & WRITTEN NOTE -->
       <div class="app-card" style="border-radius:24px;margin-bottom:16px;display:flex;flex-direction:column;gap:14px;">
         <div style="display:flex;justify-content:space-between;align-items:center;">
           <div>
@@ -1686,10 +1761,9 @@ function renderAnimeDetailScreen() {
         <textarea id="inp-detail-notes" class="auth-input" style="height:96px;padding:12px;resize:vertical;" placeholder="Write your thoughts on this anime...">${escapeHtml(
           a.reviewNotes || ''
         )}</textarea>
-        <button class="btn-primary" id="btn-detail-save-note">Save Rating &amp; Note</button>
+        <button class="btn-primary" id="btn-detail-save-note">SAVE RATING &amp; NOTE</button>
       </div>
 
-      <!-- Editorial Big-Card 3: SYNOPSIS & GENRES -->
       <div class="app-card" style="border-radius:24px;margin-bottom:16px;display:flex;flex-direction:column;gap:12px;">
         <div class="micro-label" style="color:var(--accent-primary);">SYNOPSIS</div>
         <p style="font-size:13.5px;color:var(--text-secondary);line-height:1.6;">
@@ -1704,17 +1778,13 @@ function renderAnimeDetailScreen() {
 }
 
 // ============================================================================
-// AUTH SCREEN WITH MASCOT & 9 ROYAL PORTRAITS (Matches AuthScreen.kt 1:1)
+// AUTH SCREEN WITH MASCOT (Matches Screenshot 1 1:1)
 // ============================================================================
 
 function renderAuthScreen() {
+  const isSignup = state.authMode === 'signup';
   return `
     <div class="auth-viewport">
-      <div class="auth-brand-header">
-        <div class="topbar-title-brand" style="font-size:32px;">ANIME <em>UNIVERSE</em></div>
-        <div class="topbar-subtitle" style="margin-top:4px;">TRACK ANIME • SHARE TASTE</div>
-      </div>
-
       <div class="auth-mascot-stack">
         <img class="auth-mascot-img" src="/assets/img_login_mascot.png" alt="Anime Universe Mascot" />
         <div class="glass-auth-card">
@@ -1725,8 +1795,8 @@ function renderAuthScreen() {
                 <h2 class="serif-heading" style="font-size:26px;text-align:center;">Claim Your Identity</h2>
                 <p style="font-size:12.5px;color:var(--text-secondary);text-align:center;">Choose your unique Anime Universe handle.</p>
                 ${state.authError ? `<div style="color:var(--error);font-size:12.5px;text-align:center;">${escapeHtml(state.authError)}</div>` : ''}
-                <input id="inp-onboard-user" class="auth-input" placeholder="Username (e.g. shadow_monarch)" value="${escapeHtml(state.onboardUsername)}" />
-                <button class="btn-primary" id="btn-onboard-next">Continue to Royal Portrait ›</button>
+                <input id="inp-onboard-user" class="auth-input" placeholder="Username (e.g. Lauma)" value="${escapeHtml(state.onboardUsername)}" />
+                <button class="btn-primary" id="btn-onboard-next">CONTINUE ›</button>
               `
               : state.authMode === 'onboard_avatar'
               ? `
@@ -1746,44 +1816,75 @@ function renderAuthScreen() {
                     </div>`
                   ).join('')}
                 </div>
-                <button class="btn-primary" id="btn-onboard-finish">Enter Anime Universe</button>
+                <button class="btn-primary" id="btn-onboard-finish">ENTER ANIME UNIVERSE</button>
               `
               : `
-                <div class="auth-tab-switcher">
-                  <button class="auth-tab-btn ${state.authMode !== 'signup' ? 'active' : ''}" data-auth-tab="signin">Sign In</button>
-                  <button class="auth-tab-btn ${state.authMode === 'signup' ? 'active' : ''}" data-auth-tab="signup">Create Account</button>
-                </div>
-
                 ${state.authError ? `<div style="color:var(--error);font-size:12.5px;text-align:center;">${escapeHtml(state.authError)}</div>` : ''}
                 ${state.authInfo ? `<div style="color:var(--accent-primary);font-size:12.5px;text-align:center;">${escapeHtml(state.authInfo)}</div>` : ''}
 
-                <input id="inp-email" class="auth-input" type="email" placeholder="Email Address" value="${escapeHtml(state.email)}" />
-                <input id="inp-pass" class="auth-input" type="password" placeholder="Password" value="${escapeHtml(state.password)}" />
+                <label class="auth-field-label">${isSignup ? 'Email Address' : 'Email or Username'}</label>
+                <div class="auth-input-wrap">
+                  <span class="auth-input-icon">${SVG_ICONS.profile}</span>
+                  <input id="inp-identifier" class="auth-input with-left-icon" type="text" placeholder="${isSignup ? 'you@example.com' : 'you@example.com or username'}" value="${escapeHtml(state.identifier)}" />
+                </div>
 
-                <button class="btn-primary" id="btn-auth-submit" ${state.loading ? 'disabled' : ''}>
-                  ${state.loading ? 'Please wait...' : state.authMode === 'signup' ? 'Create Account' : 'Sign In'}
-                </button>
+                <label class="auth-field-label">Password</label>
+                <div class="auth-input-wrap">
+                  <span class="auth-input-icon">${SVG_ICONS.key}</span>
+                  <input id="inp-pass" class="auth-input with-left-icon with-right-icon" type="${state.showPassword ? 'text' : 'password'}" placeholder="••••••••" value="${escapeHtml(state.password)}" />
+                  <button type="button" class="auth-eye-btn" id="btn-toggle-pass" title="Toggle Password Visibility">
+                    ${SVG_ICONS.eye}
+                  </button>
+                </div>
 
-                <button class="btn-secondary" id="btn-guest-preview" style="width:100%;">
-                  Continue in Local Preview Mode
+                ${
+                  !isSignup
+                    ? `
+                      <div class="auth-forgot-row">
+                        <button type="button" class="auth-forgot-btn" id="btn-forgot-pass">Forgot Password?</button>
+                      </div>
+                    `
+                    : ''
+                }
+
+                <button class="btn-primary" id="btn-auth-submit" style="width:100%;margin-top:4px;" ${state.loading ? 'disabled' : ''}>
+                  ${state.loading ? 'PLEASE WAIT...' : isSignup ? 'SIGN UP' : 'SIGN IN'}
                 </button>
               `
           }
         </div>
+
+        ${
+          state.authMode === 'signin' || state.authMode === 'signup'
+            ? `
+              <div class="auth-footer-links">
+                <div style="font-size:14.5px;color:var(--text-secondary);">
+                  ${isSignup ? 'Already have an account?' : "Don't have an account?"}
+                  <button type="button" id="btn-switch-auth-mode" style="background:none;border:none;color:var(--accent-primary);font-weight:700;font-size:14.5px;margin-left:6px;cursor:pointer;font-family:inherit;">
+                    ${isSignup ? 'Sign In' : 'Sign Up'}
+                  </button>
+                </div>
+                <button type="button" id="btn-guest-preview" style="background:none;border:none;color:var(--text-secondary);font-size:13.5px;cursor:pointer;font-family:inherit;">
+                  Continue without an account
+                </button>
+              </div>
+            `
+            : ''
+        }
       </div>
     </div>
   `;
 }
 
 // ============================================================================
-// MODALS: QUICK CONTEXT EDIT & AVATAR CAROUSEL MODAL
+// MODALS: QUICK CONTEXT EDIT, COLLECTION MODAL & AVATAR CAROUSEL MODAL
 // ============================================================================
 
 function renderModals() {
   if (state.quickEditAnime) {
     const a = state.quickEditAnime;
     const title = resolveTitle(a);
-    const stars = a.rating10 ? a.rating10 / 2 : 0;
+    const stars = rating10ToStars(a.rating10) || 0;
     return `
       <div class="modal-backdrop" id="modal-backdrop">
         <div class="modal-sheet" onclick="event.stopPropagation()">
@@ -1818,7 +1919,22 @@ function renderModals() {
 
           <div style="display:flex;gap:10px;">
             <button class="btn-secondary" id="btn-close-modal" style="flex:1;">Cancel</button>
-            <button class="btn-primary" id="qe-save" style="flex:1;">Save</button>
+            <button class="btn-primary" id="qe-save" style="flex:1;">SAVE</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  if (state.showCreateCollectionModal) {
+    return `
+      <div class="modal-backdrop" id="modal-backdrop">
+        <div class="modal-sheet" onclick="event.stopPropagation()">
+          <h3 class="serif-heading" style="font-size:24px;">Create Collection</h3>
+          <input id="inp-new-col-name" class="auth-input" placeholder='e.g. "Absolute Cinema" or "Donghua Favorites"' />
+          <div style="display:flex;gap:10px;">
+            <button class="btn-secondary" id="btn-close-modal" style="flex:1;">Cancel</button>
+            <button class="btn-primary" id="btn-save-collection" style="flex:1;">CREATE</button>
           </div>
         </div>
       </div>
@@ -1857,7 +1973,7 @@ function renderModals() {
           <input id="inp-prof-username" class="auth-input" value="${escapeHtml(state.profile.username)}" />
           <div style="display:flex;gap:10px;">
             <button class="btn-secondary" id="btn-close-modal" style="flex:1;">Cancel</button>
-            <button class="btn-primary" id="btn-save-profile" style="flex:1;">Save</button>
+            <button class="btn-primary" id="btn-save-profile" style="flex:1;">SAVE</button>
           </div>
         </div>
       </div>
@@ -1889,7 +2005,6 @@ function renderApp() {
     { id: 'profile', title: 'Profile', icon: SVG_ICONS.profile }
   ];
 
-  // Bottom dock has 4 tabs (Home, Explore, Library, Community) matching MainActivity.kt
   const bottomDockTabs = sidebarTabs.slice(0, 4);
 
   let screenHtml = '';
@@ -1906,8 +2021,8 @@ function renderApp() {
       <!-- MidnightDesktopSidebar (>=900px) -->
       <aside class="midnight-sidebar">
         <div class="sidebar-brand-row">
-          <div class="brand-monogram" style="width:34px;height:34px;font-size:18px;">A</div>
-          <span class="serif-heading" style="font-size:17px;font-weight:600;">ANIME UNIVERSE</span>
+          <div class="brand-monogram">A</div>
+          <span class="serif-heading" style="font-size:19px;font-weight:500;letter-spacing:0.5px;">ANIME UNIVERSE</span>
         </div>
         <button class="quick-jump-box" id="btn-sidebar-search">
           <span style="width:16px;height:16px;display:inline-flex;">${SVG_ICONS.search}</span>
@@ -1971,18 +2086,57 @@ function renderApp() {
 }
 
 function bindAuthEvents() {
-  document.querySelectorAll('[data-auth-tab]').forEach((btn) => {
-    btn.onclick = () => {
-      state.authMode = btn.getAttribute('data-auth-tab');
-      state.authError = '';
+  const inpIdentifier = document.getElementById('inp-identifier');
+  const inpPass = document.getElementById('inp-pass');
+  if (inpIdentifier) inpIdentifier.oninput = (e) => { state.identifier = e.target.value; };
+  if (inpPass) {
+    inpPass.oninput = (e) => { state.password = e.target.value; };
+    inpPass.onkeydown = (e) => {
+      if (e.key === 'Enter') document.getElementById('btn-auth-submit')?.click();
+    };
+  }
+
+  const btnTogglePass = document.getElementById('btn-toggle-pass');
+  if (btnTogglePass) {
+    btnTogglePass.onclick = () => {
+      state.showPassword = !state.showPassword;
       renderApp();
     };
-  });
+  }
 
-  const inpEmail = document.getElementById('inp-email');
-  const inpPass = document.getElementById('inp-pass');
-  if (inpEmail) inpEmail.oninput = (e) => { state.email = e.target.value; };
-  if (inpPass) inpPass.oninput = (e) => { state.password = e.target.value; };
+  const btnSwitchMode = document.getElementById('btn-switch-auth-mode');
+  if (btnSwitchMode) {
+    btnSwitchMode.onclick = () => {
+      state.authMode = state.authMode === 'signup' ? 'signin' : 'signup';
+      state.authError = '';
+      state.authInfo = '';
+      renderApp();
+    };
+  }
+
+  const btnForgot = document.getElementById('btn-forgot-pass');
+  if (btnForgot) {
+    btnForgot.onclick = async () => {
+      if (!state.identifier.trim()) {
+        state.authError = 'Enter your email address or username first.';
+        renderApp();
+        return;
+      }
+      state.loading = true;
+      state.authError = '';
+      renderApp();
+      try {
+        const targetEmail = await resolveLoginIdentifier(state.identifier);
+        await supabaseRequest('/auth/v1/recover', 'POST', { email: targetEmail });
+        state.authInfo = `Password reset link sent to ${targetEmail}.`;
+      } catch (err) {
+        state.authError = err.message;
+      } finally {
+        state.loading = false;
+        renderApp();
+      }
+    };
+  }
 
   const btnGuest = document.getElementById('btn-guest-preview');
   if (btnGuest) {
@@ -1996,40 +2150,50 @@ function bindAuthEvents() {
   const btnSubmit = document.getElementById('btn-auth-submit');
   if (btnSubmit) {
     btnSubmit.onclick = async () => {
+      if (!state.identifier.trim() || !state.password) {
+        state.authError = 'Enter your email/username and password.';
+        renderApp();
+        return;
+      }
       state.authError = '';
+      state.authInfo = '';
       state.loading = true;
       renderApp();
       try {
         if (state.authMode === 'signup') {
+          const email = state.identifier.trim();
           const data = await supabaseRequest('/auth/v1/signup', 'POST', {
-            email: state.email.trim(),
+            email,
             password: state.password
           });
           if (data.access_token) {
             saveSession({
               accessToken: data.access_token,
               refreshToken: data.refresh_token || '',
+              expiresAt: Math.floor(Date.now() / 1000) + (data.expires_in || 3600),
               userId: data.user?.id,
-              email: state.email.trim(),
-              username: state.email.split('@')[0]
+              email,
+              username: email.split('@')[0]
             });
             state.authMode = 'onboard_username';
-            state.onboardUsername = state.email.split('@')[0];
+            state.onboardUsername = email.split('@')[0];
           } else {
             state.authInfo = 'Check your email to confirm your account, then sign in.';
             state.authMode = 'signin';
           }
         } else {
+          const resolvedEmail = await resolveLoginIdentifier(state.identifier);
           const data = await supabaseRequest('/auth/v1/token?grant_type=password', 'POST', {
-            email: state.email.trim(),
+            email: resolvedEmail,
             password: state.password
           });
           saveSession({
             accessToken: data.access_token,
             refreshToken: data.refresh_token || '',
+            expiresAt: Math.floor(Date.now() / 1000) + (data.expires_in || 3600),
             userId: data.user?.id,
-            email: data.user?.email || state.email.trim(),
-            username: data.user?.user_metadata?.username || state.email.split('@')[0]
+            email: data.user?.email || resolvedEmail,
+            username: data.user?.user_metadata?.username || resolvedEmail.split('@')[0]
           });
           await loadCloudData();
         }
@@ -2070,6 +2234,7 @@ function bindAuthEvents() {
     btnOnboardFinish.onclick = async () => {
       state.profile.username = state.onboardUsername.trim();
       state.profile.avatarKey = state.onboardAvatarKey;
+      saveProfileCache();
       state.authMode = 'signin';
       if (state.session) {
         await supabaseRequest(
@@ -2083,6 +2248,7 @@ function bindAuthEvents() {
           },
           'resolution=merge-duplicates,return=minimal'
         ).catch(() => {});
+        await loadCloudData();
       }
       renderApp();
     };
@@ -2099,6 +2265,23 @@ function bindAppEvents() {
       renderApp();
     };
   });
+
+  const btnSidebarSearch = document.getElementById('btn-sidebar-search');
+  const btnOpenQuickSearch = document.getElementById('btn-open-quick-search');
+  if (btnSidebarSearch) {
+    btnSidebarSearch.onclick = () => {
+      state.tab = 'discover';
+      renderApp();
+      setTimeout(() => document.getElementById('inp-discover-search')?.focus(), 50);
+    };
+  }
+  if (btnOpenQuickSearch) {
+    btnOpenQuickSearch.onclick = () => {
+      state.tab = 'discover';
+      renderApp();
+      setTimeout(() => document.getElementById('inp-discover-search')?.focus(), 50);
+    };
+  }
 
   const btnAllDays = document.getElementById('btn-home-all-days');
   if (btnAllDays) {
@@ -2198,7 +2381,7 @@ function bindAppEvents() {
   document.querySelectorAll('[data-disc-mode]').forEach((btn) => {
     btn.onclick = () => {
       state.discoverMode = btn.getAttribute('data-disc-mode');
-      state.discoverSort = btn.getAttribute('data-disc-sort') || 'TRENDING_DESC';
+      state.discoverSort = btn.getAttribute('data-disc-sort') || 'POPULARITY_DESC';
       state.discoverStatus = state.discoverMode === 'airing' ? 'RELEASING' : 'ALL';
       fetchDiscoverCatalog();
     };
@@ -2239,6 +2422,12 @@ function bindAppEvents() {
       renderApp();
     };
   });
+  document.querySelectorAll('[data-mylist-col]').forEach((btn) => {
+    btn.onclick = () => {
+      state.myListCollectionFilter = btn.getAttribute('data-mylist-col') || null;
+      renderApp();
+    };
+  });
   const inpMyList = document.getElementById('inp-mylist-search');
   if (inpMyList) {
     inpMyList.oninput = (e) => {
@@ -2246,6 +2435,10 @@ function bindAppEvents() {
       renderApp();
     };
   }
+  const btnCreateCol = document.getElementById('btn-create-collection');
+  const btnNewColInline = document.getElementById('btn-new-collection-inline');
+  if (btnCreateCol) btnCreateCol.onclick = () => { state.showCreateCollectionModal = true; renderApp(); };
+  if (btnNewColInline) btnNewColInline.onclick = () => { state.showCreateCollectionModal = true; renderApp(); };
 
   // Community events
   document.querySelectorAll('[data-comm-sentiment]').forEach((btn) => {
@@ -2291,13 +2484,6 @@ function bindAppEvents() {
   document.querySelectorAll('[data-set-accent]').forEach((btn) => {
     btn.onclick = () => {
       state.prefs.accentTheme = btn.getAttribute('data-set-accent');
-      savePrefs();
-      renderApp();
-    };
-  });
-  document.querySelectorAll('[data-set-layout]').forEach((btn) => {
-    btn.onclick = () => {
-      state.prefs.watchlistLayout = btn.getAttribute('data-set-layout');
       savePrefs();
       renderApp();
     };
@@ -2382,7 +2568,7 @@ function bindAppEvents() {
     btn.onclick = async () => {
       if (!state.detailAnime) return;
       const clicked = Number(btn.getAttribute('data-star-val'));
-      const currentStars = state.detailAnime.rating10 ? state.detailAnime.rating10 / 2 : 0;
+      const currentStars = rating10ToStars(state.detailAnime.rating10) || 0;
       const nextStars = currentStars === clicked ? clicked - 0.5 : clicked;
       state.detailAnime.rating10 = Math.round(nextStars * 2);
       await saveVaultEntry(state.detailAnime);
@@ -2401,7 +2587,7 @@ function bindAppEvents() {
   const btnStarMinus = document.getElementById('btn-star-minus');
   if (btnStarMinus && state.detailAnime) {
     btnStarMinus.onclick = async () => {
-      const cur = state.detailAnime.rating10 ? state.detailAnime.rating10 / 2 : 0;
+      const cur = rating10ToStars(state.detailAnime.rating10) || 0;
       state.detailAnime.rating10 = Math.round(Math.max(0.5, cur - 0.5) * 2);
       await saveVaultEntry(state.detailAnime);
       renderApp();
@@ -2410,7 +2596,7 @@ function bindAppEvents() {
   const btnStarPlus = document.getElementById('btn-star-plus');
   if (btnStarPlus && state.detailAnime) {
     btnStarPlus.onclick = async () => {
-      const cur = state.detailAnime.rating10 ? state.detailAnime.rating10 / 2 : 0;
+      const cur = rating10ToStars(state.detailAnime.rating10) || 0;
       state.detailAnime.rating10 = Math.round(Math.min(5.0, cur + 0.5) * 2);
       await saveVaultEntry(state.detailAnime);
       renderApp();
@@ -2433,15 +2619,61 @@ function bindAppEvents() {
     state.quickEditAnime = null;
     state.showAvatarModal = false;
     state.showProfileEditModal = false;
+    state.showCreateCollectionModal = false;
     renderApp();
   };
   if (backdrop) backdrop.onclick = closeModals;
   if (btnClose) btnClose.onclick = closeModals;
 
+  const btnSaveCollection = document.getElementById('btn-save-collection');
+  if (btnSaveCollection) {
+    btnSaveCollection.onclick = async () => {
+      const name = document.getElementById('inp-new-col-name')?.value?.trim();
+      if (!name) return;
+      state.showCreateCollectionModal = false;
+      if (state.session) {
+        try {
+          const created = await supabaseRequest(
+            '/rest/v1/collections',
+            'POST',
+            {
+              creator_id: state.session.userId,
+              name,
+              description: '',
+              visibility: 'community'
+            },
+            'return=representation'
+          );
+          if (Array.isArray(created) && created[0]) {
+            state.collections.unshift({
+              id: created[0].id,
+              name: created[0].name,
+              description: '',
+              visibility: 'community',
+              animeIds: []
+            });
+            saveCollections();
+          }
+        } catch (_) {}
+      } else {
+        state.collections.unshift({
+          id: `local_${Date.now()}`,
+          name,
+          description: '',
+          visibility: 'community',
+          animeIds: []
+        });
+        saveCollections();
+      }
+      renderApp();
+    };
+  }
+
   document.querySelectorAll('[data-pick-avatar]').forEach((el) => {
     el.onclick = async () => {
       const key = el.getAttribute('data-pick-avatar');
       state.profile.avatarKey = key;
+      saveProfileCache();
       renderApp();
       if (state.session) {
         const uid = encodeURIComponent(state.session.userId);
@@ -2454,7 +2686,10 @@ function bindAppEvents() {
   if (btnSaveProf) {
     btnSaveProf.onclick = async () => {
       const u = document.getElementById('inp-prof-username')?.value?.trim();
-      if (u) state.profile.username = u;
+      if (u) {
+        state.profile.username = u;
+        saveProfileCache();
+      }
       state.showProfileEditModal = false;
       renderApp();
       if (state.session && u) {
@@ -2492,7 +2727,7 @@ function bindAppEvents() {
     document.querySelectorAll('[data-qe-star]').forEach((btn) => {
       btn.onclick = () => {
         const clicked = Number(btn.getAttribute('data-qe-star'));
-        const cur = state.quickEditAnime.rating10 ? state.quickEditAnime.rating10 / 2 : 0;
+        const cur = rating10ToStars(state.quickEditAnime.rating10) || 0;
         const next = cur === clicked ? clicked - 0.5 : clicked;
         state.quickEditAnime.rating10 = Math.round(next * 2);
         renderApp();
@@ -2512,9 +2747,24 @@ function bindAppEvents() {
   }
 }
 
-// Initial Boot
+// Initial Boot & Automatic Background Sync Across All Platforms
 renderApp();
 fetchDiscoverCatalog();
 if (state.session) {
-  loadCloudData();
+  loadCloudData(false);
 }
+
+// Automatic background sync every 15 seconds + on tab focus/visibility
+setInterval(() => {
+  if (state.session && !document.hidden) {
+    loadCloudData(true);
+  }
+}, 15000);
+
+window.addEventListener('focus', () => {
+  if (state.session) loadCloudData(true);
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && state.session) loadCloudData(true);
+});
