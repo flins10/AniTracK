@@ -11,6 +11,25 @@ java {
     targetCompatibility = JavaVersion.VERSION_17
 }
 
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}
+
+sourceSets {
+    main {
+        resources.srcDirs("src/main/resources", "../app/src/main/res")
+    }
+}
+
+tasks.register<Copy>("syncWebAssets") {
+    from("../app/src/main/res/drawable") {
+        include("*.png")
+    }
+    into("../public/assets")
+}
+
 dependencies {
     implementation(compose.desktop.currentOs)
     implementation(compose.material3)
