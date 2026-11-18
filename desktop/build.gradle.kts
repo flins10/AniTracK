@@ -45,7 +45,7 @@ tasks.register("syncWebAssets") {
         }
         project.copy {
             from("../public") {
-                include("index.html", "app.js", "styles.css", "sw.js", "manifest.json", "downloads-config.json")
+                include("index.html", "app.js", "styles.css", "sw.js", "manifest.json", "downloads-config.json", "assets-bundle.js")
             }
             into("..")
         }

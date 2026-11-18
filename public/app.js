@@ -152,15 +152,106 @@ function formatReviewDate(isoStr) {
   }
 }
 
-// Persistent State
+// Cleanup legacy shared storage keys that previously caused cross-user/guest data leakage
+try {
+  localStorage.removeItem('anime_universe_local_vault');
+  localStorage.removeItem('anime_universe_collections');
+  localStorage.removeItem('anime_universe_profile');
+} catch (_) {}
+
+function generateUniqueGuestId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `guest_${crypto.randomUUID()}`;
+  }
+  return `guest_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function getOrCreateGuestId() {
+  let gid = localStorage.getItem('anime_universe_guest_id');
+  if (!gid || !gid.startsWith('guest_')) {
+    gid = generateUniqueGuestId();
+    localStorage.setItem('anime_universe_guest_id', gid);
+  }
+  return gid;
+}
+
+function rotateGuestId() {
+  const gid = generateUniqueGuestId();
+  localStorage.setItem('anime_universe_guest_id', gid);
+  return gid;
+}
+
+function getStorageKeyForIdentity(kind, sessionObj, isGuest, guestId) {
+  if (sessionObj && sessionObj.userId) {
+    return `anime_universe_${kind}_user_${sessionObj.userId}`;
+  }
+  if (isGuest) {
+    const gid = guestId || getOrCreateGuestId();
+    return `anime_universe_${kind}_guest_${gid}`;
+  }
+  return null;
+}
+
+function readScopedArray(kind, sessionObj, isGuest, guestId) {
+  const key = getStorageKeyForIdentity(kind, sessionObj, isGuest, guestId);
+  if (!key) return [];
+  try {
+    const parsed = JSON.parse(localStorage.getItem(key) || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function readScopedProfile(sessionObj, isGuest, guestId) {
+  const key = getStorageKeyForIdentity('profile', sessionObj, isGuest, guestId);
+  const defaultUsername = sessionObj
+    ? (sessionObj.username || (sessionObj.email ? sessionObj.email.split('@')[0] : 'Member'))
+    : isGuest
+    ? 'Guest Tracker'
+    : 'Member';
+  if (!key) {
+    return {
+      userId: null,
+      username: defaultUsername,
+      avatarKey: 'avatar_1',
+      bio: '',
+      memberStatus: isGuest ? 'guest' : 'active',
+      isAdmin: false
+    };
+  }
+  try {
+    const parsed = JSON.parse(localStorage.getItem(key) || '{}') || {};
+    return {
+      userId: sessionObj ? sessionObj.userId : guestId,
+      username: parsed.username || defaultUsername,
+      avatarKey: parsed.avatarKey || 'avatar_1',
+      bio: parsed.bio || '',
+      memberStatus: parsed.memberStatus || (isGuest ? 'guest' : 'active'),
+      isAdmin: Boolean(parsed.isAdmin)
+    };
+  } catch (_) {
+    return {
+      userId: sessionObj ? sessionObj.userId : guestId,
+      username: defaultUsername,
+      avatarKey: 'avatar_1',
+      bio: '',
+      memberStatus: isGuest ? 'guest' : 'active',
+      isAdmin: false
+    };
+  }
+}
+
+// Persistent State (Strictly Scoped per User ID or Unique Guest ID)
 const savedPrefs = JSON.parse(localStorage.getItem('anime_universe_prefs') || '{}');
-const savedLocalVault = JSON.parse(localStorage.getItem('anime_universe_local_vault') || '[]');
-const savedCollections = JSON.parse(localStorage.getItem('anime_universe_collections') || '[]');
-const savedProfile = JSON.parse(localStorage.getItem('anime_universe_profile') || '{}');
+const initialSession = JSON.parse(localStorage.getItem('anime_universe_session') || localStorage.getItem('auralog_session') || 'null');
+const initialGuestMode = !initialSession && localStorage.getItem('anime_universe_guest') === 'true';
+const initialGuestId = getOrCreateGuestId();
 
 const state = {
-  session: JSON.parse(localStorage.getItem('anime_universe_session') || localStorage.getItem('auralog_session') || 'null'),
-  isGuestMode: localStorage.getItem('anime_universe_guest') === 'true',
+  session: initialSession,
+  isGuestMode: initialGuestMode,
+  guestId: initialGuestId,
   tab: 'home', // 'home' | 'discover' | 'mylist' | 'community' | 'profile' | 'settings' | 'detail'
   previousTab: 'home',
   settingsCategory: null,
@@ -191,14 +282,8 @@ const state = {
   authInfo: '',
   loading: false,
 
-  // Profile State
-  profile: {
-    username: savedProfile.username || 'Member',
-    avatarKey: savedProfile.avatarKey || 'avatar_1',
-    bio: savedProfile.bio || '',
-    memberStatus: savedProfile.memberStatus || 'active',
-    isAdmin: Boolean(savedProfile.isAdmin)
-  },
+  // Profile State (Isolated to active user or active guest)
+  profile: readScopedProfile(initialSession, initialGuestMode, initialGuestId),
   showAvatarModal: false,
   showProfileEditModal: false,
 
@@ -206,9 +291,9 @@ const state = {
   homeAllWeekDays: true,
   selectedDay: ((new Date().getDay() + 6) % 7) + 1,
 
-  // Library (MyList) State
-  vault: savedLocalVault,
-  collections: savedCollections,
+  // Library (MyList) State (Isolated to active user or active guest)
+  vault: readScopedArray('vault', initialSession, initialGuestMode, initialGuestId),
+  collections: readScopedArray('collections', initialSession, initialGuestMode, initialGuestId),
   myListStatusFilter: 'ALL',
   myListSentimentFilter: null,
   myListCollectionFilter: null,
@@ -325,29 +410,123 @@ function savePrefs() {
   applyTheme();
 }
 
+function getActiveOwnerId() {
+  if (state.session && state.session.userId) return state.session.userId;
+  if (state.isGuestMode) return state.guestId || getOrCreateGuestId();
+  return null;
+}
+
 function saveLocalVault() {
-  localStorage.setItem('anime_universe_local_vault', JSON.stringify(state.vault));
+  const key = getStorageKeyForIdentity('vault', state.session, state.isGuestMode, state.guestId);
+  if (!key) return;
+  const ownerId = getActiveOwnerId();
+  const tagged = state.vault.map((v) => ({ ...v, ownerId }));
+  state.vault = tagged;
+  localStorage.setItem(key, JSON.stringify(tagged));
 }
 
 function saveCollections() {
-  localStorage.setItem('anime_universe_collections', JSON.stringify(state.collections));
+  const key = getStorageKeyForIdentity('collections', state.session, state.isGuestMode, state.guestId);
+  if (!key) return;
+  const ownerId = getActiveOwnerId();
+  const tagged = state.collections.map((c) => ({ ...c, ownerId }));
+  state.collections = tagged;
+  localStorage.setItem(key, JSON.stringify(tagged));
 }
 
 function saveProfileCache() {
-  localStorage.setItem('anime_universe_profile', JSON.stringify(state.profile));
+  const key = getStorageKeyForIdentity('profile', state.session, state.isGuestMode, state.guestId);
+  if (!key) return;
+  const ownerId = getActiveOwnerId();
+  state.profile = { ...state.profile, userId: ownerId };
+  localStorage.setItem(key, JSON.stringify(state.profile));
 }
 
+function clearActiveUserMemoryState() {
+  state.vault = [];
+  state.collections = [];
+  state.profile = {
+    userId: null,
+    username: 'Member',
+    avatarKey: 'avatar_1',
+    bio: '',
+    memberStatus: 'active',
+    isAdmin: false
+  };
+  state.detailAnime = null;
+  state.detailRich = null;
+  state.quickEditAnime = null;
+  state.myListStatusFilter = 'ALL';
+  state.myListSentimentFilter = null;
+  state.myListCollectionFilter = null;
+  state.myListQuery = '';
+}
+
+function hydrateActiveIdentityState() {
+  if (state.session && state.session.userId) {
+    state.vault = readScopedArray('vault', state.session, false, null).filter(
+      (v) => !v.ownerId || v.ownerId === state.session.userId
+    );
+    state.collections = readScopedArray('collections', state.session, false, null).filter(
+      (c) => !c.ownerId || c.ownerId === state.session.userId
+    );
+    state.profile = readScopedProfile(state.session, false, null);
+    state.detailAnime = null;
+    state.quickEditAnime = null;
+  } else if (state.isGuestMode) {
+    state.guestId = getOrCreateGuestId();
+    state.vault = readScopedArray('vault', null, true, state.guestId).filter(
+      (v) => !v.ownerId || v.ownerId === state.guestId
+    );
+    state.collections = readScopedArray('collections', null, true, state.guestId).filter(
+      (c) => !c.ownerId || c.ownerId === state.guestId
+    );
+    state.profile = readScopedProfile(null, true, state.guestId);
+    state.detailAnime = null;
+    state.quickEditAnime = null;
+  } else {
+    clearActiveUserMemoryState();
+  }
+}
+
+let pendingGuestMigrationItems = [];
+let pendingGuestMigrationGuestId = null;
+
 function saveSession(session) {
-  state.session = session;
-  if (session) {
+  if (session && session.userId) {
+    // Capture any active guest session items for safe non-duplicating migration
+    const activeGuestId = state.guestId || localStorage.getItem('anime_universe_guest_id');
+    if (activeGuestId) {
+      const guestItems = readScopedArray('vault', null, true, activeGuestId);
+      if (guestItems.length > 0) {
+        pendingGuestMigrationItems = guestItems.map((it) => ({ ...it }));
+        pendingGuestMigrationGuestId = activeGuestId;
+      }
+    }
+    state.session = session;
     localStorage.setItem('anime_universe_session', JSON.stringify(session));
     localStorage.setItem('auralog_session', JSON.stringify(session));
     state.isGuestMode = false;
     localStorage.removeItem('anime_universe_guest');
+    hydrateActiveIdentityState();
   } else {
+    state.session = null;
+    state.isGuestMode = false;
     localStorage.removeItem('anime_universe_session');
     localStorage.removeItem('auralog_session');
+    localStorage.removeItem('anime_universe_guest');
+    clearActiveUserMemoryState();
   }
+}
+
+function enterGuestSession(forceNewGuestId = false) {
+  state.session = null;
+  localStorage.removeItem('anime_universe_session');
+  localStorage.removeItem('auralog_session');
+  state.guestId = forceNewGuestId ? rotateGuestId() : getOrCreateGuestId();
+  state.isGuestMode = true;
+  localStorage.setItem('anime_universe_guest', 'true');
+  hydrateActiveIdentityState();
 }
 
 function escapeHtml(str) {
@@ -360,6 +539,13 @@ function escapeHtml(str) {
 
 const AVATAR_IMG_ONERROR =
   "if(!this.dataset.fb){this.dataset.fb='1';const s=this.getAttribute('src')||'';this.src=s.startsWith('/public/')?s.replace('/public/','/'):('/public'+s);}else{this.style.opacity='0';}";
+
+function getMascotImgUrl() {
+  if (typeof window !== 'undefined' && window.ANIME_UNIVERSE_ASSETS && window.ANIME_UNIVERSE_ASSETS.img_login_mascot) {
+    return window.ANIME_UNIVERSE_ASSETS.img_login_mascot;
+  }
+  return '/assets/img_login_mascot.png';
+}
 
 function normalizeAvatarKey(rawKey, rawUrl = '') {
   const candidates = [rawKey, rawUrl].map((v) => String(v || '').trim()).filter((v) => v && v !== 'null');
@@ -375,7 +561,12 @@ function normalizeAvatarKey(rawKey, rawUrl = '') {
 
 function getAvatarPreset(avatarKey, avatarUrl = '') {
   const norm = normalizeAvatarKey(avatarKey, avatarUrl);
-  return BUILT_IN_AVATARS.find((a) => a.key === norm) || BUILT_IN_AVATARS[0];
+  const found = BUILT_IN_AVATARS.find((a) => a.key === norm) || BUILT_IN_AVATARS[0];
+  const embedded =
+    typeof window !== 'undefined' && window.ANIME_UNIVERSE_ASSETS && window.ANIME_UNIVERSE_ASSETS[found.key]
+      ? window.ANIME_UNIVERSE_ASSETS[found.key]
+      : found.img;
+  return { ...found, img: embedded };
 }
 
 function getAvatarImgUrl(avatarKey, avatarUrl = '') {
@@ -388,7 +579,7 @@ function renderAvatarCircle(avatarKey, username = 'A', sizePx = 28, avatarUrl = 
   return `
     <div style="position:relative;width:${sizePx}px;height:${sizePx}px;border-radius:50%;overflow:hidden;border:1.5px solid rgba(255,255,255,0.32);background:linear-gradient(135deg,${av.c1},${av.c2});flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;">
       <span style="position:absolute;color:#FFF;font-size:${Math.max(10, Math.round(sizePx * 0.44))}px;font-weight:700;pointer-events:none;">${escapeHtml(initial)}</span>
-      <img src="${av.img}" alt="${escapeHtml(username)}" onerror="${AVATAR_IMG_ONERROR}" style="position:relative;z-index:1;width:100%;height:100%;object-fit:cover;display:block;border-radius:50%;" />
+      <img src="${av.img}" alt="" onerror="${AVATAR_IMG_ONERROR}" style="position:relative;z-index:1;width:100%;height:100%;object-fit:cover;display:block;border-radius:50%;" />
     </div>
   `;
 }
@@ -531,11 +722,12 @@ function formatAiringClock(airingUnix) {
   }
 }
 
-// Fetch User Watchlist, Collections, Profile & Community Reviews (Exact match to SupabaseDatabaseService.kt)
+// Fetch User Watchlist, Collections, Profile & Community Reviews (Strictly isolated per user_id)
 async function loadCloudData(silent = false) {
-  if (!state.session || !state.session.userId) return;
+  const activeUserId = state.session?.userId;
+  if (!activeUserId) return;
   try {
-    const uid = encodeURIComponent(state.session.userId);
+    const uid = encodeURIComponent(activeUserId);
     // Exact select string from SupabaseDatabaseService.kt line 1060 (no user_season column!)
     const watchlistSelect =
       'id,user_id,anime_id,status,episode_progress,total_episodes,personal_rating,review_notes,is_favorite,updated_at,' +
@@ -548,62 +740,97 @@ async function loadCloudData(silent = false) {
       supabaseRequest(`/rest/v1/community_members?user_id=eq.${uid}&select=status`).catch(() => [])
     ]);
 
+    // Guard against session switching while request was in flight
+    if (!state.session || state.session.userId !== activeUserId) return;
+
     if (Array.isArray(normRows)) {
-      state.vault = normRows.map((r) => {
-        const anime = r.anime || {};
-        const existingLocal = state.vault.find((v) => v.animeId === r.anime_id) || {};
-        const eng = anime.title_english && anime.title_english !== 'null' ? anime.title_english : existingLocal.titleEnglish || '';
-        const rom = anime.title_romaji && anime.title_romaji !== 'null' ? anime.title_romaji : existingLocal.titleRomaji || '';
-        const nextAir = anime.next_airing_at ? Number(anime.next_airing_at) : existingLocal.airingTimeUnix || null;
-        const dow = nextAir && nextAir > 0
-          ? (((new Date(nextAir * 1000).getDay() + 6) % 7) + 1)
-          : existingLocal.airingDayOfWeek || ((r.anime_id % 7) + 1);
-        return {
-          animeId: r.anime_id,
-          title: eng || rom || existingLocal.title || `Anime #${r.anime_id}`,
-          titleEnglish: eng || rom || 'Anime',
-          titleRomaji: rom || eng || 'Anime',
-          titleNative: anime.title_native || existingLocal.titleNative || '',
-          coverImage: anime.cover_image || existingLocal.coverImage || '',
-          bannerImage: anime.banner_image || existingLocal.bannerImage || '',
-          format: anime.format || existingLocal.format || 'TV',
-          mediaStatus: anime.status || existingLocal.mediaStatus || 'RELEASING',
-          seasonYear: anime.release_year || existingLocal.seasonYear || null,
-          averageScore: anime.average_score || existingLocal.averageScore || null,
-          countryOfOrigin: existingLocal.countryOfOrigin || 'JP',
-          airingDayOfWeek: dow,
-          airingTimeUnix: nextAir,
-          nextEpisodeNumber: anime.next_episode_number || existingLocal.nextEpisodeNumber || null,
-          status: r.status || 'watching',
-          season: existingLocal.season || 1,
-          watchedEpisodes: r.episode_progress || 0,
-          totalEpisodes: r.total_episodes || anime.episodes || existingLocal.totalEpisodes || null,
-          rating10: r.personal_rating !== null && r.personal_rating !== undefined ? Number(r.personal_rating) : null,
-          reviewNotes: r.review_notes || '',
-          isPinned: Boolean(existingLocal.isPinned),
-          isFavorite: Boolean(r.is_favorite ?? existingLocal.isFavorite),
-          genres: Array.isArray(anime.genres) ? anime.genres : existingLocal.genres || [],
-          synopsis: existingLocal.synopsis || ''
-        };
-      });
+      const userScopedLocal = readScopedArray('vault', state.session, false, null).filter(
+        (v) => !v.ownerId || v.ownerId === activeUserId
+      );
+      state.vault = normRows
+        .filter((r) => !r.user_id || r.user_id === activeUserId)
+        .map((r) => {
+          const anime = r.anime || {};
+          const existingLocal = userScopedLocal.find((v) => v.animeId === r.anime_id) || {};
+          const eng = anime.title_english && anime.title_english !== 'null' ? anime.title_english : existingLocal.titleEnglish || '';
+          const rom = anime.title_romaji && anime.title_romaji !== 'null' ? anime.title_romaji : existingLocal.titleRomaji || '';
+          const nextAir = anime.next_airing_at ? Number(anime.next_airing_at) : existingLocal.airingTimeUnix || null;
+          const dow = nextAir && nextAir > 0
+            ? (((new Date(nextAir * 1000).getDay() + 6) % 7) + 1)
+            : existingLocal.airingDayOfWeek || ((r.anime_id % 7) + 1);
+          return {
+            ownerId: activeUserId,
+            animeId: r.anime_id,
+            title: eng || rom || existingLocal.title || `Anime #${r.anime_id}`,
+            titleEnglish: eng || rom || 'Anime',
+            titleRomaji: rom || eng || 'Anime',
+            titleNative: anime.title_native || existingLocal.titleNative || '',
+            coverImage: anime.cover_image || existingLocal.coverImage || '',
+            bannerImage: anime.banner_image || existingLocal.bannerImage || '',
+            format: anime.format || existingLocal.format || 'TV',
+            mediaStatus: anime.status || existingLocal.mediaStatus || 'RELEASING',
+            seasonYear: anime.release_year || existingLocal.seasonYear || null,
+            averageScore: anime.average_score || existingLocal.averageScore || null,
+            countryOfOrigin: existingLocal.countryOfOrigin || 'JP',
+            airingDayOfWeek: dow,
+            airingTimeUnix: nextAir,
+            nextEpisodeNumber: anime.next_episode_number || existingLocal.nextEpisodeNumber || null,
+            status: r.status || 'watching',
+            season: existingLocal.season || 1,
+            watchedEpisodes: r.episode_progress || 0,
+            totalEpisodes: r.total_episodes || anime.episodes || existingLocal.totalEpisodes || null,
+            rating10: r.personal_rating !== null && r.personal_rating !== undefined ? Number(r.personal_rating) : null,
+            reviewNotes: r.review_notes || '',
+            isPinned: Boolean(existingLocal.isPinned),
+            isFavorite: Boolean(r.is_favorite ?? existingLocal.isFavorite),
+            genres: Array.isArray(anime.genres) ? anime.genres : existingLocal.genres || [],
+            synopsis: existingLocal.synopsis || '',
+            inWatchlist: true
+          };
+        });
       saveLocalVault();
     }
 
+    // Safe non-duplicating migration if the user had tracked items in a Guest session prior to logging in
+    if (pendingGuestMigrationItems.length > 0) {
+      const itemsToMigrate = [...pendingGuestMigrationItems];
+      const oldGuestId = pendingGuestMigrationGuestId;
+      pendingGuestMigrationItems = [];
+      pendingGuestMigrationGuestId = null;
+      const existingIds = new Set(state.vault.map((v) => v.animeId));
+      for (const gItem of itemsToMigrate) {
+        if (!existingIds.has(gItem.animeId)) {
+          existingIds.add(gItem.animeId);
+          await saveVaultEntry({ ...gItem, ownerId: activeUserId });
+        }
+      }
+      if (oldGuestId) {
+        localStorage.removeItem(`anime_universe_vault_guest_${oldGuestId}`);
+        localStorage.removeItem(`anime_universe_collections_guest_${oldGuestId}`);
+        localStorage.removeItem(`anime_universe_profile_guest_${oldGuestId}`);
+      }
+      state.guestId = rotateGuestId();
+    }
+
     if (Array.isArray(colRows)) {
-      state.collections = colRows.map((c) => ({
-        id: c.id,
-        name: c.name || 'Collection',
-        description: c.description || '',
-        visibility: c.visibility || 'community',
-        animeIds: Array.isArray(c.collection_anime) ? c.collection_anime.map((ca) => ca.anime_id) : []
-      }));
+      state.collections = colRows
+        .filter((c) => !c.creator_id || c.creator_id === activeUserId)
+        .map((c) => ({
+          ownerId: activeUserId,
+          id: c.id,
+          name: c.name || 'Collection',
+          description: c.description || '',
+          visibility: c.visibility || 'community',
+          animeIds: Array.isArray(c.collection_anime) ? c.collection_anime.map((ca) => ca.anime_id) : []
+        }));
       saveCollections();
     }
 
     const cmStatus = Array.isArray(cmRows) && cmRows.length > 0 ? cmRows[0].status : '';
     if (Array.isArray(prof) && prof.length > 0) {
-      const p = prof[0];
+      const p = prof.find((row) => !row.id || row.id === activeUserId) || prof[0];
       state.profile = {
+        userId: activeUserId,
         username: p.username || state.session.username || 'Member',
         avatarKey: normalizeAvatarKey(p.avatar_key, p.avatar_url),
         bio: p.bio || '',
@@ -996,14 +1223,13 @@ async function removeFromVault(animeId) {
 // SHARED WIDGETS: OBSIDIAN TOP BAR & POSTER TRACKER CARD
 // ============================================================================
 
-function renderObsidianTopBar({ title, accentTitleTail = null, subtitle, showBrandMonogram = false, leftActionHtml = '', actionsHtml = '' }) {
+function renderObsidianTopBar({ title, accentTitleTail = null, subtitle, leftActionHtml = '', actionsHtml = '' }) {
   const av = getAvatarPreset(state.profile.avatarKey);
   const initial = String(state.profile.username || 'A').trim().charAt(0).toUpperCase() || 'A';
   return `
     <header class="obsidian-topbar">
       <div class="topbar-left">
         ${leftActionHtml}
-        ${showBrandMonogram ? `<div class="brand-monogram">A</div>` : ''}
         <div style="min-width:0;">
           ${
             accentTitleTail
@@ -1017,7 +1243,7 @@ function renderObsidianTopBar({ title, accentTitleTail = null, subtitle, showBra
         ${actionsHtml}
         <button class="profile-avatar-btn" data-nav="profile" title="Open Profile" style="position:relative;background:linear-gradient(135deg,${av.c1},${av.c2});display:inline-flex;align-items:center;justify-content:center;">
           <span style="position:absolute;color:#FFF;font-size:15px;font-weight:700;pointer-events:none;">${escapeHtml(initial)}</span>
-          <img src="${av.img}" alt="Profile" onerror="${AVATAR_IMG_ONERROR}" style="position:relative;z-index:1;width:100%;height:100%;object-fit:cover;border-radius:50%;display:block;" />
+          <img src="${av.img}" alt="" onerror="${AVATAR_IMG_ONERROR}" style="position:relative;z-index:1;width:100%;height:100%;object-fit:cover;border-radius:50%;display:block;" />
         </button>
       </div>
     </header>
@@ -1138,7 +1364,6 @@ function renderHomeScreen() {
     title: 'ANIME ',
     accentTitleTail: 'UNIVERSE',
     subtitle: 'WEEKLY SCHEDULE',
-    showBrandMonogram: true,
     actionsHtml: `
       <button class="app-icon-btn" data-nav="downloads" title="Download Applications">${SVG_ICONS.download}</button>
       <button class="app-icon-btn" id="btn-open-quick-search" title="Quick Search">${SVG_ICONS.search}</button>
@@ -1583,7 +1808,7 @@ function renderProfileScreen() {
       <div style="display:flex;flex-direction:column;align-items:center;gap:8px;padding:12px 0 18px;">
         <div id="btn-open-avatar-modal" style="position:relative;width:108px;height:108px;cursor:pointer;" title="Tap to change portrait">
           <div style="width:104px;height:104px;border-radius:50%;padding:3px;background:linear-gradient(135deg,${avPreset.c1},${avPreset.c2});box-shadow:0 12px 32px var(--accent-soft);">
-            <img src="${avatarImg}" alt="Avatar" onerror="${AVATAR_IMG_ONERROR}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;border:2.5px solid var(--bg-main);display:block;" />
+            <img src="${avatarImg}" alt="" onerror="${AVATAR_IMG_ONERROR}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;border:2.5px solid var(--bg-main);display:block;" />
           </div>
           <div style="position:absolute;bottom:2px;right:2px;width:28px;height:28px;border-radius:50%;background:var(--accent-primary);color:var(--on-accent);border:2px solid var(--bg-main);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;">✎</div>
         </div>
@@ -1904,10 +2129,11 @@ function renderAnimeDetailScreen() {
 
 function renderAuthScreen() {
   const isSignup = state.authMode === 'signup';
+  const mascotSrc = getMascotImgUrl();
   return `
     <div class="auth-viewport">
       <div class="auth-mascot-stack">
-        <img class="auth-mascot-img" src="/assets/img_login_mascot.png" alt="Anime Universe Mascot" onerror="${AVATAR_IMG_ONERROR}" />
+        <img class="auth-mascot-img" src="${mascotSrc}" alt="" onerror="${AVATAR_IMG_ONERROR}" />
         <div class="glass-auth-card">
           ${
             state.authMode === 'verify_otp'
@@ -1996,7 +2222,7 @@ function renderAuthScreen() {
                     (av) => `
                     <div class="avatar-carousel-item ${state.onboardAvatarKey === av.key ? 'selected' : ''}" data-onboard-avatar="${av.key}">
                       <div class="avatar-ring-wrap" style="background:linear-gradient(135deg,${av.c1},${av.c2});">
-                        <img src="${av.img}" alt="${escapeHtml(av.name)}" onerror="${AVATAR_IMG_ONERROR}" />
+                        <img src="${av.img}" alt="" onerror="${AVATAR_IMG_ONERROR}" />
                         ${state.onboardAvatarKey === av.key ? `<div class="avatar-check-badge">✓</div>` : ''}
                       </div>
                       <span style="font-size:11px;color:${state.onboardAvatarKey === av.key ? 'var(--highlight)' : 'var(--text-secondary)'};text-align:center;">
@@ -2713,7 +2939,7 @@ function renderModals() {
               (av) => `
               <div class="avatar-carousel-item ${state.profile.avatarKey === av.key ? 'selected' : ''}" data-pick-avatar="${av.key}">
                 <div class="avatar-ring-wrap" style="background:linear-gradient(135deg,${av.c1},${av.c2});">
-                  <img src="${av.img}" alt="${escapeHtml(av.name)}" onerror="${AVATAR_IMG_ONERROR}" />
+                  <img src="${av.img}" alt="" onerror="${AVATAR_IMG_ONERROR}" />
                   ${state.profile.avatarKey === av.key ? `<div class="avatar-check-badge">✓</div>` : ''}
                 </div>
                 <span style="font-size:11px;color:var(--text-secondary);">${escapeHtml(av.name)}</span>
@@ -2787,10 +3013,6 @@ function renderApp() {
     <div class="universe-scaffold">
       <!-- MidnightDesktopSidebar (>=900px) -->
       <aside class="midnight-sidebar">
-        <div class="sidebar-brand-row">
-          <div class="brand-monogram">A</div>
-          <span class="serif-heading" style="font-size:19px;font-weight:500;letter-spacing:0.5px;">ANIME UNIVERSE</span>
-        </div>
         <button class="quick-jump-box" id="btn-sidebar-search">
           <span style="width:16px;height:16px;display:inline-flex;">${SVG_ICONS.search}</span>
           <span>Quick Jump...</span>
@@ -2808,7 +3030,6 @@ function renderApp() {
 
       <!-- MidnightCompactRail (600-899px) -->
       <aside class="midnight-compact-rail">
-        <div class="brand-monogram">A</div>
         ${sidebarTabs
           .map(
             (t) => `
@@ -2985,9 +3206,7 @@ function bindAuthEvents() {
   const btnGuest = document.getElementById('btn-guest-preview');
   if (btnGuest) {
     btnGuest.onclick = () => {
-      state.isGuestMode = true;
-      localStorage.removeItem('anime_universe_guest');
-      localStorage.setItem('anime_universe_guest', 'true');
+      enterGuestSession(false);
       renderApp();
     };
   }
@@ -3487,6 +3706,7 @@ function bindAppEvents() {
     btnExitGuest.onclick = () => {
       state.isGuestMode = false;
       localStorage.removeItem('anime_universe_guest');
+      clearActiveUserMemoryState();
       renderApp();
     };
   }
@@ -3494,6 +3714,7 @@ function bindAppEvents() {
   if (btnSignout) {
     btnSignout.onclick = () => {
       saveSession(null);
+      state.tab = 'home';
       renderApp();
     };
   }

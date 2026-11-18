@@ -13,6 +13,7 @@ import com.example.data.local.AnimeEntity
 import com.example.data.local.AppDatabase
 import com.example.data.repository.AnimeRepository
 import com.example.data.repository.AppPreferencesState
+import com.example.data.repository.OwnerVaultStore
 import com.example.data.repository.PreferencesRepository
 import com.example.model.AnimeCollection
 import com.example.model.AnimeRichDetail
@@ -86,8 +87,13 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
         onCompactDatabase = { database.compactDatabase() }
     )
     private val preferencesRepo = PreferencesRepository(application)
+    private val ownerVaultStore = OwnerVaultStore(application)
     private val supabaseAuth = SupabaseAuthService(application)
     private val supabaseDb = SupabaseDatabaseService()
+
+    @Volatile
+    private var activeOwnerKey: String? = null
+    private val dirtyPendingSyncIds = mutableSetOf<Int>()
 
     // App Preferences (DataStore)
     val preferences: StateFlow<AppPreferencesState> = preferencesRepo.preferencesFlow
@@ -111,12 +117,12 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // Auth & Membership State (synchronously hydrated from fastPrefs to eliminate startup login flash)
+    // Auth & Membership State (synchronously hydrated from fastPrefs for signed-in users to eliminate startup login flash)
     private val initialFastSession = supabaseAuth.getFastCachedSession()
     private val _authSession = MutableStateFlow<AuthSession?>(initialFastSession)
     val authSession = _authSession.asStateFlow()
 
-    private val _isRestoringSession = MutableStateFlow(initialFastSession == null)
+    private val _isRestoringSession = MutableStateFlow(false)
     val isRestoringSession = _isRestoringSession.asStateFlow()
 
     private val _isLocalPreviewMode = MutableStateFlow(false)
@@ -319,15 +325,122 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
+    private suspend fun persistCurrentOwnerVaultSnapshot() {
+        val key = activeOwnerKey ?: return
+        val items = repository.getTrackedAnimeSnapshot()
+        val deletedIds = repository.getDeletedAnimeIdsSnapshot()
+        ownerVaultStore.saveOwnerVault(key, items, deletedIds)
+    }
+
+    private suspend fun switchToOwnerVault(targetOwnerKey: String) {
+        val currentKey = activeOwnerKey ?: ownerVaultStore.getLastActiveOwnerKey()
+        if (currentKey != null && currentKey != targetOwnerKey) {
+            val prevItems = repository.getTrackedAnimeSnapshot()
+            val prevDeleted = repository.getDeletedAnimeIdsSnapshot()
+            ownerVaultStore.saveOwnerVault(currentKey, prevItems, prevDeleted)
+            dirtyPendingSyncIds.clear()
+        }
+        val alreadyOwnsRoom = currentKey == targetOwnerKey && activeOwnerKey == targetOwnerKey
+        if (!alreadyOwnsRoom) {
+            val targetSnap = ownerVaultStore.loadOwnerVault(targetOwnerKey)
+            if (currentKey != targetOwnerKey) {
+                repository.restoreOwnerTrackedItems(targetSnap.items, targetSnap.deletedAnimeIds)
+            } else {
+                // Same owner across app restart: merge snapshot safely without losing offline edits
+                repository.reconcileSavedAnime()
+                if (targetSnap.items.isNotEmpty()) {
+                    val currentIds = repository.getTrackedAnimeSnapshot().map { it.id }.toSet()
+                    val missingFromRoom = targetSnap.items.filter { it.id !in currentIds }
+                    if (missingFromRoom.isNotEmpty()) {
+                        repository.syncCloudWatchlistEntries(missingFromRoom, replaceMissingFromCloud = false)
+                    }
+                }
+            }
+            activeOwnerKey = targetOwnerKey
+            ownerVaultStore.setLastActiveOwnerKey(targetOwnerKey)
+            syncDisplayedCatalogPersonalFlags()
+        }
+    }
+
+    private fun syncDisplayedCatalogPersonalFlags() {
+        val trackedById = watchlist.value.associateBy { it.id }
+        fun clearFlags(entity: AnimeEntity): AnimeEntity {
+            val mine = trackedById[entity.id]
+            return if (mine != null) {
+                entity.copy(
+                    inWatchlist = mine.inWatchlist,
+                    isWishlist = mine.isWishlist,
+                    isFavorite = mine.isFavorite,
+                    isPinned = mine.isPinned,
+                    watchedEpisodeCount = mine.watchedEpisodeCount,
+                    userSeason = mine.userSeason,
+                    userStatus = mine.userStatus,
+                    userScore = mine.userScore,
+                    isWatched = mine.isWatched,
+                    userNotes = mine.userNotes
+                )
+            } else {
+                entity.copy(
+                    inWatchlist = false,
+                    isWishlist = false,
+                    isFavorite = false,
+                    isPinned = false,
+                    watchedEpisodeCount = 0,
+                    userSeason = 1,
+                    userStatus = null,
+                    userScore = null,
+                    isWatched = false,
+                    userNotes = null
+                )
+            }
+        }
+        _searchResults.value = _searchResults.value.map(::clearFlags)
+        _trendingAnime.value = _trendingAnime.value.map(::clearFlags)
+    }
+
+    private suspend fun migrateGuestVaultToAccountIfNeeded(session: AuthSession) {
+        val guestId = ownerVaultStore.getOrCreateGuestId()
+        val guestKey = OwnerVaultStore.guestKey(guestId)
+        val guestSnapshot = ownerVaultStore.loadOwnerVault(guestKey)
+        if (guestSnapshot.items.isEmpty()) {
+            ownerVaultStore.setGuestModeActive(false)
+            return
+        }
+        val currentAccountItems = repository.getTrackedAnimeSnapshot()
+        val toMigrate = OwnerVaultStore.computeNonDuplicatingMigrationItems(currentAccountItems, guestSnapshot.items)
+        if (toMigrate.isNotEmpty()) {
+            toMigrate.forEach { dirtyPendingSyncIds.add(it.id) }
+            repository.syncCloudWatchlistEntries(toMigrate, replaceMissingFromCloud = false)
+            toMigrate.forEach { item ->
+                supabaseDb.upsertUserAnimeEntry(session, item).onSuccess {
+                    dirtyPendingSyncIds.remove(item.id)
+                }
+            }
+            persistCurrentOwnerVaultSnapshot()
+        }
+        ownerVaultStore.deleteOwnerVault(guestKey)
+        ownerVaultStore.setGuestModeActive(false)
+        ownerVaultStore.rotateGuestId()
+    }
+
     private fun restoreSessionAndInitialData() {
         viewModelScope.launch {
             // Read saved session from DataStore immediately before any network calls
             val saved = supabaseAuth.getSavedSession()
             if (saved != null) {
                 _authSession.value = saved
+                _isLocalPreviewMode.value = false
+                ownerVaultStore.setGuestModeActive(false)
+                switchToOwnerVault(OwnerVaultStore.userKey(saved.userId))
                 if (saved.onboardingCompleted && _userProfile.value == null) {
                     _userProfile.value = buildOptimisticProfile(saved)
                 }
+            } else if (!_isLocalPreviewMode.value) {
+                // On Login screen with no active account: unblock AuthScreen immediately, clear transient Room rows while keeping per-guest vault intact on disk
+                _isRestoringSession.value = false
+                repository.clearUserTrackingStateOnly()
+                ownerVaultStore.setLastActiveOwnerKey(null)
+                activeOwnerKey = null
             }
             _isRestoringSession.value = false
 
@@ -364,6 +477,9 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                             }
                         } else {
                             supabaseAuth.clearSession()
+                            repository.clearUserTrackingStateOnly()
+                            ownerVaultStore.setLastActiveOwnerKey(null)
+                            activeOwnerKey = null
                             _authSession.value = null
                             _userProfile.value = null
                         }
@@ -372,7 +488,6 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         viewModelScope.launch {
-            repository.reconcileSavedAnime()
             repository.pruneAndCompactStorage()
             refreshHome()
             checkForUpdates(manual = false)
@@ -382,7 +497,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     private fun startAutoCloudSyncLoop() {
         viewModelScope.launch {
             while (isActive) {
-                delay(20_000L)
+                delay(15_000L)
                 triggerSilentCloudSync()
             }
         }
@@ -391,22 +506,46 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     fun triggerSilentCloudSync() {
         val current = _authSession.value ?: return
         if (_onboardingStage.value != OnboardingStage.NONE || !current.onboardingCompleted) return
+        val capturedUserId = current.userId
         viewModelScope.launch {
             val activeSession = supabaseAuth.refreshSessionIfNeeded(current).getOrDefault(current)
+            if (_authSession.value?.userId != capturedUserId) return@launch
             if (activeSession.accessToken != current.accessToken) {
                 _authSession.value = activeSession
             }
-            supabaseDb.fetchUserWatchlist(activeSession).onSuccess { cloudItems ->
-                repository.syncCloudWatchlistEntries(cloudItems)
+            if (dirtyPendingSyncIds.isNotEmpty()) {
+                val pendingSnapshot = repository.getTrackedAnimeSnapshot().filter { it.id in dirtyPendingSyncIds }
+                pendingSnapshot.forEach { item ->
+                    supabaseDb.upsertUserAnimeEntry(activeSession, item).onSuccess {
+                        dirtyPendingSyncIds.remove(item.id)
+                    }
+                }
             }
-            supabaseDb.fetchCollections(activeSession).onSuccess { _collections.value = it }
+            supabaseDb.fetchUserWatchlist(activeSession).onSuccess { cloudItems ->
+                if (_authSession.value?.userId != capturedUserId) return@onSuccess
+                repository.syncCloudWatchlistEntries(
+                    cloudItems = cloudItems,
+                    replaceMissingFromCloud = true,
+                    protectedPendingIds = dirtyPendingSyncIds.toSet()
+                )
+                persistCurrentOwnerVaultSnapshot()
+                syncDisplayedCatalogPersonalFlags()
+            }
+            supabaseDb.fetchCollections(activeSession, creatorUserId = capturedUserId).onSuccess { cols ->
+                if (_authSession.value?.userId == capturedUserId) {
+                    _collections.value = cols
+                }
+            }
             if (_userProfile.value?.memberStatus == MemberStatus.ACTIVE) {
                 val membersRes = supabaseDb.fetchCommunityMembers(activeSession)
                 membersRes.onSuccess { members ->
+                    if (_authSession.value?.userId != capturedUserId) return@onSuccess
                     _communityMembers.value = members
                     supabaseDb.fetchCommunityFeed(activeSession, members).onSuccess { (reviews, activity) ->
-                        _communityReviews.value = sortReviews(reviews, _reviewSortOption.value)
-                        _communityActivity.value = activity
+                        if (_authSession.value?.userId == capturedUserId) {
+                            _communityReviews.value = sortReviews(reviews, _reviewSortOption.value)
+                            _communityActivity.value = activity
+                        }
                     }
                 }
             }
@@ -467,13 +606,32 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     // ------------------------------------------------------------------------
 
     fun enterLocalPreviewMode() {
+        val guestId = ownerVaultStore.getOrCreateGuestId()
+        ownerVaultStore.setGuestModeActive(true)
+        _authSession.value = null
+        _userProfile.value = null
+        _privacySettings.value = PrivacySettings()
+        _collections.value = emptyList()
+        _communityMembers.value = emptyList()
+        _communityReviews.value = emptyList()
+        _communityActivity.value = emptyList()
+        _animeReviews.value = emptyList()
+        _selectedAnimeId.value = null
+        _selectedRichDetail.value = null
         _isLocalPreviewMode.value = true
-        refreshHome()
-        ensureDiscoverLoaded()
+        viewModelScope.launch {
+            switchToOwnerVault(OwnerVaultStore.guestKey(guestId))
+            refreshHome()
+            ensureDiscoverLoaded()
+        }
     }
 
     fun exitLocalPreviewMode() {
         _isLocalPreviewMode.value = false
+        ownerVaultStore.setGuestModeActive(false)
+        viewModelScope.launch {
+            persistCurrentOwnerVaultSnapshot()
+        }
     }
 
     fun clearAuthMessages() {
@@ -1074,7 +1232,14 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     fun signOut() {
         val current = _authSession.value
         viewModelScope.launch {
+            persistCurrentOwnerVaultSnapshot()
             supabaseAuth.signOut(current)
+            repository.clearUserTrackingStateOnly()
+            dirtyPendingSyncIds.clear()
+            activeOwnerKey = null
+            ownerVaultStore.setLastActiveOwnerKey(null)
+            ownerVaultStore.setGuestModeActive(false)
+            ownerVaultStore.rotateGuestId()
             _authSession.value = null
             _userProfile.value = null
             _privacySettings.value = PrivacySettings()
@@ -1082,7 +1247,14 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             _communityMembers.value = emptyList()
             _communityReviews.value = emptyList()
             _communityActivity.value = emptyList()
+            _animeReviews.value = emptyList()
+            _inspectedMemberWatchlist.value = emptyList()
+            _inspectedMemberCollections.value = emptyList()
             _invitations.value = emptyList()
+            _storageStats.value = null
+            _selectedAnimeId.value = null
+            _selectedRichDetail.value = null
+            _dynamicIslandFeedback.value = null
             _needsInviteRedemption.value = false
             _onboardingStage.value = OnboardingStage.NONE
             _pendingOnboardingUsername.value = ""
@@ -1092,6 +1264,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             pendingSignUpEmail = null
             pendingSignUpPassword = null
             _isLocalPreviewMode.value = false
+            syncDisplayedCatalogPersonalFlags()
             _userMessage.value = "Signed out."
         }
     }
@@ -1141,6 +1314,12 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             )
             supabaseAuth.clearSession()
             repository.clearAllUserData()
+            ownerVaultStore.deleteOwnerVault(OwnerVaultStore.userKey(verifiedSession.userId))
+            dirtyPendingSyncIds.clear()
+            activeOwnerKey = null
+            ownerVaultStore.setLastActiveOwnerKey(null)
+            ownerVaultStore.setGuestModeActive(false)
+            ownerVaultStore.rotateGuestId()
 
             _authSession.value = null
             _userProfile.value = null
@@ -1149,9 +1328,14 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             _communityMembers.value = emptyList()
             _communityReviews.value = emptyList()
             _communityActivity.value = emptyList()
+            _animeReviews.value = emptyList()
             _invitations.value = emptyList()
             _inspectedMemberWatchlist.value = emptyList()
             _inspectedMemberCollections.value = emptyList()
+            _storageStats.value = null
+            _selectedAnimeId.value = null
+            _selectedRichDetail.value = null
+            _dynamicIslandFeedback.value = null
             _needsInviteRedemption.value = false
             _onboardingStage.value = OnboardingStage.NONE
             _pendingOnboardingUsername.value = ""
@@ -1161,6 +1345,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             pendingSignUpEmail = null
             pendingSignUpPassword = null
             _isLocalPreviewMode.value = false
+            syncDisplayedCatalogPersonalFlags()
             _isDeletingAccount.value = false
             _userMessage.value = "Account deleted. Your email can re-register after 5 minutes and your username after 24 hours."
             onSuccess()
@@ -1210,18 +1395,37 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun loadAuthenticatedWorkspace(session: AuthSession) {
+        val capturedUserId = session.userId
         viewModelScope.launch {
+            switchToOwnerVault(OwnerVaultStore.userKey(capturedUserId))
             val loaded = supabaseDb.fetchCurrentProfile(session).getOrNull()
                 ?: supabaseDb.ensurePersonalProfile(session).getOrNull()
+            if (_authSession.value?.userId != capturedUserId) return@launch
             if (loaded != null) {
                 _userProfile.value = loaded
                 supabaseAuth.cacheProfileSnapshot(loaded.username, loaded.avatarKey)
                 _needsInviteRedemption.value = false
-                supabaseDb.fetchPrivacySettings(session).onSuccess { _privacySettings.value = it }
-                supabaseDb.fetchUserWatchlist(session).onSuccess { cloudItems ->
-                    repository.syncCloudWatchlistEntries(cloudItems)
+                supabaseDb.fetchPrivacySettings(session).onSuccess {
+                    if (_authSession.value?.userId == capturedUserId) _privacySettings.value = it
                 }
-                supabaseDb.fetchCollections(session).onSuccess { _collections.value = it }
+                val cloudWatchlistRes = supabaseDb.fetchUserWatchlist(session)
+                cloudWatchlistRes.onSuccess { cloudItems ->
+                    if (_authSession.value?.userId != capturedUserId) return@onSuccess
+                    repository.syncCloudWatchlistEntries(
+                        cloudItems = cloudItems,
+                        replaceMissingFromCloud = true,
+                        protectedPendingIds = dirtyPendingSyncIds.toSet()
+                    )
+                    migrateGuestVaultToAccountIfNeeded(session)
+                    persistCurrentOwnerVaultSnapshot()
+                    syncDisplayedCatalogPersonalFlags()
+                }.onFailure {
+                    migrateGuestVaultToAccountIfNeeded(session)
+                    persistCurrentOwnerVaultSnapshot()
+                }
+                supabaseDb.fetchCollections(session, creatorUserId = capturedUserId).onSuccess {
+                    if (_authSession.value?.userId == capturedUserId) _collections.value = it
+                }
                 if (loaded.memberStatus == MemberStatus.ACTIVE) {
                     refreshCommunityData()
                     if (loaded.isInviteCreator) {
@@ -1591,8 +1795,10 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             }
             val session = _authSession.value
             if (session != null) {
+                dirtyPendingSyncIds.remove(animeId)
                 supabaseDb.deleteUserAnimeEntry(session, animeId)
             }
+            persistCurrentOwnerVaultSnapshot()
             _dynamicIslandFeedback.value = DynamicIslandFeedback(
                 title = "Removed from List",
                 subtitle = "Watchlist entry cleared",
@@ -1603,8 +1809,12 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun syncSingleEntryToCloud(entity: AnimeEntity) {
+        persistCurrentOwnerVaultSnapshot()
         val session = _authSession.value ?: return
-        supabaseDb.upsertUserAnimeEntry(session, entity)
+        dirtyPendingSyncIds.add(entity.id)
+        supabaseDb.upsertUserAnimeEntry(session, entity).onSuccess {
+            dirtyPendingSyncIds.remove(entity.id)
+        }
     }
 
     fun createCollection(name: String, description: String, visibility: VisibilityLevel) {
@@ -1673,9 +1883,17 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             _userMessage.value = "Sign in to sync your library to the cloud."
             return
         }
+        val capturedUserId = session.userId
         viewModelScope.launch {
             supabaseDb.fetchUserWatchlist(session).onSuccess { cloudItems ->
-                repository.syncCloudWatchlistEntries(cloudItems)
+                if (_authSession.value?.userId != capturedUserId) return@onSuccess
+                repository.syncCloudWatchlistEntries(
+                    cloudItems = cloudItems,
+                    replaceMissingFromCloud = true,
+                    protectedPendingIds = dirtyPendingSyncIds.toSet()
+                )
+                persistCurrentOwnerVaultSnapshot()
+                syncDisplayedCatalogPersonalFlags()
                 _userMessage.value = "Library synced cleanly."
             }.onFailure { err ->
                 _userMessage.value = ErrorSanitizer.sanitize(err, "Unable to sync right now.")
@@ -1791,7 +2009,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             val canViewCollections = member.userId == session.userId ||
                 member.privacy.collectionsVisibility == VisibilityLevel.COMMUNITY
             if (canViewCollections) {
-                supabaseDb.fetchCollections(session).onSuccess { allCols ->
+                supabaseDb.fetchCollections(session, creatorUserId = member.userId).onSuccess { allCols ->
                     _inspectedMemberCollections.value = allCols.filter {
                         it.creatorId == member.userId && (member.userId == session.userId || it.visibility == VisibilityLevel.COMMUNITY)
                     }

@@ -154,6 +154,37 @@ interface AnimeDao {
         maxUntrackedRows: Int = 80
     ): Int
 
+    @Query("""
+        SELECT * FROM anime
+        WHERE inWatchlist = 1
+           OR isWishlist = 1
+           OR isFavorite = 1
+           OR isPinned = 1
+           OR watchedEpisodeCount > 0
+           OR (userStatus IS NOT NULL AND userStatus != '')
+           OR userScore IS NOT NULL
+           OR (userNotes IS NOT NULL AND userNotes != '')
+    """)
+    suspend fun getAllTrackedAnimeSync(): List<AnimeEntity>
+
+    @Query("""
+        UPDATE anime SET
+            inWatchlist = 0,
+            isWishlist = 0,
+            isFavorite = 0,
+            isPinned = 0,
+            watchedEpisodeCount = 0,
+            userSeason = 1,
+            userStatus = NULL,
+            userScore = NULL,
+            startDate = NULL,
+            finishDate = NULL,
+            isWatched = 0,
+            lastWatchedTime = NULL,
+            userNotes = NULL
+    """)
+    suspend fun clearAllUserTrackingFields()
+
     @Query("DELETE FROM anime")
     suspend fun clearAllAnime()
 }

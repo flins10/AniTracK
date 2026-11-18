@@ -1147,11 +1147,12 @@ class SupabaseDatabaseService {
         }
     }
 
-    suspend fun fetchCollections(session: AuthSession): Result<List<AnimeCollection>> = withContext(Dispatchers.IO) {
+    suspend fun fetchCollections(session: AuthSession, creatorUserId: String = session.userId): Result<List<AnimeCollection>> = withContext(Dispatchers.IO) {
         if (!AppConfig.isSupabaseConfigured) return@withContext Result.failure(Exception("Supabase not configured"))
         try {
+            val encodedCreator = URLEncoder.encode(creatorUserId, "UTF-8")
             val req = requestBuilder(
-                "/rest/v1/collections?select=*,collection_anime(anime_id)&order=updated_at.desc",
+                "/rest/v1/collections?creator_id=eq.$encodedCreator&select=*,collection_anime(anime_id)&order=updated_at.desc",
                 session.accessToken
             ).get().build()
             client.newCall(req).execute().use { resp ->

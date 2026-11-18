@@ -162,7 +162,7 @@ fun HomeScreen(
                     )
                 }
             }
-            val anytimeShows = sortedWatchlist.filter { it.airingDayOfWeek == null || it.airingDayOfWeek !in 1..7 }
+            val anytimeShows = sortedWatchlist.filter { it.airingDayOfWeek !in 1..7 }
             if (anytimeShows.isNotEmpty()) {
                 add(
                     DayAnimeSection(
@@ -229,7 +229,6 @@ fun HomeScreen(
                             subtitle = "Weekly Schedule",
                             userProfile = userProfile,
                             onOpenProfile = onNavigateToProfile,
-                            showBrandMonogram = true,
                             actions = {
                                 AppIconButton(
                                     icon = Icons.Filled.Search,

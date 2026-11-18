@@ -74,6 +74,7 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
@@ -336,6 +337,7 @@ data class DesktopPersistedState(
     val refreshToken: String = "",
     val expiresAt: Long = 0L,
     val userId: String = "",
+    val guestId: String = "",
     val email: String = "",
     val username: String = "Wanderer",
     val avatarKey: String = DesktopAvatar.AVATAR_3.key,
@@ -344,30 +346,169 @@ data class DesktopPersistedState(
     val collections: List<DesktopCollectionItem> = emptyList()
 )
 
+private data class DesktopActiveIdentity(
+    val mode: String = "none",
+    val userId: String = "",
+    val guestId: String = ""
+)
+
 private object DesktopStorage {
-    private val stateFile: File by lazy {
+    private val rootDir: File by lazy {
         val dir = File(System.getProperty("user.home"), ".anime_universe")
         if (!dir.exists()) dir.mkdirs()
-        File(dir, "desktop_state_v2.json")
+        dir
+    }
+    private val legacyStateFile: File by lazy { File(rootDir, "desktop_state_v2.json") }
+    private val identityFile: File by lazy { File(rootDir, "desktop_active_identity.json") }
+    private val guestIdFile: File by lazy { File(rootDir, "desktop_guest_id.txt") }
+
+    private fun userVaultFile(userId: String): File {
+        val safe = userId.trim().replace(Regex("[^A-Za-z0-9._-]"), "_")
+        return File(rootDir, "user_$safe.json")
     }
 
-    fun load(): DesktopPersistedState {
-        return runCatching {
-            if (!stateFile.exists()) return DesktopPersistedState()
-            val text = stateFile.readText(Charsets.UTF_8)
-            gson.fromJson(text, DesktopPersistedState::class.java) ?: DesktopPersistedState()
-        }.getOrDefault(DesktopPersistedState())
+    private fun guestVaultFile(guestId: String): File {
+        val safe = guestId.trim().replace(Regex("[^A-Za-z0-9._-]"), "_")
+        return File(rootDir, "$safe.json")
     }
 
-    fun save(state: DesktopPersistedState) {
+    private fun migrateLegacyStateOnce() {
+        if (!legacyStateFile.exists()) return
         runCatching {
-            stateFile.writeText(gson.toJson(state), Charsets.UTF_8)
+            val legacy = gson.fromJson(legacyStateFile.readText(Charsets.UTF_8), DesktopPersistedState::class.java)
+            if (!identityFile.exists() && legacy != null && !legacy.isGuest && legacy.userId.isNotBlank() && legacy.accessToken.isNotBlank()) {
+                val cleanUser = legacy.copy(isGuest = false, guestId = "")
+                userVaultFile(cleanUser.userId).writeText(gson.toJson(cleanUser), Charsets.UTF_8)
+                identityFile.writeText(
+                    gson.toJson(DesktopActiveIdentity(mode = "user", userId = cleanUser.userId)),
+                    Charsets.UTF_8
+                )
+            }
+            legacyStateFile.delete()
         }
     }
 
-    fun clear() {
+    fun getOrCreateGuestId(): String {
+        val existing = runCatching {
+            if (guestIdFile.exists()) guestIdFile.readText(Charsets.UTF_8).trim() else ""
+        }.getOrDefault("")
+        if (existing.startsWith("guest_") && existing.length > 8) return existing
+        val fresh = "guest_${UUID.randomUUID()}"
+        runCatching { guestIdFile.writeText(fresh, Charsets.UTF_8) }
+        return fresh
+    }
+
+    fun rotateGuestId(): String {
+        val fresh = "guest_${UUID.randomUUID()}"
+        runCatching { guestIdFile.writeText(fresh, Charsets.UTF_8) }
+        return fresh
+    }
+
+    fun loadUser(userId: String): DesktopPersistedState {
+        if (userId.isBlank()) return DesktopPersistedState()
+        return runCatching {
+            val f = userVaultFile(userId)
+            if (!f.exists()) return DesktopPersistedState(userId = userId, isGuest = false)
+            val parsed = gson.fromJson(f.readText(Charsets.UTF_8), DesktopPersistedState::class.java)
+                ?: return DesktopPersistedState(userId = userId, isGuest = false)
+            parsed.copy(isGuest = false, guestId = "", userId = userId)
+        }.getOrDefault(DesktopPersistedState(userId = userId, isGuest = false))
+    }
+
+    fun loadGuest(guestId: String): DesktopPersistedState {
+        val gid = guestId.takeIf { it.startsWith("guest_") } ?: getOrCreateGuestId()
+        return runCatching {
+            val f = guestVaultFile(gid)
+            if (!f.exists()) {
+                return DesktopPersistedState(
+                    isGuest = true,
+                    guestId = gid,
+                    userId = "",
+                    accessToken = "",
+                    refreshToken = "",
+                    email = "",
+                    username = "Guest"
+                )
+            }
+            val parsed = gson.fromJson(f.readText(Charsets.UTF_8), DesktopPersistedState::class.java)
+                ?: return DesktopPersistedState(isGuest = true, guestId = gid, username = "Guest")
+            parsed.copy(
+                isGuest = true,
+                guestId = gid,
+                userId = "",
+                accessToken = "",
+                refreshToken = "",
+                expiresAt = 0L,
+                email = "",
+                username = parsed.username.takeIf { it.isNotBlank() && it != "Wanderer" } ?: "Guest"
+            )
+        }.getOrDefault(DesktopPersistedState(isGuest = true, guestId = gid, username = "Guest"))
+    }
+
+    fun loadActive(): DesktopPersistedState {
+        migrateLegacyStateOnce()
+        val id = runCatching {
+            if (!identityFile.exists()) return DesktopPersistedState()
+            gson.fromJson(identityFile.readText(Charsets.UTF_8), DesktopActiveIdentity::class.java)
+                ?: DesktopActiveIdentity()
+        }.getOrDefault(DesktopActiveIdentity())
+        return when {
+            id.mode == "user" && id.userId.isNotBlank() -> {
+                val u = loadUser(id.userId)
+                if (u.accessToken.isNotBlank() && u.userId.isNotBlank()) u else DesktopPersistedState()
+            }
+            id.mode == "guest" -> {
+                val gid = id.guestId.takeIf { it.startsWith("guest_") } ?: getOrCreateGuestId()
+                loadGuest(gid)
+            }
+            else -> DesktopPersistedState()
+        }
+    }
+
+    fun saveActive(state: DesktopPersistedState) {
         runCatching {
-            if (stateFile.exists()) stateFile.delete()
+            if (!state.isGuest && state.userId.isNotBlank() && state.accessToken.isNotBlank()) {
+                val cleanUser = state.copy(isGuest = false, guestId = "")
+                userVaultFile(cleanUser.userId).writeText(gson.toJson(cleanUser), Charsets.UTF_8)
+                identityFile.writeText(
+                    gson.toJson(DesktopActiveIdentity(mode = "user", userId = cleanUser.userId)),
+                    Charsets.UTF_8
+                )
+            } else if (state.isGuest) {
+                val gid = state.guestId.takeIf { it.startsWith("guest_") } ?: getOrCreateGuestId()
+                val cleanGuest = state.copy(
+                    isGuest = true,
+                    guestId = gid,
+                    userId = "",
+                    accessToken = "",
+                    refreshToken = "",
+                    expiresAt = 0L,
+                    email = "",
+                    username = state.username.takeIf { it.isNotBlank() && it != "Wanderer" } ?: "Guest"
+                )
+                guestVaultFile(gid).writeText(gson.toJson(cleanGuest), Charsets.UTF_8)
+                identityFile.writeText(
+                    gson.toJson(DesktopActiveIdentity(mode = "guest", guestId = gid)),
+                    Charsets.UTF_8
+                )
+            }
+        }
+    }
+
+    fun deleteGuestVault(guestId: String) {
+        if (guestId.isBlank()) return
+        runCatching {
+            val f = guestVaultFile(guestId)
+            if (f.exists()) f.delete()
+        }
+    }
+
+    fun onSignOut(wasAuthenticated: Boolean) {
+        runCatching {
+            identityFile.writeText(gson.toJson(DesktopActiveIdentity(mode = "none")), Charsets.UTF_8)
+            if (wasAuthenticated) {
+                rotateGuestId()
+            }
         }
     }
 }
@@ -658,7 +799,9 @@ private suspend fun resendSignupOtpSupabase(emailInput: String): Result<Unit> = 
 }
 
 private suspend fun refreshTokenIfNeeded(state: DesktopPersistedState): DesktopPersistedState = withContext(Dispatchers.IO) {
-    if (state.accessToken.isBlank() || state.refreshToken.isBlank()) return@withContext state
+    if (state.isGuest || state.userId.isBlank() || state.accessToken.isBlank() || state.refreshToken.isBlank()) {
+        return@withContext state
+    }
     val nowSec = System.currentTimeMillis() / 1000L
     if (state.expiresAt > nowSec + 120L) return@withContext state
     runCatching {
@@ -680,7 +823,7 @@ private suspend fun refreshTokenIfNeeded(state: DesktopPersistedState): DesktopP
                 refreshToken = newRefresh,
                 expiresAt = nowSec + expiresIn
             )
-            DesktopStorage.save(updated)
+            DesktopStorage.saveActive(updated)
             updated
         }
     }.getOrDefault(state)
@@ -768,7 +911,9 @@ private suspend fun fetchFullCloudSnapshot(session: DesktopPersistedState): Clou
                     collectionsResult = arr.mapNotNull { el ->
                         val row = el.asJsonObject
                         val cid = row.get("id").asStringOrNull() ?: return@mapNotNull null
-                        val title = row.get("title").asStringOrNull() ?: "Collection"
+                        val title = row.get("name").asStringOrNull()?.takeIf { it.isNotBlank() }
+                            ?: row.get("title").asStringOrNull()?.takeIf { it.isNotBlank() }
+                            ?: "Collection"
                         val desc = row.get("description").asStringOrNull().orEmpty()
                         val itemsArr = row.get("collection_anime")?.takeIf { it.isJsonArray }?.asJsonArray
                         DesktopCollectionItem(
@@ -955,14 +1100,14 @@ private suspend fun createCollectionInSupabase(
     title: String,
     description: String
 ): DesktopCollectionItem? = withContext(Dispatchers.IO) {
-    if (session.userId.isBlank() || session.accessToken.isBlank()) return@withContext null
+    if (session.isGuest || session.userId.isBlank() || session.accessToken.isBlank()) return@withContext null
     val active = refreshTokenIfNeeded(session)
     runCatching {
         val payload = JsonObject().apply {
             addProperty("creator_id", active.userId)
-            addProperty("title", title.trim())
+            addProperty("name", title.trim())
             addProperty("description", description.trim())
-            addProperty("is_public", true)
+            addProperty("visibility", "public")
         }
         val req = Request.Builder()
             .url("$SUPABASE_URL/rest/v1/collections")
@@ -978,7 +1123,9 @@ private suspend fun createCollectionInSupabase(
             val row = arr?.firstOrNull()?.asJsonObject ?: return@withContext null
             DesktopCollectionItem(
                 id = row.get("id").asStringOrNull() ?: "local-${System.currentTimeMillis()}",
-                title = row.get("title").asStringOrNull() ?: title,
+                title = row.get("name").asStringOrNull()?.takeIf { it.isNotBlank() }
+                    ?: row.get("title").asStringOrNull()?.takeIf { it.isNotBlank() }
+                    ?: title,
                 description = row.get("description").asStringOrNull() ?: description,
                 count = 0
             )
@@ -1144,10 +1291,10 @@ fun main() = application {
 fun AnimeUniverseDesktopRoot() {
     val scope = rememberCoroutineScope()
 
-    // Synchronous restore from disk so logged-in PC users NEVER see a login screen flash on startup
-    val initialPersisted = remember { DesktopStorage.load() }
+    // Synchronous restore from isolated per-user / per-guest vault so logged-in PC users NEVER see a login screen flash on startup
+    val initialPersisted = remember { DesktopStorage.loadActive() }
     var sessionState by remember { mutableStateOf(initialPersisted) }
-    var isAuthenticated by remember { mutableStateOf(initialPersisted.accessToken.isNotBlank() && initialPersisted.userId.isNotBlank()) }
+    var isAuthenticated by remember { mutableStateOf(!initialPersisted.isGuest && initialPersisted.accessToken.isNotBlank() && initialPersisted.userId.isNotBlank()) }
     var isGuestMode by remember { mutableStateOf(initialPersisted.isGuest) }
 
     var currentScreen by remember { mutableStateOf(DesktopScreen.HOME) }
@@ -1182,31 +1329,44 @@ fun AnimeUniverseDesktopRoot() {
     var commSortMode by remember { mutableStateOf("newest") }
 
     suspend fun syncWithCloud() {
+        val capturedAuth = isAuthenticated
+        val capturedGuest = isGuestMode
+        val capturedUserId = sessionState.userId
+        val capturedGuestId = sessionState.guestId
+        if (!capturedAuth && !capturedGuest) return
+
         val snap = fetchFullCloudSnapshot(sessionState)
-        var nextState = sessionState
-        if (!snap.username.isNullOrBlank()) {
-            nextState = nextState.copy(username = snap.username)
-        }
-        if (!snap.avatarKey.isNullOrBlank()) {
-            nextState = nextState.copy(avatarKey = snap.avatarKey)
-        }
-        if (snap.watchlist != null) {
-            watchlist = snap.watchlist
-            nextState = nextState.copy(watchlist = snap.watchlist)
-        }
-        if (snap.collections != null) {
-            collections = snap.collections
-            nextState = nextState.copy(collections = snap.collections)
+        // Guard against race if user switched accounts or signed out while network call was in-flight
+        if (isAuthenticated != capturedAuth || isGuestMode != capturedGuest) return
+        if (capturedAuth && sessionState.userId != capturedUserId) return
+        if (capturedGuest && sessionState.guestId != capturedGuestId) return
+
+        if (capturedAuth && !sessionState.isGuest && capturedUserId.isNotBlank()) {
+            var nextState = sessionState
+            if (!snap.username.isNullOrBlank()) {
+                nextState = nextState.copy(username = snap.username)
+            }
+            if (!snap.avatarKey.isNullOrBlank()) {
+                nextState = nextState.copy(avatarKey = snap.avatarKey)
+            }
+            if (snap.watchlist != null) {
+                watchlist = snap.watchlist
+                nextState = nextState.copy(watchlist = snap.watchlist)
+            }
+            if (snap.collections != null) {
+                collections = snap.collections
+                nextState = nextState.copy(collections = snap.collections)
+            }
+            sessionState = nextState
+            DesktopStorage.saveActive(nextState)
         }
         if (snap.communityReviews.isNotEmpty()) {
             communityReviews = snap.communityReviews
         }
-        sessionState = nextState
-        DesktopStorage.save(nextState)
     }
 
     // Initial cloud sync + automatic 15-second background sync loop
-    LaunchedEffect(isAuthenticated, isGuestMode, sessionState.userId) {
+    LaunchedEffect(isAuthenticated, isGuestMode, sessionState.userId, sessionState.guestId) {
         if (isAuthenticated || isGuestMode) {
             syncWithCloud()
             while (isActive) {
@@ -1226,16 +1386,58 @@ fun AnimeUniverseDesktopRoot() {
     if (!isAuthenticated && !isGuestMode) {
         DesktopAuthScreen(
             onAuthenticated = { newSession ->
-                sessionState = newSession
+                val prevGuestId = DesktopStorage.getOrCreateGuestId()
+                val guestItemsToMigrate = DesktopStorage.loadGuest(prevGuestId).watchlist
+                val existingUserState = DesktopStorage.loadUser(newSession.userId)
+                val mergedSession = newSession.copy(
+                    isGuest = false,
+                    guestId = "",
+                    username = existingUserState.username.takeIf { it.isNotBlank() && it != "Wanderer" } ?: newSession.username,
+                    avatarKey = existingUserState.avatarKey.ifBlank { newSession.avatarKey },
+                    watchlist = existingUserState.watchlist,
+                    collections = existingUserState.collections
+                )
+                selectedAnime = null
+                communityReviews = emptyList()
+                watchlist = mergedSession.watchlist
+                collections = mergedSession.collections
+                sessionState = mergedSession
                 isAuthenticated = true
                 isGuestMode = false
-                DesktopStorage.save(newSession)
+                currentScreen = DesktopScreen.HOME
+                DesktopStorage.saveActive(mergedSession)
+
+                scope.launch {
+                    syncWithCloud()
+                    if (guestItemsToMigrate.isNotEmpty()) {
+                        val existingIds = watchlist.map { it.id }.toSet()
+                        val uniqueGuestItems = guestItemsToMigrate.filter { !existingIds.contains(it.id) }
+                        if (uniqueGuestItems.isNotEmpty()) {
+                            uniqueGuestItems.forEach { gItem ->
+                                saveAnimeToSupabase(sessionState, gItem.copy(inWatchlist = true))
+                            }
+                            watchlist = (uniqueGuestItems + watchlist).distinctBy { it.id }
+                            sessionState = sessionState.copy(watchlist = watchlist)
+                            DesktopStorage.saveActive(sessionState)
+                            syncWithCloud()
+                        }
+                        DesktopStorage.deleteGuestVault(prevGuestId)
+                        DesktopStorage.rotateGuestId()
+                    }
+                }
             },
             onContinueGuest = {
-                val guestState = sessionState.copy(isGuest = true, username = "Guest")
+                val gid = DesktopStorage.getOrCreateGuestId()
+                val guestState = DesktopStorage.loadGuest(gid)
+                selectedAnime = null
+                communityReviews = emptyList()
                 sessionState = guestState
+                watchlist = guestState.watchlist
+                collections = guestState.collections
+                isAuthenticated = false
                 isGuestMode = true
-                DesktopStorage.save(guestState)
+                currentScreen = DesktopScreen.HOME
+                DesktopStorage.saveActive(guestState)
             }
         )
         return
@@ -1247,16 +1449,18 @@ fun AnimeUniverseDesktopRoot() {
             onCreate = { title, desc ->
                 showCreateCollectionDialog = false
                 scope.launch {
-                    val created = createCollectionInSupabase(sessionState, title, desc)
-                        ?: DesktopCollectionItem(
-                            id = "local-${System.currentTimeMillis()}",
-                            title = title,
-                            description = desc,
-                            count = 0
-                        )
-                    collections = listOf(created) + collections
+                    val created = if (isAuthenticated && !sessionState.isGuest) {
+                        createCollectionInSupabase(sessionState, title, desc)
+                    } else null
+                    val finalCol = created ?: DesktopCollectionItem(
+                        id = "local-${System.currentTimeMillis()}",
+                        title = title,
+                        description = desc,
+                        count = 0
+                    )
+                    collections = listOf(finalCol) + collections
                     sessionState = sessionState.copy(collections = collections)
-                    DesktopStorage.save(sessionState)
+                    DesktopStorage.saveActive(sessionState)
                 }
             }
         )
@@ -1271,7 +1475,7 @@ fun AnimeUniverseDesktopRoot() {
 
         Row(modifier = Modifier.fillMaxSize()) {
             if (isWide) {
-                // 1:1 Left Sidebar matching Screenshots 2, 3, 4, 5
+                // 1:1 Left Sidebar without top brand header row
                 Surface(
                     color = ObsidianSidebar,
                     modifier = Modifier.width(264.dp).fillMaxHeight()
@@ -1283,42 +1487,6 @@ fun AnimeUniverseDesktopRoot() {
                                 .fillMaxHeight()
                                 .padding(horizontal = 16.dp, vertical = 22.dp)
                         ) {
-                            // Brand Header: Gold rounded square "A" + ANIME UNIVERSE
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 4.dp, vertical = 4.dp)
-                                    .clickable { currentScreen = DesktopScreen.HOME }
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(38.dp)
-                                        .clip(RoundedCornerShape(11.dp))
-                                        .background(Brush.linearGradient(listOf(ChampagneGold, ChampagneGoldBronze))),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        "A",
-                                        fontFamily = FontFamily.Serif,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 20.sp,
-                                        color = ChampagneOnGold
-                                    )
-                                }
-                                Text(
-                                    "ANIME UNIVERSE",
-                                    fontFamily = FontFamily.Serif,
-                                    fontWeight = FontWeight.Normal,
-                                    fontSize = 16.5.sp,
-                                    letterSpacing = 0.8.sp,
-                                    color = IvoryText
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.height(18.dp))
-
                             // Quick Jump Search Pill (matches Screenshots 2-5)
                             Surface(
                                 shape = RoundedCornerShape(16.dp),
@@ -1542,17 +1710,23 @@ fun AnimeUniverseDesktopRoot() {
                                 onUpdateProfile = { newName, newAv ->
                                     val updated = sessionState.copy(username = newName, avatarKey = newAv)
                                     sessionState = updated
-                                    DesktopStorage.save(updated)
-                                    scope.launch {
-                                        updateProfileInSupabase(updated, newName, newAv)
-                                        syncWithCloud()
+                                    DesktopStorage.saveActive(updated)
+                                    if (isAuthenticated && !updated.isGuest) {
+                                        scope.launch {
+                                            updateProfileInSupabase(updated, newName, newAv)
+                                            syncWithCloud()
+                                        }
                                     }
                                 },
                                 onSignOut = {
-                                    DesktopStorage.clear()
+                                    val wasAuth = isAuthenticated && !sessionState.isGuest
+                                    DesktopStorage.saveActive(sessionState)
+                                    DesktopStorage.onSignOut(wasAuth)
                                     sessionState = DesktopPersistedState()
                                     watchlist = emptyList()
                                     collections = emptyList()
+                                    communityReviews = emptyList()
+                                    selectedAnime = null
                                     isAuthenticated = false
                                     isGuestMode = false
                                 }
@@ -1567,14 +1741,20 @@ fun AnimeUniverseDesktopRoot() {
                                 onUpdateProfile = { newName, newAv ->
                                     val updated = sessionState.copy(username = newName, avatarKey = newAv)
                                     sessionState = updated
-                                    DesktopStorage.save(updated)
-                                    scope.launch { updateProfileInSupabase(updated, newName, newAv) }
+                                    DesktopStorage.saveActive(updated)
+                                    if (isAuthenticated && !updated.isGuest) {
+                                        scope.launch { updateProfileInSupabase(updated, newName, newAv) }
+                                    }
                                 },
                                 onSignOut = {
-                                    DesktopStorage.clear()
+                                    val wasAuth = isAuthenticated && !sessionState.isGuest
+                                    DesktopStorage.saveActive(sessionState)
+                                    DesktopStorage.onSignOut(wasAuth)
                                     sessionState = DesktopPersistedState()
                                     watchlist = emptyList()
                                     collections = emptyList()
+                                    communityReviews = emptyList()
+                                    selectedAnime = null
                                     isAuthenticated = false
                                     isGuestMode = false
                                 }
@@ -1592,10 +1772,12 @@ fun AnimeUniverseDesktopRoot() {
                                         val nextList = listOf(updatedItem) + watchlist.filter { it.id != updatedItem.id }
                                         watchlist = nextList
                                         sessionState = sessionState.copy(watchlist = nextList)
-                                        DesktopStorage.save(sessionState)
-                                        scope.launch {
-                                            saveAnimeToSupabase(sessionState, updatedItem)
-                                            syncWithCloud()
+                                        DesktopStorage.saveActive(sessionState)
+                                        if (isAuthenticated && !sessionState.isGuest) {
+                                            scope.launch {
+                                                saveAnimeToSupabase(sessionState, updatedItem)
+                                                syncWithCloud()
+                                            }
                                         }
                                         currentScreen = DesktopScreen.LIBRARY
                                     },
@@ -1603,10 +1785,12 @@ fun AnimeUniverseDesktopRoot() {
                                         val nextList = watchlist.filter { it.id != toRemove.id }
                                         watchlist = nextList
                                         sessionState = sessionState.copy(watchlist = nextList)
-                                        DesktopStorage.save(sessionState)
-                                        scope.launch {
-                                            deleteAnimeFromSupabase(sessionState, toRemove.id)
-                                            syncWithCloud()
+                                        DesktopStorage.saveActive(sessionState)
+                                        if (isAuthenticated && !sessionState.isGuest) {
+                                            scope.launch {
+                                                deleteAnimeFromSupabase(sessionState, toRemove.id)
+                                                syncWithCloud()
+                                            }
                                         }
                                         currentScreen = DesktopScreen.LIBRARY
                                     }
@@ -2059,39 +2243,25 @@ private fun DesktopHomeScreen(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(13.dp))
-                    .background(Brush.linearGradient(listOf(ChampagneGold, ChampagneGoldBronze))),
-                contentAlignment = Alignment.Center
-            ) {
-                Text("A", fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold, fontSize = 23.sp, color = ChampagneOnGold)
-            }
-            Column {
-                Text(
-                    buildAnnotatedString {
-                        append("ANIME ")
-                        withStyle(SpanStyle(color = ChampagneGold, fontStyle = FontStyle.Italic)) {
-                            append("UNIVERSE")
-                        }
-                    },
-                    fontFamily = FontFamily.Serif,
-                    fontSize = 24.sp,
-                    color = IvoryText
-                )
-                Text(
-                    "WEEKLY SCHEDULE",
-                    fontSize = 9.5.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    letterSpacing = 2.4.sp,
-                    color = WarmSilver
-                )
-            }
+        Column {
+            Text(
+                buildAnnotatedString {
+                    append("ANIME ")
+                    withStyle(SpanStyle(color = ChampagneGold, fontStyle = FontStyle.Italic)) {
+                        append("UNIVERSE")
+                    }
+                },
+                fontFamily = FontFamily.Serif,
+                fontSize = 24.sp,
+                color = IvoryText
+            )
+            Text(
+                "WEEKLY SCHEDULE",
+                fontSize = 9.5.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 2.4.sp,
+                color = WarmSilver
+            )
         }
 
         Row(
@@ -3257,7 +3427,10 @@ private fun DesktopProfileScreen(
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(session.username, fontFamily = FontFamily.Serif, fontSize = 26.sp, color = IvoryText)
                         Text(
-                            session.email.ifBlank { "Cloud Synced Account" },
+                            session.email.ifBlank {
+                                if (session.isGuest) "Isolated Guest Vault (${session.guestId.take(14)})"
+                                else "Cloud Synced Account"
+                            },
                             fontSize = 13.5.sp,
                             color = WarmSilver
                         )
@@ -3317,7 +3490,7 @@ private fun DesktopProfileScreen(
                         shape = CircleShape,
                         border = BorderStroke(1.dp, CrimsonWaste.copy(alpha = 0.6f))
                     ) {
-                        Text("Sign Out", color = CrimsonWaste)
+                        Text(if (session.isGuest) "Sign In / Switch" else "Sign Out", color = CrimsonWaste)
                     }
                 }
             }

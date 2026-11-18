@@ -316,7 +316,63 @@ class AnimeRepository(
         deletedAnimeDao?.isDeleted(animeId, listType) ?: false
     }
 
-    suspend fun syncCloudWatchlistEntries(cloudItems: List<AnimeEntity>) = withContext(Dispatchers.IO) {
+    suspend fun getTrackedAnimeSnapshot(): List<AnimeEntity> = withContext(Dispatchers.IO) {
+        val mainTracked = animeDao.getAllTrackedAnimeSync()
+        val savedList = savedAnimeDao?.getAllSavedAnimeSync().orEmpty()
+        mergeAnimeWithSaved(mainTracked, savedList) { it.hasActiveUserState || it.userScore != null }
+    }
+
+    suspend fun getDeletedAnimeIdsSnapshot(): List<Int> = withContext(Dispatchers.IO) {
+        deletedAnimeDao?.getAllTombstones()?.map { it.animeId }.orEmpty()
+    }
+
+    suspend fun clearUserTrackingStateOnly() = withContext(Dispatchers.IO) {
+        deletedAnimeDao?.clearAllTombstones()
+        historyDao.clearAllHistory()
+        savedAnimeDao?.clearAll()
+        animeDao.clearAllUserTrackingFields()
+    }
+
+    suspend fun restoreOwnerTrackedItems(
+        items: List<AnimeEntity>,
+        deletedIds: List<Int> = emptyList()
+    ) = withContext(Dispatchers.IO) {
+        clearUserTrackingStateOnly()
+        for (item in items) {
+            val catalogExisting = animeDao.getAnimeByIdSync(item.id)
+            val merged = if (catalogExisting != null) {
+                catalogExisting.copy(
+                    inWatchlist = item.inWatchlist,
+                    isWishlist = item.isWishlist,
+                    isFavorite = item.isFavorite,
+                    isPinned = item.isPinned,
+                    watchedEpisodeCount = ProgressRules.clampEpisodeProgress(item.watchedEpisodeCount, catalogExisting.totalEpisodes ?: item.totalEpisodes),
+                    userSeason = SeasonRules.clampSeason(item.userSeason),
+                    userStatus = item.userStatus,
+                    userScore = item.userScore,
+                    startDate = item.startDate,
+                    finishDate = item.finishDate,
+                    isWatched = item.isWatched,
+                    lastWatchedTime = item.lastWatchedTime,
+                    userNotes = item.userNotes
+                )
+            } else {
+                item
+            }
+            animeDao.insertAnime(merged)
+            syncEntityToSavedTable(merged)
+        }
+        for (delId in deletedIds.distinct()) {
+            deletedAnimeDao?.insertTombstone(DeletedAnimeEntity(animeId = delId, listType = "WATCHLIST"))
+        }
+    }
+
+    suspend fun syncCloudWatchlistEntries(
+        cloudItems: List<AnimeEntity>,
+        replaceMissingFromCloud: Boolean = false,
+        protectedPendingIds: Set<Int> = emptySet()
+    ) = withContext(Dispatchers.IO) {
+        val cloudIds = cloudItems.map { it.id }.toSet()
         for (item in cloudItems) {
             val existing = getAnimeByIdSync(item.id)
             val merged = if (existing != null) {
@@ -333,6 +389,30 @@ class AnimeRepository(
             }
             animeDao.insertAnime(merged)
             syncEntityToSavedTable(merged)
+        }
+        if (replaceMissingFromCloud) {
+            val localTracked = getTrackedAnimeSnapshot()
+            for (localItem in localTracked) {
+                if (localItem.id !in cloudIds && localItem.id !in protectedPendingIds) {
+                    val cleared = localItem.copy(
+                        inWatchlist = false,
+                        isWishlist = false,
+                        isFavorite = false,
+                        isPinned = false,
+                        watchedEpisodeCount = 0,
+                        userSeason = 1,
+                        userStatus = null,
+                        userScore = null,
+                        startDate = null,
+                        finishDate = null,
+                        isWatched = false,
+                        lastWatchedTime = null,
+                        userNotes = null
+                    )
+                    animeDao.insertAnime(cleared)
+                    savedAnimeDao?.deleteSavedAnimeById(localItem.id)
+                }
+            }
         }
     }
 

@@ -1,8 +1,9 @@
-const CACHE_NAME = 'anime-universe-pwa-v2.5.0';
+const CACHE_NAME = 'anime-universe-pwa-v2.6.0';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
   '/styles.css',
+  '/assets-bundle.js',
   '/app.js',
   '/manifest.json',
   '/icon-192.png',

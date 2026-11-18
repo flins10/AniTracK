@@ -223,35 +223,6 @@ fun ObsidianTopBar(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier.weight(1f)
         ) {
-            if (showBrandMonogram) {
-                Box(
-                    modifier = Modifier
-                        .size(38.dp)
-                        .shadow(
-                            elevation = 8.dp,
-                            shape = RoundedCornerShape(12.dp),
-                            ambientColor = colors.accentPrimary.copy(alpha = 0.35f),
-                            spotColor = colors.accentPrimary.copy(alpha = 0.35f)
-                        )
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(
-                            Brush.linearGradient(
-                                listOf(colors.accentPrimary, colors.accentSecondary)
-                            )
-                        )
-                        .border(1.dp, Color.White.copy(alpha = 0.30f), RoundedCornerShape(12.dp)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "A",
-                        fontFamily = CormorantSerifFamily,
-                        fontSize = 21.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = colors.onAccentPrimary
-                    )
-                }
-            }
-
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 if (accentTitleTail != null) {
                     Text(
@@ -1266,22 +1237,6 @@ fun MidnightCompactRail(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(38.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Brush.linearGradient(listOf(colors.accentPrimary, colors.accentSecondary))),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "A",
-                        fontFamily = CormorantSerifFamily,
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = colors.onAccentPrimary
-                    )
-                }
-
                 AppIconButton(
                     icon = Icons.Filled.Search,
                     contentDescription = "Quick Jump",
@@ -1378,34 +1333,6 @@ fun MidnightDesktopSidebar(
                     .padding(horizontal = AppSpacing.sm, vertical = AppSpacing.lg),
                 verticalArrangement = Arrangement.spacedBy(AppSpacing.xs)
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.padding(horizontal = AppSpacing.sm, vertical = AppSpacing.xs)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(34.dp)
-                            .clip(RoundedCornerShape(11.dp))
-                            .background(Brush.linearGradient(listOf(colors.accentPrimary, colors.accentSecondary))),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "A",
-                            fontFamily = CormorantSerifFamily,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = colors.onAccentPrimary
-                        )
-                    }
-                    Text(
-                        text = "ANIME UNIVERSE",
-                        fontFamily = CormorantSerifFamily,
-                        fontSize = 17.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = colors.textPrimary
-                    )
-                }
                 val searchInteraction = remember { MutableInteractionSource() }
                 val searchHovered by searchInteraction.collectIsHoveredAsState()
                 Surface(
