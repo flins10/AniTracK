@@ -242,14 +242,14 @@ const state = {
         platformName: 'Android APK',
         appName: 'Anime Universe for Android',
         version: 'v2.1.0',
-        fileSize: '25.4 MB',
+        fileSize: '17.3 MB',
         osSupported: 'Android 8.0 (Oreo) & above • ARM64 / Universal',
         releaseDate: 'Nov 18, 2026',
         fileName: 'AnimeUniverse-v2.1.0-arm64.apk',
-        architecture: 'Universal APK (ARM64-v8a / armeabi-v7a)',
+        architecture: 'Universal APK (ARM64-v8a / armeabi-v7a / x86_64)',
         packageType: 'Signed Android Package (.apk)',
-        available: false,
-        downloadUrl: ''
+        available: true,
+        downloadUrl: '/downloads/AnimeUniverse-v2.1.0-arm64.apk'
       },
       windows: {
         id: 'windows',
@@ -1959,12 +1959,29 @@ function renderAuthScreen() {
 // SCREEN 8: DOWNLOAD APPLICATIONS CENTER (Android APK, Windows EXE, macOS DMG)
 // ============================================================================
 
-function isHttpsUrlReady(url) {
-  if (!url || typeof url !== 'string') return false;
+function resolveHttpsDownloadUrl(url) {
+  if (!url || typeof url !== 'string') return '';
   const trimmed = url.trim();
-  if (!trimmed) return false;
-  if (trimmed.includes('<') || trimmed.includes('>') || trimmed.includes('example.com')) return false;
-  return trimmed.startsWith('https://');
+  if (!trimmed) return '';
+  if (trimmed.includes('<') || trimmed.includes('>') || trimmed.includes('example.com')) return '';
+  if (trimmed.startsWith('https://')) return trimmed;
+  if (trimmed.startsWith('/')) {
+    try {
+      const resolved = new URL(trimmed, window.location.origin).href;
+      if (
+        resolved.startsWith('https://') ||
+        window.location.hostname === 'localhost' ||
+        window.location.hostname === '127.0.0.1'
+      ) {
+        return resolved;
+      }
+    } catch (_) {}
+  }
+  return '';
+}
+
+function isHttpsUrlReady(url) {
+  return Boolean(resolveHttpsDownloadUrl(url));
 }
 
 function isPlatformDownloadReady(plat) {
@@ -1981,6 +1998,17 @@ function detectVisitorPlatformKey() {
   return null;
 }
 
+function mergePlatformConfig(basePlat = {}, overridePlat = {}) {
+  const merged = { ...basePlat, ...overridePlat };
+  if (!isHttpsUrlReady(overridePlat.downloadUrl) && isHttpsUrlReady(basePlat.downloadUrl)) {
+    merged.downloadUrl = basePlat.downloadUrl;
+    merged.available = basePlat.available !== false;
+    merged.fileSize = basePlat.fileSize || merged.fileSize;
+    merged.fileName = basePlat.fileName || merged.fileName;
+  }
+  return merged;
+}
+
 async function loadDownloadsConfig() {
   try {
     const resp = await fetch(`/downloads-config.json?_t=${Date.now()}`, { cache: 'no-store' });
@@ -1992,15 +2020,38 @@ async function loadDownloadsConfig() {
           ...fileCfg,
           ...savedOverride,
           platforms: {
-            android: { ...(fileCfg.platforms?.android || {}), ...(savedOverride.platforms?.android || {}) },
-            windows: { ...(fileCfg.platforms?.windows || {}), ...(savedOverride.platforms?.windows || {}) },
-            macos: { ...(fileCfg.platforms?.macos || {}), ...(savedOverride.platforms?.macos || {}) }
+            android: mergePlatformConfig(fileCfg.platforms?.android, savedOverride.platforms?.android),
+            windows: mergePlatformConfig(fileCfg.platforms?.windows, savedOverride.platforms?.windows),
+            macos: mergePlatformConfig(fileCfg.platforms?.macos, savedOverride.platforms?.macos)
           },
           currentRelease: { ...(fileCfg.currentRelease || {}), ...(savedOverride.currentRelease || {}) },
           previousVersions: savedOverride.previousVersions?.length ? savedOverride.previousVersions : (fileCfg.previousVersions || [])
         };
       } else {
         state.downloadsConfig = fileCfg;
+      }
+    }
+  } catch (_) {}
+
+  // Also check Supabase public.app_releases table for any published platform builds
+  try {
+    const rows = await supabaseRequest('/rest/v1/app_releases?select=*&order=version_code.desc,published_at.desc');
+    if (Array.isArray(rows) && rows.length > 0) {
+      for (const row of rows) {
+        const platKey = String(row.platform || '').toLowerCase();
+        const dlUrl = String(row.download_url || '').trim();
+        if (
+          (platKey === 'android' || platKey === 'windows' || platKey === 'macos') &&
+          isHttpsUrlReady(dlUrl) &&
+          !dlUrl.includes('play.google.com/store/apps/details')
+        ) {
+          const target = state.downloadsConfig.platforms?.[platKey];
+          if (target && !isPlatformDownloadReady(target)) {
+            target.downloadUrl = dlUrl;
+            target.version = row.version_name ? (String(row.version_name).startsWith('v') ? row.version_name : `v${row.version_name}`) : target.version;
+            target.available = true;
+          }
+        }
       }
     }
   } catch (_) {}
@@ -2103,7 +2154,8 @@ async function syncReleasesFromGitHub(repoSlug, silent = false) {
 }
 
 async function startPlatformDownload(taskKey, downloadUrl, fileName) {
-  if (!isHttpsUrlReady(downloadUrl)) return;
+  const resolvedUrl = resolveHttpsDownloadUrl(downloadUrl);
+  if (!resolvedUrl) return;
   if (state.downloadTasks[taskKey]?.active) return;
 
   state.downloadTasks[taskKey] = {
@@ -2116,8 +2168,13 @@ async function startPlatformDownload(taskKey, downloadUrl, fileName) {
   renderApp();
 
   try {
-    const response = await fetch(downloadUrl, { mode: 'cors', credentials: 'omit' });
+    const isSameOrigin = resolvedUrl.startsWith(window.location.origin);
+    const response = await fetch(resolvedUrl, { mode: isSameOrigin ? 'same-origin' : 'cors', credentials: 'omit' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const contentType = (response.headers.get('content-type') || '').toLowerCase();
+    if (contentType.includes('text/html')) {
+      throw new Error('Package binary not found at endpoint');
+    }
 
     const contentLength = Number(response.headers.get('content-length') || 0);
     const totalMB = contentLength > 0 ? (contentLength / (1024 * 1024)).toFixed(1) : null;
@@ -2200,7 +2257,7 @@ async function startPlatformDownload(taskKey, downloadUrl, fileName) {
   renderApp();
 
   const a = document.createElement('a');
-  a.href = downloadUrl;
+  a.href = resolvedUrl;
   a.setAttribute('download', fileName || '');
   a.setAttribute('rel', 'noopener noreferrer');
   a.target = '_blank';

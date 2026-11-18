@@ -135,7 +135,28 @@ export default {
       return handleGeminiProxy(request, env);
     }
     if (env && env.ASSETS) {
-      return env.ASSETS.fetch(request);
+      const assetResp = await env.ASSETS.fetch(request);
+      if (url.pathname.startsWith('/downloads/')) {
+        const ct = (assetResp.headers.get('content-type') || '').toLowerCase();
+        if (ct.includes('text/html')) {
+          return new Response('Application package not found', { status: 404 });
+        }
+        const fileName = url.pathname.split('/').pop() || 'AnimeUniverse-Package';
+        const headers = new Headers(assetResp.headers);
+        if (fileName.endsWith('.apk')) {
+          headers.set('Content-Type', 'application/vnd.android.package-archive');
+        } else if (fileName.endsWith('.exe')) {
+          headers.set('Content-Type', 'application/vnd.microsoft.portable-executable');
+        } else if (fileName.endsWith('.dmg')) {
+          headers.set('Content-Type', 'application/x-apple-diskimage');
+        }
+        headers.set('Content-Disposition', `attachment; filename="${fileName}"`);
+        return new Response(assetResp.body, {
+          status: assetResp.status,
+          headers
+        });
+      }
+      return assetResp;
     }
     return new Response('Not Found', { status: 404 });
   }

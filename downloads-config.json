@@ -9,14 +9,14 @@
       "platformName": "Android APK",
       "appName": "Anime Universe for Android",
       "version": "v2.1.0",
-      "fileSize": "25.4 MB",
+      "fileSize": "17.3 MB",
       "osSupported": "Android 8.0 (Oreo) & above • ARM64 / Universal",
       "releaseDate": "Nov 18, 2026",
       "fileName": "AnimeUniverse-v2.1.0-arm64.apk",
-      "architecture": "Universal APK (ARM64-v8a / armeabi-v7a)",
+      "architecture": "Universal APK (ARM64-v8a / armeabi-v7a / x86_64)",
       "packageType": "Signed Android Package (.apk)",
-      "available": false,
-      "downloadUrl": ""
+      "available": true,
+      "downloadUrl": "/downloads/AnimeUniverse-v2.1.0-arm64.apk"
     },
     "windows": {
       "id": "windows",
