@@ -46,12 +46,38 @@ jobs:
         run: |
           gradle :desktop:packageExe --stacktrace --no-daemon
 
-      - name: Upload Windows EXE / MSI Artifact
+      - name: Stage Windows .exe Installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist-win | Out-Null
+          $exe = Get-ChildItem -Path desktop/build/compose/binaries -Recurse -Filter "*.exe" | Select-Object -First 1
+          if ($null -eq $exe) {
+            Write-Error "Could not find generated .exe installer"
+            exit 1
+          }
+          Copy-Item $exe.FullName -Destination "dist-win/AnimeUniverse-Windows-Installer.exe" -Force
+
+      - name: Upload Windows EXE Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: anime-universe-windows-installers
-          path: desktop/build/compose/binaries/main/
+          name: anime-universe-windows-installer
+          path: dist-win/AnimeUniverse-Windows-Installer.exe
           if-no-files-found: error
+
+      - name: Publish Windows .exe to GitHub Releases
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "windows-exe-build-$env:GITHUB_RUN_NUMBER-$env:GITHUB_RUN_ATTEMPT"
+          $title = "Anime Universe Windows EXE Installer Build #$env:GITHUB_RUN_NUMBER"
+          $notes = "Automatically generated Windows (.exe) desktop installer for Anime Universe."
+          gh release create $tag "dist-win/AnimeUniverse-Windows-Installer.exe" `
+            --repo "$env:GITHUB_REPOSITORY" `
+            --title "$title" `
+            --notes "$notes" `
+            --target "$env:GITHUB_SHA"
 
   build-macos-dmg:
     runs-on: macos-latest
@@ -88,9 +114,36 @@ jobs:
         run: |
           gradle :desktop:packageDmg --stacktrace --no-daemon
 
+      - name: Stage macOS .dmg Installer
+        shell: bash
+        run: |
+          set -e
+          mkdir -p dist-mac
+          DMG_FILE=$(find desktop/build/compose/binaries -name "*.dmg" | head -n 1)
+          if [ -z "${DMG_FILE}" ] || [ ! -f "${DMG_FILE}" ]; then
+            echo "ERROR: Could not find generated .dmg file"
+            exit 1
+          fi
+          cp "${DMG_FILE}" dist-mac/AnimeUniverse-macOS-Installer.dmg
+
       - name: Upload macOS DMG Artifact
         uses: actions/upload-artifact@v4
         with:
           name: anime-universe-macos-dmg
-          path: desktop/build/compose/binaries/main/
+          path: dist-mac/AnimeUniverse-macOS-Installer.dmg
           if-no-files-found: error
+
+      - name: Publish macOS .dmg to GitHub Releases
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RELEASE_TAG="macos-dmg-build-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+          RELEASE_TITLE="Anime Universe macOS DMG Installer Build #${GITHUB_RUN_NUMBER}"
+          NOTES="Automatically generated macOS (.dmg) desktop installer for Anime Universe."
+          gh release create "${RELEASE_TAG}" dist-mac/AnimeUniverse-macOS-Installer.dmg \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${RELEASE_TITLE}" \
+            --notes "${NOTES}" \
+            --target "${GITHUB_SHA}"

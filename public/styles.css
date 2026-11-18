@@ -1309,3 +1309,269 @@ html, body {
   flex-direction: column;
   gap: 14px;
 }
+
+/* ==========================================================================
+   DOWNLOAD APPLICATIONS CENTER (Mobile, Tablet & Desktop Responsive)
+   ========================================================================== */
+
+.downloads-hero-card {
+  position: relative;
+  background: radial-gradient(circle at 88% 12%, rgba(216, 183, 120, 0.20), transparent 52%),
+              linear-gradient(145deg, #141824 0%, #10131C 100%);
+  border: 1px solid var(--border-strong);
+  border-radius: 26px;
+  padding: 26px 24px;
+  margin-bottom: 20px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  overflow: hidden;
+}
+
+.downloads-hero-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: rgba(216, 183, 120, 0.14);
+  border: 1px solid var(--accent-border);
+  color: var(--highlight);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+
+.downloads-cards-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 18px;
+  margin-bottom: 26px;
+}
+
+@media (min-width: 680px) {
+  .downloads-cards-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1040px) {
+  .downloads-cards-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.download-platform-card {
+  position: relative;
+  background: var(--card-bg);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 26px;
+  padding: 24px 22px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 18px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1), border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.download-platform-card:hover {
+  transform: translateY(-3px);
+  border-color: var(--accent-border);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.65);
+}
+
+.download-platform-card.recommended {
+  background: linear-gradient(180deg, rgba(216, 183, 120, 0.09) 0%, var(--card-bg) 42%);
+  border: 1.5px solid var(--accent-primary);
+}
+
+.recommended-ribbon {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--highlight), var(--accent-primary));
+  color: var(--on-accent);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.platform-emblem {
+  width: 56px;
+  height: 56px;
+  border-radius: 18px;
+  background: var(--elevated-surface);
+  border: 1px solid var(--border-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent-primary);
+  flex-shrink: 0;
+}
+
+.platform-emblem svg {
+  width: 28px;
+  height: 28px;
+}
+
+.platform-emblem.android {
+  color: #5CE092;
+  border-color: rgba(92, 224, 146, 0.35);
+  background: rgba(92, 224, 146, 0.10);
+}
+
+.platform-emblem.windows {
+  color: #67B7F7;
+  border-color: rgba(103, 183, 247, 0.35);
+  background: rgba(103, 183, 247, 0.10);
+}
+
+.platform-emblem.macos {
+  color: var(--highlight);
+  border-color: rgba(240, 217, 168, 0.38);
+  background: rgba(216, 183, 120, 0.12);
+}
+
+.download-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  background: var(--elevated-surface);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 18px;
+  padding: 13px 14px;
+}
+
+.download-meta-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.download-meta-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1.3px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.download-meta-val {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.download-os-box {
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 14px;
+  padding: 10px 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.btn-coming-soon {
+  width: 100%;
+  height: 52px;
+  border-radius: 999px;
+  background: rgba(23, 27, 38, 0.9);
+  border: 1px dashed rgba(216, 183, 120, 0.42);
+  color: var(--highlight);
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  cursor: not-allowed;
+  user-select: none;
+}
+
+.download-progress-wrap {
+  background: var(--elevated-surface);
+  border: 1px solid var(--accent-border);
+  border-radius: 16px;
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.download-progress-track {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.download-progress-bar {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent-secondary), var(--accent-primary), var(--highlight));
+  transition: width 0.18s ease;
+}
+
+.release-notes-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 18px;
+}
+
+@media (min-width: 920px) {
+  .release-notes-grid {
+    grid-template-columns: 1.2fr 1fr;
+  }
+}
+
+.release-highlight-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: var(--elevated-surface);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.release-tag-pill {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  color: var(--highlight);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.prev-version-card {
+  background: var(--elevated-surface);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 20px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+

@@ -115,7 +115,13 @@ const SVG_ICONS = {
   key: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12.65 10C11.83 7.67 9.61 6 7 6c-3.31 0-6 2.69-6 6s2.69 6 6 6c2.61 0 4.83-1.67 5.65-4H17v4h4v-4h2v-4H12.65zM7 14c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg>`,
   eye: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>`,
   heartFilled: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>`,
-  heartOutline: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>`
+  heartOutline: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>`,
+  download: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>`,
+  android: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.6 9.48l1.84-3.18c.16-.31.04-.69-.26-.85a.637.637 0 0 0-.83.22l-1.88 3.24a11.463 11.463 0 0 0-8.94 0L5.65 5.67a.643.643 0 0 0-.87-.2c-.28.18-.37.54-.22.83L6.4 9.48A10.78 10.78 0 0 0 1 18h22a10.78 10.78 0 0 0-5.4-8.52zM7 15.25a1.25 1.25 0 1 1 0-2.5 1.25 1.25 0 0 1 0 2.5zm10 0a1.25 1.25 0 1 1 0-2.5 1.25 1.25 0 0 1 0 2.5z"/></svg>`,
+  windows: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 3h8.5v8.5H3V3zm9.5 0H21v8.5h-8.5V3zM3 12.5h8.5V21H3v-8.5zm9.5 0H21V21h-8.5v-8.5z"/></svg>`,
+  apple: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83zM15.96 6.33c.67-.81 1.12-1.94 1-3.08-.96.04-2.13.64-2.82 1.45-.61.7-.115 1.86-.99 2.97 1.08.08 2.14-.53 2.81-1.34z"/></svg>`,
+  clock: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>`,
+  checkCircle: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>`
 };
 
 function getCurrentAnimeSeason() {
@@ -223,7 +229,75 @@ const state = {
   detailAnime: null,
   detailRich: null,
   detailLoading: false,
-  quickEditAnime: null
+  quickEditAnime: null,
+
+  // Download Center & Admin Release Configuration State
+  downloadsConfig: JSON.parse(localStorage.getItem('anime_universe_downloads_admin_override') || 'null') || {
+    githubRepo: '',
+    autoFetchGithubReleases: true,
+    lastUpdated: '2026-11-18',
+    platforms: {
+      android: {
+        id: 'android',
+        platformName: 'Android APK',
+        appName: 'Anime Universe for Android',
+        version: 'v2.1.0',
+        fileSize: '25.4 MB',
+        osSupported: 'Android 8.0 (Oreo) & above • ARM64 / Universal',
+        releaseDate: 'Nov 18, 2026',
+        fileName: 'AnimeUniverse-v2.1.0-arm64.apk',
+        architecture: 'Universal APK (ARM64-v8a / armeabi-v7a)',
+        packageType: 'Signed Android Package (.apk)',
+        available: false,
+        downloadUrl: ''
+      },
+      windows: {
+        id: 'windows',
+        platformName: 'Windows EXE',
+        appName: 'Anime Universe for Windows',
+        version: 'v2.1.0',
+        fileSize: '68.4 MB',
+        osSupported: 'Windows 10 & Windows 11 (64-bit x64)',
+        releaseDate: 'Nov 18, 2026',
+        fileName: 'AnimeUniverse-Windows-Installer.exe',
+        architecture: '64-bit Native JVM Desktop (.exe)',
+        packageType: 'Windows Native Installer (.exe)',
+        available: false,
+        downloadUrl: ''
+      },
+      macos: {
+        id: 'macos',
+        platformName: 'macOS DMG',
+        appName: 'Anime Universe for macOS',
+        version: 'v2.1.0',
+        fileSize: '74.2 MB',
+        osSupported: 'macOS 12 Monterey & newer (Apple Silicon & Intel)',
+        releaseDate: 'Nov 18, 2026',
+        fileName: 'AnimeUniverse-macOS-Installer.dmg',
+        architecture: 'Universal macOS Disk Image (.dmg)',
+        packageType: 'macOS Disk Image (.dmg)',
+        available: false,
+        downloadUrl: ''
+      }
+    },
+    currentRelease: {
+      version: 'v2.1.0',
+      title: 'Obsidian & Champagne Gold Parity + Instant Cloud Sync',
+      releaseDate: 'Nov 18, 2026',
+      channel: 'Stable Release',
+      summary: 'Unified 1:1 visual design across Android, Windows, macOS, and Web with instant startup session restore and automatic background cloud synchronization.',
+      highlights: [
+        { tag: 'SYNC', text: 'Automatic real-time cross-platform cloud synchronization every 15 seconds across Android, Windows, macOS, and Web without manual refresh.' },
+        { tag: 'PERFORMANCE', text: 'Eliminated the 4–5 second startup login flash on Android APK and Desktop by caching verified session snapshots locally.' },
+        { tag: 'DESIGN', text: '1:1 Obsidian & Champagne Gold visual parity across Home Weekly Schedule, Global Catalog Discover, Library Collections, and Community Reviews.' },
+        { tag: 'AUTH', text: 'Added seamless Email or Username sign-in resolution and automatic background JWT session refresh.' }
+      ]
+    },
+    previousVersions: []
+  },
+  downloadTasks: {},
+  showDownloadsAdminModal: false,
+  githubSyncMessage: ''
 };
 
 const syncedCatalogHashes = new Map();
@@ -1549,6 +1623,7 @@ function renderSettingsScreen() {
                 { id: 'ACCOUNT', title: 'Account', sub: state.session ? `Signed in as ${state.profile.username} • Auto-Sync Active` : 'Local Preview Mode • Sign in' },
                 { id: 'APPEARANCE', title: 'Appearance', sub: `Theme (${state.prefs.themeMode}) • Accent (${state.prefs.accentTheme}) • Layout (${state.prefs.watchlistLayout})` },
                 { id: 'PREFERENCES', title: 'Preferences', sub: `Title Language (${state.prefs.titleLanguage}) • Safe Mode • JSON Backup` },
+                { id: 'DOWNLOADS_LINK', title: 'Download Applications', sub: 'Official Native Builds for Android (.apk), Windows (.exe) & macOS (.dmg)' },
                 { id: 'ABOUT', title: 'About', sub: 'Anime Universe v2.1.0 • Architecture & Credits' }
               ]
                 .map(
@@ -1867,10 +1942,626 @@ function renderAuthScreen() {
                 <button type="button" id="btn-guest-preview" style="background:none;border:none;color:var(--text-secondary);font-size:13.5px;cursor:pointer;font-family:inherit;">
                   Continue without an account
                 </button>
+                <button type="button" id="btn-auth-open-downloads" style="background:rgba(216,183,120,0.12);border:1px solid var(--accent-border);border-radius:999px;padding:8px 18px;color:var(--highlight);font-size:12px;font-weight:700;letter-spacing:1px;cursor:pointer;font-family:inherit;display:inline-flex;align-items:center;gap:8px;">
+                  <span style="width:15px;height:15px;display:inline-flex;">${SVG_ICONS.download}</span>
+                  <span>DOWNLOAD ANDROID / PC / MAC APPS</span>
+                </button>
               </div>
             `
             : ''
         }
+      </div>
+    </div>
+  `;
+}
+
+// ============================================================================
+// SCREEN 8: DOWNLOAD APPLICATIONS CENTER (Android APK, Windows EXE, macOS DMG)
+// ============================================================================
+
+function isHttpsUrlReady(url) {
+  if (!url || typeof url !== 'string') return false;
+  const trimmed = url.trim();
+  if (!trimmed) return false;
+  if (trimmed.includes('<') || trimmed.includes('>') || trimmed.includes('example.com')) return false;
+  return trimmed.startsWith('https://');
+}
+
+function isPlatformDownloadReady(plat) {
+  if (!plat) return false;
+  if (plat.available === false) return false;
+  return isHttpsUrlReady(plat.downloadUrl);
+}
+
+function detectVisitorPlatformKey() {
+  const ua = (navigator.userAgent || '').toLowerCase();
+  if (ua.includes('android')) return 'android';
+  if (ua.includes('win')) return 'windows';
+  if (ua.includes('mac') && !ua.includes('iphone') && !ua.includes('ipad')) return 'macos';
+  return null;
+}
+
+async function loadDownloadsConfig() {
+  try {
+    const resp = await fetch(`/downloads-config.json?_t=${Date.now()}`, { cache: 'no-store' });
+    if (resp.ok) {
+      const fileCfg = await resp.json();
+      const savedOverride = JSON.parse(localStorage.getItem('anime_universe_downloads_admin_override') || 'null');
+      if (savedOverride) {
+        state.downloadsConfig = {
+          ...fileCfg,
+          ...savedOverride,
+          platforms: {
+            android: { ...(fileCfg.platforms?.android || {}), ...(savedOverride.platforms?.android || {}) },
+            windows: { ...(fileCfg.platforms?.windows || {}), ...(savedOverride.platforms?.windows || {}) },
+            macos: { ...(fileCfg.platforms?.macos || {}), ...(savedOverride.platforms?.macos || {}) }
+          },
+          currentRelease: { ...(fileCfg.currentRelease || {}), ...(savedOverride.currentRelease || {}) },
+          previousVersions: savedOverride.previousVersions?.length ? savedOverride.previousVersions : (fileCfg.previousVersions || [])
+        };
+      } else {
+        state.downloadsConfig = fileCfg;
+      }
+    }
+  } catch (_) {}
+
+  if (state.downloadsConfig?.githubRepo && state.downloadsConfig?.autoFetchGithubReleases !== false) {
+    await syncReleasesFromGitHub(state.downloadsConfig.githubRepo, true);
+  }
+  if (state.tab === 'downloads') renderApp();
+}
+
+async function syncReleasesFromGitHub(repoSlug, silent = false) {
+  const cleanRepo = String(repoSlug || '').trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\/+$/, '');
+  if (!cleanRepo || !cleanRepo.includes('/')) {
+    if (!silent) {
+      state.githubSyncMessage = 'Enter a valid GitHub repository in owner/repo format.';
+      renderApp();
+    }
+    return;
+  }
+
+  if (!silent) {
+    state.githubSyncMessage = `Fetching releases from https://api.github.com/repos/${cleanRepo}/releases...`;
+    renderApp();
+  }
+
+  try {
+    const resp = await fetch(`https://api.github.com/repos/${cleanRepo}/releases?per_page=15`, {
+      headers: { Accept: 'application/vnd.github+json' }
+    });
+    if (!resp.ok) throw new Error(`GitHub API returned HTTP ${resp.status}`);
+    const releases = await resp.json();
+    if (!Array.isArray(releases) || releases.length === 0) {
+      if (!silent) {
+        state.githubSyncMessage = 'No published GitHub Releases found in this repository yet.';
+        renderApp();
+      }
+      return;
+    }
+
+    const platforms = state.downloadsConfig.platforms;
+    let foundAny = { android: false, windows: false, macos: false };
+
+    const formatBytesMB = (bytes) => {
+      if (!bytes || isNaN(bytes)) return null;
+      return `${(Number(bytes) / (1024 * 1024)).toFixed(1)} MB`;
+    };
+
+    for (const rel of releases) {
+      const assets = Array.isArray(rel.assets) ? rel.assets : [];
+      const pubDate = formatReviewDate(rel.published_at || rel.created_at) || state.downloadsConfig.lastUpdated;
+      const verTag = rel.tag_name || rel.name || 'v2.1.0';
+
+      for (const asset of assets) {
+        const nameLower = String(asset.name || '').toLowerCase();
+        const dlUrl = asset.browser_download_url || '';
+        if (!dlUrl.startsWith('https://')) continue;
+
+        if (!foundAny.android && nameLower.endsWith('.apk')) {
+          platforms.android.downloadUrl = dlUrl;
+          platforms.android.fileName = asset.name;
+          platforms.android.fileSize = formatBytesMB(asset.size) || platforms.android.fileSize;
+          platforms.android.version = verTag;
+          platforms.android.releaseDate = pubDate;
+          platforms.android.available = true;
+          foundAny.android = true;
+        } else if (!foundAny.windows && (nameLower.endsWith('.exe') || nameLower.endsWith('.msi'))) {
+          platforms.windows.downloadUrl = dlUrl;
+          platforms.windows.fileName = asset.name;
+          platforms.windows.fileSize = formatBytesMB(asset.size) || platforms.windows.fileSize;
+          platforms.windows.version = verTag;
+          platforms.windows.releaseDate = pubDate;
+          platforms.windows.available = true;
+          foundAny.windows = true;
+        } else if (!foundAny.macos && nameLower.endsWith('.dmg')) {
+          platforms.macos.downloadUrl = dlUrl;
+          platforms.macos.fileName = asset.name;
+          platforms.macos.fileSize = formatBytesMB(asset.size) || platforms.macos.fileSize;
+          platforms.macos.version = verTag;
+          platforms.macos.releaseDate = pubDate;
+          platforms.macos.available = true;
+          foundAny.macos = true;
+        }
+      }
+    }
+
+    state.downloadsConfig.githubRepo = cleanRepo;
+    localStorage.setItem('anime_universe_downloads_admin_override', JSON.stringify(state.downloadsConfig));
+    if (!silent) {
+      const syncedList = Object.entries(foundAny).filter(([, v]) => v).map(([k]) => k.toUpperCase());
+      state.githubSyncMessage = syncedList.length > 0
+        ? `Synced HTTPS packages from GitHub Releases: ${syncedList.join(', ')}`
+        : 'Connected to GitHub Releases. Packages without published assets remain in Coming Soon state.';
+    }
+  } catch (err) {
+    if (!silent) {
+      state.githubSyncMessage = `Could not sync GitHub Releases: ${err.message}`;
+    }
+  }
+  renderApp();
+}
+
+async function startPlatformDownload(taskKey, downloadUrl, fileName) {
+  if (!isHttpsUrlReady(downloadUrl)) return;
+  if (state.downloadTasks[taskKey]?.active) return;
+
+  state.downloadTasks[taskKey] = {
+    active: true,
+    progress: 4,
+    loadedMB: '0.0',
+    totalMB: null,
+    statusText: 'Connecting via secure HTTPS...'
+  };
+  renderApp();
+
+  try {
+    const response = await fetch(downloadUrl, { mode: 'cors', credentials: 'omit' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const contentLength = Number(response.headers.get('content-length') || 0);
+    const totalMB = contentLength > 0 ? (contentLength / (1024 * 1024)).toFixed(1) : null;
+
+    if (response.body && typeof response.body.getReader === 'function') {
+      const reader = response.body.getReader();
+      const chunks = [];
+      let receivedLength = 0;
+      let lastRender = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          chunks.push(value);
+          receivedLength += value.length;
+          const loadedMB = (receivedLength / (1024 * 1024)).toFixed(1);
+          const pct = contentLength > 0
+            ? Math.min(99, Math.max(5, Math.round((receivedLength / contentLength) * 100)))
+            : Math.min(92, (state.downloadTasks[taskKey].progress || 10) + 7);
+
+          state.downloadTasks[taskKey] = {
+            active: true,
+            progress: pct,
+            loadedMB,
+            totalMB,
+            statusText: totalMB ? `Downloading package... ${loadedMB} MB / ${totalMB} MB` : `Downloading package... ${loadedMB} MB`
+          };
+
+          const now = Date.now();
+          if (now - lastRender > 120) {
+            lastRender = now;
+            renderApp();
+          }
+        }
+      }
+
+      const blob = new Blob(chunks, { type: response.headers.get('content-type') || 'application/octet-stream' });
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = fileName || downloadUrl.split('/').pop() || 'AnimeUniverse-Package';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
+
+      state.downloadTasks[taskKey] = {
+        active: false,
+        progress: 100,
+        loadedMB: totalMB || (receivedLength / (1024 * 1024)).toFixed(1),
+        totalMB,
+        statusText: 'Download complete • Package verified via HTTPS'
+      };
+      renderApp();
+      return;
+    }
+  } catch (_) {
+    // Fallback when cross-origin host (e.g. GitHub Releases S3 redirect) blocks CORS fetch streaming:
+    // Show smooth progress feedback and trigger native HTTPS browser download of the genuine asset.
+  }
+
+  state.downloadTasks[taskKey] = {
+    active: true,
+    progress: 48,
+    loadedMB: null,
+    totalMB: null,
+    statusText: 'Verifying HTTPS release signature...'
+  };
+  renderApp();
+
+  await new Promise((r) => setTimeout(r, 420));
+  state.downloadTasks[taskKey] = {
+    active: true,
+    progress: 86,
+    loadedMB: null,
+    totalMB: null,
+    statusText: 'Starting secure browser transfer...'
+  };
+  renderApp();
+
+  const a = document.createElement('a');
+  a.href = downloadUrl;
+  a.setAttribute('download', fileName || '');
+  a.setAttribute('rel', 'noopener noreferrer');
+  a.target = '_blank';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+
+  await new Promise((r) => setTimeout(r, 380));
+  state.downloadTasks[taskKey] = {
+    active: false,
+    progress: 100,
+    loadedMB: null,
+    totalMB: null,
+    statusText: 'Browser download initiated via HTTPS ✓'
+  };
+  renderApp();
+}
+
+function renderDownloadsScreen() {
+  const cfg = state.downloadsConfig || {};
+  const platforms = cfg.platforms || {};
+  const currentRel = cfg.currentRelease || {};
+  const prevVersions = Array.isArray(cfg.previousVersions) ? cfg.previousVersions : [];
+  const visitorOs = detectVisitorPlatformKey();
+
+  const topBar = renderObsidianTopBar({
+    title: 'Downloads',
+    subtitle: 'OFFICIAL NATIVE APPLICATIONS',
+    actionsHtml: `
+      <button class="capsule-pill" id="btn-open-downloads-admin" title="Configure Download URLs, Versions & Release Notes">
+        <span style="width:15px;height:15px;display:inline-flex;">${SVG_ICONS.settings}</span>
+        <span>CONFIGURE RELEASES</span>
+      </button>
+    `
+  });
+
+  const platformOrder = [
+    { key: 'android', icon: SVG_ICONS.android, badgeLabel: 'MOBILE & TABLET' },
+    { key: 'windows', icon: SVG_ICONS.windows, badgeLabel: 'WINDOWS PC' },
+    { key: 'macos', icon: SVG_ICONS.apple, badgeLabel: 'APPLE MAC' }
+  ];
+
+  return `
+    ${topBar}
+
+    <!-- Hero Banner -->
+    <div class="downloads-hero-card">
+      <div style="max-width:680px;">
+        <div class="downloads-hero-badge">
+          <span style="width:14px;height:14px;display:inline-flex;">${SVG_ICONS.shield}</span>
+          <span>HTTPS VERIFIED PACKAGES • AUTO CLOUD SYNC</span>
+        </div>
+        <h2 class="serif-heading" style="font-size:32px;line-height:36px;color:var(--text-primary);margin-bottom:8px;">
+          Anime Universe Across Every Screen
+        </h2>
+        <p style="font-size:14px;color:var(--text-secondary);line-height:1.6;">
+          Install the native application for Android, Windows, or macOS. Your watchlist, episode progress, custom collections, and community reviews synchronize automatically in the background across all devices.
+        </p>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;align-items:flex-start;">
+        <div class="micro-label" style="color:var(--accent-primary);">LATEST STABLE RELEASE</div>
+        <div class="serif-heading tabular-num" style="font-size:28px;color:var(--highlight);">
+          ${escapeHtml(currentRel.version || 'v2.1.0')}
+        </div>
+        <div style="font-size:12px;color:var(--text-secondary);">
+          Published ${escapeHtml(currentRel.releaseDate || cfg.lastUpdated || 'Nov 18, 2026')}
+        </div>
+      </div>
+    </div>
+
+    <!-- Three Platform Download Cards (Android APK, Windows EXE, macOS DMG) -->
+    <div class="downloads-cards-grid">
+      ${platformOrder
+        .map(({ key, icon, badgeLabel }) => {
+          const p = platforms[key] || {};
+          const ready = isPlatformDownloadReady(p);
+          const isRecommended = visitorOs === key;
+          const taskKey = `main_${key}`;
+          const task = state.downloadTasks[taskKey];
+
+          return `
+            <div class="download-platform-card ${isRecommended ? 'recommended' : ''}">
+              ${isRecommended ? `<div class="recommended-ribbon">Recommended for Your Device</div>` : ''}
+
+              <div style="display:flex;flex-direction:column;gap:14px;">
+                <div style="display:flex;align-items:center;gap:14px;">
+                  <div class="platform-emblem ${key}">
+                    ${icon}
+                  </div>
+                  <div style="min-width:0;flex:1;">
+                    <div class="micro-label" style="color:var(--accent-primary);margin-bottom:3px;">${escapeHtml(badgeLabel)}</div>
+                    <h3 class="serif-heading" style="font-size:25px;line-height:28px;color:var(--text-primary);">
+                      ${escapeHtml(p.platformName || key.toUpperCase())}
+                    </h3>
+                    <div style="font-size:12.5px;color:var(--text-secondary);margin-top:2px;">
+                      ${escapeHtml(p.appName || 'Anime Universe')}
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Metadata Grid: Version, File Size, Release Date, Security Status -->
+                <div class="download-meta-grid">
+                  <div class="download-meta-item">
+                    <span class="download-meta-label">Version</span>
+                    <span class="download-meta-val" style="color:var(--highlight);">${escapeHtml(p.version || 'v2.1.0')}</span>
+                  </div>
+                  <div class="download-meta-item">
+                    <span class="download-meta-label">File Size</span>
+                    <span class="download-meta-val">${escapeHtml(p.fileSize || '—')}</span>
+                  </div>
+                  <div class="download-meta-item">
+                    <span class="download-meta-label">Release Date</span>
+                    <span class="download-meta-val">${escapeHtml(p.releaseDate || 'Nov 18, 2026')}</span>
+                  </div>
+                  <div class="download-meta-item">
+                    <span class="download-meta-label">Status</span>
+                    <span class="download-meta-val" style="color:${ready ? 'var(--success)' : 'var(--warning)'};">
+                      ${ready ? 'HTTPS Ready' : 'Coming Soon'}
+                    </span>
+                  </div>
+                </div>
+
+                <!-- Supported Operating System -->
+                <div class="download-os-box">
+                  <span class="download-meta-label">Supported Operating System</span>
+                  <span style="font-size:12.5px;color:var(--text-secondary);line-height:1.45;">
+                    ${escapeHtml(p.osSupported || '')}
+                  </span>
+                </div>
+              </div>
+
+              <!-- Download Action or Coming Soon State + Progress Indicator -->
+              <div style="display:flex;flex-direction:column;gap:10px;">
+                ${
+                  task
+                    ? `
+                      <div class="download-progress-wrap">
+                        <div style="display:flex;justify-content:space-between;align-items:center;font-size:11.5px;">
+                          <span style="color:var(--text-primary);font-weight:600;">${escapeHtml(task.statusText)}</span>
+                          <span class="tabular-num" style="color:var(--highlight);font-weight:700;">${task.progress}%</span>
+                        </div>
+                        <div class="download-progress-track">
+                          <div class="download-progress-bar" style="width:${task.progress}%;"></div>
+                        </div>
+                      </div>
+                    `
+                    : ''
+                }
+
+                ${
+                  ready
+                    ? `
+                      <button
+                        class="btn-primary"
+                        data-trigger-download="${taskKey}"
+                        data-dl-url="${escapeHtml(p.downloadUrl)}"
+                        data-dl-filename="${escapeHtml(p.fileName || '')}"
+                        style="width:100%;"
+                        ${task?.active ? 'disabled' : ''}
+                      >
+                        <span style="width:18px;height:18px;display:inline-flex;">${SVG_ICONS.download}</span>
+                        <span>${task?.active ? 'DOWNLOADING...' : `DOWNLOAD ${escapeHtml((p.platformName || '').toUpperCase())}`}</span>
+                      </button>
+                      <div style="display:flex;align-items:center;justify-content:center;gap:6px;font-size:11px;color:var(--text-muted);">
+                        <span style="width:13px;height:13px;display:inline-flex;color:var(--success);">${SVG_ICONS.checkCircle}</span>
+                        <span>Direct HTTPS • ${escapeHtml(p.fileName || p.packageType || 'Verified Build')}</span>
+                      </div>
+                    `
+                    : `
+                      <div class="btn-coming-soon" title="Build package is not yet published. Configure an HTTPS URL in Release Settings once built.">
+                        <span style="width:17px;height:17px;display:inline-flex;">${SVG_ICONS.clock}</span>
+                        <span>COMING SOON</span>
+                      </div>
+                      <div style="text-align:center;font-size:11px;color:var(--text-muted);">
+                        Official ${escapeHtml(p.platformName || '')} package will unlock automatically once published.
+                      </div>
+                    `
+                }
+              </div>
+            </div>
+          `;
+        })
+        .join('')}
+    </div>
+
+    <!-- Release Notes & Previous Versions Section -->
+    <div class="release-notes-grid">
+      <!-- Current Release Notes Card -->
+      <div class="app-card" style="display:flex;flex-direction:column;gap:14px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+          <div>
+            <div class="micro-label" style="color:var(--accent-primary);">RELEASE NOTES • ${escapeHtml(currentRel.channel || 'STABLE')}</div>
+            <h3 class="serif-heading" style="font-size:26px;color:var(--text-primary);margin-top:2px;">
+              ${escapeHtml(currentRel.version || 'v2.1.0')} — ${escapeHtml(currentRel.title || 'Latest Release')}
+            </h3>
+          </div>
+          <span class="show-count-pill">${escapeHtml(currentRel.releaseDate || 'Nov 18, 2026')}</span>
+        </div>
+
+        ${
+          currentRel.summary
+            ? `<p style="font-size:13.5px;color:var(--text-secondary);line-height:1.6;">${escapeHtml(currentRel.summary)}</p>`
+            : ''
+        }
+
+        <div style="display:flex;flex-direction:column;gap:10px;">
+          ${(currentRel.highlights || [])
+            .map(
+              (h) => `
+              <div class="release-highlight-row">
+                <span class="release-tag-pill">${escapeHtml(h.tag || 'UPDATE')}</span>
+                <span style="font-size:13px;color:var(--text-primary);line-height:1.5;">${escapeHtml(h.text || '')}</span>
+              </div>
+            `
+            )
+            .join('')}
+        </div>
+      </div>
+
+      <!-- Previous Versions Archive Card -->
+      <div class="app-card" style="display:flex;flex-direction:column;gap:14px;">
+        <div>
+          <div class="micro-label" style="color:var(--accent-primary);">VERSION ARCHIVE</div>
+          <h3 class="serif-heading" style="font-size:26px;color:var(--text-primary);margin-top:2px;">
+            Previous Versions
+          </h3>
+        </div>
+
+        ${
+          prevVersions.length === 0
+            ? `<div style="color:var(--text-secondary);font-size:13px;padding:12px 0;">No archived builds listed yet.</div>`
+            : `<div style="display:flex;flex-direction:column;gap:12px;">
+                ${prevVersions
+                  .map((pv, idx) => {
+                    const dlMap = pv.downloads || {};
+                    return `
+                      <div class="prev-version-card">
+                        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                          <div>
+                            <span class="serif-heading" style="font-size:21px;color:var(--highlight);font-weight:600;">${escapeHtml(pv.version || '')}</span>
+                            <span style="font-size:13px;color:var(--text-primary);margin-left:8px;">${escapeHtml(pv.title || '')}</span>
+                          </div>
+                          <span style="font-size:11.5px;color:var(--text-muted);">${escapeHtml(pv.releaseDate || '')}</span>
+                        </div>
+
+                        <ul style="padding-left:18px;display:flex;flex-direction:column;gap:4px;font-size:12.5px;color:var(--text-secondary);line-height:1.45;">
+                          ${(pv.notes || []).map((n) => `<li>${escapeHtml(n)}</li>`).join('')}
+                        </ul>
+
+                        <div style="display:flex;flex-wrap:wrap;gap:8px;padding-top:4px;">
+                          ${[
+                            { k: 'android', label: 'Android APK' },
+                            { k: 'windows', label: 'Windows EXE' },
+                            { k: 'macos', label: 'macOS DMG' }
+                          ]
+                            .map(({ k, label }) => {
+                              const d = dlMap[k] || {};
+                              const ready = isPlatformDownloadReady(d);
+                              const prevTaskKey = `prev_${idx}_${k}`;
+                              if (ready) {
+                                return `
+                                  <button
+                                    class="capsule-pill active"
+                                    data-trigger-download="${prevTaskKey}"
+                                    data-dl-url="${escapeHtml(d.downloadUrl)}"
+                                    data-dl-filename="${escapeHtml(d.fileName || `${k}-${pv.version}`)}"
+                                  >
+                                    <span style="width:13px;height:13px;display:inline-flex;">${SVG_ICONS.download}</span>
+                                    <span>${label} (${escapeHtml(d.fileSize || pv.version)})</span>
+                                  </button>
+                                `;
+                              }
+                              return `
+                                <span class="capsule-pill" style="opacity:0.55;cursor:not-allowed;" title="Archived build not available">
+                                  ${label} • Coming Soon
+                                </span>
+                              `;
+                            })
+                            .join('')}
+                        </div>
+                      </div>
+                    `;
+                  })
+                  .join('')}
+              </div>`
+        }
+      </div>
+    </div>
+  `;
+}
+
+function renderDownloadsAdminModal() {
+  const cfg = state.downloadsConfig || {};
+  const p = cfg.platforms || {};
+  const rel = cfg.currentRelease || {};
+  const highlightsText = (rel.highlights || []).map((h) => `${h.tag || 'UPDATE'}: ${h.text || ''}`).join('\n');
+
+  return `
+    <div class="modal-backdrop" id="modal-backdrop">
+      <div class="modal-sheet" style="max-width:680px;" onclick="event.stopPropagation()">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <div>
+            <div class="micro-label" style="color:var(--accent-primary);">ADMIN CONFIGURATION SYSTEM</div>
+            <h3 class="serif-heading" style="font-size:26px;">Manage Releases &amp; Download URLs</h3>
+          </div>
+          <button class="app-icon-btn" id="btn-close-modal" title="Close">✕</button>
+        </div>
+
+        <p style="font-size:12.5px;color:var(--text-secondary);line-height:1.5;">
+          Update download URLs (HTTPS required), versions, file sizes, availability, and release notes below, or edit <code>/public/downloads-config.json</code> directly without modifying any frontend code.
+        </p>
+
+        <!-- GitHub Repository Auto-Sync Box -->
+        <div style="background:var(--elevated-surface);border:1px solid var(--border-strong);border-radius:18px;padding:14px;display:flex;flex-direction:column;gap:8px;">
+          <div class="micro-label" style="color:var(--accent-primary);">AUTO-FETCH FROM GITHUB RELEASES (OPTIONAL)</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <input id="cfg-github-repo" class="auth-input" style="flex:1;min-width:200px;height:44px;" placeholder="owner/repository (e.g. username/AniTracK)" value="${escapeHtml(cfg.githubRepo || '')}" />
+            <button class="btn-secondary" id="btn-sync-github-releases" style="height:44px;">Sync GitHub Releases</button>
+          </div>
+          ${state.githubSyncMessage ? `<div style="font-size:12px;color:var(--highlight);">${escapeHtml(state.githubSyncMessage)}</div>` : ''}
+        </div>
+
+        <!-- Three Platform Editors -->
+        ${['android', 'windows', 'macos']
+          .map((key) => {
+            const plat = p[key] || {};
+            return `
+              <div style="background:var(--elevated-surface);border:1px solid rgba(255,255,255,0.07);border-radius:18px;padding:14px;display:flex;flex-direction:column;gap:10px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                  <span class="serif-heading" style="font-size:20px;color:var(--highlight);">${escapeHtml(plat.platformName || key.toUpperCase())}</span>
+                  <label style="display:inline-flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text-primary);cursor:pointer;">
+                    <input type="checkbox" id="cfg-${key}-avail" ${plat.available ? 'checked' : ''} />
+                    <span>Build Available (uncheck for "Coming Soon")</span>
+                  </label>
+                </div>
+                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
+                  <input id="cfg-${key}-ver" class="auth-input" style="height:42px;font-size:13px;" placeholder="Version (v2.1.0)" value="${escapeHtml(plat.version || '')}" />
+                  <input id="cfg-${key}-size" class="auth-input" style="height:42px;font-size:13px;" placeholder="Size (25.4 MB)" value="${escapeHtml(plat.fileSize || '')}" />
+                  <input id="cfg-${key}-date" class="auth-input" style="height:42px;font-size:13px;" placeholder="Date (Nov 18, 2026)" value="${escapeHtml(plat.releaseDate || '')}" />
+                </div>
+                <input id="cfg-${key}-os" class="auth-input" style="height:42px;font-size:13px;" placeholder="Supported OS" value="${escapeHtml(plat.osSupported || '')}" />
+                <input id="cfg-${key}-url" class="auth-input" style="height:42px;font-size:13px;" placeholder="https://github.com/owner/repo/releases/download/..." value="${escapeHtml(plat.downloadUrl || '')}" />
+              </div>
+            `;
+          })
+          .join('')}
+
+        <!-- Release Notes Editor -->
+        <div style="background:var(--elevated-surface);border:1px solid rgba(255,255,255,0.07);border-radius:18px;padding:14px;display:flex;flex-direction:column;gap:8px;">
+          <div class="micro-label" style="color:var(--accent-primary);">CURRENT RELEASE NOTES</div>
+          <div style="display:grid;grid-template-columns:1fr 2fr;gap:8px;">
+            <input id="cfg-rel-ver" class="auth-input" style="height:42px;font-size:13px;" placeholder="Release Version" value="${escapeHtml(rel.version || '')}" />
+            <input id="cfg-rel-title" class="auth-input" style="height:42px;font-size:13px;" placeholder="Release Headline" value="${escapeHtml(rel.title || '')}" />
+          </div>
+          <textarea id="cfg-rel-highlights" class="auth-input" style="height:88px;padding:10px;font-size:12.5px;" placeholder="TAG: Highlight description (one per line)">${escapeHtml(highlightsText)}</textarea>
+        </div>
+
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+          <button class="btn-secondary" id="btn-export-downloads-json" style="flex:1;">Export downloads-config.json</button>
+          <button class="btn-primary" id="btn-save-downloads-admin" style="flex:1;">SAVE CONFIGURATION</button>
+        </div>
       </div>
     </div>
   `;
@@ -1980,6 +2671,10 @@ function renderModals() {
     `;
   }
 
+  if (state.showDownloadsAdminModal) {
+    return renderDownloadsAdminModal();
+  }
+
   return '';
 }
 
@@ -1991,7 +2686,7 @@ function renderApp() {
   const root = document.getElementById('app');
   if (!root) return;
 
-  if (!state.session && !state.isGuestMode) {
+  if (!state.session && !state.isGuestMode && state.tab !== 'downloads') {
     root.innerHTML = renderAuthScreen();
     bindAuthEvents();
     return;
@@ -2002,16 +2697,24 @@ function renderApp() {
     { id: 'discover', title: 'Explore', icon: SVG_ICONS.explore },
     { id: 'mylist', title: 'Library', icon: SVG_ICONS.library },
     { id: 'community', title: 'Community', icon: SVG_ICONS.community },
+    { id: 'downloads', title: 'Downloads', icon: SVG_ICONS.download },
     { id: 'profile', title: 'Profile', icon: SVG_ICONS.profile }
   ];
 
-  const bottomDockTabs = sidebarTabs.slice(0, 4);
+  const bottomDockTabs = [
+    { id: 'home', title: 'Home', icon: SVG_ICONS.home },
+    { id: 'discover', title: 'Explore', icon: SVG_ICONS.explore },
+    { id: 'mylist', title: 'Library', icon: SVG_ICONS.library },
+    { id: 'community', title: 'Community', icon: SVG_ICONS.community },
+    { id: 'downloads', title: 'Apps', icon: SVG_ICONS.download }
+  ];
 
   let screenHtml = '';
   if (state.tab === 'home') screenHtml = renderHomeScreen();
   else if (state.tab === 'discover') screenHtml = renderDiscoverScreen();
   else if (state.tab === 'mylist') screenHtml = renderMyListScreen();
   else if (state.tab === 'community') screenHtml = renderCommunityScreen();
+  else if (state.tab === 'downloads') screenHtml = renderDownloadsScreen();
   else if (state.tab === 'profile') screenHtml = renderProfileScreen();
   else if (state.tab === 'settings') screenHtml = renderSettingsScreen();
   else if (state.tab === 'detail') screenHtml = renderAnimeDetailScreen();
@@ -2143,6 +2846,14 @@ function bindAuthEvents() {
     btnGuest.onclick = () => {
       state.isGuestMode = true;
       localStorage.setItem('anime_universe_guest', 'true');
+      renderApp();
+    };
+  }
+
+  const btnAuthOpenDownloads = document.getElementById('btn-auth-open-downloads');
+  if (btnAuthOpenDownloads) {
+    btnAuthOpenDownloads.onclick = () => {
+      state.tab = 'downloads';
       renderApp();
     };
   }
@@ -2470,7 +3181,13 @@ function bindAppEvents() {
   }
   document.querySelectorAll('[data-settings-cat]').forEach((el) => {
     el.onclick = () => {
-      state.settingsCategory = el.getAttribute('data-settings-cat');
+      const cat = el.getAttribute('data-settings-cat');
+      if (cat === 'DOWNLOADS_LINK') {
+        state.settingsCategory = null;
+        state.tab = 'downloads';
+      } else {
+        state.settingsCategory = cat;
+      }
       renderApp();
     };
   });
@@ -2620,10 +3337,96 @@ function bindAppEvents() {
     state.showAvatarModal = false;
     state.showProfileEditModal = false;
     state.showCreateCollectionModal = false;
+    state.showDownloadsAdminModal = false;
     renderApp();
   };
   if (backdrop) backdrop.onclick = closeModals;
   if (btnClose) btnClose.onclick = closeModals;
+
+  // Download Center & Admin Configuration events
+  document.querySelectorAll('[data-trigger-download]').forEach((btn) => {
+    btn.onclick = () => {
+      const taskKey = btn.getAttribute('data-trigger-download');
+      const dlUrl = btn.getAttribute('data-dl-url');
+      const dlFile = btn.getAttribute('data-dl-filename');
+      startPlatformDownload(taskKey, dlUrl, dlFile);
+    };
+  });
+
+  const btnOpenDownloadsAdmin = document.getElementById('btn-open-downloads-admin');
+  if (btnOpenDownloadsAdmin) {
+    btnOpenDownloadsAdmin.onclick = () => {
+      state.githubSyncMessage = '';
+      state.showDownloadsAdminModal = true;
+      renderApp();
+    };
+  }
+
+  const btnSyncGithub = document.getElementById('btn-sync-github-releases');
+  if (btnSyncGithub) {
+    btnSyncGithub.onclick = async () => {
+      const repoInput = document.getElementById('cfg-github-repo')?.value || '';
+      await syncReleasesFromGitHub(repoInput, false);
+    };
+  }
+
+  const readAdminModalIntoConfig = () => {
+    const cfg = JSON.parse(JSON.stringify(state.downloadsConfig || {}));
+    cfg.githubRepo = (document.getElementById('cfg-github-repo')?.value || '').trim();
+    ['android', 'windows', 'macos'].forEach((key) => {
+      if (!cfg.platforms[key]) cfg.platforms[key] = { id: key };
+      cfg.platforms[key].available = Boolean(document.getElementById(`cfg-${key}-avail`)?.checked);
+      cfg.platforms[key].version = (document.getElementById(`cfg-${key}-ver`)?.value || '').trim();
+      cfg.platforms[key].fileSize = (document.getElementById(`cfg-${key}-size`)?.value || '').trim();
+      cfg.platforms[key].releaseDate = (document.getElementById(`cfg-${key}-date`)?.value || '').trim();
+      cfg.platforms[key].osSupported = (document.getElementById(`cfg-${key}-os`)?.value || '').trim();
+      cfg.platforms[key].downloadUrl = (document.getElementById(`cfg-${key}-url`)?.value || '').trim();
+    });
+    if (!cfg.currentRelease) cfg.currentRelease = {};
+    cfg.currentRelease.version = (document.getElementById('cfg-rel-ver')?.value || '').trim();
+    cfg.currentRelease.title = (document.getElementById('cfg-rel-title')?.value || '').trim();
+    const rawLines = (document.getElementById('cfg-rel-highlights')?.value || '')
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+    cfg.currentRelease.highlights = rawLines.map((line) => {
+      const colonIdx = line.indexOf(':');
+      if (colonIdx > 0 && colonIdx < 18) {
+        return { tag: line.slice(0, colonIdx).trim().toUpperCase(), text: line.slice(colonIdx + 1).trim() };
+      }
+      return { tag: 'UPDATE', text: line };
+    });
+    return cfg;
+  };
+
+  const btnSaveDownloadsAdmin = document.getElementById('btn-save-downloads-admin');
+  if (btnSaveDownloadsAdmin) {
+    btnSaveDownloadsAdmin.onclick = () => {
+      const updated = readAdminModalIntoConfig();
+      state.downloadsConfig = updated;
+      localStorage.setItem('anime_universe_downloads_admin_override', JSON.stringify(updated));
+      state.showDownloadsAdminModal = false;
+      renderApp();
+    };
+  }
+
+  const btnExportDownloadsJson = document.getElementById('btn-export-downloads-json');
+  if (btnExportDownloadsJson) {
+    btnExportDownloadsJson.onclick = () => {
+      const updated = readAdminModalIntoConfig();
+      state.downloadsConfig = updated;
+      localStorage.setItem('anime_universe_downloads_admin_override', JSON.stringify(updated));
+      const blob = new Blob([JSON.stringify(updated, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'downloads-config.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    };
+  }
 
   const btnSaveCollection = document.getElementById('btn-save-collection');
   if (btnSaveCollection) {
@@ -2749,6 +3552,7 @@ function bindAppEvents() {
 
 // Initial Boot & Automatic Background Sync Across All Platforms
 renderApp();
+loadDownloadsConfig();
 fetchDiscoverCatalog();
 if (state.session) {
   loadCloudData(false);

@@ -23,7 +23,15 @@ sourceSets {
     }
 }
 
+tasks.register<Copy>("syncRootWebMirror") {
+    from("../public") {
+        include("index.html", "app.js", "styles.css", "sw.js", "manifest.json", "downloads-config.json")
+    }
+    into("..")
+}
+
 tasks.register<Copy>("syncWebAssets") {
+    dependsOn("syncRootWebMirror")
     from("../app/src/main/res/drawable") {
         include("*.png")
     }

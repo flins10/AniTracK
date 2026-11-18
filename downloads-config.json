@@ -1,0 +1,139 @@
+{
+  "_comment": "Admin-friendly Release & Download Configuration for Anime Universe. Update downloadUrl (must use https://), version, fileSize, releaseDate, available, githubRepo, currentRelease, or previousVersions here without modifying any frontend code.",
+  "githubRepo": "",
+  "autoFetchGithubReleases": true,
+  "lastUpdated": "2026-11-18",
+  "platforms": {
+    "android": {
+      "id": "android",
+      "platformName": "Android APK",
+      "appName": "Anime Universe for Android",
+      "version": "v2.1.0",
+      "fileSize": "25.4 MB",
+      "osSupported": "Android 8.0 (Oreo) & above • ARM64 / Universal",
+      "releaseDate": "Nov 18, 2026",
+      "fileName": "AnimeUniverse-v2.1.0-arm64.apk",
+      "architecture": "Universal APK (ARM64-v8a / armeabi-v7a)",
+      "packageType": "Signed Android Package (.apk)",
+      "available": false,
+      "downloadUrl": ""
+    },
+    "windows": {
+      "id": "windows",
+      "platformName": "Windows EXE",
+      "appName": "Anime Universe for Windows",
+      "version": "v2.1.0",
+      "fileSize": "68.4 MB",
+      "osSupported": "Windows 10 & Windows 11 (64-bit x64)",
+      "releaseDate": "Nov 18, 2026",
+      "fileName": "AnimeUniverse-Windows-Installer.exe",
+      "architecture": "64-bit Native JVM Desktop (.exe)",
+      "packageType": "Windows Native Installer (.exe)",
+      "available": false,
+      "downloadUrl": ""
+    },
+    "macos": {
+      "id": "macos",
+      "platformName": "macOS DMG",
+      "appName": "Anime Universe for macOS",
+      "version": "v2.1.0",
+      "fileSize": "74.2 MB",
+      "osSupported": "macOS 12 Monterey & newer (Apple Silicon & Intel)",
+      "releaseDate": "Nov 18, 2026",
+      "fileName": "AnimeUniverse-macOS-Installer.dmg",
+      "architecture": "Universal macOS Disk Image (.dmg)",
+      "packageType": "macOS Disk Image (.dmg)",
+      "available": false,
+      "downloadUrl": ""
+    }
+  },
+  "currentRelease": {
+    "version": "v2.1.0",
+    "title": "Obsidian & Champagne Gold Parity + Instant Cloud Sync",
+    "releaseDate": "Nov 18, 2026",
+    "channel": "Stable Release",
+    "summary": "Unified 1:1 visual design across Android, Windows, macOS, and Web with instant startup session restore and automatic background cloud synchronization.",
+    "highlights": [
+      {
+        "tag": "SYNC",
+        "text": "Automatic real-time cross-platform cloud synchronization every 15 seconds across Android, Windows, macOS, and Web without manual refresh."
+      },
+      {
+        "tag": "PERFORMANCE",
+        "text": "Eliminated the 4–5 second startup login flash on Android APK and Desktop by caching verified session snapshots locally."
+      },
+      {
+        "tag": "DESIGN",
+        "text": "1:1 Obsidian & Champagne Gold visual parity across Home Weekly Schedule, Global Catalog Discover, Library Collections, and Community Reviews."
+      },
+      {
+        "tag": "AUTH",
+        "text": "Added seamless Email or Username sign-in resolution and automatic background JWT session refresh."
+      }
+    ]
+  },
+  "previousVersions": [
+    {
+      "version": "v2.0.4",
+      "title": "Community Lounge & Sentiment Tier Filtering",
+      "releaseDate": "Nov 10, 2026",
+      "channel": "Archived Release",
+      "notes": [
+        "Added 5-tier sentiment badges (Absolute Cinema, Worth Watching, One Time Watch, Boring, Total Waste) across Library and Community.",
+        "Introduced custom user Collections with Supabase cloud persistence.",
+        "Improved AniList GraphQL seasonal and Donghua catalog filtering."
+      ],
+      "downloads": {
+        "android": {
+          "version": "v2.0.4",
+          "fileSize": "24.6 MB",
+          "available": false,
+          "downloadUrl": ""
+        },
+        "windows": {
+          "version": "v2.0.4",
+          "fileSize": "66.9 MB",
+          "available": false,
+          "downloadUrl": ""
+        },
+        "macos": {
+          "version": "v2.0.4",
+          "fileSize": "72.8 MB",
+          "available": false,
+          "downloadUrl": ""
+        }
+      }
+    },
+    {
+      "version": "v1.9.0",
+      "title": "Weekly Airing Schedule & Half-Star Precision",
+      "releaseDate": "Oct 26, 2026",
+      "channel": "Archived Release",
+      "notes": [
+        "Launched the interactive 7-day Weekly Release Schedule with automatic local timezone conversion.",
+        "Added half-star rating precision (0.5★ to 5.0★) and editorial review quote cards.",
+        "Initial Compose Desktop packaging for Windows (.exe) and macOS (.dmg)."
+      ],
+      "downloads": {
+        "android": {
+          "version": "v1.9.0",
+          "fileSize": "23.1 MB",
+          "available": false,
+          "downloadUrl": ""
+        },
+        "windows": {
+          "version": "v1.9.0",
+          "fileSize": "64.2 MB",
+          "available": false,
+          "downloadUrl": ""
+        },
+        "macos": {
+          "version": "v1.9.0",
+          "fileSize": "70.5 MB",
+          "available": false,
+          "downloadUrl": ""
+        }
+      }
+    }
+  ]
+}
