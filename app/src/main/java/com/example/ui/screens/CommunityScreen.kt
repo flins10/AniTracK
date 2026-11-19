@@ -2,6 +2,7 @@ package com.example.ui.screens
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,6 +14,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -26,14 +29,21 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.GroupAdd
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.RateReview
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -42,6 +52,7 @@ import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -49,6 +60,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.platform.testTag
@@ -58,10 +70,14 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.example.model.CommunityAnimeGroup
 import com.example.model.CommunityReview
 import com.example.model.MemberStatus
 import com.example.model.SentimentCategory
 import com.example.model.StarRatingUtils
+import com.example.model.groupCommunityReviewsByAnime
 import com.example.ui.theme.AppSpacing
 import com.example.ui.theme.AppTheme
 import com.example.ui.theme.CormorantSerifFamily
@@ -112,19 +128,41 @@ fun CommunityScreen(
     val reviewSort by viewModel.reviewSortOption.collectAsState()
 
     var selectedSentimentKey by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedCommentsAnimeId by rememberSaveable { mutableStateOf<Int?>(null) }
 
     val selectedSentiment = remember(selectedSentimentKey) {
         SentimentCategory.entries.firstOrNull { it.key == selectedSentimentKey }
     }
 
-    // Community ONLY displays anime entries that have BOTH a star rating AND a written note
-    val ratedAndNotedReviews = remember(reviews) {
-        reviews.filter { (it.rating ?: 0.0) > 0.0 && it.reviewNotes.isNotBlank() }
+    val animeGroups = remember(reviews) {
+        groupCommunityReviewsByAnime(reviews)
     }
 
-    val filteredReviews = remember(ratedAndNotedReviews, selectedSentiment) {
-        if (selectedSentiment == null) ratedAndNotedReviews
-        else ratedAndNotedReviews.filter { SentimentCategory.fromRating10(it.rating) == selectedSentiment }
+    val filteredGroups = remember(animeGroups, selectedSentiment, reviewSort) {
+        val bySentiment = if (selectedSentiment == null) {
+            animeGroups
+        } else {
+            animeGroups.filter { grp ->
+                SentimentCategory.fromRating10(grp.averageRating10) == selectedSentiment ||
+                    grp.reviews.any { SentimentCategory.fromRating10(it.rating) == selectedSentiment }
+            }
+        }
+        when (reviewSort) {
+            ReviewSortOption.NEWEST -> bySentiment.sortedByDescending { it.latestUpdatedAt }
+            ReviewSortOption.HIGHEST_RATED -> bySentiment.sortedWith(
+                compareByDescending<CommunityAnimeGroup> { it.averageRating10 ?: -1.0 }
+                    .thenByDescending { it.latestUpdatedAt }
+            )
+            ReviewSortOption.MOST_LIKED -> bySentiment.sortedWith(
+                compareByDescending<CommunityAnimeGroup> { it.totalLikesCount }
+                    .thenByDescending { it.averageRating10 ?: -1.0 }
+                    .thenByDescending { it.latestUpdatedAt }
+            )
+        }
+    }
+
+    val selectedCommentsGroup = remember(animeGroups, selectedCommentsAnimeId) {
+        selectedCommentsAnimeId?.let { id -> animeGroups.firstOrNull { it.animeId == id } }
     }
 
     if (profile == null) {
@@ -258,7 +296,7 @@ fun CommunityScreen(
                                 textAlign = TextAlign.Center
                             )
                             Text(
-                                text = "Unlock rated & noted anime showcases shared by members. Your own ratings and notes stay private unless you enable sharing.",
+                                text = "Unlock community anime templates. Once joined, every note and rating you write is automatically added to the shared anime cards.",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = colors.textSecondary,
                                 textAlign = TextAlign.Center
@@ -293,6 +331,8 @@ fun CommunityScreen(
         return
     }
 
+    val totalEntriesCount = remember(animeGroups) { animeGroups.sumOf { it.notesAndRatingsCount } }
+
     ObsidianAmbientBackground {
         Box(
             modifier = Modifier.fillMaxSize(),
@@ -308,7 +348,7 @@ fun CommunityScreen(
                 Box(modifier = Modifier.padding(horizontal = AppSpacing.md, vertical = AppSpacing.xs)) {
                     ObsidianTopBar(
                         title = "Community",
-                        subtitle = "Rated & Noted • ${ratedAndNotedReviews.size} Reviews",
+                        subtitle = "${animeGroups.size} Anime • $totalEntriesCount Notes & Ratings",
                         userProfile = profile,
                         onOpenProfile = onNavigateToProfile
                     )
@@ -331,7 +371,7 @@ fun CommunityScreen(
                     }
                 }
 
-                // Sentiment Filter Pills + Sort Capsules
+                // Sentiment Filter Pills
                 LazyRow(
                     contentPadding = PaddingValues(horizontal = AppSpacing.md, vertical = 6.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -350,7 +390,7 @@ fun CommunityScreen(
                         ) {
                             Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 14.dp)) {
                                 Text(
-                                    text = "ALL (${ratedAndNotedReviews.size})",
+                                    text = "ALL (${animeGroups.size})",
                                     style = MicroUpperLabel.copy(fontSize = 8.5.sp, letterSpacing = 0.8.sp),
                                     color = if (active) colors.highlight else colors.textSecondary
                                 )
@@ -381,6 +421,7 @@ fun CommunityScreen(
                     }
                 }
 
+                // Sort Capsules
                 Row(
                     modifier = Modifier.padding(horizontal = AppSpacing.md, vertical = 4.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -425,7 +466,7 @@ fun CommunityScreen(
                         .fillMaxWidth()
                         .testTag("community_pull_to_refresh")
                 ) {
-                    if (filteredReviews.isEmpty()) {
+                    if (filteredGroups.isEmpty()) {
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
@@ -435,18 +476,18 @@ fun CommunityScreen(
                         ) {
                             AppEmptyState(
                                 icon = Icons.Filled.RateReview,
-                                title = if (ratedAndNotedReviews.isEmpty()) "No rated & noted anime yet" else "No matching reviews",
-                                description = if (ratedAndNotedReviews.isEmpty()) {
-                                    "Rate an anime with stars and write a note to showcase it here when sharing is enabled."
+                                title = if (animeGroups.isEmpty()) "No community notes or ratings yet" else "No matching showcases",
+                                description = if (animeGroups.isEmpty()) {
+                                    "Rate an anime or add a note in your list — as a joined member, it automatically appears in Community."
                                 } else {
-                                    "Try clearing your sentiment filter to view all rated and noted anime."
+                                    "Try clearing your sentiment filter to view all community anime templates."
                                 }
                             )
                         }
                     } else {
                         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                             val columns = if (maxWidth >= 720.dp) 2 else 1
-                            val chunked = remember(filteredReviews, columns) { filteredReviews.chunked(columns) }
+                            val chunked = remember(filteredGroups, columns) { filteredGroups.chunked(columns) }
                             LazyColumn(
                                 contentPadding = PaddingValues(
                                     start = AppSpacing.md,
@@ -459,15 +500,16 @@ fun CommunityScreen(
                             ) {
                                 items(
                                     items = chunked,
-                                    key = { row -> row.joinToString("_") { it.id } }
+                                    key = { row -> row.joinToString("_") { it.animeId.toString() } }
                                 ) { rowItems ->
                                     if (columns == 1) {
-                                        val firstRev = rowItems.first()
+                                        val firstGroup = rowItems.first()
                                         Box(modifier = Modifier.fillMaxWidth().animateItem()) {
-                                            EditorialCommunityNoteCard(
-                                                review = firstRev,
-                                                onClick = { onSelectAnime(firstRev.animeId) },
-                                                onToggleLike = { viewModel.toggleReviewLike(firstRev) }
+                                            CommunityAnimeTemplateCard(
+                                                group = firstGroup,
+                                                onClick = { onSelectAnime(firstGroup.animeId) },
+                                                onOpenComments = { selectedCommentsAnimeId = firstGroup.animeId },
+                                                onToggleLike = { viewModel.toggleReviewLike(firstGroup.leadReview) }
                                             )
                                         }
                                     } else {
@@ -476,12 +518,13 @@ fun CommunityScreen(
                                             horizontalArrangement = Arrangement.spacedBy(16.dp),
                                             verticalAlignment = Alignment.Top
                                         ) {
-                                            rowItems.forEach { rev ->
+                                            rowItems.forEach { grp ->
                                                 Box(modifier = Modifier.weight(1f)) {
-                                                    EditorialCommunityNoteCard(
-                                                        review = rev,
-                                                        onClick = { onSelectAnime(rev.animeId) },
-                                                        onToggleLike = { viewModel.toggleReviewLike(rev) }
+                                                    CommunityAnimeTemplateCard(
+                                                        group = grp,
+                                                        onClick = { onSelectAnime(grp.animeId) },
+                                                        onOpenComments = { selectedCommentsAnimeId = grp.animeId },
+                                                        onToggleLike = { viewModel.toggleReviewLike(grp.leadReview) }
                                                     )
                                                 }
                                             }
@@ -497,13 +540,609 @@ fun CommunityScreen(
                 }
             }
         }
+
+        if (selectedCommentsGroup != null) {
+            val currentUserId = profile?.id.orEmpty()
+            val myExistingReview = selectedCommentsGroup.reviews.firstOrNull { it.userId == currentUserId }
+            CommunityCommentsDialog(
+                group = selectedCommentsGroup,
+                initialMyRatingStars = StarRatingUtils.rating10ToStars(myExistingReview?.rating),
+                initialMyNote = myExistingReview?.reviewNotes.orEmpty(),
+                onDismiss = { selectedCommentsAnimeId = null },
+                onOpenAnimeDetail = {
+                    val targetId = selectedCommentsGroup.animeId
+                    selectedCommentsAnimeId = null
+                    onSelectAnime(targetId)
+                },
+                onToggleLike = { rev -> viewModel.toggleReviewLike(rev) },
+                onSubmitComment = { stars, note ->
+                    viewModel.submitCommunityCommentNote(
+                        animeId = selectedCommentsGroup.animeId,
+                        animeTitle = selectedCommentsGroup.animeTitle,
+                        coverImage = selectedCommentsGroup.animeCoverImage,
+                        ratingStars = stars,
+                        noteText = note
+                    )
+                }
+            )
+        }
     }
 }
 
 /**
- * Editorial Anime Template Card for Community & AnimeDetail:
- * Showcases the anime poster, Cormorant title, 5-star gold rating, sentiment badge,
- * and the reviewer's editorial note without exposing watching progress.
+ * Single Unified Anime Template Card for Community:
+ * Consolidates all joined members' notes and star ratings for the same anime into one card,
+ * featuring a themed Comment Icon pill that opens the full multi-user notes & ratings sheet.
+ */
+@Composable
+internal fun CommunityAnimeTemplateCard(
+    group: CommunityAnimeGroup,
+    onClick: () -> Unit,
+    onOpenComments: () -> Unit,
+    onToggleLike: (() -> Unit)? = null
+) {
+    val colors = AppTheme.colors
+    val lead = group.leadReview
+    val formattedDate = remember(group.latestUpdatedAt) { formatCommunityTimestamp(group.latestUpdatedAt) }
+    val sentiment = remember(group.averageRating10) { SentimentCategory.fromRating10(group.averageRating10) }
+    val avgStars = remember(group.averageRating10) { StarRatingUtils.rating10ToStars(group.averageRating10) }
+    val contributors = remember(group.reviews) { group.distinctContributors }
+    val extraContributors = (contributors.size - 1).coerceAtLeast(0)
+
+    AppCard(
+        shape = RoundedCornerShape(24.dp),
+        onClick = onClick,
+        modifier = Modifier.testTag("community_anime_card_${group.animeId}")
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.Top,
+                horizontalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                ResilientPosterImage(
+                    imageUrl = group.animeCoverImage,
+                    contentDescription = group.animeTitle,
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.size(width = 66.dp, height = 96.dp)
+                )
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = group.animeTitle,
+                        fontFamily = CormorantSerifFamily,
+                        fontSize = 21.sp,
+                        lineHeight = 24.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = colors.textPrimary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (avgStars > 0f) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            StarRatingRow(
+                                stars = avgStars,
+                                starSize = 16.dp,
+                                showNumeric = true
+                            )
+                            if (group.ratedCount > 1) {
+                                Text(
+                                    text = "(${group.ratedCount})",
+                                    style = TabularNumSmall.copy(fontSize = 11.sp),
+                                    color = colors.textMuted
+                                )
+                            }
+                        }
+                    } else {
+                        Surface(
+                            shape = CircleShape,
+                            color = colors.accentPrimary.copy(alpha = 0.14f),
+                            border = BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.35f))
+                        ) {
+                            Text(
+                                text = "COMMUNITY NOTES",
+                                style = MicroUpperLabel.copy(fontSize = 8.sp, letterSpacing = 0.8.sp),
+                                color = colors.accentPrimary,
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+                    if (sentiment != null) {
+                        SentimentPill(sentiment = sentiment, solid = false, fullText = true)
+                    }
+                }
+            }
+
+            // Editorial Quote Box: displays lead/latest written note (or summary if rating-only)
+            val leadStars = StarRatingUtils.rating10ToStars(lead.rating)
+            val previewQuote = if (lead.reviewNotes.isNotBlank()) {
+                "“${lead.reviewNotes}”"
+            } else {
+                "Rated ${StarRatingUtils.formatStars(leadStars)}★ by ${lead.username}"
+            }
+
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = colors.elevatedSurface.copy(alpha = if (colors.isDark) 0.55f else 0.72f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(18.dp))
+                    .clickable { onOpenComments() }
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 11.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .width(3.dp)
+                                .height(42.dp)
+                                .clip(CircleShape)
+                                .background(colors.accentPrimary.copy(alpha = 0.65f))
+                        )
+                        Text(
+                            text = previewQuote,
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                fontStyle = if (lead.reviewNotes.isNotBlank()) FontStyle.Italic else FontStyle.Normal,
+                                lineHeight = 20.sp
+                            ),
+                            color = colors.textPrimary.copy(alpha = 0.90f),
+                            maxLines = 4,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    if (group.notesAndRatingsCount > 1) {
+                        Text(
+                            text = "Tap comment icon to view all ${group.notesAndRatingsCount} notes & ratings",
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                            color = colors.accentPrimary,
+                            modifier = Modifier.padding(start = 13.dp)
+                        )
+                    }
+                }
+            }
+
+            // Attribution Footer + Themed Comment Icon Pill + Like Pill
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    val visibleAvatars = contributors.take(3)
+                    Box(
+                        modifier = Modifier.width((26 + (visibleAvatars.size - 1) * 14).dp),
+                        contentAlignment = Alignment.CenterStart
+                    ) {
+                        visibleAvatars.forEachIndexed { idx, contributor ->
+                            Box(
+                                modifier = Modifier
+                                    .offset(x = (idx * 14).dp)
+                                    .border(1.5.dp, colors.cardBackground, CircleShape)
+                                    .clip(CircleShape)
+                            ) {
+                                MemberAvatar(
+                                    avatarKey = contributor.avatarKey,
+                                    avatarUrl = contributor.avatarUrl,
+                                    username = contributor.username,
+                                    size = 26.dp
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        text = if (extraContributors > 0) "${contributors.first().username} +$extraContributors" else contributors.first().username,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = colors.textSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (formattedDate.isNotBlank()) {
+                        Text(
+                            text = "• $formattedDate",
+                            style = TabularNumSmall.copy(fontSize = 10.sp),
+                            color = colors.textMuted,
+                            maxLines = 1
+                        )
+                    }
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // Themed Comment Icon Pill (Obsidian + Champagne Gold)
+                    Surface(
+                        shape = CircleShape,
+                        color = colors.accentPrimary.copy(alpha = 0.14f),
+                        border = BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.55f)),
+                        modifier = Modifier
+                            .height(34.dp)
+                            .pointerHoverIcon(PointerIcon.Hand)
+                            .clip(CircleShape)
+                            .clickable { onOpenComments() }
+                            .testTag("comment_anime_${group.animeId}")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.ChatBubbleOutline,
+                                contentDescription = "View all ${group.notesAndRatingsCount} community notes and ratings",
+                                tint = colors.accentPrimary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                text = "${group.notesAndRatingsCount}",
+                                style = TabularNumSmall.copy(fontSize = 11.sp, fontWeight = FontWeight.Bold),
+                                color = colors.highlight
+                            )
+                        }
+                    }
+
+                    // Lead Review Like Pill
+                    Surface(
+                        shape = CircleShape,
+                        color = if (lead.likedByMe) colors.accentPrimary.copy(alpha = 0.2f) else colors.elevatedSurface.copy(alpha = 0.65f),
+                        border = if (lead.likedByMe) BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.6f)) else null,
+                        modifier = Modifier
+                            .height(34.dp)
+                            .clip(CircleShape)
+                            .clickable(enabled = onToggleLike != null) { onToggleLike?.invoke() }
+                            .testTag("like_review_${lead.id}")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (lead.likedByMe) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                                contentDescription = if (lead.likedByMe) "Unlike review" else "Like review",
+                                tint = if (lead.likedByMe) colors.accentPrimary else colors.textSecondary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                text = "${lead.likesCount}",
+                                style = TabularNumSmall.copy(fontSize = 11.sp, fontWeight = FontWeight.SemiBold),
+                                color = if (lead.likedByMe) colors.highlight else colors.textSecondary
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Obsidian & Champagne Gold Comments Modal showing ALL notes and ratings contributed by
+ * joined community members for a single anime, with each contributor's Avatar, Username,
+ * Star Rating, Sentiment Badge, Written Note, Like Toggle, and an inline Composer.
+ */
+@Composable
+internal fun CommunityCommentsDialog(
+    group: CommunityAnimeGroup,
+    initialMyRatingStars: Float,
+    initialMyNote: String,
+    onDismiss: () -> Unit,
+    onOpenAnimeDetail: () -> Unit,
+    onToggleLike: (CommunityReview) -> Unit,
+    onSubmitComment: (ratingStars: Float, noteText: String) -> Unit
+) {
+    val colors = AppTheme.colors
+    val avgStars = StarRatingUtils.rating10ToStars(group.averageRating10)
+    var selectedStars by remember(group.animeId) { mutableFloatStateOf(initialMyRatingStars) }
+    var noteDraft by remember(group.animeId) { mutableStateOf(initialMyNote) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            shape = RoundedCornerShape(28.dp),
+            color = colors.backgroundSecondary,
+            border = BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.35f)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .widthIn(max = 640.dp)
+                .heightIn(max = 760.dp)
+                .padding(horizontal = 16.dp, vertical = 20.dp)
+                .testTag("community_comments_dialog")
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // Header: Poster + Title + Community Avg + Close Button
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    ResilientPosterImage(
+                        imageUrl = group.animeCoverImage,
+                        contentDescription = group.animeTitle,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .size(width = 48.dp, height = 68.dp)
+                            .clickable { onOpenAnimeDetail() }
+                    )
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clickable { onOpenAnimeDetail() },
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = group.animeTitle,
+                            fontFamily = CormorantSerifFamily,
+                            fontSize = 22.sp,
+                            lineHeight = 25.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = colors.textPrimary,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (avgStars > 0f) {
+                                StarRatingRow(stars = avgStars, starSize = 14.dp, showNumeric = true)
+                            }
+                            Text(
+                                text = "${group.ratedCount} ratings • ${group.notedCount} notes",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.textSecondary
+                            )
+                        }
+                    }
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.testTag("close_community_comments_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = "Close comments",
+                            tint = colors.textSecondary
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = colors.borderSubtle.copy(alpha = 0.65f))
+
+                // All Contributors' Notes & Ratings List
+                LazyColumn(
+                    modifier = Modifier
+                        .heightIn(max = 360.dp)
+                        .fillMaxWidth()
+                        .testTag("community_comments_list"),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    items(group.reviews, key = { it.id }) { rev ->
+                        val revStars = StarRatingUtils.rating10ToStars(rev.rating)
+                        val revSentiment = SentimentCategory.fromRating10(rev.rating)
+                        val revDate = formatCommunityTimestamp(rev.updatedAt)
+
+                        Surface(
+                            shape = RoundedCornerShape(18.dp),
+                            color = colors.cardBackground,
+                            border = BorderStroke(1.dp, colors.borderSubtle.copy(alpha = 0.65f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("community_comment_row_${rev.id}")
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        MemberAvatar(
+                                            avatarKey = rev.avatarKey,
+                                            avatarUrl = rev.avatarUrl,
+                                            username = rev.username,
+                                            size = 34.dp
+                                        )
+                                        Column {
+                                            Text(
+                                                text = rev.username,
+                                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                                                color = colors.textPrimary,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            if (revDate.isNotBlank()) {
+                                                Text(
+                                                    text = revDate,
+                                                    style = TabularNumSmall.copy(fontSize = 10.sp),
+                                                    color = colors.textMuted
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = if (rev.likedByMe) colors.accentPrimary.copy(alpha = 0.2f) else colors.elevatedSurface.copy(alpha = 0.65f),
+                                        border = if (rev.likedByMe) BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.6f)) else null,
+                                        modifier = Modifier
+                                            .clip(CircleShape)
+                                            .clickable { onToggleLike(rev) }
+                                            .testTag("comment_like_${rev.id}")
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = if (rev.likedByMe) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                                                contentDescription = if (rev.likedByMe) "Unlike" else "Like",
+                                                tint = if (rev.likedByMe) colors.accentPrimary else colors.textSecondary,
+                                                modifier = Modifier.size(13.dp)
+                                            )
+                                            Text(
+                                                text = "${rev.likesCount}",
+                                                style = TabularNumSmall.copy(fontSize = 11.sp, fontWeight = FontWeight.SemiBold),
+                                                color = if (rev.likedByMe) colors.highlight else colors.textSecondary
+                                            )
+                                        }
+                                    }
+                                }
+
+                                if (revStars > 0f || revSentiment != null) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        if (revStars > 0f) {
+                                            StarRatingRow(stars = revStars, starSize = 14.dp, showNumeric = true)
+                                        }
+                                        if (revSentiment != null) {
+                                            SentimentPill(sentiment = revSentiment, solid = false, fullText = false)
+                                        }
+                                    }
+                                }
+
+                                if (rev.reviewNotes.isNotBlank()) {
+                                    Surface(
+                                        shape = RoundedCornerShape(14.dp),
+                                        color = colors.elevatedSurface.copy(alpha = if (colors.isDark) 0.55f else 0.72f),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(9.dp),
+                                            verticalAlignment = Alignment.Top
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .width(3.dp)
+                                                    .height(26.dp)
+                                                    .clip(CircleShape)
+                                                    .background(colors.accentPrimary.copy(alpha = 0.7f))
+                                            )
+                                            Text(
+                                                text = "“${rev.reviewNotes}”",
+                                                style = MaterialTheme.typography.bodyMedium.copy(
+                                                    fontStyle = FontStyle.Italic,
+                                                    lineHeight = 19.sp
+                                                ),
+                                                color = colors.textPrimary,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+                                    }
+                                } else if (revStars > 0f) {
+                                    Text(
+                                        text = "Rated ${StarRatingUtils.formatStars(revStars)}★ (no written note yet)",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = colors.textMuted
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = colors.borderSubtle.copy(alpha = 0.65f))
+
+                // Inline Composer: Add or update your note & rating in the same anime template
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (initialMyNote.isNotBlank() || initialMyRatingStars > 0f) "UPDATE YOUR NOTE & RATING" else "ADD YOUR NOTE & RATING",
+                            style = MicroUpperLabel.copy(fontSize = 9.sp, letterSpacing = 1.sp),
+                            color = colors.accentPrimary
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            (1..5).forEach { idx ->
+                                val active = selectedStars >= idx - 0.5f
+                                Icon(
+                                    imageVector = Icons.Filled.Star,
+                                    contentDescription = "Rate $idx stars",
+                                    tint = if (active) colors.accentPrimary else colors.textMuted.copy(alpha = 0.45f),
+                                    modifier = Modifier
+                                        .size(22.dp)
+                                        .clip(CircleShape)
+                                        .clickable {
+                                            selectedStars = if (selectedStars == idx.toFloat()) idx - 0.5f else idx.toFloat()
+                                        }
+                                )
+                            }
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = noteDraft,
+                        onValueChange = { noteDraft = it },
+                        placeholder = { Text("Share your thoughts on ${group.animeTitle}...", fontSize = 13.sp) },
+                        maxLines = 3,
+                        shape = RoundedCornerShape(16.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = colors.accentPrimary,
+                            unfocusedBorderColor = colors.borderSubtle,
+                            focusedTextColor = colors.textPrimary,
+                            unfocusedTextColor = colors.textPrimary
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("community_comment_input")
+                    )
+
+                    AppPrimaryButton(
+                        text = if (initialMyNote.isNotBlank() || initialMyRatingStars > 0f) "Update Note in Community" else "Post Note to Community",
+                        enabled = noteDraft.trim().isNotEmpty() || selectedStars > 0f,
+                        onClick = { onSubmitComment(selectedStars, noteDraft) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("community_comment_submit_button")
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Editorial Anime Template Card kept for AnimeDetailScreen single-review cards.
  */
 @Composable
 internal fun EditorialCommunityNoteCard(
@@ -673,3 +1312,4 @@ internal fun EditorialCommunityNoteCard(
         }
     }
 }
+

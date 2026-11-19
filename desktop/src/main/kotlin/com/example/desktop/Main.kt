@@ -47,6 +47,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
@@ -321,6 +322,7 @@ data class DesktopCollectionItem(
 
 data class DesktopCommunityReview(
     val id: String,
+    val userId: String = "",
     val animeId: Int,
     val animeTitle: String,
     val animeCover: String,
@@ -331,6 +333,55 @@ data class DesktopCommunityReview(
     val updatedAt: String,
     val formattedDate: String
 )
+
+data class DesktopCommunityAnimeGroup(
+    val animeId: Int,
+    val animeTitle: String,
+    val animeCover: String,
+    val averageStars: Float,
+    val ratedCount: Int,
+    val notedCount: Int,
+    val latestUpdatedAt: String,
+    val formattedLatestDate: String,
+    val leadReview: DesktopCommunityReview,
+    val reviews: List<DesktopCommunityReview>
+) {
+    val notesAndRatingsCount: Int get() = reviews.size
+    val distinctContributors: List<DesktopCommunityReview>
+        get() = reviews.distinctBy { it.userId.ifBlank { it.username } }
+}
+
+private fun groupDesktopCommunityReviews(
+    reviews: List<DesktopCommunityReview>
+): List<DesktopCommunityAnimeGroup> {
+    return reviews
+        .filter { it.notes.isNotBlank() || it.stars > 0f }
+        .groupBy { it.animeId }
+        .values
+        .mapNotNull { items ->
+            val sorted = items.sortedByDescending { it.updatedAt }
+            if (sorted.isEmpty()) return@mapNotNull null
+            val lead = sorted.firstOrNull { it.notes.isNotBlank() } ?: sorted.first()
+            val rated = sorted.mapNotNull { it.stars.takeIf { s -> s > 0f } }
+            val avgStars = if (rated.isNotEmpty()) rated.average().toFloat() else 0f
+            val notedCount = sorted.count { it.notes.isNotBlank() }
+            val bestTitle = sorted.firstOrNull { it.animeTitle.isNotBlank() }?.animeTitle ?: "Anime #${lead.animeId}"
+            val bestCover = sorted.firstOrNull { it.animeCover.isNotBlank() }?.animeCover.orEmpty()
+            val latestIso = sorted.maxOfOrNull { it.updatedAt }.orEmpty()
+            DesktopCommunityAnimeGroup(
+                animeId = lead.animeId,
+                animeTitle = bestTitle,
+                animeCover = bestCover,
+                averageStars = avgStars,
+                ratedCount = rated.size,
+                notedCount = notedCount,
+                latestUpdatedAt = latestIso,
+                formattedLatestDate = lead.formattedDate,
+                leadReview = lead,
+                reviews = sorted
+            )
+        }
+}
 
 data class DesktopPersistedState(
     val accessToken: String = "",
@@ -951,12 +1002,32 @@ private suspend fun fetchFullCloudSnapshot(session: DesktopPersistedState): Clou
         }
     }
 
-    // 4. Community Reviews (All users' rated or noted entries)
+    // 4. Community Reviews (All active joined users' rated or noted entries)
     val communityList = mutableListOf<DesktopCommunityReview>()
     runCatching {
+        val leftOrRemovedUsers = mutableSetOf<String>()
+        val cmReq = Request.Builder()
+            .url("$SUPABASE_URL/rest/v1/community_members?select=user_id,status&limit=500")
+            .addHeader("apikey", SUPABASE_ANON_KEY)
+            .addHeader("Authorization", "Bearer $bearer")
+            .build()
+        httpClient.newCall(cmReq).execute().use { resp ->
+            if (resp.isSuccessful) {
+                val arr = gson.fromJson(resp.body?.string().orEmpty(), JsonArray::class.java) ?: JsonArray()
+                arr.forEach { el ->
+                    val o = el.asJsonObject
+                    val mUid = o.get("user_id").asStringOrNull() ?: return@forEach
+                    val st = o.get("status").asStringOrNull()?.lowercase().orEmpty()
+                    if (st == "left" || st == "removed") {
+                        leftOrRemovedUsers.add(mUid)
+                    }
+                }
+            }
+        }
+
         val profMap = mutableMapOf<String, Pair<String, String>>()
         val profReq = Request.Builder()
-            .url("$SUPABASE_URL/rest/v1/profiles?select=id,username,avatar_key,avatar_url&limit=200")
+            .url("$SUPABASE_URL/rest/v1/profiles?select=id,username,avatar_key,avatar_url&limit=300")
             .addHeader("apikey", SUPABASE_ANON_KEY)
             .addHeader("Authorization", "Bearer $bearer")
             .build()
@@ -978,7 +1049,7 @@ private suspend fun fetchFullCloudSnapshot(session: DesktopPersistedState): Clou
 
         val selectCols = "id,user_id,anime_id,status,episode_progress,personal_rating,review_notes,updated_at,anime(anilist_id,title_english,title_romaji,cover_image,episodes)"
         val revReq = Request.Builder()
-            .url("$SUPABASE_URL/rest/v1/user_anime?select=$selectCols&order=updated_at.desc&limit=80")
+            .url("$SUPABASE_URL/rest/v1/user_anime?select=$selectCols&order=updated_at.desc&limit=150")
             .addHeader("apikey", SUPABASE_ANON_KEY)
             .addHeader("Authorization", "Bearer $bearer")
             .build()
@@ -987,6 +1058,8 @@ private suspend fun fetchFullCloudSnapshot(session: DesktopPersistedState): Clou
                 val arr = gson.fromJson(resp.body?.string().orEmpty(), JsonArray::class.java) ?: JsonArray()
                 arr.forEach { el ->
                     val row = el.asJsonObject
+                    val rowUserId = row.get("user_id").asStringOrNull().orEmpty()
+                    if (rowUserId.isNotBlank() && leftOrRemovedUsers.contains(rowUserId)) return@forEach
                     val rawRating = row.get("personal_rating").asFloatOrNull() ?: 0f
                     val stars = if (rawRating > 5f) rawRating / 2f else rawRating
                     val notes = row.get("review_notes").asStringOrNull()?.trim().orEmpty()
@@ -998,7 +1071,6 @@ private suspend fun fetchFullCloudSnapshot(session: DesktopPersistedState): Clou
                         ?: animeObj?.get("title_romaji").asStringOrNull()?.takeIf { it.isNotBlank() }
                         ?: "Anime #$animeId"
                     val cover = animeObj?.get("cover_image").asStringOrNull().orEmpty()
-                    val rowUserId = row.get("user_id").asStringOrNull().orEmpty()
                     val (uname, avKey) = profMap[rowUserId] ?: (
                         if (rowUserId == uid) (resolvedUsername ?: session.username) to (resolvedAvatar ?: session.avatarKey)
                         else "Anime Lover" to DesktopAvatar.AVATAR_3.key
@@ -1007,6 +1079,7 @@ private suspend fun fetchFullCloudSnapshot(session: DesktopPersistedState): Clou
                     communityList.add(
                         DesktopCommunityReview(
                             id = row.get("id").asStringOrNull() ?: "$rowUserId-$animeId",
+                            userId = rowUserId,
                             animeId = animeId,
                             animeTitle = title,
                             animeCover = cover,
@@ -1078,6 +1151,39 @@ private suspend fun saveAnimeToSupabase(session: DesktopPersistedState, item: De
             .post(gson.toJson(userAnimePayload).toRequestBody("application/json".toMediaType()))
             .build()
         httpClient.newCall(uaReq).execute().close()
+
+        // 3. Ensure active community_members & privacy_settings so notes/ratings are automatically shared
+        if (item.userStars > 0f || item.notes.isNotBlank()) {
+            val cmPayload = JsonObject().apply {
+                addProperty("user_id", active.userId)
+                addProperty("role", "member")
+                addProperty("status", "active")
+            }
+            val cmReq = Request.Builder()
+                .url("$SUPABASE_URL/rest/v1/community_members?on_conflict=user_id")
+                .addHeader("apikey", SUPABASE_ANON_KEY)
+                .addHeader("Authorization", "Bearer ${active.accessToken}")
+                .addHeader("Content-Type", "application/json")
+                .addHeader("Prefer", "resolution=merge-duplicates,return=minimal")
+                .post(gson.toJson(cmPayload).toRequestBody("application/json".toMediaType()))
+                .build()
+            runCatching { httpClient.newCall(cmReq).execute().close() }
+
+            val privPayload = JsonObject().apply {
+                addProperty("user_id", active.userId)
+                addProperty("reviews_visibility", "community")
+                addProperty("activity_visibility", "community")
+            }
+            val privReq = Request.Builder()
+                .url("$SUPABASE_URL/rest/v1/privacy_settings?on_conflict=user_id")
+                .addHeader("apikey", SUPABASE_ANON_KEY)
+                .addHeader("Authorization", "Bearer ${active.accessToken}")
+                .addHeader("Content-Type", "application/json")
+                .addHeader("Prefer", "resolution=merge-duplicates,return=minimal")
+                .post(gson.toJson(privPayload).toRequestBody("application/json".toMediaType()))
+                .build()
+            runCatching { httpClient.newCall(privReq).execute().close() }
+        }
     }
 }
 
@@ -1664,12 +1770,12 @@ fun AnimeUniverseDesktopRoot() {
 
                         DesktopScreen.COMMUNITY -> {
                             val combinedReviews = remember(communityReviews, watchlist, sessionState) {
-                                if (communityReviews.isNotEmpty()) {
-                                    communityReviews
-                                } else {
-                                    watchlist.filter { it.userStars > 0f || it.notes.isNotBlank() }.map { item ->
+                                val localUserReviews = watchlist
+                                    .filter { it.userStars > 0f || it.notes.isNotBlank() }
+                                    .map { item ->
                                         DesktopCommunityReview(
-                                            id = "local-${item.id}",
+                                            id = "${sessionState.userId.ifBlank { "local" }}-${item.id}",
+                                            userId = sessionState.userId,
                                             animeId = item.id,
                                             animeTitle = item.title,
                                             animeCover = item.coverImage,
@@ -1677,14 +1783,27 @@ fun AnimeUniverseDesktopRoot() {
                                             notes = item.notes,
                                             username = sessionState.username,
                                             avatarKey = sessionState.avatarKey,
-                                            updatedAt = item.updatedAt,
+                                            updatedAt = item.updatedAt.ifBlank { Instant.now().toString() },
                                             formattedDate = formatIsoDate(item.updatedAt)
                                         )
                                     }
+                                if (communityReviews.isNotEmpty()) {
+                                    // Merge local active edits so user's freshly saved note shows immediately
+                                    val cloudWithoutLocalDuplicates = communityReviews.filterNot { c ->
+                                        localUserReviews.any { l ->
+                                            l.animeId == c.animeId &&
+                                                (l.userId.isNotBlank() && l.userId == c.userId || l.username.equals(c.username, ignoreCase = true))
+                                        }
+                                    }
+                                    localUserReviews + cloudWithoutLocalDuplicates
+                                } else {
+                                    localUserReviews
                                 }
                             }
                             DesktopCommunityScreen(
                                 reviews = combinedReviews,
+                                currentUserId = sessionState.userId,
+                                currentUsername = sessionState.username,
                                 avatarKey = sessionState.avatarKey,
                                 ratingFilter = commRatingFilter,
                                 sortMode = commSortMode,
@@ -1697,6 +1816,39 @@ fun AnimeUniverseDesktopRoot() {
                                     if (found != null) {
                                         selectedAnime = found
                                         currentScreen = DesktopScreen.DETAIL
+                                    }
+                                },
+                                onSubmitCommentNote = { animeId, animeTitle, animeCover, stars, note ->
+                                    val existing = watchlist.firstOrNull { it.id == animeId }
+                                        ?: discoverItems.firstOrNull { it.id == animeId }
+                                    val nowIso = Instant.now().toString()
+                                    val updatedItem = if (existing != null) {
+                                        existing.copy(
+                                            inWatchlist = true,
+                                            userStars = if (stars > 0f) stars else existing.userStars,
+                                            notes = note.trim().ifBlank { existing.notes },
+                                            updatedAt = nowIso
+                                        )
+                                    } else {
+                                        DesktopAnimeItem(
+                                            id = animeId,
+                                            title = animeTitle,
+                                            coverImage = animeCover,
+                                            inWatchlist = true,
+                                            userStars = stars,
+                                            notes = note.trim(),
+                                            updatedAt = nowIso
+                                        )
+                                    }
+                                    val nextList = listOf(updatedItem) + watchlist.filter { it.id != updatedItem.id }
+                                    watchlist = nextList
+                                    sessionState = sessionState.copy(watchlist = nextList)
+                                    DesktopStorage.saveActive(sessionState)
+                                    if (isAuthenticated && !sessionState.isGuest) {
+                                        scope.launch {
+                                            saveAnimeToSupabase(sessionState, updatedItem)
+                                            syncWithCloud()
+                                        }
                                     }
                                 }
                             )
@@ -2997,14 +3149,25 @@ private fun DesktopLibraryScreen(
 @Composable
 private fun DesktopCommunityScreen(
     reviews: List<DesktopCommunityReview>,
+    currentUserId: String,
+    currentUsername: String,
     avatarKey: String,
     ratingFilter: String,
     sortMode: String,
     onRatingChange: (String) -> Unit,
     onSortChange: (String) -> Unit,
     onOpenProfile: () -> Unit,
-    onOpenAnime: (Int) -> Unit
+    onOpenAnime: (Int) -> Unit,
+    onSubmitCommentNote: (animeId: Int, animeTitle: String, animeCover: String, stars: Float, note: String) -> Unit
 ) {
+    val animeGroups = remember(reviews) { groupDesktopCommunityReviews(reviews) }
+    val totalNotesAndRatings = remember(animeGroups) { animeGroups.sumOf { it.notesAndRatingsCount } }
+    var selectedCommentsAnimeId by remember { mutableStateOf<Int?>(null) }
+
+    val selectedCommentsGroup = remember(animeGroups, selectedCommentsAnimeId) {
+        selectedCommentsAnimeId?.let { id -> animeGroups.firstOrNull { it.animeId == id } }
+    }
+
     // Top Bar matching Screenshot 5
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -3014,7 +3177,7 @@ private fun DesktopCommunityScreen(
         Column {
             Text("Community", fontFamily = FontFamily.Serif, fontSize = 34.sp, color = IvoryText)
             Text(
-                "RATED & NOTED • ${reviews.size} REVIEWS",
+                "${animeGroups.size} ANIME • $totalNotesAndRatings NOTES & RATINGS",
                 fontSize = 10.sp,
                 fontWeight = FontWeight.SemiBold,
                 letterSpacing = 2.4.sp,
@@ -3026,7 +3189,7 @@ private fun DesktopCommunityScreen(
 
     Spacer(modifier = Modifier.height(16.dp))
 
-    // Sentiment Filter Row: ALL (4), CINEMA, WORTH, AVG, BORING, WASTE
+    // Sentiment Filter Row: ALL, CINEMA, WORTH, AVG, BORING, WASTE
     LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
             val active = ratingFilter == "all"
@@ -3038,7 +3201,7 @@ private fun DesktopCommunityScreen(
             ) {
                 Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 18.dp)) {
                     Text(
-                        "ALL (${reviews.size})",
+                        "ALL (${animeGroups.size})",
                         fontSize = 11.5.sp,
                         fontWeight = FontWeight.SemiBold,
                         letterSpacing = 1.sp,
@@ -3093,12 +3256,16 @@ private fun DesktopCommunityScreen(
 
     Spacer(modifier = Modifier.height(16.dp))
 
-    val filteredReviews = remember(reviews, ratingFilter, sortMode) {
-        reviews
-            .filter { r -> ratingFilter == "all" || SentimentTier.fromStars(r.stars)?.key == ratingFilter }
+    val filteredGroups = remember(animeGroups, ratingFilter, sortMode) {
+        animeGroups
+            .filter { grp ->
+                ratingFilter == "all" ||
+                    SentimentTier.fromStars(grp.averageStars)?.key == ratingFilter ||
+                    grp.reviews.any { SentimentTier.fromStars(it.stars)?.key == ratingFilter }
+            }
             .let { list ->
-                if (sortMode == "highest") list.sortedByDescending { it.stars }
-                else list
+                if (sortMode == "highest") list.sortedByDescending { it.averageStars }
+                else list.sortedByDescending { it.latestUpdatedAt }
             }
     }
 
@@ -3106,10 +3273,12 @@ private fun DesktopCommunityScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp),
         contentPadding = PaddingValues(bottom = 48.dp)
     ) {
-        items(filteredReviews, key = { it.id }) { rev ->
-            val tier = SentimentTier.fromStars(rev.stars) ?: SentimentTier.WORTH
-            val filledStars = rev.stars.toInt().coerceIn(0, 5)
-            val avatarPreset = DesktopAvatar.fromKey(rev.avatarKey)
+        items(filteredGroups, key = { it.animeId }) { grp ->
+            val tier = SentimentTier.fromStars(grp.averageStars)
+            val filledStars = kotlin.math.round(grp.averageStars).toInt().coerceIn(0, 5)
+            val contributors = grp.distinctContributors
+            val extraCount = (contributors.size - 1).coerceAtLeast(0)
+            val lead = grp.leadReview
 
             Surface(
                 shape = RoundedCornerShape(24.dp),
@@ -3118,76 +3287,112 @@ private fun DesktopCommunityScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(24.dp))
-                    .clickable { onOpenAnime(rev.animeId) }
+                    .clickable { onOpenAnime(grp.animeId) }
             ) {
                 Column(
                     modifier = Modifier.padding(22.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    // Top Row: 68x96 Poster + Serif Title + 5-Star Row + Sentiment Pill
+                    // Top Row: 74x104 Poster + Serif Title + 5-Star Row + Sentiment Pill
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(18.dp),
                         verticalAlignment = Alignment.Top
                     ) {
                         NetworkPosterImage(
-                            url = rev.animeCover,
-                            contentDescription = rev.animeTitle,
+                            url = grp.animeCover,
+                            contentDescription = grp.animeTitle,
                             modifier = Modifier
                                 .size(width = 74.dp, height = 104.dp)
                                 .clip(RoundedCornerShape(14.dp))
                         )
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text(
-                                rev.animeTitle,
+                                grp.animeTitle,
                                 fontFamily = FontFamily.Serif,
                                 fontSize = 23.sp,
                                 color = IvoryText,
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis
                             )
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                (1..5).forEach { i ->
+                            if (grp.averageStars > 0f) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    (1..5).forEach { i ->
+                                        Text(
+                                            "★",
+                                            fontSize = 18.sp,
+                                            color = if (i <= filledStars) ChampagneGold else Color(0xFF393E4F)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(4.dp))
                                     Text(
-                                        "★",
-                                        fontSize = 18.sp,
-                                        color = if (i <= filledStars) ChampagneGold else Color(0xFF393E4F)
+                                        String.format(Locale.US, "%.1f", grp.averageStars),
+                                        fontSize = 16.sp,
+                                        color = IvoryText
+                                    )
+                                    if (grp.ratedCount > 1) {
+                                        Text(
+                                            "(${grp.ratedCount})",
+                                            fontSize = 12.sp,
+                                            color = WarmSilver
+                                        )
+                                    }
+                                }
+                            } else {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = ChampagneGold.copy(alpha = 0.14f),
+                                    border = BorderStroke(1.dp, ChampagneGold.copy(alpha = 0.45f))
+                                ) {
+                                    Text(
+                                        "COMMUNITY NOTES",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        letterSpacing = 1.1.sp,
+                                        color = ChampagneGold,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
                                     )
                                 }
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    String.format(Locale.US, "%.1f", if (rev.stars > 0f) rev.stars else 4.0f),
-                                    fontSize = 16.sp,
-                                    color = IvoryText
-                                )
                             }
-                            Surface(
-                                shape = CircleShape,
-                                color = tier.pillBg
-                            ) {
-                                Text(
-                                    tier.fullLabel,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    letterSpacing = 1.2.sp,
-                                    color = tier.textColor,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
-                                )
+                            if (tier != null) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = tier.pillBg
+                                ) {
+                                    Text(
+                                        tier.fullLabel,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        letterSpacing = 1.2.sp,
+                                        color = tier.textColor,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+                                    )
+                                }
                             }
                         }
                     }
 
-                    // Quote Box with vertical gold bar matching Screenshot 5
-                    if (rev.notes.isNotBlank()) {
-                        Surface(
-                            shape = RoundedCornerShape(16.dp),
-                            color = ObsidianQuoteBox,
-                            modifier = Modifier.fillMaxWidth()
+                    // Quote Box with vertical gold bar (clicking opens all notes & ratings)
+                    val previewNote = if (lead.notes.isNotBlank()) {
+                        "“${lead.notes}”"
+                    } else {
+                        "Rated ${String.format(Locale.US, "%.1f", lead.stars)}★ by ${lead.username}"
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = ObsidianQuoteBox,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp))
+                            .clickable { selectedCommentsAnimeId = grp.animeId }
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(14.dp)
                             ) {
@@ -3199,16 +3404,25 @@ private fun DesktopCommunityScreen(
                                         .background(ChampagneGold)
                                 )
                                 Text(
-                                    "“${rev.notes}”",
-                                    fontStyle = FontStyle.Italic,
+                                    previewNote,
+                                    fontStyle = if (lead.notes.isNotBlank()) FontStyle.Italic else FontStyle.Normal,
                                     fontSize = 15.5.sp,
                                     color = IvoryText
+                                )
+                            }
+                            if (grp.notesAndRatingsCount > 1) {
+                                Text(
+                                    "Click comment icon to view all ${grp.notesAndRatingsCount} notes & ratings",
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = ChampagneGold,
+                                    modifier = Modifier.padding(start = 17.dp)
                                 )
                             }
                         }
                     }
 
-                    // Bottom Footer: Reviewer Avatar + Name on left, Date on right
+                    // Bottom Footer: Reviewer Avatar(s) + Name on left, Themed Comment Icon + Date on right
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -3218,14 +3432,334 @@ private fun DesktopCommunityScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            DesktopAvatarImage(
-                                avatarKey = avatarPreset.key,
-                                username = rev.username,
-                                modifier = Modifier.size(30.dp).clip(CircleShape)
+                            val visibleContributors = contributors.take(3)
+                            Box(
+                                modifier = Modifier.width((30 + (visibleContributors.size - 1) * 16).dp),
+                                contentAlignment = Alignment.CenterStart
+                            ) {
+                                visibleContributors.forEachIndexed { idx, c ->
+                                    val avPreset = DesktopAvatar.fromKey(c.avatarKey)
+                                    Box(
+                                        modifier = Modifier
+                                            .offset(x = (idx * 16).dp)
+                                            .size(30.dp)
+                                            .border(1.5.dp, ObsidianCard, CircleShape)
+                                            .clip(CircleShape)
+                                    ) {
+                                        DesktopAvatarImage(
+                                            avatarKey = avPreset.key,
+                                            username = c.username,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    }
+                                }
+                            }
+                            Text(
+                                if (extraCount > 0) "${contributors.first().username} +$extraCount" else contributors.first().username,
+                                fontSize = 14.sp,
+                                color = WarmSilver
                             )
-                            Text(rev.username, fontSize = 14.sp, color = WarmSilver)
                         }
-                        Text(rev.formattedDate, fontSize = 13.sp, color = WarmSilver)
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            if (grp.formattedLatestDate.isNotBlank()) {
+                                Text(grp.formattedLatestDate, fontSize = 12.5.sp, color = WarmSilver)
+                            }
+                            // Themed Comment Icon Pill matching Obsidian & Champagne Gold theme
+                            Surface(
+                                shape = CircleShape,
+                                color = Color(0xFF2B271F),
+                                border = BorderStroke(1.dp, ChampagneGold.copy(alpha = 0.65f)),
+                                modifier = Modifier
+                                    .height(34.dp)
+                                    .clip(CircleShape)
+                                    .clickable { selectedCommentsAnimeId = grp.animeId }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.ChatBubbleOutline,
+                                        contentDescription = "Comments (${grp.notesAndRatingsCount})",
+                                        tint = ChampagneGold,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Text(
+                                        "${grp.notesAndRatingsCount}",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = ChampagneGoldSoft
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (selectedCommentsGroup != null) {
+        val myExisting = selectedCommentsGroup.reviews.firstOrNull {
+            (currentUserId.isNotBlank() && it.userId == currentUserId) ||
+                it.username.equals(currentUsername, ignoreCase = true)
+        }
+        var draftStars by remember(selectedCommentsGroup.animeId) { mutableStateOf(myExisting?.stars ?: 0f) }
+        var draftNote by remember(selectedCommentsGroup.animeId) { mutableStateOf(myExisting?.notes.orEmpty()) }
+
+        Dialog(onDismissRequest = { selectedCommentsAnimeId = null }) {
+            Surface(
+                shape = RoundedCornerShape(28.dp),
+                color = ObsidianSidebar,
+                border = BorderStroke(1.dp, ChampagneGold.copy(alpha = 0.45f)),
+                modifier = Modifier
+                    .widthIn(max = 640.dp)
+                    .heightIn(max = 760.dp)
+                    .fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(22.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    // Header
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        NetworkPosterImage(
+                            url = selectedCommentsGroup.animeCover,
+                            contentDescription = selectedCommentsGroup.animeTitle,
+                            modifier = Modifier
+                                .size(width = 50.dp, height = 70.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable {
+                                    val id = selectedCommentsGroup.animeId
+                                    selectedCommentsAnimeId = null
+                                    onOpenAnime(id)
+                                }
+                        )
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable {
+                                    val id = selectedCommentsGroup.animeId
+                                    selectedCommentsAnimeId = null
+                                    onOpenAnime(id)
+                                },
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                selectedCommentsGroup.animeTitle,
+                                fontFamily = FontFamily.Serif,
+                                fontSize = 23.sp,
+                                color = IvoryText,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                "${selectedCommentsGroup.ratedCount} ratings • ${selectedCommentsGroup.notedCount} notes",
+                                fontSize = 12.sp,
+                                color = WarmSilver
+                            )
+                        }
+                        IconButton(onClick = { selectedCommentsAnimeId = null }) {
+                            Icon(Icons.Default.Close, contentDescription = "Close", tint = WarmSilver)
+                        }
+                    }
+
+                    HorizontalDivider(color = ObsidianBorder)
+
+                    // All Notes & Ratings List with Username and Avatar
+                    LazyColumn(
+                        modifier = Modifier.weight(1f, fill = false).fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(selectedCommentsGroup.reviews, key = { it.id }) { rev ->
+                            val revTier = SentimentTier.fromStars(rev.stars)
+                            val revFilled = kotlin.math.round(rev.stars).toInt().coerceIn(0, 5)
+                            val avPreset = DesktopAvatar.fromKey(rev.avatarKey)
+
+                            Surface(
+                                shape = RoundedCornerShape(18.dp),
+                                color = ObsidianCard,
+                                border = BorderStroke(1.dp, ObsidianBorder),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(16.dp),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            DesktopAvatarImage(
+                                                avatarKey = avPreset.key,
+                                                username = rev.username,
+                                                modifier = Modifier.size(34.dp).clip(CircleShape)
+                                            )
+                                            Column {
+                                                Text(
+                                                    rev.username,
+                                                    fontSize = 14.5.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = IvoryText
+                                                )
+                                                if (rev.formattedDate.isNotBlank()) {
+                                                    Text(rev.formattedDate, fontSize = 11.sp, color = WarmSilver)
+                                                }
+                                            }
+                                        }
+                                        if (revTier != null) {
+                                            Surface(shape = CircleShape, color = revTier.pillBg) {
+                                                Text(
+                                                    revTier.shortLabel,
+                                                    fontSize = 9.5.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    letterSpacing = 1.sp,
+                                                    color = revTier.textColor,
+                                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    if (rev.stars > 0f) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                        ) {
+                                            (1..5).forEach { i ->
+                                                Text(
+                                                    "★",
+                                                    fontSize = 15.sp,
+                                                    color = if (i <= revFilled) ChampagneGold else Color(0xFF393E4F)
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text(
+                                                String.format(Locale.US, "%.1f", rev.stars),
+                                                fontSize = 13.5.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = IvoryText
+                                            )
+                                        }
+                                    }
+
+                                    if (rev.notes.isNotBlank()) {
+                                        Surface(
+                                            shape = RoundedCornerShape(14.dp),
+                                            color = ObsidianQuoteBox,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
+                                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                                verticalAlignment = Alignment.Top
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .width(3.dp)
+                                                        .height(26.dp)
+                                                        .clip(CircleShape)
+                                                        .background(ChampagneGold)
+                                                )
+                                                Text(
+                                                    "“${rev.notes}”",
+                                                    fontStyle = FontStyle.Italic,
+                                                    fontSize = 14.sp,
+                                                    color = IvoryText
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(color = ObsidianBorder)
+
+                    // Inline Composer: Add/Update note & rating in this template
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                if (myExisting != null) "UPDATE YOUR NOTE & RATING" else "ADD YOUR NOTE & RATING",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.4.sp,
+                                color = ChampagneGold
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                (1..5).forEach { idx ->
+                                    val active = draftStars >= idx - 0.5f
+                                    Text(
+                                        "★",
+                                        fontSize = 20.sp,
+                                        color = if (active) ChampagneGold else Color(0xFF393E4F),
+                                        modifier = Modifier.clickable {
+                                            draftStars = if (draftStars == idx.toFloat()) idx - 0.5f else idx.toFloat()
+                                        }
+                                    )
+                                }
+                            }
+                        }
+
+                        OutlinedTextField(
+                            value = draftNote,
+                            onValueChange = { draftNote = it },
+                            placeholder = { Text("Share your note for ${selectedCommentsGroup.animeTitle}...", color = WarmSilver, fontSize = 13.sp) },
+                            maxLines = 3,
+                            shape = RoundedCornerShape(16.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = ChampagneGold,
+                                unfocusedBorderColor = ObsidianBorder,
+                                focusedTextColor = IvoryText,
+                                unfocusedTextColor = IvoryText
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        Button(
+                            onClick = {
+                                onSubmitCommentNote(
+                                    selectedCommentsGroup.animeId,
+                                    selectedCommentsGroup.animeTitle,
+                                    selectedCommentsGroup.animeCover,
+                                    draftStars,
+                                    draftNote
+                                )
+                            },
+                            enabled = draftNote.trim().isNotEmpty() || draftStars > 0f,
+                            shape = CircleShape,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = ChampagneGold,
+                                contentColor = ChampagneOnGold
+                            ),
+                            modifier = Modifier.fillMaxWidth().height(46.dp)
+                        ) {
+                            Text(
+                                if (myExisting != null) "UPDATE NOTE IN COMMUNITY" else "POST NOTE TO COMMUNITY",
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.2.sp,
+                                fontSize = 12.5.sp
+                            )
+                        }
                     }
                 }
             }

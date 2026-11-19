@@ -586,11 +586,11 @@ class SupabaseDatabaseService {
             val privacyPayload = JSONObject()
                 .put("user_id", session.userId)
                 .put("watchlist_visibility", "private")
-                .put("reviews_visibility", "private")
+                .put("reviews_visibility", "community")
                 .put("collections_visibility", "private")
-                .put("activity_visibility", "private")
+                .put("activity_visibility", "community")
             val privacyReq = requestBuilder("/rest/v1/privacy_settings?on_conflict=user_id", session.accessToken)
-                .addHeader("Prefer", "resolution=ignore-duplicates,return=minimal")
+                .addHeader("Prefer", "resolution=merge-duplicates,return=minimal")
                 .post(privacyPayload.toString().toRequestBody("application/json".toMediaType()))
                 .build()
             runCatching { client.newCall(privacyReq).execute().close() }
@@ -666,9 +666,9 @@ class SupabaseDatabaseService {
             val privacyPayload = JSONObject()
                 .put("user_id", session.userId)
                 .put("watchlist_visibility", "private")
-                .put("reviews_visibility", "private")
+                .put("reviews_visibility", "community")
                 .put("collections_visibility", "private")
-                .put("activity_visibility", "private")
+                .put("activity_visibility", "community")
             val privacyReq = requestBuilder("/rest/v1/privacy_settings?on_conflict=user_id", session.accessToken)
                 .addHeader("Prefer", "resolution=ignore-duplicates,return=minimal")
                 .post(privacyPayload.toString().toRequestBody("application/json".toMediaType()))
@@ -717,15 +717,49 @@ class SupabaseDatabaseService {
             val req = requestBuilder("/rest/v1/rpc/join_community", session.accessToken)
                 .post(payload.toString().toRequestBody("application/json".toMediaType()))
                 .build()
+            var joinedOk = false
+            var errMsg: String? = null
             client.newCall(req).execute().use { resp ->
                 val body = resp.body?.string().orEmpty()
-                if (!resp.isSuccessful) {
-                    val msg = parsePostgrestError(body, "Unable to join community right now.")
-                    Result.failure(Exception(msg))
+                if (resp.isSuccessful) {
+                    joinedOk = true
                 } else {
-                    Result.success(Unit)
+                    errMsg = parsePostgrestError(body, "Unable to join community right now.")
                 }
             }
+            if (!joinedOk) {
+                // Direct fallback to community_members table in case RPC fails or requires direct upsert
+                val directMemberPayload = JSONObject()
+                    .put("user_id", session.userId)
+                    .put("role", "member")
+                    .put("status", "active")
+                val directMemberReq = requestBuilder("/rest/v1/community_members?on_conflict=user_id", session.accessToken)
+                    .addHeader("Prefer", "resolution=merge-duplicates,return=minimal")
+                    .post(directMemberPayload.toString().toRequestBody("application/json".toMediaType()))
+                    .build()
+                runCatching {
+                    client.newCall(directMemberReq).execute().use { directResp ->
+                        if (directResp.isSuccessful) {
+                            joinedOk = true
+                        }
+                    }
+                }
+            }
+            if (!joinedOk) {
+                return@withContext Result.failure(Exception(errMsg ?: "Unable to join community right now."))
+            }
+
+            // Any user joined in Community automatically shares their notes & ratings to Community templates
+            val autoSharePayload = JSONObject()
+                .put("user_id", session.userId)
+                .put("reviews_visibility", "community")
+                .put("activity_visibility", "community")
+            val autoShareReq = requestBuilder("/rest/v1/privacy_settings?on_conflict=user_id", session.accessToken)
+                .addHeader("Prefer", "resolution=merge-duplicates,return=minimal")
+                .post(autoSharePayload.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+            runCatching { client.newCall(autoShareReq).execute().close() }
+            Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(Exception(ErrorSanitizer.sanitize(e, "Unable to join community right now.")))
         }
@@ -1404,17 +1438,17 @@ class SupabaseDatabaseService {
         session: AuthSession,
         members: List<CommunityMember>,
         animeIdFilter: Int? = null,
-        limit: Int = 60,
+        limit: Int = 120,
         offset: Int = 0
     ): Result<Pair<List<CommunityReview>, List<CommunityActivityItem>>> = withContext(Dispatchers.IO) {
         if (!AppConfig.isSupabaseConfigured) return@withContext Result.failure(Exception("Supabase not configured"))
         try {
-            val memberById = members.associateBy { it.userId }
+            val memberById = members.associateBy { it.userId }.toMutableMap()
             val animeFilterQuery = if (animeIdFilter != null) "&anime_id=eq.$animeIdFilter" else ""
             val compactFeedSelect = "id,user_id,anime_id,status,episode_progress,personal_rating,review_notes,updated_at," +
                 "anime(anilist_id,title_english,title_romaji,cover_image,episodes)"
             val req = requestBuilder(
-                "/rest/v1/user_anime?select=$compactFeedSelect$animeFilterQuery&order=updated_at.desc&limit=${limit.coerceIn(10, 100)}&offset=${offset.coerceAtLeast(0)}",
+                "/rest/v1/user_anime?select=$compactFeedSelect$animeFilterQuery&order=updated_at.desc&limit=${limit.coerceIn(10, 200)}&offset=${offset.coerceAtLeast(0)}",
                 session.accessToken
             ).get().build()
 
@@ -1422,6 +1456,68 @@ class SupabaseDatabaseService {
                 val body = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) return@withContext Result.failure(Exception(parsePostgrestError(body, "Failed to load community feed")))
                 JSONArray(body)
+            }
+
+            // Backfill any missing contributor profiles so new users always see every contributor's username and avatar
+            val missingUserIds = mutableSetOf<String>()
+            for (i in 0 until arr.length()) {
+                val uid = arr.getJSONObject(i).optString("user_id")
+                if (uid.isNotBlank() && !memberById.containsKey(uid)) {
+                    missingUserIds.add(uid)
+                }
+            }
+            if (missingUserIds.isNotEmpty()) {
+                runCatching {
+                    val profReq = requestBuilder(
+                        "/rest/v1/profiles?id=in.(${missingUserIds.joinToString(",")})&select=id,username,avatar_key,avatar_url,role",
+                        session.accessToken
+                    ).get().build()
+                    val cmReq = requestBuilder(
+                        "/rest/v1/community_members?user_id=in.(${missingUserIds.joinToString(",")})&select=user_id,status",
+                        session.accessToken
+                    ).get().build()
+                    val statusById = mutableMapOf<String, MemberStatus>()
+                    client.newCall(cmReq).execute().use { cmResp ->
+                        if (cmResp.isSuccessful) {
+                            val cmArr = JSONArray(cmResp.body?.string().orEmpty())
+                            for (j in 0 until cmArr.length()) {
+                                val cmObj = cmArr.getJSONObject(j)
+                                statusById[cmObj.optString("user_id")] = MemberStatus.fromDbValue(cmObj.optString("status"))
+                            }
+                        }
+                    }
+                    client.newCall(profReq).execute().use { profResp ->
+                        if (profResp.isSuccessful) {
+                            val profArr = JSONArray(profResp.body?.string().orEmpty())
+                            for (j in 0 until profArr.length()) {
+                                val p = profArr.getJSONObject(j)
+                                val uid = p.optString("id")
+                                val mStatus = statusById[uid] ?: MemberStatus.ACTIVE
+                                if (uid.isNotBlank() && mStatus != MemberStatus.LEFT && mStatus != MemberStatus.REMOVED) {
+                                    memberById[uid] = CommunityMember(
+                                        userId = uid,
+                                        username = p.optString("username", "Member"),
+                                        avatarKey = p.optString("avatar_key").takeIf { it.isNotBlank() && it != "null" }
+                                            ?: p.optString("avatar_url").takeIf { it.startsWith("avatar_") }
+                                            ?: "avatar_1",
+                                        avatarUrl = p.optString("avatar_url").takeIf {
+                                            it.startsWith("https://", ignoreCase = true) || it.startsWith("http://", ignoreCase = true)
+                                        },
+                                        bio = "",
+                                        role = p.optString("role", "member"),
+                                        status = MemberStatus.ACTIVE,
+                                        joinedAt = null,
+                                        privacy = PrivacySettings(
+                                            userId = uid,
+                                            reviewsVisibility = VisibilityLevel.COMMUNITY,
+                                            activityVisibility = VisibilityLevel.COMMUNITY
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // Batch-fetch review likes for the returned reviews (no N+1 queries)
@@ -1459,21 +1555,24 @@ class SupabaseDatabaseService {
                 val uid = row.getString("user_id")
                 val member = memberById[uid] ?: continue
                 if (member.status != MemberStatus.ACTIVE) continue
-                val anime = row.optJSONObject("anime") ?: continue
-                val animeId = anime.getInt("anilist_id")
-                val animeTitle = anime.optString("title_english").takeIf { it.isNotBlank() && it != "null" }
-                    ?: anime.optString("title_romaji", "Untitled Anime")
-                val coverImage = anime.optString("cover_image", "")
+                val anime = row.optJSONObject("anime")
+                val animeId = anime?.optInt("anilist_id")?.takeIf { it > 0 } ?: row.optInt("anime_id", 0)
+                if (animeId <= 0) continue
+                val animeTitle = anime?.optString("title_english")?.takeIf { it.isNotBlank() && it != "null" }
+                    ?: anime?.optString("title_romaji")?.takeIf { it.isNotBlank() && it != "null" }
+                    ?: "Anime #$animeId"
+                val coverImage = anime?.optString("cover_image", "").orEmpty()
                 val rating = if (row.isNull("personal_rating")) null else row.optDouble("personal_rating")
                 val notes = row.optString("review_notes", "").trim()
                 val status = WatchStatus.fromDbValue(row.optString("status"))
                 val progress = row.optInt("episode_progress", 0)
-                val totalEps = if (anime.isNull("episodes")) null else anime.optInt("episodes")
+                val totalEps = if (anime == null || anime.isNull("episodes")) null else anime.optInt("episodes")
                 val updatedAt = row.optString("updated_at", "")
 
-                val canShowReview = uid == session.userId || member.privacy.reviewsVisibility == VisibilityLevel.COMMUNITY
-                val hasRatingAndNote = rating != null && rating > 0.0 && notes.isNotBlank()
-                if (canShowReview && hasRatingAndNote) {
+                // Anyone joined in Community automatically shares their notes & ratings for unified anime templates
+                val canShowReview = member.status == MemberStatus.ACTIVE
+                val hasNoteOrRating = notes.isNotBlank() || (rating != null && rating > 0.0)
+                if (canShowReview && hasNoteOrRating) {
                     reviews.add(
                         CommunityReview(
                             id = rowId,
@@ -1496,7 +1595,7 @@ class SupabaseDatabaseService {
                     )
                 }
 
-                val canShowActivity = uid == session.userId || member.privacy.activityVisibility == VisibilityLevel.COMMUNITY
+                val canShowActivity = member.status == MemberStatus.ACTIVE || uid == session.userId || member.privacy.activityVisibility == VisibilityLevel.COMMUNITY
                 if (canShowActivity) {
                     activity.add(
                         CommunityActivityItem(

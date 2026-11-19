@@ -121,7 +121,8 @@ const SVG_ICONS = {
   windows: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 3h8.5v8.5H3V3zm9.5 0H21v8.5h-8.5V3zM3 12.5h8.5V21H3v-8.5zm9.5 0H21V21h-8.5v-8.5z"/></svg>`,
   apple: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83zM15.96 6.33c.67-.81 1.12-1.94 1-3.08-.96.04-2.13.64-2.82 1.45-.61.7-.115 1.86-.99 2.97 1.08.08 2.14-.53 2.81-1.34z"/></svg>`,
   clock: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>`,
-  checkCircle: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>`
+  checkCircle: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>`,
+  comment: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H5.17L4 17.17V4h16v12z"/></svg>`
 };
 
 function getCurrentAnimeSeason() {
@@ -315,6 +316,9 @@ const state = {
   communityReviews: [],
   communitySentimentFilter: null,
   communitySort: 'RECENT',
+  communityCommentsAnimeId: null,
+  communityCommentDraftStars: 0,
+  communityCommentDraftNote: '',
 
   // Modals & Detail View
   detailAnime: null,
@@ -847,20 +851,34 @@ async function loadCloudData(silent = false) {
   } catch (_) {}
 }
 
-// Fetch Community Reviews (Exact match to SupabaseDatabaseService.kt line 1402 — no user_season column!)
+// Fetch Community Reviews — Includes ALL notes and ratings from active community members
 async function loadCommunityReviews() {
   try {
     const feedSelect =
       'id,user_id,anime_id,status,episode_progress,personal_rating,review_notes,updated_at,' +
       'anime(anilist_id,title_english,title_romaji,cover_image,episodes)';
-    const normRows = await supabaseRequest(
-      `/rest/v1/user_anime?select=${feedSelect}&order=updated_at.desc&limit=80`
-    ).catch(() => []);
+    const [normRows, memberRows] = await Promise.all([
+      supabaseRequest(`/rest/v1/user_anime?select=${feedSelect}&order=updated_at.desc&limit=150`).catch(() => []),
+      supabaseRequest('/rest/v1/community_members?select=user_id,status').catch(() => [])
+    ]);
+
+    const excludedUsers = new Set();
+    if (Array.isArray(memberRows)) {
+      memberRows.forEach((m) => {
+        const st = String(m.status || '').toLowerCase();
+        if (st === 'left' || st === 'removed') {
+          excludedUsers.add(m.user_id);
+        }
+      });
+    }
 
     if (Array.isArray(normRows)) {
-      const valid = normRows.filter(
-        (r) => r.personal_rating !== null && Number(r.personal_rating) > 0 && String(r.review_notes || '').trim().length > 0
-      );
+      const valid = normRows.filter((r) => {
+        if (!r || !r.user_id || excludedUsers.has(r.user_id)) return false;
+        const hasRating = r.personal_rating !== null && Number(r.personal_rating) > 0;
+        const hasNote = String(r.review_notes || '').trim().length > 0;
+        return hasRating || hasNote;
+      });
       const userIds = Array.from(new Set(valid.map((r) => r.user_id).filter(Boolean)));
       const reviewIds = Array.from(new Set(valid.map((r) => r.id).filter(Boolean)));
 
@@ -895,32 +913,123 @@ async function loadCommunityReviews() {
         });
       }
 
-      state.communityReviews = valid.map((r) => {
+      const mapped = valid.map((r) => {
         const anime = r.anime || {};
         const prof = profMap[r.user_id] || {
           username: r.user_id === state.session?.userId ? state.profile.username : 'Member',
           avatar_key: r.user_id === state.session?.userId ? state.profile.avatarKey : 'avatar_1'
         };
+        const rawRating = r.personal_rating !== null && Number(r.personal_rating) > 0 ? Number(r.personal_rating) : null;
         return {
           id: r.id,
           user_id: r.user_id,
           username: prof.username,
           avatar_key: prof.avatar_key,
-          anime_id: r.anime_id,
+          anime_id: Number(r.anime_id),
           anime_title:
             (anime.title_english && anime.title_english !== 'null' ? anime.title_english : '') ||
             anime.title_romaji ||
             'Anime',
           anime_cover_image: anime.cover_image || '',
-          rating: Number(r.personal_rating),
+          rating: rawRating,
           review_notes: String(r.review_notes || '').trim(),
-          updated_at: r.updated_at,
+          updated_at: r.updated_at || new Date().toISOString(),
           likes_count: likesCountMap[r.id] || 0,
           liked_by_me: likedByMeSet.has(r.id)
         };
       });
+
+      // Ensure active signed-in member's own local notes/ratings are immediately present
+      if (state.session && state.profile.memberStatus !== 'left' && state.profile.memberStatus !== 'removed') {
+        state.vault.forEach((v) => {
+          const hasRating = v.rating10 !== null && Number(v.rating10) > 0;
+          const hasNote = String(v.reviewNotes || '').trim().length > 0;
+          if (!hasRating && !hasNote) return;
+          const alreadyIdx = mapped.findIndex(
+            (m) => m.user_id === state.session.userId && Number(m.anime_id) === Number(v.animeId)
+          );
+          if (alreadyIdx === -1) {
+            mapped.unshift({
+              id: `local_${state.session.userId}_${v.animeId}`,
+              user_id: state.session.userId,
+              username: state.profile.username || 'Member',
+              avatar_key: state.profile.avatarKey || 'avatar_1',
+              anime_id: Number(v.animeId),
+              anime_title: v.titleEnglish || v.title || 'Anime',
+              anime_cover_image: v.coverImage || '',
+              rating: hasRating ? Number(v.rating10) : null,
+              review_notes: String(v.reviewNotes || '').trim(),
+              updated_at: new Date().toISOString(),
+              likes_count: 0,
+              liked_by_me: false
+            });
+          }
+        });
+      }
+
+      state.communityReviews = mapped;
     }
   } catch (_) {}
+}
+
+// Group all community reviews/notes by anime_id so every anime has strictly ONE template card
+function groupCommunityReviewsByAnime(reviews) {
+  const byAnime = new Map();
+  (reviews || []).forEach((rev) => {
+    if (!rev || !rev.anime_id) return;
+    const hasRating = rev.rating !== null && Number(rev.rating) > 0;
+    const hasNote = String(rev.review_notes || '').trim().length > 0;
+    if (!hasRating && !hasNote) return;
+    const aid = Number(rev.anime_id);
+    if (!byAnime.has(aid)) {
+      byAnime.set(aid, []);
+    }
+    byAnime.get(aid).push(rev);
+  });
+
+  const groups = [];
+  byAnime.forEach((animeReviews, animeId) => {
+    // Deduplicate per user_id inside the same anime (keep most recent)
+    const sorted = [...animeReviews].sort((a, b) =>
+      String(b.updated_at || '').localeCompare(String(a.updated_at || ''))
+    );
+    const seenUsers = new Set();
+    const uniqueUserReviews = [];
+    sorted.forEach((r) => {
+      const uid = r.user_id || r.id;
+      if (seenUsers.has(uid)) return;
+      seenUsers.add(uid);
+      uniqueUserReviews.push(r);
+    });
+
+    if (uniqueUserReviews.length === 0) return;
+
+    const first = uniqueUserReviews[0];
+    const rated = uniqueUserReviews.filter((r) => r.rating !== null && Number(r.rating) > 0);
+    const noted = uniqueUserReviews.filter((r) => String(r.review_notes || '').trim().length > 0);
+    const avgRating10 =
+      rated.length > 0
+        ? rated.reduce((acc, r) => acc + Number(r.rating || 0), 0) / rated.length
+        : null;
+    const leadReview = noted.length > 0 ? noted[0] : uniqueUserReviews[0];
+    const totalLikesCount = uniqueUserReviews.reduce((acc, r) => acc + Number(r.likes_count || 0), 0);
+
+    groups.push({
+      anime_id: animeId,
+      anime_title: first.anime_title || 'Anime',
+      anime_cover_image: first.anime_cover_image || '',
+      average_rating10: avgRating10,
+      rated_count: rated.length,
+      noted_count: noted.length,
+      total_count: uniqueUserReviews.length,
+      latest_updated_at: first.updated_at || '',
+      total_likes_count: totalLikesCount,
+      lead_review: leadReview,
+      reviews: uniqueUserReviews
+    });
+  });
+
+  return groups;
 }
 
 async function fetchDiscoverCatalog() {
@@ -1201,6 +1310,31 @@ async function saveVaultEntry(item) {
       },
       'resolution=merge-duplicates,return=minimal'
     );
+
+    // Anyone joined in community automatically shares their note & rating to community
+    const hasRating = cleanItem.rating10 !== null && Number(cleanItem.rating10) > 0;
+    const hasNote = String(cleanItem.reviewNotes || '').trim().length > 0;
+    if ((hasRating || hasNote) && state.profile.memberStatus !== 'left' && state.profile.memberStatus !== 'removed') {
+      await Promise.all([
+        supabaseRequest(
+          '/rest/v1/community_members?on_conflict=user_id',
+          'POST',
+          { user_id: state.session.userId, role: 'member', status: 'active' },
+          'resolution=merge-duplicates,return=minimal'
+        ).catch(() => {}),
+        supabaseRequest(
+          '/rest/v1/privacy_settings?on_conflict=user_id',
+          'POST',
+          {
+            user_id: state.session.userId,
+            reviews_visibility: 'community',
+            activity_visibility: 'community'
+          },
+          'resolution=merge-duplicates,return=minimal'
+        ).catch(() => {})
+      ]);
+    }
+
     await loadCommunityReviews();
   } catch (_) {}
 }
@@ -1683,9 +1817,12 @@ function renderFiveStarsHtml(starsVal) {
 }
 
 function renderCommunityScreen() {
+  const allGroups = groupCommunityReviewsByAnime(state.communityReviews);
+  const totalNotesAndRatings = allGroups.reduce((acc, g) => acc + g.total_count, 0);
+
   const topBar = renderObsidianTopBar({
     title: 'Community',
-    subtitle: `RATED & NOTED • ${state.communityReviews.length} REVIEWS`
+    subtitle: `${allGroups.length} ANIME • ${totalNotesAndRatings} NOTES & RATINGS`
   });
 
   if (!state.session) {
@@ -1701,22 +1838,22 @@ function renderCommunityScreen() {
     `;
   }
 
-  const filtered = state.communityReviews
-    .filter((rev) => {
+  const filtered = allGroups
+    .filter((grp) => {
       if (!state.communitySentimentFilter) return true;
-      const s = sentimentFromRating10(rev.rating);
+      const s = grp.average_rating10 ? sentimentFromRating10(grp.average_rating10) : null;
       return s && s.key === state.communitySentimentFilter;
     })
     .sort((a, b) => {
-      if (state.communitySort === 'HIGHEST') return (b.rating || 0) - (a.rating || 0);
-      return String(b.updated_at || '').localeCompare(String(a.updated_at || ''));
+      if (state.communitySort === 'HIGHEST') return (b.average_rating10 || 0) - (a.average_rating10 || 0);
+      return String(b.latest_updated_at || '').localeCompare(String(a.latest_updated_at || ''));
     });
 
   return `
     ${topBar}
     <div class="capsule-strip">
       <button class="capsule-pill ${!state.communitySentimentFilter ? 'active' : ''}" data-comm-sentiment="">
-        ALL (${state.communityReviews.length})
+        ALL (${allGroups.length})
       </button>
       ${SENTIMENTS.map(
         (s) =>
@@ -1743,35 +1880,81 @@ function renderCommunityScreen() {
         ? `<div class="app-card" style="text-align:center;padding:42px;"><p style="color:var(--text-secondary);">No rated &amp; noted showcases match this filter yet.</p></div>`
         : `<div class="community-review-list">
             ${filtered
-              .map((rev) => {
-                const starsNum = rating10ToStars(rev.rating) || 0;
-                const stars = starsNum.toFixed(1);
-                const sentiment = sentimentFromRating10(rev.rating);
+              .map((grp) => {
+                const starsNum = grp.average_rating10 ? rating10ToStars(grp.average_rating10) || 0 : 0;
+                const stars = starsNum > 0 ? starsNum.toFixed(1) : '';
+                const sentiment = grp.average_rating10 ? sentimentFromRating10(grp.average_rating10) : null;
+                const lead = grp.lead_review || grp.reviews[0];
+                const extraContributors = Math.max(0, grp.reviews.length - 1);
+                const leadText =
+                  lead && String(lead.review_notes || '').trim().length > 0
+                    ? `“${escapeHtml(lead.review_notes)}”`
+                    : `${escapeHtml(lead?.username || 'Member')} rated this ${stars || '5.0'} ★`;
+                const stackedAvatarsHtml = grp.reviews
+                  .slice(0, 3)
+                  .map(
+                    (r, idx) =>
+                      `<div style="margin-left:${idx === 0 ? '0' : '-8px'};border:1.5px solid #12151F;border-radius:999px;display:inline-flex;">
+                        ${renderAvatarCircle(r.avatar_key || 'avatar_1', r.username, 28)}
+                      </div>`
+                  )
+                  .join('');
+
                 return `
-                  <div class="community-review-card" data-open-detail="${rev.anime_id}">
+                  <div class="community-review-card" data-open-detail="${grp.anime_id}">
                     <div style="display:flex;gap:16px;align-items:flex-start;">
-                      <img src="${escapeHtml(rev.anime_cover_image)}" alt="" style="width:68px;height:96px;object-fit:cover;border-radius:14px;flex-shrink:0;" />
+                      <img src="${escapeHtml(grp.anime_cover_image)}" alt="" style="width:68px;height:96px;object-fit:cover;border-radius:14px;flex-shrink:0;" />
                       <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;">
-                        <div class="serif-heading" style="font-size:23px;line-height:27px;color:var(--text-primary);">${escapeHtml(rev.anime_title)}</div>
-                        <div style="display:flex;align-items:center;gap:8px;">
-                          <div style="display:inline-flex;gap:2px;">${renderFiveStarsHtml(starsNum)}</div>
-                          <span class="tabular-num" style="font-size:15px;font-weight:600;color:var(--text-primary);">${stars}</span>
-                        </div>
+                        <div class="serif-heading" style="font-size:23px;line-height:27px;color:var(--text-primary);">${escapeHtml(grp.anime_title)}</div>
+                        ${
+                          starsNum > 0
+                            ? `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                                <div style="display:inline-flex;gap:2px;">${renderFiveStarsHtml(starsNum)}</div>
+                                <span class="tabular-num" style="font-size:15px;font-weight:600;color:var(--text-primary);">${stars}</span>
+                                ${
+                                  grp.rated_count > 1
+                                    ? `<span style="font-size:11.5px;color:var(--text-muted);">(${grp.rated_count} ratings)</span>`
+                                    : ''
+                                }
+                              </div>`
+                            : `<div><span class="sentiment-pill soft cinema">COMMUNITY NOTES</span></div>`
+                        }
                         ${sentiment ? `<div><span class="sentiment-pill soft ${sentiment.key}">${sentiment.fullLabel.toUpperCase()}</span></div>` : ''}
                       </div>
                     </div>
 
-                    <div class="review-quote-box">
+                    <div class="review-quote-box" data-open-comments="${grp.anime_id}" title="View all ${grp.total_count} notes &amp; ratings">
                       <div class="review-quote-bar"></div>
-                      <div class="review-quote-text">“${escapeHtml(rev.review_notes)}”</div>
+                      <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px;">
+                        <div class="review-quote-text">${leadText}</div>
+                        ${
+                          extraContributors > 0
+                            ? `<div style="font-size:11.5px;font-weight:600;color:var(--accent-primary);">+${extraContributors} more member note${extraContributors > 1 ? 's' : ''} &amp; rating${extraContributors > 1 ? 's' : ''} inside</div>`
+                            : ''
+                        }
+                      </div>
                     </div>
 
-                    <div style="display:flex;align-items:center;justify-content:space-between;padding-top:2px;">
-                      <div style="display:flex;align-items:center;gap:10px;">
-                        ${renderAvatarCircle(rev.avatar_key || 'avatar_1', rev.username, 28)}
-                        <span style="font-size:13.5px;font-weight:500;color:var(--text-secondary);">${escapeHtml(rev.username || 'Member')}</span>
+                    <div style="display:flex;align-items:center;justify-content:space-between;padding-top:2px;gap:10px;">
+                      <div style="display:flex;align-items:center;gap:10px;min-width:0;">
+                        <div style="display:inline-flex;align-items:center;">${stackedAvatarsHtml}</div>
+                        <span style="font-size:13.5px;font-weight:500;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                          ${escapeHtml(lead?.username || 'Member')}${extraContributors > 0 ? ` +${extraContributors}` : ''}
+                        </span>
                       </div>
-                      <span style="font-size:12.5px;color:var(--text-muted);">${escapeHtml(formatReviewDate(rev.updated_at))}</span>
+
+                      <div style="display:flex;align-items:center;gap:10px;flex-shrink:0;">
+                        <span style="font-size:12.5px;color:var(--text-muted);">${escapeHtml(formatReviewDate(grp.latest_updated_at))}</span>
+                        <button
+                          type="button"
+                          class="community-comment-btn"
+                          data-open-comments="${grp.anime_id}"
+                          title="Open all notes &amp; ratings for ${escapeHtml(grp.anime_title)}"
+                        >
+                          <span class="comment-icon-svg">${SVG_ICONS.comment}</span>
+                          <span class="tabular-num">${grp.total_count}</span>
+                        </button>
+                      </div>
                     </div>
                   </div>
                 `;
@@ -2967,6 +3150,118 @@ function renderModals() {
     `;
   }
 
+  if (state.communityCommentsAnimeId !== null) {
+    const allGroups = groupCommunityReviewsByAnime(state.communityReviews);
+    const grp = allGroups.find((g) => Number(g.anime_id) === Number(state.communityCommentsAnimeId));
+    if (grp) {
+      const avgStarsNum = grp.average_rating10 ? rating10ToStars(grp.average_rating10) || 0 : 0;
+      const draftStars = Number(state.communityCommentDraftStars || 0);
+      return `
+        <div class="modal-backdrop" id="modal-backdrop">
+          <div class="modal-sheet community-comments-modal" onclick="event.stopPropagation()">
+            <div style="display:flex;align-items:center;gap:14px;justify-content:space-between;">
+              <div style="display:flex;align-items:center;gap:12px;min-width:0;">
+                <img src="${escapeHtml(grp.anime_cover_image)}" alt="" style="width:48px;height:68px;border-radius:12px;object-fit:cover;flex-shrink:0;" />
+                <div style="min-width:0;">
+                  <div class="micro-label" style="color:var(--accent-primary);">COMMUNITY NOTES &amp; RATINGS</div>
+                  <h3 class="serif-heading" style="font-size:21px;line-height:25px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(grp.anime_title)}</h3>
+                  <div style="display:flex;align-items:center;gap:8px;margin-top:2px;">
+                    ${
+                      avgStarsNum > 0
+                        ? `<span style="color:var(--accent-primary);font-size:13px;font-weight:700;">★ ${avgStarsNum.toFixed(1)} avg</span>
+                           <span style="color:var(--text-muted);font-size:12px;">•</span>`
+                        : ''
+                    }
+                    <span style="color:var(--text-secondary);font-size:12px;">${grp.total_count} member${grp.total_count === 1 ? '' : 's'}</span>
+                  </div>
+                </div>
+              </div>
+              <button type="button" class="btn-secondary" id="btn-close-modal" style="height:36px;padding:0 14px;font-size:12px;">Close</button>
+            </div>
+
+            <div class="community-comments-list">
+              ${grp.reviews
+                .map((rev) => {
+                  const rStars = rev.rating ? rating10ToStars(rev.rating) || 0 : 0;
+                  const rSent = rev.rating ? sentimentFromRating10(rev.rating) : null;
+                  const hasNote = String(rev.review_notes || '').trim().length > 0;
+                  return `
+                    <div class="community-comment-item">
+                      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+                        <div style="display:flex;align-items:center;gap:10px;min-width:0;">
+                          ${renderAvatarCircle(rev.avatar_key || 'avatar_1', rev.username, 34)}
+                          <div style="min-width:0;">
+                            <div style="font-size:14px;font-weight:600;color:var(--text-primary);">${escapeHtml(rev.username || 'Member')}</div>
+                            <div style="font-size:11.5px;color:var(--text-muted);">${escapeHtml(formatReviewDate(rev.updated_at))}</div>
+                          </div>
+                        </div>
+                        ${
+                          rStars > 0
+                            ? `<div style="display:flex;flex-direction:column;align-items:flex-end;gap:3px;">
+                                <div style="display:inline-flex;align-items:center;gap:4px;">
+                                  <span style="display:inline-flex;gap:1px;">${renderFiveStarsHtml(rStars)}</span>
+                                  <span class="tabular-num" style="font-size:13.5px;font-weight:700;color:var(--highlight);">${rStars.toFixed(1)}</span>
+                                </div>
+                                ${rSent ? `<span class="sentiment-pill soft ${rSent.key}" style="font-size:9px;padding:2px 7px;">${rSent.shortLabel.toUpperCase()}</span>` : ''}
+                              </div>`
+                            : `<span class="sentiment-pill soft cinema" style="font-size:9px;padding:2px 8px;">NOTE</span>`
+                        }
+                      </div>
+
+                      ${
+                        hasNote
+                          ? `<div class="review-quote-box" style="padding:11px 14px;">
+                              <div class="review-quote-bar"></div>
+                              <div class="review-quote-text" style="font-size:13.5px;">“${escapeHtml(rev.review_notes)}”</div>
+                            </div>`
+                          : ''
+                      }
+                    </div>
+                  `;
+                })
+                .join('')}
+            </div>
+
+            ${
+              state.session
+                ? `<div class="community-comment-composer">
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                      <span class="micro-label" style="color:var(--accent-primary);">ADD OR UPDATE YOUR NOTE &amp; RATING</span>
+                      <div style="display:inline-flex;align-items:center;gap:4px;">
+                        ${[1, 2, 3, 4, 5]
+                          .map(
+                            (st) =>
+                              `<button type="button" data-comm-modal-star="${st}" style="background:none;border:none;cursor:pointer;font-size:20px;color:${
+                                draftStars >= st - 0.5 ? 'var(--accent-primary)' : '#383D4E'
+                              };">★</button>`
+                          )
+                          .join('')}
+                        ${
+                          draftStars > 0
+                            ? `<span class="tabular-num" style="font-size:12.5px;font-weight:700;color:var(--highlight);margin-left:4px;">${draftStars.toFixed(1)}</span>`
+                            : ''
+                        }
+                      </div>
+                    </div>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                      <input
+                        id="inp-comm-modal-note"
+                        class="auth-input"
+                        style="height:44px;flex:1;"
+                        placeholder="Write your note for this anime..."
+                        value="${escapeHtml(state.communityCommentDraftNote || '')}"
+                      />
+                      <button type="button" class="btn-primary" id="btn-comm-modal-submit" style="height:44px;padding:0 18px;">POST</button>
+                    </div>
+                  </div>`
+                : ''
+            }
+          </div>
+        </div>
+      `;
+    }
+  }
+
   return '';
 }
 
@@ -3447,6 +3742,16 @@ function bindAuthEvents() {
           },
           'resolution=merge-duplicates,return=minimal'
         ).catch(() => {});
+        await supabaseRequest(
+          '/rest/v1/privacy_settings?on_conflict=user_id',
+          'POST',
+          {
+            user_id: state.session.userId,
+            reviews_visibility: 'community',
+            activity_visibility: 'community'
+          },
+          'resolution=merge-duplicates,return=minimal'
+        ).catch(() => {});
         await loadCloudData();
       }
       renderApp();
@@ -3652,6 +3957,80 @@ function bindAppEvents() {
       renderApp();
     };
   });
+  document.querySelectorAll('[data-open-comments]').forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      const aid = Number(el.getAttribute('data-open-comments'));
+      const existing = state.vault.find((v) => Number(v.animeId) === aid);
+      state.communityCommentsAnimeId = aid;
+      state.communityCommentDraftStars = existing && existing.rating10 ? rating10ToStars(existing.rating10) || 0 : 0;
+      state.communityCommentDraftNote = existing ? existing.reviewNotes || '' : '';
+      renderApp();
+    };
+  });
+  document.querySelectorAll('[data-comm-modal-star]').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const clicked = Number(btn.getAttribute('data-comm-modal-star'));
+      const cur = Number(state.communityCommentDraftStars || 0);
+      state.communityCommentDraftStars = cur === clicked ? Math.max(0, clicked - 0.5) : clicked;
+      const inp = document.getElementById('inp-comm-modal-note');
+      if (inp) state.communityCommentDraftNote = inp.value;
+      renderApp();
+    };
+  });
+  const inpCommModalNote = document.getElementById('inp-comm-modal-note');
+  if (inpCommModalNote) {
+    inpCommModalNote.oninput = (e) => {
+      state.communityCommentDraftNote = e.target.value;
+    };
+    inpCommModalNote.onkeydown = (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        document.getElementById('btn-comm-modal-submit')?.click();
+      }
+    };
+  }
+  const btnCommModalSubmit = document.getElementById('btn-comm-modal-submit');
+  if (btnCommModalSubmit) {
+    btnCommModalSubmit.onclick = async () => {
+      const aid = Number(state.communityCommentsAnimeId);
+      if (!aid) return;
+      const noteText = (document.getElementById('inp-comm-modal-note')?.value ?? state.communityCommentDraftNote ?? '').trim();
+      const stars = Number(state.communityCommentDraftStars || 0);
+      if (!noteText && stars <= 0) return;
+
+      const allGroups = groupCommunityReviewsByAnime(state.communityReviews);
+      const grp = allGroups.find((g) => Number(g.anime_id) === aid);
+      const existing = state.vault.find((v) => Number(v.animeId) === aid);
+      const rating10Val = stars > 0 ? Math.round(stars * 2) : existing?.rating10 || null;
+
+      const itemToSave = existing
+        ? {
+            ...existing,
+            rating10: rating10Val,
+            reviewNotes: noteText || existing.reviewNotes || ''
+          }
+        : {
+            animeId: aid,
+            title: grp?.anime_title || 'Anime',
+            titleEnglish: grp?.anime_title || 'Anime',
+            titleRomaji: grp?.anime_title || 'Anime',
+            coverImage: grp?.anime_cover_image || '',
+            status: 'watching',
+            season: 1,
+            watchedEpisodes: 0,
+            totalEpisodes: null,
+            rating10: rating10Val,
+            reviewNotes: noteText,
+            isPinned: false,
+            isFavorite: false
+          };
+
+      await saveVaultEntry(itemToSave);
+      renderApp();
+    };
+  }
 
   // Profile & Settings events
   const openAv = document.getElementById('btn-open-avatar-modal');
@@ -3827,6 +4206,7 @@ function bindAppEvents() {
     state.showAvatarModal = false;
     state.showProfileEditModal = false;
     state.showCreateCollectionModal = false;
+    state.communityCommentsAnimeId = null;
     renderApp();
   };
   if (backdrop) backdrop.onclick = closeModals;

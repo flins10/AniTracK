@@ -27,6 +27,7 @@ import com.example.model.DatabaseStorageStats
 import com.example.model.InvitationCode
 import com.example.model.MemberStatus
 import com.example.model.PrivacySettings
+import com.example.model.StarRatingUtils
 import com.example.model.ThemeModePreference
 import com.example.model.UserProfile
 import com.example.model.VisibilityLevel
@@ -50,6 +51,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.time.Instant
 import java.time.LocalDate
 
 enum class ReviewSortOption(val label: String) {
@@ -1368,8 +1370,12 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                 avatarKey = profile.avatarKey,
                 inviteCode = inviteCode
             ).onSuccess {
+                _privacySettings.value = _privacySettings.value.copy(
+                    reviewsVisibility = VisibilityLevel.COMMUNITY,
+                    activityVisibility = VisibilityLevel.COMMUNITY
+                )
                 loadAuthenticatedWorkspace(session)
-                _userMessage.value = "Joined community! You can now see friends' ratings, notes, and activity."
+                _userMessage.value = "Joined community! Your notes and ratings are now shared automatically."
             }.onFailure { err ->
                 val msg = ErrorSanitizer.sanitize(err, "Unable to join community.")
                 _communityError.value = msg
@@ -1797,6 +1803,12 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             if (session != null) {
                 dirtyPendingSyncIds.remove(animeId)
                 supabaseDb.deleteUserAnimeEntry(session, animeId)
+                _communityReviews.value = _communityReviews.value.filterNot {
+                    it.animeId == animeId && it.userId == session.userId
+                }
+                _animeReviews.value = _animeReviews.value.filterNot {
+                    it.animeId == animeId && it.userId == session.userId
+                }
             }
             persistCurrentOwnerVaultSnapshot()
             _dynamicIslandFeedback.value = DynamicIslandFeedback(
@@ -1814,6 +1826,106 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
         dirtyPendingSyncIds.add(entity.id)
         supabaseDb.upsertUserAnimeEntry(session, entity).onSuccess {
             dirtyPendingSyncIds.remove(entity.id)
+            val profile = _userProfile.value
+            if (profile != null && profile.memberStatus == MemberStatus.ACTIVE) {
+                val trimmedNote = entity.userNotes?.trim().orEmpty()
+                val rating10 = entity.userScore?.takeIf { it > 0 }?.let { it / 10.0 }
+                if (entity.hasActiveUserState && (trimmedNote.isNotBlank() || rating10 != null)) {
+                    val existing = _communityReviews.value.firstOrNull {
+                        it.animeId == entity.id && it.userId == session.userId
+                    }
+                    val optimisticReview = CommunityReview(
+                        id = existing?.id ?: "${session.userId}-${entity.id}",
+                        userId = session.userId,
+                        username = profile.username,
+                        avatarKey = profile.avatarKey,
+                        avatarUrl = profile.avatarUrl,
+                        animeId = entity.id,
+                        animeTitle = entity.displayTitle,
+                        animeCoverImage = entity.coverImage,
+                        rating = rating10,
+                        reviewNotes = trimmedNote,
+                        status = entity.watchStatusEnum,
+                        episodeProgress = entity.watchedEpisodeCount,
+                        totalEpisodes = entity.totalEpisodes,
+                        updatedAt = Instant.now().toString(),
+                        likesCount = existing?.likesCount ?: 0,
+                        likedByMe = existing?.likedByMe ?: false
+                    )
+                    val updatedCommunity = listOf(optimisticReview) + _communityReviews.value.filterNot {
+                        it.animeId == entity.id && it.userId == session.userId
+                    }
+                    _communityReviews.value = sortReviews(updatedCommunity, _reviewSortOption.value)
+                    if (_selectedAnimeId.value == entity.id) {
+                        _animeReviews.value = listOf(optimisticReview) + _animeReviews.value.filterNot {
+                            it.userId == session.userId
+                        }
+                    }
+                } else {
+                    _communityReviews.value = _communityReviews.value.filterNot {
+                        it.animeId == entity.id && it.userId == session.userId
+                    }
+                    if (_selectedAnimeId.value == entity.id) {
+                        _animeReviews.value = _animeReviews.value.filterNot { it.userId == session.userId }
+                    }
+                }
+                refreshCommunityData()
+            }
+        }
+    }
+
+    fun submitCommunityCommentNote(
+        animeId: Int,
+        animeTitle: String,
+        coverImage: String,
+        ratingStars: Float,
+        noteText: String
+    ) {
+        val cleanNote = noteText.trim()
+        if (cleanNote.isBlank() && ratingStars <= 0f) {
+            _userMessage.value = "Write a note or select a star rating first."
+            return
+        }
+        viewModelScope.launch {
+            val existing = repository.getAnimeByIdSync(animeId)
+            val resolvedScoreTenths = if (ratingStars > 0f) {
+                StarRatingUtils.starsToScore100(ratingStars)
+            } else {
+                existing?.userScore
+            }
+            val updated = if (existing != null) {
+                repository.updateUserTrackingState(
+                    animeId = animeId,
+                    status = if (existing.inWatchlist) existing.watchStatusEnum else WatchStatus.WATCHING,
+                    episodeProgress = existing.watchedEpisodeCount,
+                    seasonNumber = existing.userSeason,
+                    score = resolvedScoreTenths,
+                    notes = cleanNote.ifBlank { existing.userNotes.orEmpty() },
+                    isFavorite = existing.isFavorite
+                )
+            } else {
+                val seeded = AnimeEntity(
+                    id = animeId,
+                    titleRomaji = animeTitle.ifBlank { "Anime #$animeId" },
+                    titleEnglish = animeTitle.ifBlank { "Anime #$animeId" },
+                    coverImage = coverImage,
+                    airingDayOfWeek = ((animeId.coerceAtLeast(1) % 7) + 1)
+                )
+                repository.addToWatchlist(seeded, WatchStatus.WATCHING)
+                repository.updateUserTrackingState(
+                    animeId = animeId,
+                    status = WatchStatus.WATCHING,
+                    episodeProgress = 0,
+                    seasonNumber = 1,
+                    score = resolvedScoreTenths,
+                    notes = cleanNote,
+                    isFavorite = false
+                )
+            }
+            if (updated != null) {
+                syncSingleEntryToCloud(updated)
+                _userMessage.value = "Added your note to $animeTitle in Community."
+            }
         }
     }
 

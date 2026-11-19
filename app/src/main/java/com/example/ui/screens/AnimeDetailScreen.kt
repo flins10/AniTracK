@@ -132,7 +132,7 @@ fun AnimeDetailScreen(
     val profile by viewModel.userProfile.collectAsState()
 
     val ratedAndNotedReviews = remember(reviews) {
-        reviews.filter { (it.rating ?: 0.0) > 0.0 && it.reviewNotes.isNotBlank() }
+        reviews.filter { (it.rating ?: 0.0) > 0.0 || it.reviewNotes.isNotBlank() }
     }
 
     var synopsisExpanded by remember { mutableStateOf(false) }
@@ -1014,7 +1014,8 @@ fun AnimeDetailScreen(
                                     EditorialCommunityNoteCard(
                                         review = rev,
                                         onClick = { onSelectAnime(rev.animeId) },
-                                        showAnimeHeader = false
+                                        showAnimeHeader = false,
+                                        onToggleLike = { viewModel.toggleReviewLike(rev) }
                                     )
                                 }
                             }

@@ -171,6 +171,61 @@ data class CommunityReview(
     val likedByMe: Boolean = false
 )
 
+/**
+ * Single unified community showcase card per anime.
+ * Consolidates all joined members' notes and star ratings for the same anime
+ * into one template instead of creating duplicate cards per member.
+ */
+data class CommunityAnimeGroup(
+    val animeId: Int,
+    val animeTitle: String,
+    val animeCoverImage: String,
+    val averageRating10: Double?,
+    val ratedCount: Int,
+    val notedCount: Int,
+    val latestUpdatedAt: String,
+    val totalLikesCount: Int,
+    val leadReview: CommunityReview,
+    val reviews: List<CommunityReview>
+) {
+    val notesAndRatingsCount: Int get() = reviews.size
+    val distinctContributors: List<CommunityReview>
+        get() = reviews.distinctBy { it.userId.ifBlank { it.username } }
+}
+
+fun groupCommunityReviewsByAnime(
+    reviews: List<CommunityReview>
+): List<CommunityAnimeGroup> {
+    return reviews
+        .filter { it.reviewNotes.isNotBlank() || (it.rating ?: 0.0) > 0.0 }
+        .groupBy { it.animeId }
+        .values
+        .mapNotNull { groupItems ->
+            val sortedEntries = groupItems.sortedByDescending { it.updatedAt }
+            if (sortedEntries.isEmpty()) return@mapNotNull null
+
+            val lead = sortedEntries.firstOrNull { it.reviewNotes.isNotBlank() } ?: sortedEntries.first()
+            val positiveRatings = sortedEntries.mapNotNull { it.rating?.takeIf { r -> r > 0.0 } }
+            val avgRating = if (positiveRatings.isNotEmpty()) positiveRatings.average() else null
+            val noted = sortedEntries.count { it.reviewNotes.isNotBlank() }
+            val bestTitle = sortedEntries.firstOrNull { it.animeTitle.isNotBlank() }?.animeTitle ?: "Anime #${lead.animeId}"
+            val bestCover = sortedEntries.firstOrNull { it.animeCoverImage.isNotBlank() }?.animeCoverImage.orEmpty()
+
+            CommunityAnimeGroup(
+                animeId = lead.animeId,
+                animeTitle = bestTitle,
+                animeCoverImage = bestCover,
+                averageRating10 = avgRating,
+                ratedCount = positiveRatings.size,
+                notedCount = noted,
+                latestUpdatedAt = sortedEntries.maxOfOrNull { it.updatedAt }.orEmpty(),
+                totalLikesCount = sortedEntries.sumOf { it.likesCount },
+                leadReview = lead,
+                reviews = sortedEntries
+            )
+        }
+}
+
 data class TableStorageStat(
     val tableName: String,
     val rowCount: Long,
