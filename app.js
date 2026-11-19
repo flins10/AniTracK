@@ -337,42 +337,42 @@ const state = {
         platformName: 'Android APK',
         appName: 'Anime Universe for Android',
         version: 'v2.1.0',
-        fileSize: '17.3 MB',
+        fileSize: '24.0 MB',
         osSupported: 'Android 8.0 (Oreo) & above • ARM64 / Universal',
         releaseDate: 'Nov 18, 2026',
         fileName: 'AnimeUniverse-v2.1.0-arm64.apk',
         architecture: 'Universal APK (ARM64-v8a / armeabi-v7a / x86_64)',
         packageType: 'Signed Android Package (.apk)',
         available: true,
-        downloadUrl: '/downloads/AnimeUniverse-v2.1.0-arm64.apk'
+        downloadUrl: 'https://drive.usercontent.google.com/download?id=1bvDpEEuwfAhWy9ECEzjUK9rdAMv18gys&export=download&confirm=t'
       },
       windows: {
         id: 'windows',
         platformName: 'Windows EXE',
         appName: 'Anime Universe for Windows',
         version: 'v2.1.0',
-        fileSize: '68.4 MB',
+        fileSize: '112.9 MB',
         osSupported: 'Windows 10 & Windows 11 (64-bit x64)',
         releaseDate: 'Nov 18, 2026',
         fileName: 'AnimeUniverse-Windows-Installer.exe',
         architecture: '64-bit Native JVM Desktop (.exe)',
         packageType: 'Windows Native Installer (.exe)',
-        available: false,
-        downloadUrl: ''
+        available: true,
+        downloadUrl: 'https://drive.usercontent.google.com/download?id=1nARmFc6FHBLt1JnCJTjGEqoDla0njtOU&export=download&confirm=t'
       },
       macos: {
         id: 'macos',
         platformName: 'macOS DMG',
         appName: 'Anime Universe for macOS',
         version: 'v2.1.0',
-        fileSize: '74.2 MB',
+        fileSize: '122.0 MB',
         osSupported: 'macOS 12 Monterey & newer (Apple Silicon & Intel)',
         releaseDate: 'Nov 18, 2026',
         fileName: 'AnimeUniverse-macOS-Installer.dmg',
         architecture: 'Universal macOS Disk Image (.dmg)',
         packageType: 'macOS Disk Image (.dmg)',
-        available: false,
-        downloadUrl: ''
+        available: true,
+        downloadUrl: 'https://drive.usercontent.google.com/download?id=1W6GoMBMHr-Vbd5_jCGv140HLMG8r3D5Y&export=download&confirm=t'
       }
     },
     currentRelease: {
@@ -2489,6 +2489,14 @@ function resolveHttpsDownloadUrl(url) {
   const trimmed = url.trim();
   if (!trimmed) return '';
   if (trimmed.includes('<') || trimmed.includes('>') || trimmed.includes('example.com')) return '';
+  // Automatically convert any Google Drive /file/d/<ID>/view share URL into a direct binary stream URL
+  const gdriveMatch =
+    trimmed.match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/i) ||
+    trimmed.match(/drive\.google\.com\/open\?id=([a-zA-Z0-9_-]+)/i) ||
+    trimmed.match(/drive\.google\.com\/uc\?.*id=([a-zA-Z0-9_-]+)/i);
+  if (gdriveMatch && gdriveMatch[1]) {
+    return `https://drive.usercontent.google.com/download?id=${gdriveMatch[1]}&export=download&confirm=t`;
+  }
   if (trimmed.startsWith('https://')) return trimmed;
   if (trimmed.startsWith('/')) {
     try {
@@ -2781,11 +2789,11 @@ async function startPlatformDownload(taskKey, downloadUrl, fileName) {
   };
   renderApp();
 
+  // Trigger native browser attachment download in-place (Content-Disposition: attachment prevents page navigation and avoids iframe CSP frame-ancestors 'none')
   const a = document.createElement('a');
   a.href = resolvedUrl;
-  a.setAttribute('download', fileName || '');
-  a.setAttribute('rel', 'noopener noreferrer');
-  a.target = '_blank';
+  a.download = fileName || resolvedUrl.split('/').pop() || 'AnimeUniverse-Package';
+  a.rel = 'noopener noreferrer';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -2796,7 +2804,7 @@ async function startPlatformDownload(taskKey, downloadUrl, fileName) {
     progress: 100,
     loadedMB: null,
     totalMB: null,
-    statusText: 'Browser download initiated via HTTPS ✓'
+    statusText: 'Direct download started ✓'
   };
   renderApp();
 }
