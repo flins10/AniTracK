@@ -2861,7 +2861,7 @@ function renderDownloadsScreen() {
                   </div>
                 </div>
 
-                <!-- Metadata Grid: Version, File Size, Release Date, Security Status -->
+                <!-- Metadata Grid: Version, File Size, Release Date -->
                 <div class="download-meta-grid">
                   <div class="download-meta-item">
                     <span class="download-meta-label">Version</span>
@@ -2874,12 +2874,6 @@ function renderDownloadsScreen() {
                   <div class="download-meta-item">
                     <span class="download-meta-label">Release Date</span>
                     <span class="download-meta-val">${escapeHtml(p.releaseDate || 'Nov 18, 2026')}</span>
-                  </div>
-                  <div class="download-meta-item">
-                    <span class="download-meta-label">Status</span>
-                    <span class="download-meta-val" style="color:${ready ? 'var(--success)' : 'var(--warning)'};">
-                      ${ready ? 'HTTPS Ready' : 'Coming Soon'}
-                    </span>
                   </div>
                 </div>
 
