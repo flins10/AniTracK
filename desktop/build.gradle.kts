@@ -23,6 +23,14 @@ sourceSets {
     }
 }
 
+tasks.withType<Copy>().configureEach {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+tasks.withType<ProcessResources>().configureEach {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
 tasks.register("syncWebAssets") {
     doLast {
         project.copy {
