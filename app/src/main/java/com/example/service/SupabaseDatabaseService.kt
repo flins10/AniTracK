@@ -621,11 +621,10 @@ class SupabaseDatabaseService {
             return@withContext Result.success(existing)
         }
         val baseName = preferredUsername.trim()
-            .ifBlank { session.pendingUsername.trim() }
-            .ifBlank { session.email.substringBefore("@").trim() }
-            .ifBlank { "Member" }
-            .take(32)
-        val safeName = if (baseName.length < 2) "${baseName}_fan" else baseName
+            .takeIf { it.isNotBlank() && !it.contains("@") }
+            ?: session.pendingUsername.trim().takeIf { it.isNotBlank() && !it.contains("@") }
+            ?: "traveler_${session.userId.replace("-", "").take(8).ifBlank { "member" }}"
+        val safeName = if (baseName.length < 2) "traveler_${session.userId.replace("-", "").take(8)}" else baseName.take(32)
         val avatarKey = preferredAvatarKey.ifBlank { session.pendingAvatarKey }.ifBlank { "avatar_1" }
 
         try {

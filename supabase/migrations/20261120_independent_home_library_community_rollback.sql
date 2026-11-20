@@ -51,7 +51,8 @@ END;
 $$;
 
 -- 4. Restore prior community_anime_stats_view
-CREATE OR REPLACE VIEW public.community_anime_stats_view AS
+CREATE OR REPLACE VIEW public.community_anime_stats_view
+WITH (security_invoker = true) AS
 SELECT
     ua.anime_id,
     COUNT(ua.id)::INTEGER AS tracking_count,

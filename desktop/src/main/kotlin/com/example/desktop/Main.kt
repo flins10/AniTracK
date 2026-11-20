@@ -400,9 +400,18 @@ data class DesktopPersistedState(
     val username: String = "Wanderer",
     val avatarKey: String = DesktopAvatar.AVATAR_3.key,
     val isGuest: Boolean = false,
+    val onboardingCompleted: Boolean = true,
     val watchlist: List<DesktopAnimeItem> = emptyList(),
     val collections: List<DesktopCollectionItem> = emptyList()
 )
+
+private fun isDesktopPlaceholderOrEmailName(name: String?): Boolean {
+    val clean = name?.trim().orEmpty()
+    return clean.isBlank() ||
+        clean.contains("@") ||
+        clean.startsWith("traveler_", ignoreCase = true) ||
+        clean.equals("Wanderer", ignoreCase = true)
+}
 
 private data class DesktopActiveIdentity(
     val mode: String = "none",
@@ -719,16 +728,25 @@ private suspend fun signInSupabase(identifier: String, password: String): Result
             val userObj = obj.getAsJsonObject("user")
             val userId = userObj?.get("id").asStringOrNull().orEmpty()
             val userEmail = userObj?.get("email").asStringOrNull() ?: email
-            val fallbackName = if (!identifier.contains("@") && identifier.isNotBlank()) identifier.trim() else userEmail.substringBefore("@")
+            val metaObj = userObj?.getAsJsonObject("user_metadata")
+            val metaUsername = metaObj?.get("username").asStringOrNull()?.trim().orEmpty()
+            val metaAvatar = metaObj?.get("avatar_key").asStringOrNull()?.trim().orEmpty()
+            val metaOnboarded = metaObj?.get("onboarding_completed")?.takeIf { !it.isJsonNull }?.asBoolean ?: true
+            val safeName = when {
+                !isDesktopPlaceholderOrEmailName(metaUsername) -> metaUsername
+                !identifier.contains("@") && identifier.isNotBlank() -> identifier.trim()
+                else -> ""
+            }
             DesktopPersistedState(
                 accessToken = token,
                 refreshToken = refresh,
                 expiresAt = (System.currentTimeMillis() / 1000L) + expiresIn,
                 userId = userId,
                 email = userEmail,
-                username = fallbackName,
-                avatarKey = DesktopAvatar.AVATAR_3.key,
-                isGuest = false
+                username = safeName,
+                avatarKey = DesktopAvatar.fromKey(metaAvatar).key,
+                isGuest = false,
+                onboardingCompleted = metaOnboarded && !isDesktopPlaceholderOrEmailName(safeName)
             )
         }
     }
@@ -743,9 +761,13 @@ private suspend fun signUpSupabase(emailInput: String, password: String): Result
         if (!email.contains("@") || !email.contains(".")) {
             throw IllegalArgumentException("Please enter a valid email address to create an account.")
         }
+        val userMeta = JsonObject().apply {
+            addProperty("onboarding_completed", false)
+        }
         val payload = JsonObject().apply {
             addProperty("email", email)
             addProperty("password", password)
+            add("data", userMeta)
         }
         val req = Request.Builder()
             .url("$SUPABASE_URL/auth/v1/signup")
@@ -781,9 +803,10 @@ private suspend fun signUpSupabase(emailInput: String, password: String): Result
                 expiresAt = (System.currentTimeMillis() / 1000L) + expiresIn,
                 userId = userId,
                 email = email,
-                username = email.substringBefore("@"),
+                username = "",
                 avatarKey = DesktopAvatar.AVATAR_1.key,
-                isGuest = false
+                isGuest = false,
+                onboardingCompleted = false
             )
         }
     }
@@ -831,9 +854,10 @@ private suspend fun verifySignupOtpSupabase(emailInput: String, otpCode: String)
                 expiresAt = (System.currentTimeMillis() / 1000L) + expiresIn,
                 userId = userId,
                 email = cleanEmail,
-                username = cleanEmail.substringBefore("@"),
+                username = "",
                 avatarKey = DesktopAvatar.AVATAR_1.key,
-                isGuest = false
+                isGuest = false,
+                onboardingCompleted = false
             )
         }
     }
@@ -1717,9 +1741,72 @@ private suspend fun updateProfileInSupabase(
             }
         }
 
-        val finalState = active.copy(username = cleanUsername, avatarKey = DesktopAvatar.fromKey(avatarKey).key)
+        // 3. Also sync Auth user metadata so onboarding_completed = true across all devices
+        runCatching {
+            val authMeta = JsonObject().apply {
+                add(
+                    "data",
+                    JsonObject().apply {
+                        addProperty("username", cleanUsername)
+                        addProperty("avatar_key", DesktopAvatar.fromKey(avatarKey).key)
+                        addProperty("onboarding_completed", true)
+                    }
+                )
+            }
+            val authReq = Request.Builder()
+                .url("$SUPABASE_URL/auth/v1/user")
+                .addHeader("apikey", SUPABASE_ANON_KEY)
+                .addHeader("Authorization", "Bearer ${active.accessToken}")
+                .addHeader("Content-Type", "application/json")
+                .put(gson.toJson(authMeta).toRequestBody("application/json".toMediaType()))
+                .build()
+            httpClient.newCall(authReq).execute().close()
+        }
+
+        val finalState = active.copy(
+            username = cleanUsername,
+            avatarKey = DesktopAvatar.fromKey(avatarKey).key,
+            onboardingCompleted = true
+        )
         DesktopStorage.saveActive(finalState)
         finalState
+    }
+}
+
+private suspend fun checkDesktopUsernameAvailable(
+    session: DesktopPersistedState,
+    username: String
+): Result<Unit> = withContext(Dispatchers.IO) {
+    val clean = username.trim()
+    if (clean.length !in 2..32) {
+        return@withContext Result.failure(IllegalArgumentException("Username must be between 2 and 32 characters."))
+    }
+    if (clean.contains("@")) {
+        return@withContext Result.failure(IllegalArgumentException("Usernames cannot contain @ or be an email address."))
+    }
+    if (!clean.matches(Regex("^[A-Za-z0-9_ .-]+$"))) {
+        return@withContext Result.failure(IllegalArgumentException("Use letters, numbers, spaces, dots, hyphens, or underscores."))
+    }
+    runCatching {
+        val active = refreshTokenIfNeeded(session)
+        val payload = JsonObject().apply { addProperty("p_username", clean) }
+        val req = Request.Builder()
+            .url("$SUPABASE_URL/rest/v1/rpc/check_username_status")
+            .addHeader("apikey", SUPABASE_ANON_KEY)
+            .addHeader("Authorization", "Bearer ${active.accessToken.ifBlank { SUPABASE_ANON_KEY }}")
+            .addHeader("Content-Type", "application/json")
+            .post(gson.toJson(payload).toRequestBody("application/json".toMediaType()))
+            .build()
+        httpClient.newCall(req).execute().use { resp ->
+            if (resp.isSuccessful) {
+                val obj = gson.fromJson(resp.body?.string().orEmpty(), JsonObject::class.java)
+                val available = obj?.get("available")?.takeIf { !it.isJsonNull }?.asBoolean ?: true
+                if (!available) {
+                    val reason = obj?.get("reason").asStringOrNull() ?: "That username is already taken. Please pick another."
+                    throw IllegalArgumentException(reason)
+                }
+            }
+        }
     }
 }
 
@@ -1990,7 +2077,11 @@ fun AnimeUniverseDesktopRoot() {
             )
             if (nowMs >= profileDirtyUntilMs) {
                 if (!snap.username.isNullOrBlank()) {
-                    nextState = nextState.copy(username = snap.username)
+                    if (isDesktopPlaceholderOrEmailName(snap.username)) {
+                        nextState = nextState.copy(username = "", onboardingCompleted = false)
+                    } else {
+                        nextState = nextState.copy(username = snap.username, onboardingCompleted = true)
+                    }
                 }
                 if (!snap.avatarKey.isNullOrBlank()) {
                     nextState = nextState.copy(avatarKey = snap.avatarKey)
@@ -2266,17 +2357,25 @@ fun AnimeUniverseDesktopRoot() {
         discoverLoading = false
     }
 
-    if (!isAuthenticated && !isGuestMode) {
+    val needsDesktopOnboarding = isAuthenticated &&
+        (!sessionState.onboardingCompleted || isDesktopPlaceholderOrEmailName(sessionState.username))
+
+    if ((!isAuthenticated && !isGuestMode) || needsDesktopOnboarding) {
         DesktopAuthScreen(
+            pendingOnboardingSession = if (needsDesktopOnboarding) sessionState else null,
             onAuthenticated = { newSession ->
                 val prevGuestId = DesktopStorage.getOrCreateGuestId()
                 val guestItemsToMigrate = DesktopStorage.loadGuest(prevGuestId).watchlist
                 val existingUserState = DesktopStorage.loadUser(newSession.userId)
+                val resolvedName = newSession.username.takeIf { !isDesktopPlaceholderOrEmailName(it) }
+                    ?: existingUserState.username.takeIf { !isDesktopPlaceholderOrEmailName(it) }
+                    ?: ""
                 val mergedSession = newSession.copy(
                     isGuest = false,
                     guestId = "",
-                    username = existingUserState.username.takeIf { it.isNotBlank() && it != "Wanderer" } ?: newSession.username,
-                    avatarKey = existingUserState.avatarKey.ifBlank { newSession.avatarKey },
+                    username = resolvedName,
+                    avatarKey = newSession.avatarKey.ifBlank { existingUserState.avatarKey.ifBlank { DesktopAvatar.AVATAR_1.key } },
+                    onboardingCompleted = newSession.onboardingCompleted && !isDesktopPlaceholderOrEmailName(resolvedName),
                     watchlist = existingUserState.watchlist,
                     collections = existingUserState.collections
                 )
@@ -2792,12 +2891,24 @@ fun AnimeUniverseDesktopRoot() {
 
 @Composable
 private fun DesktopAuthScreen(
+    pendingOnboardingSession: DesktopPersistedState? = null,
     onAuthenticated: (DesktopPersistedState) -> Unit,
     onContinueGuest: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
     var isSignUp by remember { mutableStateOf(false) }
     var awaitingOtp by remember { mutableStateOf(false) }
+    // 0 = Sign in / Sign up, 1 = Choose Username, 2 = Choose Profile Picture
+    var onboardingStep by remember(pendingOnboardingSession?.userId) {
+        mutableStateOf(if (pendingOnboardingSession != null) 1 else 0)
+    }
+    var onboardingSession by remember(pendingOnboardingSession?.userId) {
+        mutableStateOf(pendingOnboardingSession)
+    }
+    var onboardUsername by remember(pendingOnboardingSession?.userId) { mutableStateOf("") }
+    var onboardAvatarKey by remember(pendingOnboardingSession?.userId) {
+        mutableStateOf(pendingOnboardingSession?.avatarKey?.ifBlank { DesktopAvatar.AVATAR_1.key } ?: DesktopAvatar.AVATAR_1.key)
+    }
     var pendingEmail by remember { mutableStateOf("") }
     var otpCode by remember { mutableStateOf("") }
     var identifier by remember { mutableStateOf("") }
@@ -2836,7 +2947,256 @@ private fun DesktopAuthScreen(
                         .fillMaxWidth()
                         .padding(top = 158.dp)
                 ) {
-                    if (awaitingOtp) {
+                    if (onboardingStep == 1 && onboardingSession != null) {
+                        Column(
+                            modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 36.dp, bottom = 26.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = "STEP 1 OF 2 • USERNAME",
+                                color = ChampagneGold,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                letterSpacing = 1.6.sp
+                            )
+                            Text(
+                                text = "Choose Your Username",
+                                fontFamily = FontFamily.Serif,
+                                fontSize = 26.sp,
+                                color = IvoryText
+                            )
+                            Text(
+                                text = "Pick a unique display name so your email stays private in Community.",
+                                color = WarmSilver,
+                                fontSize = 13.sp,
+                                textAlign = TextAlign.Center
+                            )
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = Color(0xFF151823),
+                                border = BorderStroke(1.dp, Color(0xFF2A2F3F)),
+                                modifier = Modifier.fillMaxWidth().height(54.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    Icon(Icons.Filled.Person, contentDescription = null, tint = ChampagneGold, modifier = Modifier.size(19.dp))
+                                    Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                                        if (onboardUsername.isEmpty()) {
+                                            Text("e.g. GojoFan", color = AshMuted, fontSize = 15.sp)
+                                        }
+                                        androidx.compose.foundation.text.BasicTextField(
+                                            value = onboardUsername,
+                                            onValueChange = { raw ->
+                                                onboardUsername = raw.take(32)
+                                                errorMessage = null
+                                            },
+                                            singleLine = true,
+                                            textStyle = androidx.compose.ui.text.TextStyle(
+                                                color = IvoryText,
+                                                fontSize = 15.sp,
+                                                fontWeight = FontWeight.Medium
+                                            ),
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+                                    }
+                                }
+                            }
+                            if (!errorMessage.isNullOrBlank()) {
+                                Text(errorMessage!!, color = CrimsonWaste, fontSize = 12.5.sp, textAlign = TextAlign.Center)
+                            }
+                            if (!infoMessage.isNullOrBlank()) {
+                                Text(infoMessage!!, color = ChampagneGold, fontSize = 12.5.sp, textAlign = TextAlign.Center)
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(54.dp)
+                                    .clip(CircleShape)
+                                    .background(Brush.horizontalGradient(listOf(Color(0xFFF3E2BA), Color(0xFFDFB870))))
+                                    .clickable(enabled = !isLoading) {
+                                        val activeSess = onboardingSession ?: return@clickable
+                                        isLoading = true
+                                        errorMessage = null
+                                        scope.launch {
+                                            val checkRes = checkDesktopUsernameAvailable(activeSess, onboardUsername)
+                                            isLoading = false
+                                            checkRes.onSuccess {
+                                                onboardUsername = onboardUsername.trim()
+                                                infoMessage = null
+                                                onboardingStep = 2
+                                            }.onFailure { err ->
+                                                errorMessage = err.message ?: "Please choose a different username."
+                                            }
+                                        }
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    if (isLoading) "CHECKING..." else "CONTINUE TO PROFILE PICTURE ›",
+                                    color = ChampagneOnGold,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    letterSpacing = 1.4.sp
+                                )
+                            }
+                        }
+                    } else if (onboardingStep == 2 && onboardingSession != null) {
+                        Column(
+                            modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 36.dp, bottom = 26.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = "STEP 2 OF 2 • PROFILE PICTURE",
+                                color = ChampagneGold,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                letterSpacing = 1.6.sp
+                            )
+                            Text(
+                                text = "Choose Your Profile Picture",
+                                fontFamily = FontFamily.Serif,
+                                fontSize = 25.sp,
+                                color = IvoryText,
+                                textAlign = TextAlign.Center
+                            )
+                            Text(
+                                text = "Select a portrait for $onboardUsername",
+                                color = WarmSilver,
+                                fontSize = 13.sp,
+                                textAlign = TextAlign.Center
+                            )
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(12.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                DesktopAvatar.entries.chunked(3).forEach { rowAvatars ->
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceEvenly
+                                    ) {
+                                        rowAvatars.forEach { av ->
+                                            val selected = onboardAvatarKey == av.key
+                                            val bmp = remember(av.fileName) { loadLocalDrawableBitmap(av.fileName) }
+                                            Column(
+                                                horizontalAlignment = Alignment.CenterHorizontally,
+                                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(14.dp))
+                                                    .clickable {
+                                                        onboardAvatarKey = av.key
+                                                        errorMessage = null
+                                                    }
+                                                    .padding(4.dp)
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(66.dp)
+                                                        .clip(CircleShape)
+                                                        .background(Brush.linearGradient(listOf(av.primaryColor, av.secondaryColor)))
+                                                        .border(
+                                                            width = if (selected) 3.dp else 1.dp,
+                                                            color = if (selected) ChampagneGold else Color.White.copy(alpha = 0.22f),
+                                                            shape = CircleShape
+                                                        ),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    if (bmp != null) {
+                                                        Image(
+                                                            bitmap = bmp,
+                                                            contentDescription = av.displayName,
+                                                            contentScale = ContentScale.Crop,
+                                                            modifier = Modifier.fillMaxSize().clip(CircleShape)
+                                                        )
+                                                    }
+                                                    if (selected) {
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .align(Alignment.BottomEnd)
+                                                                .size(20.dp)
+                                                                .clip(CircleShape)
+                                                                .background(ChampagneGold),
+                                                            contentAlignment = Alignment.Center
+                                                        ) {
+                                                            Icon(
+                                                                Icons.Filled.Check,
+                                                                contentDescription = null,
+                                                                tint = ChampagneOnGold,
+                                                                modifier = Modifier.size(13.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                                Text(
+                                                    text = av.displayName.substringBefore(" "),
+                                                    color = if (selected) ChampagneGold else WarmSilver,
+                                                    fontSize = 11.sp,
+                                                    maxLines = 1
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if (!errorMessage.isNullOrBlank()) {
+                                Text(errorMessage!!, color = CrimsonWaste, fontSize = 12.5.sp, textAlign = TextAlign.Center)
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(54.dp)
+                                    .clip(CircleShape)
+                                    .background(Brush.horizontalGradient(listOf(Color(0xFFF3E2BA), Color(0xFFDFB870))))
+                                    .clickable(enabled = !isLoading) {
+                                        val activeSess = onboardingSession ?: return@clickable
+                                        isLoading = true
+                                        errorMessage = null
+                                        scope.launch {
+                                            val saveRes = updateProfileInSupabase(
+                                                session = activeSess,
+                                                username = onboardUsername.trim(),
+                                                avatarKey = onboardAvatarKey
+                                            )
+                                            isLoading = false
+                                            saveRes.onSuccess { completed ->
+                                                onboardingStep = 0
+                                                onboardingSession = null
+                                                onAuthenticated(completed.copy(onboardingCompleted = true))
+                                            }.onFailure { err ->
+                                                errorMessage = err.message ?: "Could not save profile."
+                                                if ((err.message ?: "").contains("username", ignoreCase = true) ||
+                                                    (err.message ?: "").contains("taken", ignoreCase = true)
+                                                ) {
+                                                    onboardingStep = 1
+                                                }
+                                            }
+                                        }
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    if (isLoading) "SAVING PROFILE..." else "ENTER ANIME UNIVERSE",
+                                    color = ChampagneOnGold,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    letterSpacing = 1.6.sp
+                                )
+                            }
+                            Text(
+                                text = "‹ Change Username",
+                                color = WarmSilver,
+                                fontSize = 13.sp,
+                                modifier = Modifier.clickable(enabled = !isLoading) {
+                                    errorMessage = null
+                                    onboardingStep = 1
+                                }
+                            )
+                        }
+                    } else if (awaitingOtp) {
                         Column(
                             modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 36.dp, bottom = 26.dp),
                             verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -2849,7 +3209,7 @@ private fun DesktopAuthScreen(
                                 color = IvoryText
                             )
                             Text(
-                                text = "Enter the 8-digit verification code sent to $pendingEmail",
+                                text = "Enter the verification code sent to $pendingEmail",
                                 color = WarmSilver,
                                 fontSize = 13.sp,
                                 textAlign = TextAlign.Center
@@ -2905,8 +3265,17 @@ private fun DesktopAuthScreen(
                                         scope.launch {
                                             val res = verifySignupOtpSupabase(pendingEmail, otpCode)
                                             isLoading = false
-                                            res.onSuccess { state -> onAuthenticated(state) }
-                                                .onFailure { err -> errorMessage = err.message ?: "Invalid code" }
+                                            res.onSuccess { verifiedState ->
+                                                awaitingOtp = false
+                                                otpCode = ""
+                                                onboardingSession = verifiedState.copy(onboardingCompleted = false, username = "")
+                                                onboardUsername = ""
+                                                onboardAvatarKey = DesktopAvatar.AVATAR_1.key
+                                                infoMessage = "Email verified! Choose your username and profile picture."
+                                                onboardingStep = 1
+                                            }.onFailure { err ->
+                                                errorMessage = err.message ?: "Invalid code"
+                                            }
                                         }
                                     },
                                 contentAlignment = Alignment.Center
@@ -2930,7 +3299,7 @@ private fun DesktopAuthScreen(
                                     modifier = Modifier.clickable {
                                         scope.launch {
                                             resendSignupOtpSupabase(pendingEmail)
-                                            infoMessage = "Fresh 8-digit code sent to $pendingEmail"
+                                            infoMessage = "Fresh verification code sent to $pendingEmail"
                                         }
                                     }
                                 )
@@ -3103,7 +3472,15 @@ private fun DesktopAuthScreen(
                                             }
                                             isLoading = false
                                             res.onSuccess { state ->
-                                                onAuthenticated(state)
+                                                if (!state.onboardingCompleted || isDesktopPlaceholderOrEmailName(state.username)) {
+                                                    onboardingSession = state.copy(onboardingCompleted = false, username = "")
+                                                    onboardUsername = ""
+                                                    onboardAvatarKey = DesktopAvatar.AVATAR_1.key
+                                                    infoMessage = "Choose your username and profile picture to finish setup."
+                                                    onboardingStep = 1
+                                                } else {
+                                                    onAuthenticated(state)
+                                                }
                                             }.onFailure { err ->
                                                 if (err is OtpVerificationRequiredException) {
                                                     pendingEmail = err.email

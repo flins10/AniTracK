@@ -540,8 +540,8 @@ class SupabaseAuthService(context: Context) {
         }
         val cleanEmail = email.trim()
         val cleanOtp = otpCode.trim().replace(" ", "")
-        if (cleanEmail.isBlank() || cleanOtp.length != 8) {
-            return@withContext Result.failure(Exception("Enter the 8-digit verification code from your email."))
+        if (cleanEmail.isBlank() || cleanOtp.length !in 6..8) {
+            return@withContext Result.failure(Exception("Enter the verification code from your email."))
         }
         try {
             val payload = JSONObject()

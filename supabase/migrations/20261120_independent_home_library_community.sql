@@ -197,18 +197,26 @@ WHERE COALESCE(ua.personal_rating, 0) > 0
    OR length(trim(COALESCE(ua.review_notes, ''))) > 0
 ON CONFLICT (user_id, anime_id) DO NOTHING;
 
--- 4.3 Backfill existing review_likes into community_note_likes
-INSERT INTO public.community_note_likes (user_id, note_id, created_at)
-SELECT
-    rl.user_id,
-    cn.id,
-    rl.created_at
-FROM public.review_likes rl
-JOIN public.user_anime ua ON ua.id = rl.review_id
-JOIN public.community_notes cn
-  ON cn.user_id = ua.user_id
- AND cn.anime_id = ua.anime_id
-ON CONFLICT (user_id, note_id) DO NOTHING;
+-- 4.3 Backfill existing review_likes into community_note_likes (only if legacy review_likes exists)
+DO $$
+BEGIN
+    IF to_regclass('public.review_likes') IS NOT NULL THEN
+        EXECUTE $q$
+            INSERT INTO public.community_note_likes (user_id, note_id, created_at)
+            SELECT
+                rl.user_id,
+                cn.id,
+                rl.created_at
+            FROM public.review_likes rl
+            JOIN public.user_anime ua ON ua.id = rl.review_id
+            JOIN public.community_notes cn
+              ON cn.user_id = ua.user_id
+             AND cn.anime_id = ua.anime_id
+            ON CONFLICT (user_id, note_id) DO NOTHING
+        $q$;
+    END IF;
+END;
+$$;
 
 -- ----------------------------------------------------------------------------
 -- 5. STRICT AUTOMATIC COMPLETION & DROPPED LIFECYCLE TRIGGERS
@@ -603,7 +611,8 @@ GRANT EXECUTE ON FUNCTION public.toggle_community_note_like(UUID) TO authenticat
 -- ----------------------------------------------------------------------------
 -- 7. UPDATED VIEW & ACCOUNT CLEANUP / STORAGE STATS FUNCTIONS
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE VIEW public.community_anime_stats_view AS
+CREATE OR REPLACE VIEW public.community_anime_stats_view
+WITH (security_invoker = true) AS
 SELECT
     a.anilist_id AS anime_id,
     COALESCE(lib.tracking_count, 0)::INTEGER AS tracking_count,
@@ -649,33 +658,36 @@ BEGIN
     SELECT u.email INTO v_email FROM auth.users u WHERE u.id = v_user_id;
     SELECT p.username INTO v_username FROM public.profiles p WHERE p.id = v_user_id;
 
-    DELETE FROM public.deleted_account_cooldowns
-    WHERE email_available_at <= NOW() AND username_available_at <= NOW();
+    IF to_regclass('public.deleted_account_cooldowns') IS NOT NULL THEN
+        EXECUTE 'DELETE FROM public.deleted_account_cooldowns WHERE email_available_at <= NOW() AND username_available_at <= NOW()';
 
-    IF COALESCE(trim(v_email), '') <> '' THEN
-        v_email_hash := encode(digest(lower(trim(v_email)), 'sha256'), 'hex');
-        DELETE FROM public.deleted_account_cooldowns WHERE email_hash = v_email_hash;
-        IF v_username IS NOT NULL AND trim(v_username) <> '' THEN
-            DELETE FROM public.deleted_account_cooldowns WHERE username_lower = lower(trim(v_username));
+        IF COALESCE(trim(v_email), '') <> '' THEN
+            v_email_hash := encode(digest(lower(trim(v_email)), 'sha256'), 'hex');
+            EXECUTE 'DELETE FROM public.deleted_account_cooldowns WHERE email_hash = $1' USING v_email_hash;
+            IF v_username IS NOT NULL AND trim(v_username) <> '' THEN
+                EXECUTE 'DELETE FROM public.deleted_account_cooldowns WHERE username_lower = $1' USING lower(trim(v_username));
+            END IF;
+
+            EXECUTE $q$
+                INSERT INTO public.deleted_account_cooldowns (
+                    email_hash,
+                    email_available_at,
+                    username_lower,
+                    username_available_at,
+                    deleted_user_id
+                ) VALUES (
+                    $1,
+                    NOW() + INTERVAL '5 minutes',
+                    CASE
+                        WHEN $2 IS NOT NULL AND lower(trim($2)) NOT LIKE 'traveler_%'
+                        THEN lower(trim($2))
+                        ELSE NULL
+                    END,
+                    NOW() + INTERVAL '24 hours',
+                    $3
+                )
+            $q$ USING v_email_hash, v_username, v_user_id;
         END IF;
-
-        INSERT INTO public.deleted_account_cooldowns (
-            email_hash,
-            email_available_at,
-            username_lower,
-            username_available_at,
-            deleted_user_id
-        ) VALUES (
-            v_email_hash,
-            NOW() + INTERVAL '5 minutes',
-            CASE
-                WHEN v_username IS NOT NULL AND lower(trim(v_username)) NOT LIKE 'traveler_%'
-                THEN lower(trim(v_username))
-                ELSE NULL
-            END,
-            NOW() + INTERVAL '24 hours',
-            v_user_id
-        );
     END IF;
 
     BEGIN
@@ -698,14 +710,18 @@ BEGIN
     DELETE FROM public.home_tracking WHERE user_id = v_user_id;
     DELETE FROM public.community_note_likes WHERE user_id = v_user_id;
     DELETE FROM public.community_notes WHERE user_id = v_user_id;
-    DELETE FROM public.review_likes WHERE user_id = v_user_id;
+    IF to_regclass('public.review_likes') IS NOT NULL THEN
+        EXECUTE 'DELETE FROM public.review_likes WHERE user_id = $1' USING v_user_id;
+    END IF;
     DELETE FROM public.user_anime WHERE user_id = v_user_id;
     DELETE FROM public.privacy_settings WHERE user_id = v_user_id;
     DELETE FROM public.community_members WHERE user_id = v_user_id;
     IF to_regclass('public.user_push_tokens') IS NOT NULL THEN
         EXECUTE 'DELETE FROM public.user_push_tokens WHERE user_id = $1' USING v_user_id;
     END IF;
-    UPDATE public.invitations SET created_by = NULL WHERE created_by = v_user_id;
+    IF to_regclass('public.invitations') IS NOT NULL THEN
+        EXECUTE 'UPDATE public.invitations SET created_by = NULL WHERE created_by = $1' USING v_user_id;
+    END IF;
     DELETE FROM public.profiles WHERE id = v_user_id;
 
     DELETE FROM auth.users WHERE id = v_user_id;
@@ -750,11 +766,13 @@ BEGIN
         RAISE EXCEPTION 'Authentication required';
     END IF;
 
-    DELETE FROM public.deleted_account_cooldowns
-    WHERE email_available_at <= NOW() AND username_available_at <= NOW();
+    IF to_regclass('public.deleted_account_cooldowns') IS NOT NULL THEN
+        EXECUTE 'DELETE FROM public.deleted_account_cooldowns WHERE email_available_at <= NOW() AND username_available_at <= NOW()';
+    END IF;
 
-    DELETE FROM public.invitations
-    WHERE expires_at <= NOW() - INTERVAL '7 days' AND uses_count = 0;
+    IF to_regclass('public.invitations') IS NOT NULL THEN
+        EXECUTE 'DELETE FROM public.invitations WHERE expires_at <= NOW() - INTERVAL ''7 days'' AND uses_count = 0';
+    END IF;
 
     SELECT pg_database_size(current_database()) INTO v_total_db_bytes;
     v_usage_pct := ROUND((v_total_db_bytes::NUMERIC / v_limit_bytes::NUMERIC) * 100.0, 2);

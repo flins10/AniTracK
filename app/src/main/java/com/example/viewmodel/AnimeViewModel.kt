@@ -135,9 +135,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             UserProfile(
                 id = initialFastSession.userId,
                 email = initialFastSession.email,
-                username = initialFastSession.pendingUsername.ifBlank {
-                    initialFastSession.email.substringBefore("@").ifBlank { "Member" }
-                },
+                username = initialFastSession.pendingUsername.takeIf { it.isNotBlank() && !it.contains("@") } ?: "Member",
                 avatarKey = initialFastSession.pendingAvatarKey.ifBlank { BuiltInAvatar.AVATAR_1.key },
                 memberStatus = MemberStatus.ACTIVE
             )
@@ -327,9 +325,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
         return _userProfile.value ?: UserProfile(
             id = session.userId,
             email = session.email,
-            username = session.pendingUsername.ifBlank {
-                session.email.substringBefore("@").ifBlank { "Member" }
-            },
+            username = session.pendingUsername.takeIf { it.isNotBlank() && !it.contains("@") } ?: "Member",
             avatarKey = session.pendingAvatarKey.ifBlank { BuiltInAvatar.AVATAR_1.key },
             memberStatus = MemberStatus.ACTIVE
         )
@@ -1017,8 +1013,8 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             _authError.value = "Enter your email address first."
             return
         }
-        if (cleanCode.length != 8) {
-            _authError.value = "Enter the 8-digit code sent to your email."
+        if (cleanCode.length !in 6..8) {
+            _authError.value = "Enter the verification code sent to your email."
             return
         }
         viewModelScope.launch {
@@ -1035,13 +1031,18 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                 _isLocalPreviewMode.value = false
                 _needsInviteRedemption.value = false
                 val existingProfile = supabaseDb.fetchCurrentProfile(session).getOrNull()
-                val needsOnboarding = !session.onboardingCompleted ||
-                    existingProfile == null ||
-                    existingProfile.username.startsWith("traveler_", ignoreCase = true)
+                val emailPrefix = targetEmail.substringBefore("@").trim()
+                val looksLikeEmailOrPlaceholder = existingProfile == null ||
+                    existingProfile.username.isBlank() ||
+                    existingProfile.username.startsWith("traveler_", ignoreCase = true) ||
+                    existingProfile.username.contains("@") ||
+                    (emailPrefix.isNotBlank() && existingProfile.username.equals(emailPrefix, ignoreCase = true))
+                val needsOnboarding = !session.onboardingCompleted || looksLikeEmailOrPlaceholder
                 if (needsOnboarding) {
+                    _pendingOnboardingUsername.value = ""
                     _userProfile.value = existingProfile
                     _onboardingStage.value = OnboardingStage.USERNAME
-                    _userMessage.value = "Email verified! Claim your unique username."
+                    _userMessage.value = "Email verified! Choose your username and profile picture."
                 } else {
                     _onboardingStage.value = OnboardingStage.NONE
                     _userProfile.value = existingProfile

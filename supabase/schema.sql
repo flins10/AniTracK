@@ -199,6 +199,7 @@ CREATE TRIGGER trg_privacy_settings_updated_at
     FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
 
 -- Auto-create personal profile & default private settings on Auth Sign Up
+-- Privacy rule: NEVER derive public username from the user's email address.
 CREATE OR REPLACE FUNCTION public.handle_new_auth_user()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -206,16 +207,18 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
-    v_onboarding_pending BOOLEAN := COALESCE(lower(NEW.raw_user_meta_data->>'onboarding_completed'), 'true') = 'false';
+    v_onboarding_pending BOOLEAN := COALESCE(lower(NEW.raw_user_meta_data->>'onboarding_completed'), 'false') = 'false';
+    v_meta_username TEXT := trim(COALESCE(NEW.raw_user_meta_data->>'username', ''));
     v_raw_name TEXT := CASE
-        WHEN v_onboarding_pending THEN 'traveler_' || left(replace(NEW.id::text, '-', ''), 8)
-        ELSE trim(COALESCE(NEW.raw_user_meta_data->>'username', split_part(COALESCE(NEW.email, ''), '@', 1), 'Member'))
+        WHEN v_onboarding_pending OR v_meta_username = '' OR position('@' in v_meta_username) > 0
+            THEN 'traveler_' || left(replace(NEW.id::text, '-', ''), 8)
+        ELSE v_meta_username
     END;
     v_clean_name TEXT;
     v_avatar_key TEXT := COALESCE(NULLIF(trim(NEW.raw_user_meta_data->>'avatar_key'), ''), 'avatar_1');
 BEGIN
     IF char_length(v_raw_name) < 2 THEN
-        v_raw_name := 'Member_' || substring(NEW.id::text from 1 for 4);
+        v_raw_name := 'traveler_' || left(replace(NEW.id::text, '-', ''), 8);
     END IF;
     v_clean_name := left(v_raw_name, 32);
 
@@ -230,7 +233,7 @@ BEGIN
     RETURN NEW;
 EXCEPTION WHEN unique_violation THEN
     INSERT INTO public.profiles (id, username, avatar_key, role, can_generate_invites)
-    VALUES (NEW.id, left(v_clean_name, 26) || '_' || substring(NEW.id::text from 1 for 4), v_avatar_key, 'member', FALSE)
+    VALUES (NEW.id, 'traveler_' || left(replace(NEW.id::text, '-', ''), 12), v_avatar_key, 'member', FALSE)
     ON CONFLICT (id) DO NOTHING;
     INSERT INTO public.privacy_settings (user_id) VALUES (NEW.id) ON CONFLICT (user_id) DO NOTHING;
     RETURN NEW;
@@ -1354,7 +1357,8 @@ $$;
 REVOKE ALL ON FUNCTION public.toggle_review_like(UUID) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.toggle_review_like(UUID) TO authenticated;
 
-CREATE OR REPLACE VIEW public.community_anime_stats_view AS
+CREATE OR REPLACE VIEW public.community_anime_stats_view
+WITH (security_invoker = true) AS
 SELECT
     ua.anime_id,
     COUNT(ua.id)::INTEGER AS tracking_count,

@@ -204,10 +204,16 @@ function readScopedArray(kind, sessionObj, isGuest, guestId) {
   }
 }
 
+function isPlaceholderOrEmailName(name) {
+  const clean = String(name || '').trim();
+  return !clean || clean.includes('@') || /^traveler_/i.test(clean);
+}
+
 function readScopedProfile(sessionObj, isGuest, guestId) {
   const key = getStorageKeyForIdentity('profile', sessionObj, isGuest, guestId);
+  const safeSessionName = sessionObj && !isPlaceholderOrEmailName(sessionObj.username) ? sessionObj.username : 'Member';
   const defaultUsername = sessionObj
-    ? (sessionObj.username || (sessionObj.email ? sessionObj.email.split('@')[0] : 'Member'))
+    ? safeSessionName
     : isGuest
     ? 'Guest Tracker'
     : 'Member';
@@ -967,15 +973,29 @@ async function loadCloudData(silent = false) {
     const cmStatus = Array.isArray(cmRows) && cmRows.length > 0 ? cmRows[0].status : '';
     if (Array.isArray(prof) && prof.length > 0) {
       const p = prof.find((row) => !row.id || row.id === activeUserId) || prof[0];
+      const loadedName = String(p.username || '').trim();
+      const needsProfileSetup =
+        state.session?.onboardingCompleted === false || isPlaceholderOrEmailName(loadedName);
       state.profile = {
         userId: activeUserId,
-        username: p.username || state.session.username || 'Member',
+        username: isPlaceholderOrEmailName(loadedName) ? 'Member' : loadedName,
         avatarKey: normalizeAvatarKey(p.avatar_key, p.avatar_url),
         bio: p.bio || '',
         memberStatus: cmStatus || p.member_status || 'active',
         isAdmin: Boolean(p.is_admin)
       };
       saveProfileCache();
+      if (needsProfileSetup && state.session) {
+        if (state.session.onboardingCompleted !== false) {
+          saveSession({ ...state.session, onboardingCompleted: false, username: '' });
+        }
+        if (state.authMode !== 'onboard_username' && state.authMode !== 'onboard_avatar') {
+          state.onboardUsername = '';
+          state.authMode = 'onboard_username';
+        }
+      } else if (state.session && !isPlaceholderOrEmailName(loadedName) && state.session.username !== loadedName) {
+        saveSession({ ...state.session, username: loadedName, onboardingCompleted: true });
+      }
     }
 
     await loadCommunityReviews();
@@ -2976,17 +2996,22 @@ function renderAuthScreen() {
               `
               : state.authMode === 'onboard_username'
               ? `
-                <div class="micro-label" style="color:var(--accent-primary);text-align:center;">STEP 1 OF 2 • IDENTITY</div>
-                <h2 class="serif-heading" style="font-size:26px;text-align:center;">Claim Your Identity</h2>
-                <p style="font-size:12.5px;color:var(--text-secondary);text-align:center;">Choose your unique Anime Universe handle.</p>
+                <div class="micro-label" style="color:var(--accent-primary);text-align:center;">STEP 1 OF 2 • USERNAME</div>
+                <h2 class="serif-heading" style="font-size:26px;text-align:center;">Choose Your Username</h2>
+                <p style="font-size:12.5px;color:var(--text-secondary);text-align:center;">Pick a unique display name so your email stays private in Community.</p>
                 ${state.authError ? `<div style="color:var(--error);font-size:12.5px;text-align:center;">${escapeHtml(state.authError)}</div>` : ''}
-                <input id="inp-onboard-user" class="auth-input" placeholder="Username (e.g. Lauma)" value="${escapeHtml(state.onboardUsername)}" />
-                <button class="btn-primary" id="btn-onboard-next">CONTINUE ›</button>
+                ${state.authInfo ? `<div style="color:var(--accent-primary);font-size:12.5px;text-align:center;">${escapeHtml(state.authInfo)}</div>` : ''}
+                <input id="inp-onboard-user" class="auth-input" maxlength="32" placeholder="Choose a username (e.g. GojoFan)" value="${escapeHtml(state.onboardUsername)}" />
+                <button class="btn-primary" id="btn-onboard-next" ${state.loading ? 'disabled' : ''}>
+                  ${state.loading ? 'CHECKING...' : 'CONTINUE TO PROFILE PICTURE ›'}
+                </button>
               `
               : state.authMode === 'onboard_avatar'
               ? `
-                <div class="micro-label" style="color:var(--accent-primary);text-align:center;">STEP 2 OF 2 • PORTRAIT</div>
-                <h2 class="serif-heading" style="font-size:26px;text-align:center;">Select Your Royal Portrait</h2>
+                <div class="micro-label" style="color:var(--accent-primary);text-align:center;">STEP 2 OF 2 • PROFILE PICTURE</div>
+                <h2 class="serif-heading" style="font-size:26px;text-align:center;">Choose Your Profile Picture</h2>
+                <p style="font-size:12.5px;color:var(--text-secondary);text-align:center;">Pick an avatar for <strong style="color:var(--text-primary);">${escapeHtml(state.onboardUsername)}</strong>.</p>
+                ${state.authError ? `<div style="color:var(--error);font-size:12.5px;text-align:center;">${escapeHtml(state.authError)}</div>` : ''}
                 <div class="round-avatar-carousel">
                   ${BUILT_IN_AVATARS.map(
                     (av) => `
@@ -3001,7 +3026,12 @@ function renderAuthScreen() {
                     </div>`
                   ).join('')}
                 </div>
-                <button class="btn-primary" id="btn-onboard-finish">ENTER ANIME UNIVERSE</button>
+                <button class="btn-primary" id="btn-onboard-finish" ${state.loading ? 'disabled' : ''}>
+                  ${state.loading ? 'SAVING PROFILE...' : 'ENTER ANIME UNIVERSE'}
+                </button>
+                <button type="button" class="btn-secondary" id="btn-onboard-back" style="width:100%;height:42px;font-size:12.5px;" ${state.loading ? 'disabled' : ''}>
+                  ‹ Change Username
+                </button>
               `
               : `
                 ${state.authError ? `<div style="color:var(--error);font-size:12.5px;text-align:center;">${escapeHtml(state.authError)}</div>` : ''}
@@ -3941,7 +3971,17 @@ function renderApp() {
   const root = document.getElementById('app');
   if (!root) return;
 
-  if (!state.session && !state.isGuestMode && state.tab !== 'downloads') {
+  const needsOnboarding = Boolean(
+    state.session &&
+      (state.authMode === 'onboard_username' ||
+        state.authMode === 'onboard_avatar' ||
+        state.session.onboardingCompleted === false)
+  );
+  if (needsOnboarding && state.authMode !== 'onboard_username' && state.authMode !== 'onboard_avatar') {
+    state.authMode = 'onboard_username';
+  }
+
+  if (((!state.session && !state.isGuestMode) || needsOnboarding) && state.tab !== 'downloads') {
     root.innerHTML = renderAuthScreen();
     bindAuthEvents();
     return;
@@ -4147,13 +4187,17 @@ function bindAuthEvents() {
           type: 'recovery'
         });
         if (!verifyData.access_token) throw new Error('Invalid or expired recovery code.');
+        const recoveredMetaName = String(verifyData.user?.user_metadata?.username || '').trim();
+        const recoveredOnboarded =
+          verifyData.user?.user_metadata?.onboarding_completed !== false && !isPlaceholderOrEmailName(recoveredMetaName);
         saveSession({
           accessToken: verifyData.access_token,
           refreshToken: verifyData.refresh_token || '',
           expiresAt: Math.floor(Date.now() / 1000) + (verifyData.expires_in || 3600),
           userId: verifyData.user?.id,
           email: verifyData.user?.email || targetEmail,
-          username: verifyData.user?.user_metadata?.username || targetEmail.split('@')[0]
+          username: recoveredOnboarded ? recoveredMetaName : '',
+          onboardingCompleted: recoveredOnboarded
         });
         await supabaseRequest('/auth/v1/user', 'PUT', { password: state.resetNewPassword });
         await loadCloudData();
@@ -4216,9 +4260,12 @@ function bindAuthEvents() {
           expiresAt: Math.floor(Date.now() / 1000) + (data.expires_in || 3600),
           userId: data.user?.id,
           email: data.user?.email || targetEmail,
-          username: targetEmail.split('@')[0]
+          username: '',
+          onboardingCompleted: false
         });
-        state.onboardUsername = targetEmail.split('@')[0];
+        state.onboardUsername = '';
+        state.onboardAvatarKey = 'avatar_1';
+        state.authInfo = 'Email verified! Choose your username and profile picture.';
         state.authMode = 'onboard_username';
       } catch (err) {
         state.authError = err.message || 'Invalid or expired verification code.';
@@ -4290,7 +4337,10 @@ function bindAuthEvents() {
           }
           const data = await supabaseRequest('/auth/v1/signup', 'POST', {
             email,
-            password: state.password
+            password: state.password,
+            data: {
+              onboarding_completed: false
+            }
           });
           // Supabase returns an empty identities array if the email is already registered
           const identities = data?.user?.identities || data?.identities;
@@ -4304,10 +4354,12 @@ function bindAuthEvents() {
               expiresAt: Math.floor(Date.now() / 1000) + (data.expires_in || 3600),
               userId: data.user?.id,
               email,
-              username: email.split('@')[0]
+              username: '',
+              onboardingCompleted: false
             });
+            state.onboardUsername = '';
+            state.onboardAvatarKey = 'avatar_1';
             state.authMode = 'onboard_username';
-            state.onboardUsername = email.split('@')[0];
           } else {
             state.pendingVerifyEmail = email;
             state.pendingVerifyPassword = state.password;
@@ -4322,15 +4374,24 @@ function bindAuthEvents() {
               email: resolvedEmail,
               password: state.password
             });
+            const metaUsername = String(data.user?.user_metadata?.username || '').trim();
+            const metaOnboarded = data.user?.user_metadata?.onboarding_completed !== false;
             saveSession({
               accessToken: data.access_token,
               refreshToken: data.refresh_token || '',
               expiresAt: Math.floor(Date.now() / 1000) + (data.expires_in || 3600),
               userId: data.user?.id,
               email: data.user?.email || resolvedEmail,
-              username: data.user?.user_metadata?.username || resolvedEmail.split('@')[0]
+              username: !isPlaceholderOrEmailName(metaUsername) ? metaUsername : '',
+              onboardingCompleted: metaOnboarded
             });
-            await loadCloudData();
+            if (!metaOnboarded) {
+              state.onboardUsername = '';
+              state.onboardAvatarKey = 'avatar_1';
+              state.authMode = 'onboard_username';
+            } else {
+              await loadCloudData();
+            }
           } catch (signInErr) {
             const msg = String(signInErr.message || '');
             if (msg.toLowerCase().includes('not confirmed') || msg.toLowerCase().includes('email_not_confirmed')) {
@@ -4358,18 +4419,62 @@ function bindAuthEvents() {
   }
 
   const inpOnboardUser = document.getElementById('inp-onboard-user');
-  if (inpOnboardUser) inpOnboardUser.oninput = (e) => { state.onboardUsername = e.target.value; };
+  if (inpOnboardUser) {
+    inpOnboardUser.oninput = (e) => {
+      state.onboardUsername = e.target.value;
+    };
+    inpOnboardUser.onkeydown = (e) => {
+      if (e.key === 'Enter') document.getElementById('btn-onboard-next')?.click();
+    };
+  }
 
   const btnOnboardNext = document.getElementById('btn-onboard-next');
   if (btnOnboardNext) {
-    btnOnboardNext.onclick = () => {
-      if (!state.onboardUsername.trim()) {
-        state.authError = 'Please enter a username.';
+    btnOnboardNext.onclick = async () => {
+      const cleanName = String(state.onboardUsername || '').trim();
+      if (cleanName.length < 2 || cleanName.length > 32) {
+        state.authError = 'Username must be between 2 and 32 characters.';
         renderApp();
         return;
       }
+      if (cleanName.includes('@')) {
+        state.authError = 'Usernames cannot contain @ or be an email address.';
+        renderApp();
+        return;
+      }
+      if (!/^[A-Za-z0-9_ .-]+$/.test(cleanName)) {
+        state.authError = 'Use letters, numbers, spaces, dots, hyphens, or underscores.';
+        renderApp();
+        return;
+      }
+      state.loading = true;
       state.authError = '';
-      state.authMode = 'onboard_avatar';
+      state.authInfo = '';
+      renderApp();
+      try {
+        const statusRes = await supabaseRequest('/rest/v1/rpc/check_username_status', 'POST', {
+          p_username: cleanName
+        }).catch(() => ({ available: true }));
+        if (statusRes && statusRes.available === false) {
+          state.authError = statusRes.reason || 'That username is already taken. Please pick another.';
+          return;
+        }
+        state.onboardUsername = cleanName;
+        state.authMode = 'onboard_avatar';
+      } catch (err) {
+        state.authError = err?.message || 'Unable to verify username availability.';
+      } finally {
+        state.loading = false;
+        renderApp();
+      }
+    };
+  }
+
+  const btnOnboardBack = document.getElementById('btn-onboard-back');
+  if (btnOnboardBack) {
+    btnOnboardBack.onclick = () => {
+      state.authError = '';
+      state.authMode = 'onboard_username';
       renderApp();
     };
   }
@@ -4384,45 +4489,95 @@ function bindAuthEvents() {
   const btnOnboardFinish = document.getElementById('btn-onboard-finish');
   if (btnOnboardFinish) {
     btnOnboardFinish.onclick = async () => {
-      state.profile.username = state.onboardUsername.trim();
-      state.profile.avatarKey = normalizeAvatarKey(state.onboardAvatarKey);
-      saveProfileCache();
-      state.authMode = 'signin';
-      if (state.session) {
-        await supabaseRequest(
-          '/rest/v1/profiles?on_conflict=id',
-          'POST',
-          {
-            id: state.session.userId,
-            username: state.profile.username,
-            avatar_key: state.profile.avatarKey,
-            avatar_url: null
-          },
-          'resolution=merge-duplicates,return=minimal'
-        ).catch(() => {});
-        await supabaseRequest(
-          '/rest/v1/community_members?on_conflict=user_id',
-          'POST',
-          {
-            user_id: state.session.userId,
-            role: 'member',
-            status: 'active'
-          },
-          'resolution=merge-duplicates,return=minimal'
-        ).catch(() => {});
-        await supabaseRequest(
-          '/rest/v1/privacy_settings?on_conflict=user_id',
-          'POST',
-          {
-            user_id: state.session.userId,
-            reviews_visibility: 'community',
-            activity_visibility: 'community'
-          },
-          'resolution=merge-duplicates,return=minimal'
-        ).catch(() => {});
-        await loadCloudData();
+      const cleanName = String(state.onboardUsername || '').trim();
+      if (cleanName.length < 2 || cleanName.includes('@')) {
+        state.authError = 'Choose a valid username first.';
+        state.authMode = 'onboard_username';
+        renderApp();
+        return;
       }
+      const chosenAvatar = normalizeAvatarKey(state.onboardAvatarKey);
+      state.loading = true;
+      state.authError = '';
       renderApp();
+      try {
+        if (state.session) {
+          const uid = encodeURIComponent(state.session.userId);
+          const patched = await supabaseRequest(
+            `/rest/v1/profiles?id=eq.${uid}`,
+            'PATCH',
+            {
+              username: cleanName,
+              avatar_key: chosenAvatar,
+              avatar_url: null,
+              updated_at: new Date().toISOString()
+            },
+            'return=representation'
+          ).catch(() => null);
+          if (!Array.isArray(patched) || patched.length === 0) {
+            await supabaseRequest(
+              '/rest/v1/profiles?on_conflict=id',
+              'POST',
+              {
+                id: state.session.userId,
+                username: cleanName,
+                avatar_key: chosenAvatar,
+                avatar_url: null,
+                role: 'member',
+                can_generate_invites: false
+              },
+              'resolution=merge-duplicates,return=minimal'
+            );
+          }
+          await supabaseRequest('/auth/v1/user', 'PUT', {
+            data: {
+              username: cleanName,
+              avatar_key: chosenAvatar,
+              onboarding_completed: true
+            }
+          }).catch(() => {});
+          await Promise.all([
+            supabaseRequest(
+              '/rest/v1/community_members?on_conflict=user_id',
+              'POST',
+              { user_id: state.session.userId, role: 'member', status: 'active' },
+              'resolution=merge-duplicates,return=minimal'
+            ).catch(() => {}),
+            supabaseRequest(
+              '/rest/v1/privacy_settings?on_conflict=user_id',
+              'POST',
+              {
+                user_id: state.session.userId,
+                reviews_visibility: 'community',
+                activity_visibility: 'community'
+              },
+              'resolution=merge-duplicates,return=minimal'
+            ).catch(() => {})
+          ]);
+          saveSession({
+            ...state.session,
+            username: cleanName,
+            onboardingCompleted: true
+          });
+        }
+        state.profile.username = cleanName;
+        state.profile.avatarKey = chosenAvatar;
+        saveProfileCache();
+        state.authMode = 'signin';
+        state.tab = 'home';
+        if (state.session) {
+          await loadCloudData();
+        }
+      } catch (err) {
+        const msg = err?.message || 'Unable to save your profile right now.';
+        state.authError = msg;
+        if (msg.toLowerCase().includes('username') || msg.toLowerCase().includes('taken') || msg.toLowerCase().includes('duplicate')) {
+          state.authMode = 'onboard_username';
+        }
+      } finally {
+        state.loading = false;
+        renderApp();
+      }
     };
   }
 }
@@ -5291,9 +5446,12 @@ setInterval(async () => {
           expiresAt: Math.floor(Date.now() / 1000) + (data.expires_in || 3600),
           userId: data.user?.id,
           email: data.user?.email || state.pendingVerifyEmail,
-          username: state.pendingVerifyEmail.split('@')[0]
+          username: '',
+          onboardingCompleted: false
         });
-        state.onboardUsername = state.pendingVerifyEmail.split('@')[0];
+        state.onboardUsername = '';
+        state.onboardAvatarKey = 'avatar_1';
+        state.authInfo = 'Email verified! Choose your username and profile picture.';
         state.authMode = 'onboard_username';
         renderApp();
       }
