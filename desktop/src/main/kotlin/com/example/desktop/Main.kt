@@ -18,7 +18,9 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -1824,28 +1826,51 @@ private suspend fun checkDesktopUsernameAvailable(
     }
 }
 
+private data class DesktopDiscoverPage(
+    val items: List<DesktopAnimeItem>,
+    val hasNextPage: Boolean
+)
+
+private fun currentDesktopAnimeSeason(): String {
+    return when (LocalDate.now().monthValue) {
+        in 1..3 -> "WINTER"
+        in 4..6 -> "SPRING"
+        in 7..9 -> "SUMMER"
+        else -> "FALL"
+    }
+}
+
 private suspend fun fetchAniListDiscover(
     mode: String,
     genre: String,
     search: String,
-    safeMode: Boolean
-): List<DesktopAnimeItem> = withContext(Dispatchers.IO) {
+    safeMode: Boolean,
+    page: Int = 1,
+    perPage: Int = 30
+): DesktopDiscoverPage = withContext(Dispatchers.IO) {
     val sort = when (mode) {
         "popular" -> "POPULARITY_DESC"
         "top" -> "SCORE_DESC"
         "seasonal" -> "POPULARITY_DESC"
-        "donghua" -> "TRENDING_DESC"
+        "donghua" -> "POPULARITY_DESC"
         "airing" -> "TRENDING_DESC"
         else -> "TRENDING_DESC"
     }
-    val statusFilter = if (mode == "airing" || mode == "seasonal") ", status: RELEASING" else ""
+    val statusFilter = if (mode == "airing") ", status: RELEASING" else ""
+    val seasonalFilter = if (mode == "seasonal") {
+        ", season: ${currentDesktopAnimeSeason()}, seasonYear: ${LocalDate.now().year}"
+    } else ""
     val countryFilter = if (mode == "donghua") ", countryOfOrigin: \"CN\"" else ""
     val adultFilter = if (safeMode) ", isAdult: false" else ""
 
     val query = """
-        query(${'$'}search: String, ${'$'}genre: String) {
-          Page(page: 1, perPage: 24) {
-            media(type: ANIME, sort: [$sort], search: ${'$'}search, genre: ${'$'}genre$statusFilter$countryFilter$adultFilter) {
+        query(${'$'}page: Int, ${'$'}perPage: Int, ${'$'}search: String, ${'$'}genre: String) {
+          Page(page: ${'$'}page, perPage: ${'$'}perPage) {
+            pageInfo {
+              hasNextPage
+              currentPage
+            }
+            media(type: ANIME, sort: [$sort], search: ${'$'}search, genre: ${'$'}genre$statusFilter$seasonalFilter$countryFilter$adultFilter) {
               id
               title { english romaji }
               coverImage { extraLarge large }
@@ -1863,6 +1888,8 @@ private suspend fun fetchAniListDiscover(
         }
     """.trimIndent()
     val vars = JsonObject().apply {
+        addProperty("page", page)
+        addProperty("perPage", perPage)
         if (search.isNotBlank()) addProperty("search", search.trim())
         if (genre != "All Genres") addProperty("genre", genre)
     }
@@ -1870,57 +1897,72 @@ private suspend fun fetchAniListDiscover(
         addProperty("query", query)
         add("variables", vars)
     }
-    runCatching {
-        val req = Request.Builder()
-            .url("https://graphql.anilist.co")
-            .post(gson.toJson(payload).toRequestBody("application/json".toMediaType()))
-            .build()
-        httpClient.newCall(req).execute().use { resp ->
-            val body = resp.body?.string().orEmpty()
-            val root = gson.fromJson(body, JsonObject::class.java)
-            val mediaArr = root?.getAsJsonObject("data")?.getAsJsonObject("Page")?.getAsJsonArray("media")
-                ?: return@withContext emptyList()
-            mediaArr.map { el ->
-                val obj = el.asJsonObject
-                val id = obj.get("id").asInt
-                val titleObj = obj.getAsJsonObject("title")
-                val romaji = titleObj?.get("romaji").asStringOrNull().orEmpty()
-                val title = titleObj?.get("english").asStringOrNull()?.takeIf { it.isNotBlank() }
-                    ?: romaji.ifBlank { "Anime #$id" }
-                val coverObj = obj.getAsJsonObject("coverImage")
-                val cover = coverObj?.get("extraLarge").asStringOrNull()
-                    ?: coverObj?.get("large").asStringOrNull().orEmpty()
-                val banner = obj.get("bannerImage").asStringOrNull().orEmpty()
-                val format = obj.get("format").asStringOrNull() ?: "TV"
-                val status = obj.get("status").asStringOrNull() ?: "RELEASING"
-                val eps = obj.get("episodes").asIntOrNull()
-                val year = obj.get("seasonYear").asIntOrNull()
-                val score100 = obj.get("averageScore").asIntOrNull() ?: 0
-                val nextAiring = obj.get("nextAiringEpisode")?.takeIf { it.isJsonObject }?.asJsonObject
-                    ?.get("airingAt").asLongOrNull()
-                val desc = obj.get("description").asStringOrNull().orEmpty()
-                    .replace(Regex("<[^>]+>"), "")
-                val genresList = obj.get("genres")?.takeIf { it.isJsonArray }?.asJsonArray
-                    ?.mapNotNull { it.asStringOrNull() } ?: emptyList()
 
-                DesktopAnimeItem(
-                    id = id,
-                    title = title,
-                    titleRomaji = romaji,
-                    coverImage = cover,
-                    bannerImage = banner,
-                    format = format,
-                    status = status,
-                    totalEpisodes = eps,
-                    catalogStars = if (score100 > 0) (score100 / 20f) else 0f,
-                    airingDayOfWeek = computeDayOfWeek(id, nextAiring),
-                    seasonYear = year,
-                    genres = genresList,
-                    synopsis = desc
-                )
+    var attempt = 0
+    while (attempt < 2) {
+        attempt++
+        val outcome = runCatching {
+            val req = Request.Builder()
+                .url("https://graphql.anilist.co")
+                .post(gson.toJson(payload).toRequestBody("application/json".toMediaType()))
+                .build()
+            httpClient.newCall(req).execute().use { resp ->
+                if (resp.code == 429) return@use null
+                if (!resp.isSuccessful) return@use DesktopDiscoverPage(emptyList(), false)
+                val body = resp.body?.string().orEmpty()
+                val root = gson.fromJson(body, JsonObject::class.java)
+                val pageObj = root?.getAsJsonObject("data")?.getAsJsonObject("Page")
+                    ?: return@use DesktopDiscoverPage(emptyList(), false)
+                val hasNext = pageObj.get("pageInfo")?.takeIf { it.isJsonObject }?.asJsonObject
+                    ?.get("hasNextPage")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+                val mediaArr = pageObj.getAsJsonArray("media")
+                    ?: return@use DesktopDiscoverPage(emptyList(), false)
+                val parsed = mediaArr.map { el ->
+                    val obj = el.asJsonObject
+                    val id = obj.get("id").asInt
+                    val titleObj = obj.getAsJsonObject("title")
+                    val romaji = titleObj?.get("romaji").asStringOrNull().orEmpty()
+                    val title = titleObj?.get("english").asStringOrNull()?.takeIf { it.isNotBlank() }
+                        ?: romaji.ifBlank { "Anime #$id" }
+                    val coverObj = obj.getAsJsonObject("coverImage")
+                    val cover = coverObj?.get("extraLarge").asStringOrNull()
+                        ?: coverObj?.get("large").asStringOrNull().orEmpty()
+                    val banner = obj.get("bannerImage").asStringOrNull().orEmpty()
+                    val format = obj.get("format").asStringOrNull() ?: "TV"
+                    val status = obj.get("status").asStringOrNull() ?: "RELEASING"
+                    val eps = obj.get("episodes").asIntOrNull()
+                    val year = obj.get("seasonYear").asIntOrNull()
+                    val score100 = obj.get("averageScore").asIntOrNull() ?: 0
+                    val nextAiring = obj.get("nextAiringEpisode")?.takeIf { it.isJsonObject }?.asJsonObject
+                        ?.get("airingAt").asLongOrNull()
+                    val desc = obj.get("description").asStringOrNull().orEmpty()
+                        .replace(Regex("<[^>]+>"), "")
+                    val genresList = obj.get("genres")?.takeIf { it.isJsonArray }?.asJsonArray
+                        ?.mapNotNull { it.asStringOrNull() } ?: emptyList()
+
+                    DesktopAnimeItem(
+                        id = id,
+                        title = title,
+                        titleRomaji = romaji,
+                        coverImage = cover,
+                        bannerImage = banner,
+                        format = format,
+                        status = status,
+                        totalEpisodes = eps,
+                        catalogStars = if (score100 > 0) (score100 / 20f) else 0f,
+                        airingDayOfWeek = computeDayOfWeek(id, nextAiring),
+                        seasonYear = year,
+                        genres = genresList,
+                        synopsis = desc
+                    )
+                }
+                DesktopDiscoverPage(items = parsed, hasNextPage = hasNext && parsed.isNotEmpty())
             }
-        }
-    }.getOrDefault(emptyList())
+        }.getOrNull()
+        if (outcome != null) return@withContext outcome
+        if (attempt < 2) delay(700L)
+    }
+    DesktopDiscoverPage(emptyList(), false)
 }
 
 data class DesktopSeasonEntry(
@@ -2410,6 +2452,11 @@ fun AnimeUniverseDesktopRoot() {
     // Discover State
     var discoverItems by remember { mutableStateOf<List<DesktopAnimeItem>>(emptyList()) }
     var discoverLoading by remember { mutableStateOf(false) }
+    var discoverLoadingMore by remember { mutableStateOf(false) }
+    var discoverPage by remember { mutableStateOf(1) }
+    var discoverHasNextPage by remember { mutableStateOf(true) }
+    var discoverLastPageStartIndex by remember { mutableStateOf(0) }
+    var discoverRequestToken by remember { mutableStateOf(0) }
     var discoverMode by remember { mutableStateOf("popular") }
     var discoverGenre by remember { mutableStateOf("All Genres") }
     var discoverSearch by remember { mutableStateOf("") }
@@ -2761,10 +2808,55 @@ fun AnimeUniverseDesktopRoot() {
         }
     }
 
-    // Discover catalog loader
-    LaunchedEffect(discoverMode, discoverGenre, safeMode) {
+    fun loadMoreDiscover() {
+        if (discoverLoading || discoverLoadingMore || !discoverHasNextPage) return
+        val activeToken = discoverRequestToken
+        val nextPage = discoverPage + 1
+        discoverLoadingMore = true
+        scope.launch {
+            val result = fetchAniListDiscover(
+                mode = discoverMode,
+                genre = discoverGenre,
+                search = discoverSearch,
+                safeMode = safeMode,
+                page = nextPage,
+                perPage = 30
+            )
+            if (activeToken != discoverRequestToken) return@launch
+            val existingIds = discoverItems.mapTo(HashSet()) { it.id }
+            val uniqueNew = result.items.filter { it.id !in existingIds }
+            if (uniqueNew.isNotEmpty()) {
+                discoverLastPageStartIndex = discoverItems.size
+                discoverItems = discoverItems + uniqueNew
+            }
+            discoverPage = nextPage
+            discoverHasNextPage = result.hasNextPage
+            discoverLoadingMore = false
+        }
+    }
+
+    // Discover catalog loader (debounces search typing and resets pagination cleanly)
+    LaunchedEffect(discoverMode, discoverGenre, safeMode, discoverSearch) {
+        if (discoverSearch.isNotBlank()) {
+            delay(260L)
+        }
+        val token = ++discoverRequestToken
         discoverLoading = true
-        discoverItems = fetchAniListDiscover(discoverMode, discoverGenre, discoverSearch, safeMode)
+        discoverLoadingMore = false
+        discoverPage = 1
+        discoverHasNextPage = true
+        discoverLastPageStartIndex = 0
+        val result = fetchAniListDiscover(
+            mode = discoverMode,
+            genre = discoverGenre,
+            search = discoverSearch,
+            safeMode = safeMode,
+            page = 1,
+            perPage = 30
+        )
+        if (token != discoverRequestToken) return@LaunchedEffect
+        discoverItems = result.items
+        discoverHasNextPage = result.hasNextPage
         discoverLoading = false
     }
 
@@ -2918,9 +3010,6 @@ fun AnimeUniverseDesktopRoot() {
                                                 quickJumpQuery = q
                                                 discoverSearch = q
                                                 currentScreen = DesktopScreen.EXPLORE
-                                                scope.launch {
-                                                    discoverItems = fetchAniListDiscover(discoverMode, discoverGenre, q, safeMode)
-                                                }
                                             },
                                             singleLine = true,
                                             textStyle = androidx.compose.ui.text.TextStyle(
@@ -3028,6 +3117,9 @@ fun AnimeUniverseDesktopRoot() {
                                 discoverItems = discoverItems,
                                 watchlist = watchlist,
                                 loading = discoverLoading,
+                                loadingMore = discoverLoadingMore,
+                                hasNextPage = discoverHasNextPage,
+                                lastPageStartIndex = discoverLastPageStartIndex,
                                 avatarKey = sessionState.avatarKey,
                                 discoverMode = discoverMode,
                                 discoverGenre = discoverGenre,
@@ -3037,14 +3129,8 @@ fun AnimeUniverseDesktopRoot() {
                                 showFilters = discoverShowFilters,
                                 onToggleListView = { discoverListView = !discoverListView },
                                 onToggleFilters = { discoverShowFilters = !discoverShowFilters },
-                                onSearchChange = { q ->
-                                    discoverSearch = q
-                                    scope.launch {
-                                        discoverLoading = true
-                                        discoverItems = fetchAniListDiscover(discoverMode, discoverGenre, q, safeMode)
-                                        discoverLoading = false
-                                    }
-                                },
+                                onSearchChange = { q -> discoverSearch = q },
+                                onLoadMore = { loadMoreDiscover() },
                                 onSelectMode = { m -> discoverMode = m },
                                 onSelectGenre = { g -> discoverGenre = g },
                                 onToggleSafe = { safeMode = !safeMode },
@@ -4292,6 +4378,9 @@ private fun DesktopDiscoverScreen(
     discoverItems: List<DesktopAnimeItem>,
     watchlist: List<DesktopAnimeItem>,
     loading: Boolean,
+    loadingMore: Boolean,
+    hasNextPage: Boolean,
+    lastPageStartIndex: Int,
     avatarKey: String,
     discoverMode: String,
     discoverGenre: String,
@@ -4302,6 +4391,7 @@ private fun DesktopDiscoverScreen(
     onToggleListView: () -> Unit,
     onToggleFilters: () -> Unit,
     onSearchChange: (String) -> Unit,
+    onLoadMore: () -> Unit,
     onSelectMode: (String) -> Unit,
     onSelectGenre: (String) -> Unit,
     onToggleSafe: () -> Unit,
@@ -4312,6 +4402,49 @@ private fun DesktopDiscoverScreen(
     onViewInLibrary: (DesktopAnimeItem) -> Unit,
     onViewCommunity: (DesktopAnimeItem) -> Unit
 ) {
+    val gridState = rememberLazyGridState()
+    val listState = rememberLazyListState()
+
+    // Scroll back to top when filter/search resets the catalog
+    LaunchedEffect(discoverMode, discoverGenre, safeMode, searchQuery) {
+        gridState.scrollToItem(0)
+        listState.scrollToItem(0)
+    }
+
+    // Automatically load next page once the 3rd row of the latest batch is crossed
+    LaunchedEffect(gridState, isListView, discoverItems.size, lastPageStartIndex, hasNextPage, loading, loadingMore) {
+        if (isListView) return@LaunchedEffect
+        snapshotFlow {
+            val layout = gridState.layoutInfo
+            val visible = layout.visibleItemsInfo
+            val lastVisible = visible.lastOrNull()?.index ?: -1
+            val cols = visible.map { it.column }.distinct().size.coerceAtLeast(1)
+            Pair(lastVisible, cols)
+        }.collect { (lastVisible, cols) ->
+            val count = discoverItems.size
+            if (count > 0 && lastVisible >= 0 && hasNextPage && !loading && !loadingMore) {
+                val triggerIdx = minOf(count - 1, maxOf(0, lastPageStartIndex + cols * 3 - 1))
+                if (lastVisible >= triggerIdx) {
+                    onLoadMore()
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(listState, isListView, discoverItems.size, lastPageStartIndex, hasNextPage, loading, loadingMore) {
+        if (!isListView) return@LaunchedEffect
+        snapshotFlow {
+            listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+        }.collect { lastVisible ->
+            val count = discoverItems.size
+            if (count > 0 && lastVisible >= 0 && hasNextPage && !loading && !loadingMore) {
+                val triggerIdx = minOf(count - 1, maxOf(0, lastPageStartIndex + 6))
+                if (lastVisible >= triggerIdx) {
+                    onLoadMore()
+                }
+            }
+        }
+    }
     // Top Bar matching Screenshot 4
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -4490,6 +4623,7 @@ private fun DesktopDiscoverScreen(
 
     if (isListView) {
         LazyColumn(
+            state = listState,
             verticalArrangement = Arrangement.spacedBy(12.dp),
             contentPadding = PaddingValues(bottom = 48.dp)
         ) {
@@ -4509,9 +4643,40 @@ private fun DesktopDiscoverScreen(
                     onCommitEpisodes = null
                 )
             }
+            if (discoverItems.isNotEmpty() && (loadingMore || hasNextPage)) {
+                item(key = "discover_list_footer") {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 18.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (loadingMore) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = ChampagneGold
+                                )
+                                Text("Loading more anime...", color = ChampagneGold, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = onLoadMore,
+                                shape = CircleShape,
+                                border = BorderStroke(1.dp, ChampagneGold.copy(alpha = 0.5f))
+                            ) {
+                                Text("Load More Anime", color = ChampagneGold, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                    }
+                }
+            }
         }
     } else {
         LazyVerticalGrid(
+            state = gridState,
             columns = GridCells.Adaptive(minSize = 195.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp),
             horizontalArrangement = Arrangement.spacedBy(16.dp),
@@ -4535,6 +4700,36 @@ private fun DesktopDiscoverScreen(
                     onViewCommunity = { onViewCommunity(merged) },
                     onCommitEpisodes = null
                 )
+            }
+            if (discoverItems.isNotEmpty() && (loadingMore || hasNextPage)) {
+                item(key = "discover_grid_footer", span = { GridItemSpan(maxLineSpan) }) {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 18.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (loadingMore) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = ChampagneGold
+                                )
+                                Text("Loading more anime...", color = ChampagneGold, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = onLoadMore,
+                                shape = CircleShape,
+                                border = BorderStroke(1.dp, ChampagneGold.copy(alpha = 0.5f))
+                            ) {
+                                Text("Load More Anime", color = ChampagneGold, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                    }
+                }
             }
         }
     }

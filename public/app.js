@@ -388,6 +388,10 @@ const state = {
   discoverStatus: 'ALL',
   discoverGenre: null,
   discoverSort: 'POPULARITY_DESC',
+  discoverPage: 1,
+  discoverHasNextPage: true,
+  discoverLoadingMore: false,
+  discoverLastPageStartIndex: 0,
   isSearching: false,
 
   // Community State
@@ -1324,13 +1328,246 @@ function groupCommunityReviewsByAnime(reviews) {
   return groups;
 }
 
-async function fetchDiscoverCatalog() {
-  state.isSearching = true;
-  renderApp();
+let discoverFetchToken = 0;
+let discoverScrollRaf = null;
+
+function mapDiscoverMediaItem(m) {
+  const airingAt = m.nextAiringEpisode?.airingAt || null;
+  const dow = airingAt ? (((new Date(airingAt * 1000).getDay() + 6) % 7) + 1) : ((m.id % 7) + 1);
+  return {
+    animeId: m.id,
+    title: m.title?.english || m.title?.romaji || 'Anime',
+    titleEnglish: m.title?.english || '',
+    titleRomaji: m.title?.romaji || '',
+    titleNative: m.title?.native || '',
+    coverImage: m.coverImage?.extraLarge || m.coverImage?.large || '',
+    bannerImage: m.bannerImage || '',
+    format: m.format || 'TV',
+    mediaStatus: m.status || 'RELEASING',
+    seasonYear: m.seasonYear || null,
+    countryOfOrigin: m.countryOfOrigin || 'JP',
+    totalEpisodes: m.episodes || null,
+    averageScore: m.averageScore || null,
+    genres: m.genres || [],
+    synopsis: (m.description || '').replace(/<[^>]+>/g, ''),
+    airingDayOfWeek: dow,
+    airingTimeUnix: airingAt,
+    nextEpisodeNumber: m.nextAiringEpisode?.episode || null,
+    status: 'watching',
+    season: 1,
+    watchedEpisodes: 0,
+    rating10: null,
+    reviewNotes: '',
+    isPinned: false,
+    isFavorite: false
+  };
+}
+
+function renderDiscoverFooterHtml() {
+  if (state.isSearching) return '';
+  if (state.discoverLoadingMore) {
+    return `<div id="discover-load-sentinel" style="text-align:center;padding:24px 16px;color:var(--accent-primary);font-size:13px;font-weight:600;letter-spacing:0.6px;">Loading more anime...</div>`;
+  }
+  if (state.discoverHasNextPage && state.discover.length > 0) {
+    return `
+      <div id="discover-load-sentinel" style="display:flex;justify-content:center;padding:20px 16px;">
+        <button type="button" class="capsule-pill" id="btn-discover-load-more" style="height:44px;padding:0 22px;color:var(--accent-primary);border-color:var(--accent-border);">
+          Load More Anime
+        </button>
+      </div>
+    `;
+  }
+  if (state.discover.length > 0) {
+    return `<div id="discover-load-sentinel" style="text-align:center;padding:20px 16px;color:var(--text-muted);font-size:12px;">All ${state.discover.length} matching titles loaded</div>`;
+  }
+  return `<div id="discover-load-sentinel"></div>`;
+}
+
+function updateDiscoverFooterDom() {
+  const countEl = document.getElementById('discover-count-label');
+  if (countEl) {
+    countEl.textContent = `${state.discover.length} TITLES`;
+  }
+  const sentinelWrap = document.getElementById('discover-sentinel-wrap');
+  if (sentinelWrap) {
+    sentinelWrap.innerHTML = renderDiscoverFooterHtml();
+    const btnMore = document.getElementById('btn-discover-load-more');
+    if (btnMore) {
+      btnMore.onclick = () => fetchDiscoverCatalog(true);
+    }
+  }
+}
+
+function bindCardInteractionHandlers(rootEl) {
+  if (!rootEl) return;
+  rootEl.querySelectorAll('[data-open-detail]').forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      if (state._suppressNextCardClick) {
+        state._suppressNextCardClick = false;
+        return;
+      }
+      openAnimeDetail(Number(el.getAttribute('data-open-detail')));
+    };
+  });
+
+  rootEl.querySelectorAll('[data-card-anime-id]').forEach((card) => {
+    const aid = Number(card.getAttribute('data-card-anime-id'));
+    card.oncontextmenu = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      state.contextMenu = { animeId: aid, x: e.clientX, y: e.clientY };
+      renderApp();
+    };
+
+    let touchTimer = null;
+    let startX = 0;
+    let startY = 0;
+    card.ontouchstart = (e) => {
+      if (!e.touches || e.touches.length !== 1) return;
+      startX = e.touches[0].clientX;
+      startY = e.touches[0].clientY;
+      touchTimer = setTimeout(() => {
+        touchTimer = null;
+        state._suppressNextCardClick = true;
+        state.contextMenu = { animeId: aid, x: startX, y: startY };
+        renderApp();
+      }, 500);
+    };
+    card.ontouchmove = (e) => {
+      if (!touchTimer || !e.touches || e.touches.length !== 1) return;
+      const dx = Math.abs(e.touches[0].clientX - startX);
+      const dy = Math.abs(e.touches[0].clientY - startY);
+      if (dx > 10 || dy > 10) {
+        clearTimeout(touchTimer);
+        touchTimer = null;
+      }
+    };
+    card.ontouchend = () => {
+      if (touchTimer) {
+        clearTimeout(touchTimer);
+        touchTimer = null;
+      }
+    };
+    card.ontouchcancel = () => {
+      if (touchTimer) {
+        clearTimeout(touchTimer);
+        touchTimer = null;
+      }
+    };
+  });
+
+  rootEl.querySelectorAll('[data-quick-add]').forEach((btn) => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const id = Number(btn.getAttribute('data-quick-add'));
+      const existing = state.vault.find((v) => Number(v.animeId) === id);
+      if (existing) {
+        state.quickEditAnime = { ...existing };
+        renderApp();
+        return;
+      }
+      const disc = state.discover.find((d) => Number(d.animeId) === id);
+      if (disc) {
+        await addToHome(disc);
+      }
+    };
+  });
+
+  rootEl.querySelectorAll('[data-quick-edit]').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const id = Number(btn.getAttribute('data-quick-edit'));
+      const item = state.vault.find((v) => Number(v.animeId) === id);
+      if (item) {
+        state.quickEditAnime = { ...item };
+        renderApp();
+      }
+    };
+  });
+}
+
+function checkDiscoverInfiniteScroll() {
+  if (state.tab !== 'discover') return;
+  if (state.isSearching || state.discoverLoadingMore || !state.discoverHasNextPage) return;
+  if (!state.discover.length) return;
+
+  const grid = document.getElementById('discover-poster-grid');
+  if (!grid || !grid.children.length) return;
+
+  const cards = grid.children;
+  const firstTop = cards[0].offsetTop;
+  let cols = 0;
+  for (let i = 0; i < cards.length; i++) {
+    if (Math.abs(cards[i].offsetTop - firstTop) <= 8) cols++;
+    else break;
+  }
+  cols = Math.max(1, cols);
+
+  // Automatically load the next page once the user crosses the 3rd row of the active batch
+  const triggerIdx = Math.min(
+    cards.length - 1,
+    Math.max(0, state.discoverLastPageStartIndex + cols * 3 - 1)
+  );
+  const triggerCard = cards[triggerIdx];
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 800;
+
+  let shouldLoad = false;
+  if (triggerCard) {
+    const rect = triggerCard.getBoundingClientRect();
+    // Trigger as soon as the 3rd row crosses into / above the lower viewport
+    if (rect.top <= viewportHeight + 120) {
+      shouldLoad = true;
+    }
+  }
+  if (!shouldLoad) {
+    const sentinel = document.getElementById('discover-load-sentinel');
+    if (sentinel) {
+      const sRect = sentinel.getBoundingClientRect();
+      if (sRect.top <= viewportHeight + 480) {
+        shouldLoad = true;
+      }
+    }
+  }
+
+  if (shouldLoad) {
+    fetchDiscoverCatalog(true);
+  }
+}
+
+window.addEventListener(
+  'scroll',
+  () => {
+    if (state.tab !== 'discover') return;
+    if (discoverScrollRaf) return;
+    discoverScrollRaf = requestAnimationFrame(() => {
+      discoverScrollRaf = null;
+      checkDiscoverInfiniteScroll();
+    });
+  },
+  { passive: true }
+);
+
+async function fetchDiscoverCatalog(loadMore = false) {
+  if (loadMore) {
+    if (state.isSearching || state.discoverLoadingMore || !state.discoverHasNextPage) return;
+    state.discoverLoadingMore = true;
+    updateDiscoverFooterDom();
+  } else {
+    state.isSearching = true;
+    state.discoverPage = 1;
+    state.discoverHasNextPage = true;
+    state.discoverLoadingMore = false;
+    state.discoverLastPageStartIndex = 0;
+    renderApp();
+  }
+
+  const targetPage = loadMore ? state.discoverPage + 1 : 1;
+  const myToken = loadMore ? discoverFetchToken : ++discoverFetchToken;
 
   const variables = {
-    page: 1,
-    perPage: 24,
+    page: targetPage,
+    perPage: 30,
     isAdult: Boolean(state.prefs.showAdultContent),
     sort: [state.discoverSort || 'POPULARITY_DESC']
   };
@@ -1359,6 +1596,10 @@ async function fetchDiscoverCatalog() {
       $isAdult: Boolean
     ) {
       Page(page: $page, perPage: $perPage) {
+        pageInfo {
+          hasNextPage
+          currentPage
+        }
         media(
           type: ANIME,
           search: $search,
@@ -1390,48 +1631,75 @@ async function fetchDiscoverCatalog() {
   `;
 
   try {
-    const resp = await fetch('https://graphql.anilist.co', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: gql, variables })
-    });
-    const json = await resp.json();
-    const list = json?.data?.Page?.media || [];
-    state.discover = list.map((m) => {
-      const airingAt = m.nextAiringEpisode?.airingAt || null;
-      const dow = airingAt ? (((new Date(airingAt * 1000).getDay() + 6) % 7) + 1) : ((m.id % 7) + 1);
-      return {
-        animeId: m.id,
-        title: m.title?.english || m.title?.romaji || 'Anime',
-        titleEnglish: m.title?.english || '',
-        titleRomaji: m.title?.romaji || '',
-        titleNative: m.title?.native || '',
-        coverImage: m.coverImage?.extraLarge || m.coverImage?.large || '',
-        bannerImage: m.bannerImage || '',
-        format: m.format || 'TV',
-        mediaStatus: m.status || 'RELEASING',
-        seasonYear: m.seasonYear || null,
-        countryOfOrigin: m.countryOfOrigin || 'JP',
-        totalEpisodes: m.episodes || null,
-        averageScore: m.averageScore || null,
-        genres: m.genres || [],
-        synopsis: (m.description || '').replace(/<[^>]+>/g, ''),
-        airingDayOfWeek: dow,
-        airingTimeUnix: airingAt,
-        nextEpisodeNumber: m.nextAiringEpisode?.episode || null,
-        status: 'watching',
-        season: 1,
-        watchedEpisodes: 0,
-        rating10: null,
-        reviewNotes: '',
-        isPinned: false,
-        isFavorite: false
-      };
-    });
+    let json = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const resp = await fetch('https://graphql.anilist.co', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: gql, variables })
+      });
+      if (resp.status === 429 && attempt === 0) {
+        await new Promise((r) => setTimeout(r, 700));
+        continue;
+      }
+      if (!resp.ok) break;
+      json = await resp.json();
+      break;
+    }
+
+    if (myToken !== discoverFetchToken) return;
+
+    const pageObj = json?.data?.Page;
+    const list = pageObj?.media || [];
+    const mapped = list.map(mapDiscoverMediaItem);
+    const hasNext = Boolean(pageObj?.pageInfo?.hasNextPage) && mapped.length > 0;
+
+    if (loadMore) {
+      const existingIds = new Set(state.discover.map((d) => Number(d.animeId)));
+      const uniqueNew = mapped.filter((item) => !existingIds.has(Number(item.animeId)));
+      const prevCount = state.discover.length;
+      state.discoverPage = targetPage;
+      state.discoverHasNextPage = hasNext;
+      state.discoverLoadingMore = false;
+
+      if (uniqueNew.length > 0) {
+        state.discoverLastPageStartIndex = prevCount;
+        state.discover = [...state.discover, ...uniqueNew];
+        const grid = document.getElementById('discover-poster-grid');
+        if (state.tab === 'discover' && grid) {
+          const tempWrap = document.createElement('div');
+          tempWrap.innerHTML = uniqueNew.map((it) => renderPosterTrackerCard(it, false)).join('');
+          bindCardInteractionHandlers(tempWrap);
+          const frag = document.createDocumentFragment();
+          while (tempWrap.firstChild) {
+            frag.appendChild(tempWrap.firstChild);
+          }
+          grid.appendChild(frag);
+          updateDiscoverFooterDom();
+        } else if (state.tab === 'discover') {
+          renderApp();
+        }
+      } else {
+        updateDiscoverFooterDom();
+      }
+    } else {
+      state.discover = mapped;
+      state.discoverPage = 1;
+      state.discoverHasNextPage = hasNext;
+      state.discoverLastPageStartIndex = 0;
+      state.isSearching = false;
+      renderApp();
+      requestAnimationFrame(() => checkDiscoverInfiniteScroll());
+    }
   } catch (_) {
-  } finally {
-    state.isSearching = false;
-    renderApp();
+    if (myToken !== discoverFetchToken) return;
+    if (loadMore) {
+      state.discoverLoadingMore = false;
+      updateDiscoverFooterDom();
+    } else {
+      state.isSearching = false;
+      renderApp();
+    }
   }
 }
 
@@ -2657,13 +2925,16 @@ function renderDiscoverScreen() {
 
     <div class="section-header-row" style="margin-top:8px;">
       <h2 class="serif-heading" style="font-size:26px;">${escapeHtml(activeModeObj.title)}</h2>
-      <span class="micro-label" style="color:var(--accent-primary);">${state.discover.length} TITLES</span>
+      <span class="micro-label" id="discover-count-label" style="color:var(--accent-primary);">${state.discover.length} TITLES</span>
     </div>
 
     ${
       state.isSearching
         ? `<div class="app-card" style="text-align:center;padding:48px;"><p style="color:var(--accent-primary);">Loading Anime Universe catalog...</p></div>`
-        : `<div class="poster-grid">${state.discover.map((it) => renderPosterTrackerCard(it, false)).join('')}</div>`
+        : `
+          <div class="poster-grid" id="discover-poster-grid">${state.discover.map((it) => renderPosterTrackerCard(it, false)).join('')}</div>
+          <div id="discover-sentinel-wrap">${renderDiscoverFooterHtml()}</div>
+        `
     }
   `;
 }
@@ -5362,6 +5633,14 @@ function bindAppEvents() {
       savePrefs();
       fetchDiscoverCatalog();
     };
+  }
+
+  const btnDiscoverMore = document.getElementById('btn-discover-load-more');
+  if (btnDiscoverMore) {
+    btnDiscoverMore.onclick = () => fetchDiscoverCatalog(true);
+  }
+  if (state.tab === 'discover' && !state.isSearching && state.discover.length > 0) {
+    requestAnimationFrame(() => checkDiscoverInfiniteScroll());
   }
 
   // Library events
