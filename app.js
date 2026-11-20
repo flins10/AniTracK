@@ -47,6 +47,76 @@ const BUILT_IN_AVATARS = [
   { key: 'avatar_9', name: 'Solar Halo', img: '/assets/avatar_9.png', c1: '#FBBF24', c2: '#64748B' }
 ];
 
+const SANDRONE_IMAGE_SRC = '/assets/aistudio/117029-removebg-preview_a7bd2144.png';
+const SANDRONE_VOICE_CLIPS = [
+  '/assets/aistudio/s_2a7b087c.mp3',
+  '/assets/aistudio/s1_9f22134b.mp3',
+  '/assets/aistudio/s2_1eb199af.mp3',
+  '/assets/aistudio/s3_186666cd.mp3',
+  '/assets/aistudio/s4_f2c388e7.mp3',
+  '/assets/aistudio/s5_208121d9.mp3',
+  '/assets/aistudio/s6_5675dac2.mp3',
+  '/assets/aistudio/s7_9691e270.mp3',
+  '/assets/aistudio/s8_653b32e5.mp3',
+  '/assets/aistudio/s9_19fa5bf7.mp3'
+];
+
+let sandroneAudio = null;
+let sandroneLastClipIndex = -1;
+let sandroneIsPlaying = false;
+let sandronePlayToken = 0;
+
+function syncSandronePlayingUI() {
+  document.querySelectorAll('[data-sandrone-mascot]').forEach((el) => {
+    el.classList.toggle('is-playing', sandroneIsPlaying);
+  });
+}
+
+function playRandomSandroneVoice(triggerEl) {
+  if (!SANDRONE_VOICE_CLIPS.length) return;
+  let nextIdx = Math.floor(Math.random() * SANDRONE_VOICE_CLIPS.length);
+  if (SANDRONE_VOICE_CLIPS.length > 1 && nextIdx === sandroneLastClipIndex) {
+    nextIdx = (nextIdx + 1 + Math.floor(Math.random() * (SANDRONE_VOICE_CLIPS.length - 1))) % SANDRONE_VOICE_CLIPS.length;
+  }
+  sandroneLastClipIndex = nextIdx;
+
+  if (triggerEl) {
+    triggerEl.classList.remove('is-tapped');
+    void triggerEl.offsetWidth;
+    triggerEl.classList.add('is-tapped');
+    setTimeout(() => triggerEl.classList.remove('is-tapped'), 170);
+  }
+
+  const token = ++sandronePlayToken;
+  if (sandroneAudio) {
+    try {
+      sandroneAudio.pause();
+      sandroneAudio.currentTime = 0;
+    } catch (_) {}
+  }
+
+  const audio = new Audio(SANDRONE_VOICE_CLIPS[nextIdx]);
+  audio.preload = 'auto';
+  sandroneAudio = audio;
+  sandroneIsPlaying = true;
+  syncSandronePlayingUI();
+
+  const handleFinish = () => {
+    if (token !== sandronePlayToken) return;
+    sandroneIsPlaying = false;
+    syncSandronePlayingUI();
+  };
+  audio.addEventListener('ended', handleFinish);
+  audio.addEventListener('error', handleFinish);
+
+  const playPromise = audio.play();
+  if (playPromise && typeof playPromise.catch === 'function') {
+    playPromise.catch(() => {
+      handleFinish();
+    });
+  }
+}
+
 const SENTIMENTS = [
   { key: 'cinema', shortLabel: 'Cinema', fullLabel: 'Absolute Cinema', minScore100: 90, suggestedStars: 4.5 },
   { key: 'worth', shortLabel: 'Worth', fullLabel: 'Worth Watching', minScore100: 75, suggestedStars: 4.0 },
@@ -4029,6 +4099,11 @@ function renderApp() {
             </button>`
           )
           .join('')}
+        <div class="sidebar-sandrone-slot">
+          <button type="button" class="sandrone-mascot-btn ${sandroneIsPlaying ? 'is-playing' : ''}" data-sandrone-mascot="sidebar" aria-label="Play a random Sandrone voice line" title="Click Sandrone">
+            <img class="sandrone-mascot-img" src="${SANDRONE_IMAGE_SRC}" alt="Sandrone" draggable="false" />
+          </button>
+        </div>
       </aside>
 
       <!-- MidnightCompactRail (600-899px) -->
@@ -4042,6 +4117,11 @@ function renderApp() {
             </button>`
           )
           .join('')}
+        <div class="rail-sandrone-slot">
+          <button type="button" class="sandrone-mascot-btn compact ${sandroneIsPlaying ? 'is-playing' : ''}" data-sandrone-mascot="rail" aria-label="Play a random Sandrone voice line" title="Click Sandrone">
+            <img class="sandrone-mascot-img" src="${SANDRONE_IMAGE_SRC}" alt="Sandrone" draggable="false" />
+          </button>
+        </div>
       </aside>
 
       <!-- Main Content Stage -->
@@ -4590,6 +4670,13 @@ function bindAppEvents() {
       state.tab = target;
       window.scrollTo({ top: 0, behavior: 'smooth' });
       renderApp();
+    };
+  });
+
+  document.querySelectorAll('[data-sandrone-mascot]').forEach((el) => {
+    el.onclick = (e) => {
+      e.preventDefault();
+      playRandomSandroneVoice(el);
     };
   });
 

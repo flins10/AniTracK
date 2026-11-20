@@ -1,5 +1,8 @@
 package com.example.desktop
 
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -7,6 +10,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -29,14 +33,17 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.isCtrlPressed
 import androidx.compose.ui.input.pointer.isSecondaryPressed
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
@@ -71,13 +78,20 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import javazoom.jl.player.Player
 import org.jetbrains.skia.Image as SkiaImage
+import java.io.BufferedInputStream
 import java.io.File
+import java.io.FileInputStream
+import java.io.InputStream
 import java.net.URI
 import java.net.URLEncoder
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.concurrent.thread
+import kotlin.random.Random
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -2567,6 +2581,14 @@ fun AnimeUniverseDesktopRoot() {
                                     }
                                 }
                             }
+
+                            Spacer(modifier = Modifier.weight(1f))
+
+                            SandroneSidebarMascot(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 12.dp, bottom = 4.dp)
+                            )
                         }
                         Box(modifier = Modifier.width(1.dp).fillMaxHeight().background(Color.White.copy(alpha = 0.06f)))
                     }
@@ -5960,3 +5982,190 @@ private fun CreateCollectionDialog(
         }
     )
 }
+
+private object SandroneAudioPlayer {
+    private const val IMAGE_FILE = "117029-removebg-preview_a7bd2144.png"
+    private val VOICE_CLIPS = listOf(
+        "s_2a7b087c.mp3",
+        "s1_9f22134b.mp3",
+        "s2_1eb199af.mp3",
+        "s3_186666cd.mp3",
+        "s4_f2c388e7.mp3",
+        "s5_208121d9.mp3",
+        "s6_5675dac2.mp3",
+        "s7_9691e270.mp3",
+        "s8_653b32e5.mp3",
+        "s9_19fa5bf7.mp3"
+    )
+
+    private val lock = Any()
+    private val playToken = AtomicLong(0L)
+    private var currentPlayer: Player? = null
+    private var lastClipIndex: Int = -1
+    @Volatile
+    private var cachedBitmap: ImageBitmap? = null
+
+    private fun openAssetStream(fileName: String): InputStream? {
+        val resourceStream = SandroneAudioPlayer::class.java.getResourceAsStream("/sandrone/$fileName")
+        if (resourceStream != null) return BufferedInputStream(resourceStream)
+        val fallbackPaths = listOf(
+            File("public/assets/aistudio/$fileName"),
+            File("../public/assets/aistudio/$fileName"),
+            File("assets/aistudio/$fileName"),
+            File("../assets/aistudio/$fileName")
+        )
+        val existingFile = fallbackPaths.firstOrNull { it.isFile && it.canRead() }
+        return existingFile?.let { BufferedInputStream(FileInputStream(it)) }
+    }
+
+    fun loadBitmap(): ImageBitmap? {
+        cachedBitmap?.let { return it }
+        return runCatching {
+            val bytes = openAssetStream(IMAGE_FILE)?.use { it.readBytes() } ?: return null
+            SkiaImage.makeFromEncoded(bytes).toComposeImageBitmap().also { cachedBitmap = it }
+        }.getOrNull()
+    }
+
+    fun playRandom(onPlaybackStateChanged: (Boolean) -> Unit) {
+        if (VOICE_CLIPS.isEmpty()) return
+        val nextIndex = synchronized(lock) {
+            var idx = Random.nextInt(VOICE_CLIPS.size)
+            if (VOICE_CLIPS.size > 1 && idx == lastClipIndex) {
+                idx = (idx + 1 + Random.nextInt(VOICE_CLIPS.size - 1)) % VOICE_CLIPS.size
+            }
+            lastClipIndex = idx
+            idx
+        }
+        val clipName = VOICE_CLIPS[nextIndex]
+        val token = playToken.incrementAndGet()
+        stopCurrentPlayer()
+        onPlaybackStateChanged(true)
+
+        thread(start = true, isDaemon = true, name = "sandrone-voice-$token") {
+            var player: Player? = null
+            try {
+                val stream = openAssetStream(clipName)
+                if (stream == null) {
+                    if (playToken.get() == token) onPlaybackStateChanged(false)
+                    return@thread
+                }
+                stream.use { input ->
+                    player = Player(input)
+                    synchronized(lock) {
+                        if (playToken.get() != token) {
+                            runCatching { player?.close() }
+                            return@thread
+                        }
+                        currentPlayer = player
+                    }
+                    player?.play()
+                }
+            } catch (_: Throwable) {
+                // Ignore playback interruption when rapidly clicking or closing window
+            } finally {
+                synchronized(lock) {
+                    if (currentPlayer === player) {
+                        currentPlayer = null
+                    }
+                }
+                runCatching { player?.close() }
+                if (playToken.get() == token) {
+                    onPlaybackStateChanged(false)
+                }
+            }
+        }
+    }
+
+    private fun stopCurrentPlayer() {
+        val prev = synchronized(lock) {
+            val p = currentPlayer
+            currentPlayer = null
+            p
+        }
+        runCatching { prev?.close() }
+    }
+
+    fun stop() {
+        playToken.incrementAndGet()
+        stopCurrentPlayer()
+    }
+}
+
+@Composable
+private fun SandroneSidebarMascot(modifier: Modifier = Modifier) {
+    val bitmap = remember { SandroneAudioPlayer.loadBitmap() } ?: return
+    val scope = rememberCoroutineScope()
+    var isPlaying by remember { mutableStateOf(false) }
+    var isPressedBounce by remember { mutableStateOf(false) }
+
+    val scale by animateFloatAsState(
+        targetValue = when {
+            isPressedBounce -> 0.92f
+            isPlaying -> 1.03f
+            else -> 1f
+        },
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMedium
+        )
+    )
+
+    DisposableEffect(Unit) {
+        onDispose {
+            SandroneAudioPlayer.stop()
+        }
+    }
+
+    Box(
+        modifier = modifier,
+        contentAlignment = Alignment.BottomCenter
+    ) {
+        Box(
+            modifier = Modifier
+                .size(196.dp)
+                .clip(RoundedCornerShape(24.dp))
+                .pointerHoverIcon(PointerIcon.Hand)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null
+                ) {
+                    isPressedBounce = true
+                    scope.launch {
+                        delay(130)
+                        isPressedBounce = false
+                    }
+                    SandroneAudioPlayer.playRandom { playing ->
+                        scope.launch {
+                            isPlaying = playing
+                        }
+                    }
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            if (isPlaying) {
+                Box(
+                    modifier = Modifier
+                        .size(156.dp)
+                        .clip(CircleShape)
+                        .background(
+                            Brush.radialGradient(
+                                colors = listOf(
+                                    ChampagneGold.copy(alpha = 0.24f),
+                                    Color.Transparent
+                                )
+                            )
+                        )
+                )
+            }
+            Image(
+                bitmap = bitmap,
+                contentDescription = "Sandrone — click to play a random voice line",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .size(188.dp)
+                    .scale(scale)
+            )
+        }
+    }
+}
+

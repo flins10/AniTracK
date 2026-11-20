@@ -1,4 +1,4 @@
-const CACHE_NAME = 'anime-universe-pwa-v2.7.0';
+const CACHE_NAME = 'anime-universe-pwa-v2.8.0';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -9,6 +9,7 @@ const STATIC_ASSETS = [
   '/icon-192.png',
   '/icon-512.png',
   '/assets/img_login_mascot.png',
+  '/assets/aistudio/117029-removebg-preview_a7bd2144.png',
   '/assets/avatar_1.png',
   '/assets/avatar_2.png',
   '/assets/avatar_3.png',
@@ -57,7 +58,7 @@ self.addEventListener('fetch', (event) => {
       .then((networkResponse) => {
         if (networkResponse && networkResponse.status === 200 && url.origin === self.location.origin) {
           const ct = (networkResponse.headers.get('content-type') || '').toLowerCase();
-          const isAssetPath = /\.(png|jpg|jpeg|webp|svg|gif|css|js|json|woff2?)$/i.test(url.pathname);
+          const isAssetPath = /\.(png|jpg|jpeg|webp|svg|gif|mp3|css|js|json|woff2?)$/i.test(url.pathname);
           if (!(isAssetPath && ct.includes('text/html'))) {
             const clone = networkResponse.clone();
             caches.open(CACHE_NAME).then((cache) => cache.put(request, clone)).catch(() => {});

@@ -57,6 +57,18 @@ tasks.register("syncWebAssets") {
             }
             into("..")
         }
+        project.copy {
+            from("../public/assets/aistudio") {
+                include("117029-removebg-preview_a7bd2144.png", "s_2a7b087c.mp3", "s1_9f22134b.mp3", "s2_1eb199af.mp3", "s3_186666cd.mp3", "s4_f2c388e7.mp3", "s5_208121d9.mp3", "s6_5675dac2.mp3", "s7_9691e270.mp3", "s8_653b32e5.mp3", "s9_19fa5bf7.mp3")
+            }
+            into("../assets/aistudio")
+        }
+        project.copy {
+            from("../public/assets/aistudio") {
+                include("117029-removebg-preview_a7bd2144.png", "s_2a7b087c.mp3", "s1_9f22134b.mp3", "s2_1eb199af.mp3", "s3_186666cd.mp3", "s4_f2c388e7.mp3", "s5_208121d9.mp3", "s6_5675dac2.mp3", "s7_9691e270.mp3", "s8_653b32e5.mp3", "s9_19fa5bf7.mp3")
+            }
+            into("src/main/resources/sandrone")
+        }
     }
 }
 
@@ -72,6 +84,7 @@ dependencies {
     implementation(libs.logging.interceptor)
     implementation(libs.moshi.kotlin)
     implementation("org.xerial:sqlite-jdbc:3.45.1.0")
+    implementation("javazoom:jlayer:1.0.1")
 }
 
 compose.desktop {

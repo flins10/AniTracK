@@ -1936,4 +1936,116 @@ html, body {
   color: var(--error);
 }
 
+/* Sandrone Sidebar Mascot (Web Desktop & Medium Rail Only) */
+.sidebar-sandrone-slot {
+  margin-top: auto;
+  padding: 18px 6px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+
+.rail-sandrone-slot {
+  margin-top: auto;
+  padding: 12px 2px 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  flex-shrink: 0;
+}
+
+.sandrone-mascot-btn {
+  position: relative;
+  border: none;
+  background: transparent;
+  padding: 6px;
+  margin: 0;
+  border-radius: 22px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  outline: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1), filter 0.22s ease;
+}
+
+.sandrone-mascot-btn::before {
+  content: '';
+  position: absolute;
+  inset: 14px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(216, 183, 120, 0.24) 0%, rgba(216, 183, 120, 0) 70%);
+  opacity: 0;
+  transform: scale(0.86);
+  transition: opacity 0.24s ease, transform 0.24s ease;
+  pointer-events: none;
+}
+
+.sandrone-mascot-btn:hover {
+  transform: translateY(-4px) scale(1.03);
+}
+
+.sandrone-mascot-btn:hover::before,
+.sandrone-mascot-btn:focus-visible::before {
+  opacity: 0.9;
+  transform: scale(1.04);
+}
+
+.sandrone-mascot-btn:focus-visible {
+  box-shadow: 0 0 0 2px rgba(216, 183, 120, 0.55);
+}
+
+.sandrone-mascot-btn:active,
+.sandrone-mascot-btn.is-tapped {
+  transform: scale(0.94);
+}
+
+.sandrone-mascot-btn.is-playing::before {
+  opacity: 1;
+  animation: sandroneAuraPulse 1.35s ease-in-out infinite;
+}
+
+.sandrone-mascot-btn.is-playing .sandrone-mascot-img {
+  filter: drop-shadow(0 8px 18px rgba(216, 183, 120, 0.34));
+}
+
+.sandrone-mascot-img {
+  position: relative;
+  z-index: 1;
+  width: 184px;
+  max-width: 100%;
+  height: auto;
+  display: block;
+  object-fit: contain;
+  pointer-events: none;
+  filter: drop-shadow(0 10px 20px rgba(0, 0, 0, 0.48));
+  transition: filter 0.22s ease;
+}
+
+.sandrone-mascot-btn.compact {
+  padding: 4px;
+  border-radius: 16px;
+}
+
+.sandrone-mascot-btn.compact .sandrone-mascot-img {
+  width: 64px;
+}
+
+@keyframes sandroneAuraPulse {
+  0%, 100% {
+    opacity: 0.55;
+    transform: scale(0.96);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+}
+
+
 
