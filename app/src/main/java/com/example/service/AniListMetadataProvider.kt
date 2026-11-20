@@ -16,6 +16,7 @@ import com.example.util.EnglishTitleMapper
 import com.example.util.EpisodeDataParser
 import com.example.util.ErrorSanitizer
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.time.ZoneId
@@ -163,31 +164,49 @@ class AniListMetadataProvider(
         }
     }
 
-    private suspend fun fetchChainNode(anilistId: Int): AniListMedia? {
-        seasonNodeCache[anilistId]?.let { return it }
-        return try {
-            val response = apiService.querySingleMedia(
-                AniListRequest(
-                    query = AniListQueries.MEDIA_SEASON_CHAIN_QUERY,
-                    variables = mapOf("id" to anilistId)
-                )
-            )
-            val media = if (response.isSuccessful) response.body()?.data?.Media else null
-            if (media != null) {
-                seasonNodeCache[media.id] = media
-            }
-            media
-        } catch (_: Exception) {
-            null
+    private suspend fun fetchChainBatch(anilistIds: List<Int>): List<AniListMedia> {
+        if (anilistIds.isEmpty()) return emptyList()
+        val cached = mutableListOf<AniListMedia>()
+        val missing = mutableListOf<Int>()
+        for (id in anilistIds.distinct()) {
+            val hit = seasonNodeCache[id]
+            if (hit != null) cached.add(hit) else missing.add(id)
         }
+        if (missing.isEmpty()) return cached
+
+        val fetched = mutableListOf<AniListMedia>()
+        var attempt = 0
+        while (attempt < 2) {
+            attempt++
+            try {
+                val response = apiService.queryMedia(
+                    AniListRequest(
+                        query = AniListQueries.MEDIA_SEASON_BATCH_QUERY,
+                        variables = mapOf("ids" to missing)
+                    )
+                )
+                if (response.isSuccessful) {
+                    val nodes = response.body()?.data?.Page?.media.orEmpty()
+                    for (node in nodes) {
+                        seasonNodeCache[node.id] = node
+                        fetched.add(node)
+                    }
+                    break
+                } else if (response.code() == 429 && attempt < 2) {
+                    delay(700L)
+                } else {
+                    break
+                }
+            } catch (_: Exception) {
+                if (attempt < 2) delay(450L)
+            }
+        }
+        return cached + fetched
     }
 
     override suspend fun getRichDetailWithSeasons(rootMedia: AniListMedia): AnimeRichDetail = withContext(Dispatchers.IO) {
         seasonNodeCache[rootMedia.id] = rootMedia
         val base = mapRichDetail(rootMedia)
-        if (!isEpisodicSeasonFormat(rootMedia.format)) {
-            return@withContext base.copy(seasons = emptyList())
-        }
 
         val hasImmediateLink = rootMedia.relations?.edges.orEmpty().any { edge ->
             val rel = edge.relationType?.uppercase().orEmpty()
@@ -198,84 +217,15 @@ class AniListMetadataProvider(
             return@withContext base.copy(seasons = emptyList())
         }
 
-        val visited = mutableSetOf(rootMedia.id)
-        val bridgeParts = mutableListOf<AnimeRelationItem>()
-
-        fun pickRelationTarget(media: AniListMedia, relation: String): AniListMedia? {
-            val candidates = media.relations?.edges.orEmpty()
-                .filter { edge ->
-                    edge.relationType.equals(relation, ignoreCase = true) &&
-                        edge.node != null &&
-                        isAnimeMediaType(edge.node.type) &&
-                        !visited.contains(edge.node.id)
-                }
-                .mapNotNull { it.node }
-            return candidates.firstOrNull { isEpisodicSeasonFormat(it.format) }
-                ?: candidates.firstOrNull()
-        }
-
-        // Walk backward via PREQUEL (up to 6 hops)
-        val prequelsNewestFirst = mutableListOf<AniListMedia>()
-        var cursor: AniListMedia = rootMedia
-        repeat(6) {
-            val prevEdgeNode = pickRelationTarget(cursor, "PREQUEL") ?: return@repeat
-            visited.add(prevEdgeNode.id)
-            val fullPrev = fetchChainNode(prevEdgeNode.id) ?: prevEdgeNode
-            prequelsNewestFirst.add(fullPrev)
-            if (!isEpisodicSeasonFormat(fullPrev.format)) {
-                toRelationItem(fullPrev, "PREQUEL")?.let { bridgeParts.add(it) }
-            }
-            cursor = fullPrev
-        }
-
-        // Walk forward via SEQUEL (up to 6 hops)
-        val sequels = mutableListOf<AniListMedia>()
-        cursor = rootMedia
-        repeat(6) {
-            val nextEdgeNode = pickRelationTarget(cursor, "SEQUEL") ?: return@repeat
-            visited.add(nextEdgeNode.id)
-            val fullNext = fetchChainNode(nextEdgeNode.id) ?: nextEdgeNode
-            sequels.add(fullNext)
-            if (!isEpisodicSeasonFormat(fullNext.format)) {
-                toRelationItem(fullNext, "SEQUEL")?.let { bridgeParts.add(it) }
-            }
-            cursor = fullNext
-        }
-
-        val orderedChain = prequelsNewestFirst.asReversed() + listOf(rootMedia) + sequels
-        val episodicSeasons = orderedChain.filter { isEpisodicSeasonFormat(it.format) }
-        val mergedRelations = (base.relations + bridgeParts).distinctBy { it.id }
-
-        if (episodicSeasons.size <= 1) {
-            return@withContext base.copy(
-                seasons = emptyList(),
-                relations = mergedRelations
-            )
-        }
-
-        val seasonEntries = episodicSeasons.mapIndexed { idx, node ->
-            val title = node.title?.english?.takeIf { it.isNotBlank() }
-                ?: node.title?.userPreferred?.takeIf { it.isNotBlank() }
-                ?: node.title?.romaji?.takeIf { it.isNotBlank() }
-                ?: "Season ${idx + 1}"
-            AnimeSeasonEntry(
-                id = node.id,
-                seasonNumber = idx + 1,
-                title = title,
-                coverImage = node.coverImage?.extraLarge
-                    ?: node.coverImage?.large
-                    ?: node.coverImage?.medium.orEmpty(),
-                format = node.format,
-                status = node.status,
-                episodes = node.episodes,
-                seasonYear = node.seasonYear,
-                isCurrent = node.id == rootMedia.id
-            )
-        }
+        val resolved = SeasonChainResolver.resolve(
+            rootMedia = rootMedia,
+            fetchBatch = { batchIds -> fetchChainBatch(batchIds) }
+        )
+        val mergedRelations = (base.relations + resolved.bridgeRelations).distinctBy { it.id }
 
         base.copy(
             relations = mergedRelations,
-            seasons = seasonEntries
+            seasons = resolved.seasons
         )
     }
 

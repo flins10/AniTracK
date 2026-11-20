@@ -532,6 +532,11 @@ object AniListQueries {
             popularity
             season
             seasonYear
+            startDate {
+              year
+              month
+              day
+            }
             description(asHtml: false)
             countryOfOrigin
             synonyms
@@ -571,11 +576,17 @@ object AniListQueries {
                   coverImage {
                     medium
                     large
+                    extraLarge
                   }
                   format
                   status
                   episodes
                   seasonYear
+                  startDate {
+                    year
+                    month
+                    day
+                  }
                   averageScore
                 }
               }
@@ -615,11 +626,17 @@ object AniListQueries {
             coverImage {
               medium
               large
+              extraLarge
             }
             format
             status
             episodes
             seasonYear
+            startDate {
+              year
+              month
+              day
+            }
             averageScore
             relations {
               edges {
@@ -635,12 +652,78 @@ object AniListQueries {
                   coverImage {
                     medium
                     large
+                    extraLarge
                   }
                   format
                   status
                   episodes
                   seasonYear
+                  startDate {
+                    year
+                    month
+                    day
+                  }
                   averageScore
+                }
+              }
+            }
+          }
+        }
+    """.trimIndent()
+
+    val MEDIA_SEASON_BATCH_QUERY = """
+        query (${'$'}ids: [Int]) {
+          Page (page: 1, perPage: 50) {
+            media (id_in: ${'$'}ids, type: ANIME) {
+              id
+              type
+              title {
+                romaji
+                english
+                userPreferred
+              }
+              coverImage {
+                medium
+                large
+                extraLarge
+              }
+              format
+              status
+              episodes
+              seasonYear
+              startDate {
+                year
+                month
+                day
+              }
+              averageScore
+              relations {
+                edges {
+                  relationType
+                  node {
+                    id
+                    type
+                    title {
+                      romaji
+                      english
+                      userPreferred
+                    }
+                    coverImage {
+                      medium
+                      large
+                      extraLarge
+                    }
+                    format
+                    status
+                    episodes
+                    seasonYear
+                    startDate {
+                      year
+                      month
+                      day
+                    }
+                    averageScore
+                  }
                 }
               }
             }

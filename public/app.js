@@ -1435,6 +1435,311 @@ async function fetchDiscoverCatalog() {
   }
 }
 
+const anilistSeasonNodeCache = new Map();
+let detailFetchToken = 0;
+
+const ANILIST_SEASON_BATCH_QUERY = `
+  query($ids: [Int]) {
+    Page(page: 1, perPage: 50) {
+      media(id_in: $ids, type: ANIME) {
+        id
+        type
+        title { english romaji userPreferred }
+        coverImage { extraLarge large medium }
+        format
+        status
+        episodes
+        seasonYear
+        startDate { year month day }
+        averageScore
+        relations {
+          edges {
+            relationType
+            node {
+              id
+              type
+              title { english romaji userPreferred }
+              coverImage { extraLarge large medium }
+              format
+              status
+              episodes
+              seasonYear
+              startDate { year month day }
+              averageScore
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+function isSeasonCandidateMedia(node) {
+  if (!node) return false;
+  if (node.type && String(node.type).toUpperCase() !== 'ANIME') return false;
+  if (String(node.status || '').toUpperCase() === 'CANCELLED') return false;
+  const fmt = String(node.format || '').toUpperCase().trim();
+  if (!fmt || fmt === 'TV' || fmt === 'TV_SHORT' || fmt === 'ONA') return true;
+  if (fmt === 'SPECIAL') {
+    const combined = [node.title?.english, node.title?.userPreferred, node.title?.romaji]
+      .filter(Boolean)
+      .join(' ');
+    if (
+      /(final\s+season|final\s+chapters?|season\s+\d+|\bpart\s+\d+)/i.test(combined) &&
+      !/(recap|summary|digest|preview|special\s+program|pv)/i.test(combined)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function compareSeasonNodesChronologically(a, b, aId, bId) {
+  const aYear = a?.startDate?.year ?? a?.seasonYear ?? null;
+  const bYear = b?.startDate?.year ?? b?.seasonYear ?? null;
+  const aUndated = aYear == null && String(a?.status || '').toUpperCase() === 'NOT_YET_RELEASED' ? 1 : 0;
+  const bUndated = bYear == null && String(b?.status || '').toUpperCase() === 'NOT_YET_RELEASED' ? 1 : 0;
+  if (aUndated !== bUndated) return aUndated - bUndated;
+  const yDiff = (aYear ?? 9999) - (bYear ?? 9999);
+  if (yDiff !== 0) return yDiff;
+  const mDiff = (a?.startDate?.month ?? 13) - (b?.startDate?.month ?? 13);
+  if (mDiff !== 0) return mDiff;
+  const dDiff = (a?.startDate?.day ?? 32) - (b?.startDate?.day ?? 32);
+  if (dDiff !== 0) return dDiff;
+  return aId - bId;
+}
+
+async function fetchAniListSeasonBatch(ids) {
+  const uniqueIds = [...new Set(ids.map(Number).filter((id) => id > 0))];
+  if (!uniqueIds.length) return [];
+  const cached = [];
+  const missing = [];
+  for (const id of uniqueIds) {
+    const hit = anilistSeasonNodeCache.get(id);
+    if (hit) cached.push(hit);
+    else missing.push(id);
+  }
+  if (!missing.length) return cached;
+
+  let fetched = [];
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const resp = await fetch('https://graphql.anilist.co', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: ANILIST_SEASON_BATCH_QUERY, variables: { ids: missing } })
+      });
+      if (resp.status === 429 && attempt === 0) {
+        await new Promise((r) => setTimeout(r, 700));
+        continue;
+      }
+      if (!resp.ok) break;
+      const json = await resp.json();
+      const mediaList = json?.data?.Page?.media || [];
+      for (const node of mediaList) {
+        if (node?.id) {
+          anilistSeasonNodeCache.set(Number(node.id), node);
+          fetched.push(node);
+        }
+      }
+      break;
+    } catch (_) {
+      if (attempt === 0) await new Promise((r) => setTimeout(r, 450));
+    }
+  }
+  return [...cached, ...fetched];
+}
+
+async function resolveFullSeasonChain(rootMedia) {
+  if (!rootMedia?.id) return [];
+  anilistSeasonNodeCache.set(Number(rootMedia.id), rootMedia);
+
+  const hasImmediateLink = (rootMedia.relations?.edges || []).some(
+    (e) =>
+      e?.node &&
+      (!e.node.type || String(e.node.type).toUpperCase() === 'ANIME') &&
+      (e.relationType === 'PREQUEL' || e.relationType === 'SEQUEL')
+  );
+  if (!hasImmediateLink) return [];
+
+  const MAX_WAVES = 25;
+  const MAX_NODES = 60;
+  const BATCH_SIZE = 25;
+
+  const nodesById = new Map();
+  const outgoing = new Map(); // predecessorId -> Set(successorId)
+  const expandedIds = new Set();
+  const queuedIds = new Set();
+  const frontier = [];
+
+  const mergeNode = (candidate) => {
+    const id = Number(candidate.id);
+    const existing = nodesById.get(id);
+    if (!existing) {
+      nodesById.set(id, candidate);
+      return;
+    }
+    const existingHasRels = Array.isArray(existing.relations?.edges) && existing.relations.edges.length > 0;
+    const candidateHasRels = Array.isArray(candidate.relations?.edges) && candidate.relations.edges.length > 0;
+    if (candidateHasRels && !existingHasRels) {
+      nodesById.set(id, {
+        ...existing,
+        ...candidate,
+        startDate: candidate.startDate || existing.startDate,
+        seasonYear: candidate.seasonYear ?? existing.seasonYear,
+        episodes: candidate.episodes ?? existing.episodes
+      });
+    } else {
+      nodesById.set(id, {
+        ...candidate,
+        ...existing,
+        startDate: existing.startDate || candidate.startDate,
+        seasonYear: existing.seasonYear ?? candidate.seasonYear,
+        episodes: existing.episodes ?? candidate.episodes,
+        relations: existingHasRels ? existing.relations : candidate.relations
+      });
+    }
+  };
+
+  const addDirectedEdge = (fromId, toId) => {
+    if (!outgoing.has(fromId)) outgoing.set(fromId, new Set());
+    outgoing.get(fromId).add(toId);
+  };
+
+  const enqueue = (id) => {
+    if (!id || expandedIds.has(id) || queuedIds.has(id)) return;
+    if (nodesById.size >= MAX_NODES && !nodesById.has(id)) return;
+    queuedIds.add(id);
+    frontier.push(id);
+  };
+
+  const ingestRelations = (media) => {
+    const mediaId = Number(media.id);
+    mergeNode(media);
+    expandedIds.add(mediaId);
+    for (const edge of media.relations?.edges || []) {
+      const rel = String(edge?.relationType || '').toUpperCase();
+      if (rel !== 'PREQUEL' && rel !== 'SEQUEL') continue;
+      const target = edge.node;
+      if (!target?.id) continue;
+      if (target.type && String(target.type).toUpperCase() !== 'ANIME') continue;
+      const targetId = Number(target.id);
+      if (!nodesById.has(targetId) && nodesById.size >= MAX_NODES) continue;
+      mergeNode(target);
+      if (rel === 'SEQUEL') addDirectedEdge(mediaId, targetId);
+      else addDirectedEdge(targetId, mediaId);
+      enqueue(targetId);
+    }
+  };
+
+  ingestRelations(rootMedia);
+
+  let wave = 0;
+  while (frontier.length > 0 && wave < MAX_WAVES && expandedIds.size < MAX_NODES) {
+    wave++;
+    const batch = [];
+    while (frontier.length > 0 && batch.length < BATCH_SIZE) {
+      const nextId = frontier.shift();
+      if (!expandedIds.has(nextId)) batch.push(nextId);
+    }
+    if (!batch.length) break;
+
+    const fetched = await fetchAniListSeasonBatch(batch);
+    const fetchedIds = new Set();
+    for (const node of fetched) {
+      fetchedIds.add(Number(node.id));
+      ingestRelations(node);
+    }
+    for (const reqId of batch) {
+      if (!fetchedIds.has(reqId)) expandedIds.add(reqId);
+    }
+  }
+
+  const seasonIds = new Set();
+  for (const [id, node] of nodesById.entries()) {
+    if (isSeasonCandidateMedia(node)) seasonIds.add(id);
+  }
+  if (seasonIds.size <= 1) return [];
+
+  // Project transitive reachability across Movie / OVA / Special bridges onto the season DAG
+  const seasonOutgoing = new Map();
+  const inDegree = new Map();
+  for (const sid of seasonIds) {
+    seasonOutgoing.set(sid, new Set());
+    inDegree.set(sid, 0);
+  }
+
+  for (const startId of seasonIds) {
+    const seen = new Set();
+    const queue = [];
+    for (const next of outgoing.get(startId) || []) {
+      if (!seen.has(next)) {
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+    while (queue.length > 0) {
+      const curr = queue.shift();
+      if (curr === startId) continue;
+      if (seasonIds.has(curr)) {
+        const targets = seasonOutgoing.get(startId);
+        if (!targets.has(curr)) {
+          targets.add(curr);
+          inDegree.set(curr, (inDegree.get(curr) || 0) + 1);
+        }
+      } else {
+        for (const next of outgoing.get(curr) || []) {
+          if (!seen.has(next)) {
+            seen.add(next);
+            queue.push(next);
+          }
+        }
+      }
+    }
+  }
+
+  const cmp = (aId, bId) => compareSeasonNodesChronologically(nodesById.get(aId), nodesById.get(bId), aId, bId);
+  const ready = [...seasonIds].filter((sid) => (inDegree.get(sid) || 0) === 0).sort(cmp);
+  const orderedIds = [];
+
+  while (ready.length > 0) {
+    const curr = ready.shift();
+    orderedIds.push(curr);
+    let added = false;
+    for (const next of seasonOutgoing.get(curr) || []) {
+      const rem = (inDegree.get(next) || 1) - 1;
+      inDegree.set(next, rem);
+      if (rem === 0) {
+        ready.push(next);
+        added = true;
+      }
+    }
+    if (added) ready.sort(cmp);
+  }
+
+  if (orderedIds.length < seasonIds.size) {
+    const placed = new Set(orderedIds);
+    const remaining = [...seasonIds].filter((id) => !placed.has(id)).sort(cmp);
+    orderedIds.push(...remaining);
+  }
+
+  const rootId = Number(rootMedia.id);
+  return orderedIds.map((id, idx) => {
+    const sn = nodesById.get(id);
+    const title = sn?.title?.english || sn?.title?.userPreferred || sn?.title?.romaji || `Season ${idx + 1}`;
+    return {
+      id,
+      seasonNumber: idx + 1,
+      title,
+      seasonYear: sn?.seasonYear ?? sn?.startDate?.year ?? null,
+      status: sn?.status || null,
+      format: sn?.format || null,
+      episodes: sn?.episodes ?? null,
+      isCurrent: id === rootId
+    };
+  });
+}
+
 async function openAnimeDetail(animeId) {
   if (state.tab !== 'detail') {
     state.previousTab = state.tab;
@@ -1467,8 +1772,9 @@ async function openAnimeDetail(animeId) {
     query($id: Int) {
       Media(id: $id, type: ANIME) {
         id
-        title { english romaji native }
-        coverImage { extraLarge large }
+        type
+        title { english romaji native userPreferred }
+        coverImage { extraLarge large medium }
         bannerImage
         format
         status
@@ -1476,6 +1782,7 @@ async function openAnimeDetail(animeId) {
         averageScore
         season
         seasonYear
+        startDate { year month day }
         countryOfOrigin
         genres
         description(asHtml: false)
@@ -1484,12 +1791,25 @@ async function openAnimeDetail(animeId) {
         relations {
           edges {
             relationType
-            node { id type title { english romaji } coverImage { large } format status episodes seasonYear }
+            node {
+              id
+              type
+              title { english romaji userPreferred }
+              coverImage { extraLarge large medium }
+              format
+              status
+              episodes
+              seasonYear
+              startDate { year month day }
+              averageScore
+            }
           }
         }
       }
     }
   `;
+
+  const myToken = ++detailFetchToken;
 
   try {
     const resp = await fetch('https://graphql.anilist.co', {
@@ -1498,6 +1818,7 @@ async function openAnimeDetail(animeId) {
       body: JSON.stringify({ query: gql, variables: { id: animeId } })
     });
     const json = await resp.json();
+    if (myToken !== detailFetchToken) return;
     const m = json?.data?.Media;
     if (m) {
       const existing = state.vault.find((v) => v.animeId === animeId);
@@ -1512,7 +1833,7 @@ async function openAnimeDetail(animeId) {
         bannerImage: m.bannerImage || '',
         format: m.format || 'TV',
         mediaStatus: m.status || 'RELEASING',
-        seasonYear: m.seasonYear || null,
+        seasonYear: m.seasonYear || m.startDate?.year || null,
         countryOfOrigin: m.countryOfOrigin || 'JP',
         totalEpisodes: m.episodes || existing?.totalEpisodes || null,
         averageScore: m.averageScore || null,
@@ -1530,24 +1851,23 @@ async function openAnimeDetail(animeId) {
         inWatchlist: Boolean(existing)
       };
 
-      const relEdges = (m.relations?.edges || []).filter((e) => e.node && e.node.type === 'ANIME');
-      const prequels = relEdges.filter((e) => e.relationType === 'PREQUEL').map((e) => e.node);
-      const sequels = relEdges.filter((e) => e.relationType === 'SEQUEL').map((e) => e.node);
-      const seasonNodes = [...prequels, { id: m.id, title: m.title, status: m.status, seasonYear: m.seasonYear, isCurrent: true }, ...sequels];
+      // Render detail page immediately, then resolve the complete multi-season franchise chain via batched BFS
+      state.detailLoading = false;
+      renderApp();
+
+      const fullSeasons = await resolveFullSeasonChain(m);
+      if (myToken !== detailFetchToken) return;
       state.detailRich = {
-        seasons: seasonNodes.map((sn, idx) => ({
-          id: sn.id,
-          seasonNumber: idx + 1,
-          seasonYear: sn.seasonYear,
-          status: sn.status,
-          isCurrent: sn.id === m.id
-        }))
+        seasons: fullSeasons
       };
+      renderApp();
     }
   } catch (_) {
   } finally {
-    state.detailLoading = false;
-    renderApp();
+    if (myToken === detailFetchToken) {
+      state.detailLoading = false;
+      renderApp();
+    }
   }
 }
 
@@ -2885,21 +3205,33 @@ function renderAnimeDetailScreen() {
       <div class="app-card" style="border-radius:24px;margin-bottom:16px;display:flex;flex-direction:column;gap:14px;">
         ${
           seasons.length > 1
-            ? `
+            ? (() => {
+                const activeSeason = seasons.find((s) => s.isCurrent || s.id === a.animeId);
+                const activeMeta = activeSeason
+                  ? `Season ${activeSeason.seasonNumber} of ${seasons.length}${activeSeason.seasonYear ? ` • ${activeSeason.seasonYear}` : ''}`
+                  : `${seasons.length} Seasons`;
+                return `
               <div>
-                <div class="micro-label" style="color:var(--accent-primary);margin-bottom:8px;">SEASONS</div>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;">
+                  <div class="micro-label" style="color:var(--accent-primary);">SEASONS</div>
+                  <div class="micro-label" style="color:var(--text-secondary);">${escapeHtml(activeMeta)}</div>
+                </div>
                 <div class="capsule-strip" style="margin-bottom:4px;">
                   ${seasons
-                    .map(
-                      (s) => `
-                      <button class="capsule-pill gold-solid ${s.isCurrent ? 'active' : ''}" data-open-detail="${s.id}" style="min-width:52px;height:44px;justify-content:center;font-size:14px;">
-                        ${s.seasonNumber}
-                      </button>`
-                    )
+                    .map((s) => {
+                      const isUpcoming = String(s.status || '').toUpperCase() === 'NOT_YET_RELEASED';
+                      const tooltip = `${s.title || `Season ${s.seasonNumber}`}${s.seasonYear ? ` (${s.seasonYear})` : ''}`;
+                      return `
+                      <button class="capsule-pill gold-solid ${s.isCurrent ? 'active' : ''}" data-open-detail="${s.id}" title="${escapeHtml(tooltip)}" style="min-width:52px;height:44px;justify-content:center;font-size:14px;gap:5px;">
+                        <span>${s.seasonNumber}</span>
+                        ${isUpcoming && !s.isCurrent ? '<span style="width:6px;height:6px;border-radius:50%;background:var(--warning);display:inline-block;"></span>' : ''}
+                      </button>`;
+                    })
                     .join('')}
                 </div>
               </div>
-            `
+            `;
+              })()
             : ''
         }
 

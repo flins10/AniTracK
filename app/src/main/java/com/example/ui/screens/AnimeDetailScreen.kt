@@ -379,7 +379,7 @@ fun AnimeDetailScreen(
                                         if (activeSeasonEntry != null) {
                                             val yearText = activeSeasonEntry.seasonYear?.let { " • $it" }.orEmpty()
                                             Text(
-                                                text = "Season ${activeSeasonEntry.seasonNumber}$yearText",
+                                                text = "Season ${activeSeasonEntry.seasonNumber} of ${seasonEntries.size}$yearText",
                                                 style = MicroUpperLabel.copy(fontSize = 8.5.sp, letterSpacing = 1.sp),
                                                 color = colors.textSecondary
                                             )
