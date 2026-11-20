@@ -12,8 +12,14 @@ interface AnimeDao {
     @Query("SELECT * FROM anime WHERE inWatchlist = 1 ORDER BY isPinned DESC, airingDayOfWeek ASC, airingTimeUnix ASC")
     fun getAllWatchlistAnime(): Flow<List<AnimeEntity>>
 
+    @Query("SELECT * FROM anime WHERE inHome = 1 ORDER BY isPinned DESC, airingDayOfWeek ASC, airingTimeUnix ASC")
+    fun getHomeTrackedAnime(): Flow<List<AnimeEntity>>
+
     @Query("SELECT * FROM anime WHERE inWatchlist = 1 AND airingDayOfWeek = :dayOfWeek ORDER BY isPinned DESC, airingTimeUnix ASC")
     fun getPlannerAnimeByDay(dayOfWeek: Int): Flow<List<AnimeEntity>>
+
+    @Query("SELECT * FROM anime WHERE inHome = 1 AND airingDayOfWeek = :dayOfWeek ORDER BY isPinned DESC, airingTimeUnix ASC")
+    fun getHomeAnimeByDay(dayOfWeek: Int): Flow<List<AnimeEntity>>
 
     @Query("SELECT * FROM anime WHERE (UPPER(status) = 'RELEASING' OR UPPER(status) = 'CURRENTLY_AIRING' OR UPPER(status) = 'AIRING') AND airingDayOfWeek = :dayOfWeek ORDER BY isPinned DESC, airingTimeUnix ASC")
     fun getCalendarAnimeByDay(dayOfWeek: Int): Flow<List<AnimeEntity>>
@@ -50,6 +56,9 @@ interface AnimeDao {
 
     @Query("UPDATE anime SET inWatchlist = :inWatchlist WHERE id = :id")
     suspend fun updateWatchlistStatus(id: Int, inWatchlist: Boolean)
+
+    @Query("UPDATE anime SET inHome = :inHome WHERE id = :id")
+    suspend fun updateHomeStatus(id: Int, inHome: Boolean)
 
     @Query("UPDATE anime SET isWishlist = :isWishlist WHERE id = :id")
     suspend fun updateWishlistStatus(id: Int, isWishlist: Boolean)
@@ -115,6 +124,7 @@ interface AnimeDao {
     @Query("""
         DELETE FROM anime
         WHERE inWatchlist = 0
+          AND inHome = 0
           AND isWishlist = 0
           AND isFavorite = 0
           AND isPinned = 0
@@ -127,6 +137,7 @@ interface AnimeDao {
     @Query("""
         DELETE FROM anime
         WHERE inWatchlist = 0
+          AND inHome = 0
           AND isWishlist = 0
           AND isFavorite = 0
           AND isPinned = 0
@@ -138,6 +149,7 @@ interface AnimeDao {
               OR id NOT IN (
                   SELECT id FROM anime
                   WHERE inWatchlist = 0
+                    AND inHome = 0
                     AND isWishlist = 0
                     AND isFavorite = 0
                     AND isPinned = 0
@@ -157,6 +169,7 @@ interface AnimeDao {
     @Query("""
         SELECT * FROM anime
         WHERE inWatchlist = 1
+           OR inHome = 1
            OR isWishlist = 1
            OR isFavorite = 1
            OR isPinned = 1
@@ -169,6 +182,7 @@ interface AnimeDao {
 
     @Query("""
         UPDATE anime SET
+            inHome = 0,
             inWatchlist = 0,
             isWishlist = 0,
             isFavorite = 0,

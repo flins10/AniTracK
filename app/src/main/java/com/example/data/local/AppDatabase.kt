@@ -180,6 +180,40 @@ private class Migration11To12 : Migration(11, 12) {
     }
 }
 
+private class Migration12To13 : Migration(12, 13) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `anime` ADD COLUMN `inHome` INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE `saved_anime` ADD COLUMN `inHome` INTEGER NOT NULL DEFAULT 0")
+        // Non-destructive backfill: active watching shows remain on Home; completed/dropped/finished-at-total stay in Library only
+        db.execSQL(
+            """
+            UPDATE `anime` SET `inHome` = 1
+            WHERE `inWatchlist` = 1
+              AND LOWER(COALESCE(`userStatus`, 'watching')) = 'watching'
+              AND NOT (
+                  UPPER(COALESCE(`status`, '')) IN ('FINISHED', 'FINISHED_AIRING')
+                  AND `totalEpisodes` IS NOT NULL
+                  AND `totalEpisodes` > 0
+                  AND `watchedEpisodeCount` >= `totalEpisodes`
+              )
+            """.trimIndent()
+        )
+        db.execSQL(
+            """
+            UPDATE `saved_anime` SET `inHome` = 1
+            WHERE `inWatchlist` = 1
+              AND LOWER(COALESCE(`userStatus`, 'watching')) = 'watching'
+              AND NOT (
+                  UPPER(COALESCE(`status`, '')) IN ('FINISHED', 'FINISHED_AIRING')
+                  AND `totalEpisodes` IS NOT NULL
+                  AND `totalEpisodes` > 0
+                  AND `watchedEpisodeCount` >= `totalEpisodes`
+              )
+            """.trimIndent()
+        )
+    }
+}
+
 @Database(
     entities = [
         AnimeEntity::class,
@@ -188,7 +222,7 @@ private class Migration11To12 : Migration(11, 12) {
         DeletedAnimeEntity::class,
         SavedAnimeEntity::class
     ],
-    version = 12,
+    version = 13,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -204,8 +238,9 @@ abstract class AppDatabase : RoomDatabase() {
 
         val MIGRATION_10_11: Migration = Migration10To11()
         val MIGRATION_11_12: Migration = Migration11To12()
+        val MIGRATION_12_13: Migration = Migration12To13()
 
-        val ALL_MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_10_11, MIGRATION_11_12)
+        val ALL_MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13)
 
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {

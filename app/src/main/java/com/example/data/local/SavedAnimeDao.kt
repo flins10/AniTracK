@@ -18,6 +18,9 @@ interface SavedAnimeDao {
     @Query("SELECT * FROM saved_anime WHERE inWatchlist = 1 ORDER BY isPinned DESC, airingDayOfWeek ASC, airingTimeUnix ASC")
     fun getWatchlistFlow(): Flow<List<SavedAnimeEntity>>
 
+    @Query("SELECT * FROM saved_anime WHERE inHome = 1 ORDER BY isPinned DESC, airingDayOfWeek ASC, airingTimeUnix ASC")
+    fun getHomeTrackedFlow(): Flow<List<SavedAnimeEntity>>
+
     @Query("SELECT * FROM saved_anime WHERE isWishlist = 1 ORDER BY COALESCE(titleEnglish, titleRomaji) ASC")
     fun getWishlistFlow(): Flow<List<SavedAnimeEntity>>
 

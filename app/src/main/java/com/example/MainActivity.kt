@@ -500,6 +500,7 @@ private fun AnimeUniverseMainScaffold(
                         viewModel = viewModel,
                         onSelectAnime = { id -> navController.navigate("detail/$id") },
                         onNavigateToDiscover = { navigateToTab(MainNavTab.Discover) },
+                        onNavigateToCommunity = { navigateToTab(MainNavTab.Community) },
                         onNavigateToProfile = { navigateToTab(MainNavTab.Profile) }
                     )
                 }

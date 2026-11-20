@@ -40,6 +40,7 @@ data class AnimeEntity(
     val synopsis: String? = null,
     val countryOfOrigin: String? = "JP",
     val inWatchlist: Boolean = false,
+    @ColumnInfo(defaultValue = "0") val inHome: Boolean = false,
     val isWishlist: Boolean = false,
     val isFavorite: Boolean = false,
     @ColumnInfo(defaultValue = "0") val isPinned: Boolean = false,
@@ -174,7 +175,7 @@ data class AnimeEntity(
     }
 
     val hasActiveUserState: Boolean
-        get() = inWatchlist || isWishlist || isFavorite || isPinned ||
+        get() = inWatchlist || inHome || isWishlist || isFavorite || isPinned ||
             watchedEpisodeCount > 0 || !userStatus.isNullOrBlank() ||
             !userNotes.isNullOrBlank()
 }

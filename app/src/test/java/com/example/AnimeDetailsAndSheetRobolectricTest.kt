@@ -94,12 +94,14 @@ class AnimeDetailsAndSheetRobolectricTest {
     }
 
     @Test
-    fun `DetailEpisodeStepperControl removes inline Type episode row and opens custom dialog when middle episode is clicked`() {
+    fun `DetailEpisodeStepperControl supports direct inline custom episode input and save`() {
         var appliedEpisode: Int? = null
+        val testAnimeId = 9001
 
         composeTestRule.setContent {
             AnimeUniverseTheme(themeMode = ThemeModePreference.DARK) {
                 DetailEpisodeStepperControl(
+                    animeId = testAnimeId,
                     watchedEpisodeCount = 3,
                     totalEpisodes = 25,
                     subtitle = "EPISODES WATCHED",
@@ -107,34 +109,28 @@ class AnimeDetailsAndSheetRobolectricTest {
                     canIncrement = true,
                     onDecrement = {},
                     onIncrement = {},
-                    onSetCustomEpisode = { appliedEpisode = it }
+                    onCommitCustomEpisode = { next ->
+                        appliedEpisode = next
+                        Result.success(Unit)
+                    }
                 )
             }
         }
         composeTestRule.waitForIdle()
 
-        // Inline "Type episode #" and "SET EP" are gone; middle stepper counter is displayed
-        composeTestRule.onNodeWithText("Type episode #").assertDoesNotExist()
-        composeTestRule.onNodeWithText("SET EP").assertDoesNotExist()
-        composeTestRule.onNodeWithTag("detail_custom_episode_dialog").assertDoesNotExist()
-        composeTestRule.onNodeWithTag("detail_decrement_ep").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("detail_increment_ep").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("detail_episode_center").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("anime_decrement_action_$testAnimeId").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("anime_quick_action_$testAnimeId").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("inline_episode_trigger_$testAnimeId").assertIsDisplayed()
 
-        // Click middle of - and + -> opens Set Episode dialog
-        composeTestRule.mainClock.autoAdvance = false
-        composeTestRule.onNodeWithTag("detail_episode_center").performClick()
-        composeTestRule.mainClock.advanceTimeBy(300L)
+        // Tap episode count -> inline editable numeric input opens
+        composeTestRule.onNodeWithTag("inline_episode_trigger_$testAnimeId").performClick()
+        composeTestRule.waitForIdle()
 
-        composeTestRule.onNodeWithTag("detail_custom_episode_dialog").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("detail_episode_input").performTextReplacement("18")
-        composeTestRule.mainClock.advanceTimeBy(150L)
-        composeTestRule.onNodeWithTag("detail_set_episode_button").performClick()
-        composeTestRule.mainClock.advanceTimeBy(300L)
-        composeTestRule.mainClock.autoAdvance = true
+        composeTestRule.onNodeWithTag("inline_episode_input_$testAnimeId").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("inline_episode_input_$testAnimeId").performTextReplacement("18")
+        composeTestRule.onNodeWithTag("inline_episode_save_$testAnimeId").performClick()
         composeTestRule.waitForIdle()
 
         assertEquals(18, appliedEpisode)
-        composeTestRule.onNodeWithTag("detail_custom_episode_dialog").assertDoesNotExist()
     }
 }

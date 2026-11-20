@@ -52,6 +52,25 @@ class AnimeRepository(
         animeDao.getAllWatchlistAnime()
     }
 
+    val homeTrackedAnime: Flow<List<AnimeEntity>> = if (savedAnimeDao != null) {
+        combine(animeDao.getHomeTrackedAnime(), savedAnimeDao.getHomeTrackedFlow()) { mainList, savedList ->
+            mergeAnimeWithSaved(mainList, savedList) {
+                it.inHome && !ProgressRules.shouldRemoveFromHome(
+                    it.watchStatusEnum,
+                    it.status,
+                    it.totalEpisodes,
+                    it.watchedEpisodeCount
+                )
+            }.sortedWith(
+                compareByDescending<AnimeEntity> { it.isPinned }
+                    .thenByDescending { it.lastWatchedTime ?: 0L }
+                    .thenBy { it.airingDayOfWeek }
+            )
+        }
+    } else {
+        animeDao.getHomeTrackedAnime()
+    }
+
     val wishlist: Flow<List<AnimeEntity>> = if (savedAnimeDao != null) {
         combine(animeDao.getWishlistAnime(), savedAnimeDao.getWishlistFlow()) { mainList, savedList ->
             mergeAnimeWithSaved(mainList, savedList) { it.isWishlist }
@@ -83,6 +102,26 @@ class AnimeRepository(
             }
         } else {
             animeDao.getPlannerAnimeByDay(dayOfWeek)
+        }
+    }
+
+    fun getHomeAnimeByDay(dayOfWeek: Int): Flow<List<AnimeEntity>> {
+        return if (savedAnimeDao != null) {
+            combine(animeDao.getHomeAnimeByDay(dayOfWeek), savedAnimeDao.getHomeTrackedFlow()) { mainList, savedList ->
+                val daySaved = savedList.filter { it.airingDayOfWeek == dayOfWeek }
+                mergeAnimeWithSaved(mainList, daySaved) {
+                    it.inHome &&
+                        it.airingDayOfWeek == dayOfWeek &&
+                        !ProgressRules.shouldRemoveFromHome(
+                            it.watchStatusEnum,
+                            it.status,
+                            it.totalEpisodes,
+                            it.watchedEpisodeCount
+                        )
+                }.sortedWith(compareByDescending<AnimeEntity> { it.isPinned }.thenBy { it.airingTimeUnix ?: Long.MAX_VALUE })
+            }
+        } else {
+            animeDao.getHomeAnimeByDay(dayOfWeek)
         }
     }
 
@@ -130,20 +169,34 @@ class AnimeRepository(
                 else -> item.synopsis?.take(160)
             }
             val merged = if (existing != null) {
+                val resolvedTotal = item.totalEpisodes ?: existing.totalEpisodes
+                val resolvedStatusText = item.status?.takeIf { it.isNotBlank() } ?: existing.status
+                val clampedWatched = ProgressRules.clampEpisodeProgress(existing.watchedEpisodeCount, resolvedTotal)
+                val autoComplete = existing.inWatchlist &&
+                    existing.watchStatusEnum != WatchStatus.DROPPED &&
+                    ProgressRules.shouldAutoComplete(resolvedStatusText, resolvedTotal, clampedWatched)
+                val effectiveWatchStatus = if (autoComplete) WatchStatus.COMPLETED else existing.watchStatusEnum
+                val effectiveInHome = existing.inHome && !ProgressRules.shouldRemoveFromHome(
+                    effectiveWatchStatus,
+                    resolvedStatusText,
+                    resolvedTotal,
+                    clampedWatched
+                )
                 item.copy(
                     genres = compactedGenres.ifBlank { existing.genres },
                     studios = compactedStudios.ifBlank { existing.studios },
                     synopsis = compactedSynopsis,
+                    inHome = effectiveInHome,
                     inWatchlist = existing.inWatchlist,
-                    isWishlist = existing.isWishlist,
+                    isWishlist = if (autoComplete) false else existing.isWishlist,
                     isFavorite = existing.isFavorite,
                     isPinned = existing.isPinned,
-                    watchedEpisodeCount = ProgressRules.clampEpisodeProgress(existing.watchedEpisodeCount, item.totalEpisodes ?: existing.totalEpisodes),
+                    watchedEpisodeCount = clampedWatched,
                     userSeason = existing.userSeason,
-                    userStatus = existing.userStatus,
+                    userStatus = if (autoComplete) WatchStatus.COMPLETED.dbValue else existing.userStatus,
                     userScore = existing.userScore,
                     userNotes = existing.userNotes,
-                    isWatched = existing.isWatched,
+                    isWatched = if (autoComplete) true else existing.isWatched,
                     notificationsEnabled = existing.notificationsEnabled,
                     lastWatchedTime = existing.lastWatchedTime
                 )
@@ -160,20 +213,35 @@ class AnimeRepository(
         pruneAndCompactStorage()
     }
 
-    suspend fun addToWatchlist(anime: AnimeEntity, initialStatus: WatchStatus = WatchStatus.WATCHING): AnimeEntity = withContext(Dispatchers.IO) {
+    suspend fun addToWatchlist(
+        anime: AnimeEntity,
+        initialStatus: WatchStatus = WatchStatus.WATCHING,
+        addToHome: Boolean = initialStatus == WatchStatus.WATCHING
+    ): AnimeEntity = withContext(Dispatchers.IO) {
         deletedAnimeDao?.removeTombstone(anime.id)
         val existing = getAnimeByIdSync(anime.id)
+        val base = existing ?: anime
         val targetTotal = anime.totalEpisodes ?: existing?.totalEpisodes
         val progress = ProgressRules.clampEpisodeProgress(existing?.watchedEpisodeCount ?: anime.watchedEpisodeCount, targetTotal)
+        val autoComplete = initialStatus != WatchStatus.DROPPED &&
+            ProgressRules.shouldAutoComplete(base.status, targetTotal, progress)
+        val effectiveStatus = if (autoComplete) WatchStatus.COMPLETED else initialStatus
+        val shouldBeInHome = addToHome && !ProgressRules.shouldRemoveFromHome(
+            watchStatus = effectiveStatus,
+            officialStatus = base.status,
+            totalEpisodes = targetTotal,
+            watchedEpisodes = progress
+        )
         val resolvedSeason = SeasonRules.resolveInitialSeason(
             existing?.userSeason ?: anime.userSeason,
-            (existing ?: anime).displayTitle
+            base.displayTitle
         )
-        val updated = (existing ?: anime).copy(
+        val updated = base.copy(
+            inHome = shouldBeInHome,
             inWatchlist = true,
-            isWishlist = initialStatus == WatchStatus.PLAN_TO_WATCH,
-            isWatched = initialStatus == WatchStatus.COMPLETED,
-            userStatus = initialStatus.dbValue,
+            isWishlist = effectiveStatus == WatchStatus.PLAN_TO_WATCH,
+            isWatched = effectiveStatus == WatchStatus.COMPLETED,
+            userStatus = effectiveStatus.dbValue,
             watchedEpisodeCount = progress,
             userSeason = resolvedSeason,
             lastWatchedTime = System.currentTimeMillis()
@@ -183,11 +251,54 @@ class AnimeRepository(
         updated
     }
 
+    suspend fun addToHome(anime: AnimeEntity): AnimeEntity = withContext(Dispatchers.IO) {
+        deletedAnimeDao?.removeTombstone(anime.id)
+        val existing = getAnimeByIdSync(anime.id)
+        val base = existing ?: anime
+        val targetTotal = anime.totalEpisodes ?: existing?.totalEpisodes
+        val progress = ProgressRules.clampEpisodeProgress(base.watchedEpisodeCount, targetTotal)
+        val resolvedStatus = when {
+            base.userStatus.isNullOrBlank() -> WatchStatus.WATCHING
+            base.watchStatusEnum == WatchStatus.DROPPED || base.watchStatusEnum == WatchStatus.COMPLETED -> WatchStatus.WATCHING
+            else -> base.watchStatusEnum
+        }
+        val resolvedSeason = SeasonRules.resolveInitialSeason(base.userSeason, base.displayTitle)
+        val updated = base.copy(
+            inHome = true,
+            inWatchlist = true,
+            isWishlist = resolvedStatus == WatchStatus.PLAN_TO_WATCH,
+            isWatched = false,
+            userStatus = resolvedStatus.dbValue,
+            watchedEpisodeCount = progress,
+            userSeason = resolvedSeason,
+            lastWatchedTime = System.currentTimeMillis()
+        )
+        animeDao.insertAnime(updated)
+        syncEntityToSavedTable(updated)
+        updated
+    }
+
+    suspend fun removeFromHomeOnly(animeId: Int): AnimeEntity? = withContext(Dispatchers.IO) {
+        val existing = getAnimeByIdSync(animeId) ?: return@withContext null
+        val updated = existing.copy(
+            inHome = false
+        )
+        animeDao.insertAnime(updated)
+        syncEntityToSavedTable(updated)
+        updated
+    }
+
+    suspend fun restoreEntitySnapshot(snapshot: AnimeEntity) = withContext(Dispatchers.IO) {
+        animeDao.insertAnime(snapshot)
+        syncEntityToSavedTable(snapshot)
+    }
+
     suspend fun removeFromWatchlist(animeId: Int) = withContext(Dispatchers.IO) {
         deletedAnimeDao?.insertTombstone(DeletedAnimeEntity(animeId = animeId, listType = "WATCHLIST"))
         val existing = animeDao.getAnimeByIdSync(animeId)
         if (existing != null) {
             val updated = existing.copy(
+                inHome = false,
                 inWatchlist = false,
                 isWishlist = false,
                 isPinned = false,
@@ -203,9 +314,13 @@ class AnimeRepository(
 
     suspend fun incrementEpisode(animeId: Int): AnimeEntity? = withContext(Dispatchers.IO) {
         val current = getAnimeByIdSync(animeId) ?: return@withContext null
-        val (nextCount, reachedEnd) = ProgressRules.incrementEpisode(current.watchedEpisodeCount, current.totalEpisodes)
+        val (nextCount, shouldAutoComplete) = ProgressRules.incrementEpisode(
+            current = current.watchedEpisodeCount,
+            totalEpisodes = current.totalEpisodes,
+            officialStatus = current.status
+        )
         val nextStatus = when {
-            reachedEnd -> WatchStatus.COMPLETED
+            shouldAutoComplete -> WatchStatus.COMPLETED
             current.userStatus == WatchStatus.PLAN_TO_WATCH.dbValue || current.userStatus == null -> WatchStatus.WATCHING
             else -> current.watchStatusEnum
         }
@@ -225,7 +340,8 @@ class AnimeRepository(
         seasonNumber: Int? = null,
         score: Int? = null,
         notes: String? = null,
-        isFavorite: Boolean? = null
+        isFavorite: Boolean? = null,
+        explicitInHome: Boolean? = null
     ): AnimeEntity? = withContext(Dispatchers.IO) {
         val existing = getAnimeByIdSync(animeId) ?: return@withContext null
         val clampedProgress = ProgressRules.clampEpisodeProgress(
@@ -233,17 +349,32 @@ class AnimeRepository(
             existing.totalEpisodes
         )
         val clampedSeason = seasonNumber?.let { SeasonRules.clampSeason(it) } ?: existing.effectiveSeasonNumber
-        val finalProgress = if (status == WatchStatus.COMPLETED && (existing.totalEpisodes ?: 0) > 0) {
+        val autoComplete = status != WatchStatus.DROPPED &&
+            ProgressRules.shouldAutoComplete(existing.status, existing.totalEpisodes, clampedProgress)
+        val effectiveStatus = if (autoComplete) WatchStatus.COMPLETED else status
+        val finalProgress = if (episodeProgress == null && effectiveStatus == WatchStatus.COMPLETED && (existing.totalEpisodes ?: 0) > 0) {
             existing.totalEpisodes!!
         } else {
             clampedProgress
         }
+        val autoRemoveFromHome = ProgressRules.shouldRemoveFromHome(
+            watchStatus = effectiveStatus,
+            officialStatus = existing.status,
+            totalEpisodes = existing.totalEpisodes,
+            watchedEpisodes = finalProgress
+        )
+        val resolvedInHome = when {
+            autoRemoveFromHome -> false
+            explicitInHome != null -> explicitInHome
+            else -> existing.inHome
+        }
         val updated = existing.copy(
+            inHome = resolvedInHome,
             inWatchlist = true,
-            isWishlist = status == WatchStatus.PLAN_TO_WATCH,
-            isWatched = status == WatchStatus.COMPLETED,
+            isWishlist = effectiveStatus == WatchStatus.PLAN_TO_WATCH,
+            isWatched = effectiveStatus == WatchStatus.COMPLETED,
             isFavorite = isFavorite ?: existing.isFavorite,
-            userStatus = status.dbValue,
+            userStatus = effectiveStatus.dbValue,
             watchedEpisodeCount = finalProgress,
             userSeason = clampedSeason,
             userScore = score ?: existing.userScore,
@@ -342,6 +473,7 @@ class AnimeRepository(
             val catalogExisting = animeDao.getAnimeByIdSync(item.id)
             val merged = if (catalogExisting != null) {
                 catalogExisting.copy(
+                    inHome = item.inHome,
                     inWatchlist = item.inWatchlist,
                     isWishlist = item.isWishlist,
                     isFavorite = item.isFavorite,
@@ -377,6 +509,7 @@ class AnimeRepository(
             val existing = getAnimeByIdSync(item.id)
             val merged = if (existing != null) {
                 item.copy(
+                    inHome = item.inHome,
                     isPinned = existing.isPinned,
                     notificationsEnabled = existing.notificationsEnabled,
                     airingDayOfWeek = if (item.airingTimeUnix != null) item.airingDayOfWeek else existing.airingDayOfWeek,
@@ -395,6 +528,7 @@ class AnimeRepository(
             for (localItem in localTracked) {
                 if (localItem.id !in cloudIds && localItem.id !in protectedPendingIds) {
                     val cleared = localItem.copy(
+                        inHome = false,
                         inWatchlist = false,
                         isWishlist = false,
                         isFavorite = false,
@@ -541,6 +675,7 @@ class AnimeRepository(
                     studios = existing.studios.ifBlank { saved.studios },
                     watchedEpisodeCount = maxOf(existing.watchedEpisodeCount, saved.watchedEpisodeCount),
                     userSeason = if (existing.inWatchlist) existing.userSeason else saved.userSeason,
+                    inHome = existing.inHome,
                     inWatchlist = existing.inWatchlist || saved.inWatchlist,
                     isWishlist = existing.isWishlist || saved.isWishlist,
                     isFavorite = existing.isFavorite || saved.isFavorite,

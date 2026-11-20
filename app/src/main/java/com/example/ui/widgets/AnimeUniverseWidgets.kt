@@ -30,28 +30,42 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Bookmarks
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Group
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.RemoveCircleOutline
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -64,35 +78,50 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogProperties
+import kotlinx.coroutines.launch
 import com.example.data.local.AnimeEntity
 import com.example.model.ProgressRules
 import com.example.model.SeasonRules
@@ -214,6 +243,7 @@ fun PosterTrackerCard(
     onLongClick: (() -> Unit)? = null,
     onDecrementEpisode: (() -> Unit)? = null,
     onIncrementEpisode: (() -> Unit)? = null,
+    onCommitCustomEpisode: (suspend (Int) -> Result<Unit>)? = null,
     onOpenQuickEdit: (() -> Unit)? = null,
     onQuickAdd: (() -> Unit)? = null,
     modifier: Modifier = Modifier
@@ -222,7 +252,10 @@ fun PosterTrackerCard(
     val title = anime.getResolvedTitle(titlePreference)
     val total = anime.totalEpisodes
     val sentiment = SentimentCategory.fromScore100(anime.userScore)
-    val isCompleted = isInUserList && (anime.watchStatusEnum == WatchStatus.COMPLETED || (total != null && total > 0 && anime.watchedEpisodeCount >= total))
+    val isCompleted = isInUserList && (
+        anime.watchStatusEnum == WatchStatus.COMPLETED ||
+            ProgressRules.shouldAutoComplete(anime.status, total, anime.watchedEpisodeCount)
+    )
     val canIncrement = !isInUserList || total == null || total <= 0 || anime.watchedEpisodeCount < total
     val canDecrement = isInUserList && anime.watchedEpisodeCount > 0
 
@@ -407,86 +440,19 @@ fun PosterTrackerCard(
                     heightDp = 3
                 )
 
-                // Capsule Stepper: circular - / 11/13 / circular +
-                Surface(
-                    shape = CircleShape,
-                    color = colors.elevatedSurface.copy(alpha = if (colors.isDark) 0.72f else 0.88f),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 4.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Surface(
-                            shape = CircleShape,
-                            color = colors.cardBackground.copy(alpha = if (canDecrement) 1f else 0.45f),
-                            modifier = Modifier
-                                .size(30.dp)
-                                .then(if (canDecrement) Modifier.pointerHoverIcon(PointerIcon.Hand) else Modifier)
-                                .clip(CircleShape)
-                                .clickable(enabled = canDecrement && onDecrementEpisode != null) {
-                                    onDecrementEpisode?.invoke()
-                                }
-                                .testTag("anime_decrement_action_${anime.id}")
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Text(
-                                    text = "−",
-                                    fontSize = 16.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = if (canDecrement) colors.textPrimary else colors.textMuted
-                                )
-                            }
-                        }
-
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .pointerHoverIcon(PointerIcon.Hand)
-                                .clip(CircleShape)
-                                .clickable { onOpenQuickEdit?.invoke() ?: onClick() }
-                                .padding(vertical = 2.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = buildAnnotatedString {
-                                    append("${anime.watchedEpisodeCount}")
-                                    withStyle(SpanStyle(color = colors.textMuted, fontSize = 11.5.sp, fontWeight = FontWeight.Medium)) {
-                                        append("/${total?.takeIf { it > 0 }?.toString() ?: "∞"}")
-                                    }
-                                },
-                                style = TabularNumMedium.copy(fontSize = 14.5.sp, fontWeight = FontWeight.Bold),
-                                color = colors.textPrimary,
-                                maxLines = 1
-                            )
-                        }
-
-                        Surface(
-                            shape = CircleShape,
-                            color = if (canIncrement) colors.accentPrimary else colors.cardBackground.copy(alpha = 0.45f),
-                            modifier = Modifier
-                                .size(30.dp)
-                                .then(if (canIncrement) Modifier.pointerHoverIcon(PointerIcon.Hand) else Modifier)
-                                .clip(CircleShape)
-                                .clickable(enabled = canIncrement && onIncrementEpisode != null) {
-                                    onIncrementEpisode?.invoke()
-                                }
-                                .testTag("anime_quick_action_${anime.id}")
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Text(
-                                    text = "+",
-                                    fontSize = 16.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (canIncrement) colors.onAccentPrimary else colors.textMuted
-                                )
-                            }
-                        }
-                    }
-                }
+                // Capsule Stepper with inline editable custom episode input
+                InlineEpisodeNumberStepper(
+                    animeId = anime.id,
+                    watchedEpisodeCount = anime.watchedEpisodeCount,
+                    totalEpisodes = total,
+                    canDecrement = canDecrement,
+                    canIncrement = canIncrement,
+                    compact = true,
+                    onDecrement = onDecrementEpisode,
+                    onIncrement = onIncrementEpisode,
+                    onCommitCustomEpisode = onCommitCustomEpisode,
+                    onFallbackTap = { onOpenQuickEdit?.invoke() ?: onClick() }
+                )
 
                 // Soft Next EP / Completed pill
                 if (isCompleted) {
@@ -875,10 +841,8 @@ fun TrackingEditorDialog(
         val clamped = ProgressRules.clampEpisodeProgress(target, anime.totalEpisodes)
         progress = clamped
         progressText = clamped.toString()
-        if (anime.totalEpisodes != null && anime.totalEpisodes > 0 && clamped >= anime.totalEpisodes) {
+        if (selectedStatus != WatchStatus.DROPPED && ProgressRules.shouldAutoComplete(anime.status, anime.totalEpisodes, clamped)) {
             selectedStatus = WatchStatus.COMPLETED
-        } else if (clamped > 0 && selectedStatus == WatchStatus.PLAN_TO_WATCH) {
-            selectedStatus = WatchStatus.WATCHING
         }
     }
 
@@ -1214,6 +1178,598 @@ fun TrackingEditorDialog(
                         )
                     },
                     modifier = Modifier.testTag("save_tracking_button")
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Compact inline custom episode stepper (`[ 850 ] / 1150`) supporting direct numeric typing,
+ * auto-selecting existing digits, Enter/Done save, Escape cancel, explicit Save button,
+ * loading indicator, inline validation error, and automatic rollback on sync failure.
+ */
+@Composable
+fun InlineEpisodeNumberStepper(
+    animeId: Int,
+    watchedEpisodeCount: Int,
+    totalEpisodes: Int?,
+    canDecrement: Boolean,
+    canIncrement: Boolean,
+    compact: Boolean = true,
+    onDecrement: (() -> Unit)? = null,
+    onIncrement: (() -> Unit)? = null,
+    onCommitCustomEpisode: (suspend (Int) -> Result<Unit>)? = null,
+    onFallbackTap: (() -> Unit)? = null,
+    modifier: Modifier = Modifier
+) {
+    val colors = AppTheme.colors
+    val scope = rememberCoroutineScope()
+    var isEditing by remember(animeId) { mutableStateOf(false) }
+    var isSaving by remember(animeId) { mutableStateOf(false) }
+    var errorMessage by remember(animeId) { mutableStateOf<String?>(null) }
+    var fieldValue by remember(animeId, watchedEpisodeCount) {
+        val text = watchedEpisodeCount.toString()
+        mutableStateOf(TextFieldValue(text = text, selection = TextRange(0, text.length)))
+    }
+    val focusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(isEditing) {
+        if (isEditing) {
+            val currentText = watchedEpisodeCount.toString()
+            fieldValue = TextFieldValue(text = currentText, selection = TextRange(0, currentText.length))
+            errorMessage = null
+            runCatching { focusRequester.requestFocus() }
+        }
+    }
+
+    val cancelEditing: () -> Unit = {
+        val currentText = watchedEpisodeCount.toString()
+        fieldValue = TextFieldValue(text = currentText, selection = TextRange(0, currentText.length))
+        errorMessage = null
+        isEditing = false
+    }
+
+    val saveEditing: () -> Unit = {
+        val commit = onCommitCustomEpisode
+        if (commit != null && !isSaving) {
+            when (val validation = ProgressRules.validateEpisodeInput(fieldValue.text, totalEpisodes)) {
+                is com.example.model.EpisodeInputValidation.Invalid -> {
+                    errorMessage = validation.message
+                }
+                is com.example.model.EpisodeInputValidation.Valid -> {
+                    val targetEp = validation.episodes
+                    if (targetEp == watchedEpisodeCount) {
+                        errorMessage = null
+                        isEditing = false
+                    } else {
+                        isSaving = true
+                        errorMessage = null
+                        scope.launch {
+                            val res = commit(targetEp)
+                            isSaving = false
+                            if (res.isSuccess) {
+                                isEditing = false
+                                errorMessage = null
+                            } else {
+                                val restoredText = watchedEpisodeCount.toString()
+                                fieldValue = TextFieldValue(text = restoredText, selection = TextRange(0, restoredText.length))
+                                errorMessage = res.exceptionOrNull()?.message ?: "Save failed. Previous value restored."
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    val totalLabel = totalEpisodes?.takeIf { it > 0 }?.toString() ?: "∞"
+
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Surface(
+            shape = if (compact) CircleShape else RoundedCornerShape(22.dp),
+            color = colors.elevatedSurface.copy(alpha = if (colors.isDark) 0.72f else 0.88f),
+            border = if (isEditing) BorderStroke(1.2.dp, colors.accentPrimary.copy(alpha = 0.78f)) else null,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            if (isEditing && onCommitCustomEpisode != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = if (compact) 6.dp else 10.dp, vertical = if (compact) 4.dp else 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = colors.cardBackground,
+                        border = BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.55f)),
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = if (compact) 30.dp else 40.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            BasicTextField(
+                                value = fieldValue,
+                                onValueChange = { next ->
+                                    if (next.text.length <= 6) {
+                                        fieldValue = next
+                                        errorMessage = null
+                                    }
+                                },
+                                enabled = !isSaving,
+                                singleLine = true,
+                                cursorBrush = SolidColor(colors.accentPrimary),
+                                textStyle = TabularNumMedium.copy(
+                                    fontSize = if (compact) 13.5.sp else 17.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = colors.textPrimary,
+                                    textAlign = TextAlign.Center
+                                ),
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Number,
+                                    imeAction = ImeAction.Done
+                                ),
+                                keyboardActions = KeyboardActions(onDone = { saveEditing() }),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .focusRequester(focusRequester)
+                                    .onPreviewKeyEvent { keyEvent ->
+                                        if (keyEvent.type == KeyEventType.KeyDown) {
+                                            when (keyEvent.key) {
+                                                Key.Escape -> {
+                                                    cancelEditing()
+                                                    true
+                                                }
+                                                Key.Enter, Key.NumPadEnter -> {
+                                                    saveEditing()
+                                                    true
+                                                }
+                                                else -> false
+                                            }
+                                        } else false
+                                    }
+                                    .testTag("inline_episode_input_$animeId")
+                            )
+                            Text(
+                                text = "/$totalLabel",
+                                style = TabularNumSmall.copy(fontSize = if (compact) 11.sp else 13.sp),
+                                color = colors.textMuted,
+                                maxLines = 1
+                            )
+                        }
+                    }
+
+                    if (isSaving) {
+                        Box(
+                            modifier = Modifier.size(if (compact) 28.dp else 36.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(
+                                color = colors.accentPrimary,
+                                strokeWidth = 2.dp,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    } else {
+                        Surface(
+                            shape = CircleShape,
+                            color = colors.accentPrimary,
+                            modifier = Modifier
+                                .size(if (compact) 28.dp else 36.dp)
+                                .pointerHoverIcon(PointerIcon.Hand)
+                                .clip(CircleShape)
+                                .clickable(onClick = saveEditing)
+                                .testTag("inline_episode_save_$animeId")
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Filled.Check,
+                                    contentDescription = "Save episode count",
+                                    tint = colors.onAccentPrimary,
+                                    modifier = Modifier.size(if (compact) 15.dp else 18.dp)
+                                )
+                            }
+                        }
+                        Surface(
+                            shape = CircleShape,
+                            color = colors.cardBackground,
+                            modifier = Modifier
+                                .size(if (compact) 28.dp else 36.dp)
+                                .pointerHoverIcon(PointerIcon.Hand)
+                                .clip(CircleShape)
+                                .clickable(onClick = cancelEditing)
+                                .testTag("inline_episode_cancel_$animeId")
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Filled.Close,
+                                    contentDescription = "Cancel episode edit",
+                                    tint = colors.textSecondary,
+                                    modifier = Modifier.size(if (compact) 14.dp else 17.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = if (compact) 4.dp else 8.dp, vertical = if (compact) 4.dp else 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = colors.cardBackground.copy(alpha = if (canDecrement) 1f else 0.45f),
+                        modifier = Modifier
+                            .size(if (compact) 30.dp else 44.dp)
+                            .then(if (canDecrement) Modifier.pointerHoverIcon(PointerIcon.Hand) else Modifier)
+                            .clip(CircleShape)
+                            .clickable(enabled = canDecrement && onDecrement != null) {
+                                onDecrement?.invoke()
+                            }
+                            .testTag("anime_decrement_action_$animeId")
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                text = "−",
+                                fontSize = if (compact) 16.sp else 22.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = if (canDecrement) colors.textPrimary else colors.textMuted
+                            )
+                        }
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .pointerHoverIcon(PointerIcon.Hand)
+                            .clip(CircleShape)
+                            .clickable {
+                                if (onCommitCustomEpisode != null) {
+                                    isEditing = true
+                                } else {
+                                    onFallbackTap?.invoke()
+                                }
+                            }
+                            .padding(vertical = if (compact) 2.dp else 6.dp)
+                            .testTag("inline_episode_trigger_$animeId"),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = buildAnnotatedString {
+                                append("$watchedEpisodeCount")
+                                withStyle(
+                                    SpanStyle(
+                                        color = colors.textMuted,
+                                        fontSize = if (compact) 11.5.sp else 16.sp,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                ) {
+                                    append(" / $totalLabel")
+                                }
+                            },
+                            style = TabularNumMedium.copy(
+                                fontSize = if (compact) 14.5.sp else 22.sp,
+                                fontWeight = FontWeight.Bold
+                            ),
+                            color = colors.textPrimary,
+                            maxLines = 1
+                        )
+                    }
+
+                    Surface(
+                        shape = CircleShape,
+                        color = if (canIncrement) colors.accentPrimary else colors.cardBackground.copy(alpha = 0.45f),
+                        modifier = Modifier
+                            .size(if (compact) 30.dp else 44.dp)
+                            .then(if (canIncrement) Modifier.pointerHoverIcon(PointerIcon.Hand) else Modifier)
+                            .clip(CircleShape)
+                            .clickable(enabled = canIncrement && onIncrement != null) {
+                                onIncrement?.invoke()
+                            }
+                            .testTag("anime_quick_action_$animeId")
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                text = "+",
+                                fontSize = if (compact) 16.sp else 22.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (canIncrement) colors.onAccentPrimary else colors.textMuted
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!errorMessage.isNullOrBlank()) {
+            Text(
+                text = errorMessage!!,
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                color = colors.error,
+                maxLines = 2,
+                modifier = Modifier
+                    .padding(horizontal = 6.dp)
+                    .testTag("inline_episode_error_$animeId")
+            )
+        }
+    }
+}
+
+/**
+ * Confirmation dialog for removing an anime ONLY from the Home tracking list.
+ * Preserves Library status, progress, notes, ratings, reviews, and Community discussions.
+ */
+@Composable
+fun RemoveFromHomeConfirmDialog(
+    animeTitle: String,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    val colors = AppTheme.colors
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+        shape = RoundedCornerShape(AppRadius.xl),
+        containerColor = colors.backgroundSecondary,
+        modifier = Modifier
+            .fillMaxWidth()
+            .widthIn(max = 420.dp)
+            .padding(horizontal = 24.dp)
+            .testTag("remove_from_home_confirm_dialog"),
+        title = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = "Remove from Home?",
+                    fontFamily = CormorantSerifFamily,
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.textPrimary
+                )
+                if (animeTitle.isNotBlank()) {
+                    Text(
+                        text = animeTitle,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = colors.accentPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        },
+        text = {
+            Text(
+                text = "This anime will be removed from your Home tracking list but will remain in your Library. Your notes, ratings, reviews, and Community discussions will not be affected.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = colors.textSecondary
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onConfirm,
+                colors = ButtonDefaults.textButtonColors(contentColor = colors.error),
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .testTag("confirm_remove_from_home_button")
+            ) {
+                Text("Remove from Home", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .testTag("cancel_remove_from_home_button")
+            ) {
+                Text("Cancel", color = colors.textSecondary)
+            }
+        }
+    )
+}
+
+/**
+ * Long-press context menu sheet for anime cards across Home and Library.
+ * Includes the 4 required actions: Remove from Home (or Add to Home), View Anime Details,
+ * View in Library, and View Community, plus optional Quick Edit.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AnimeCardContextMenuSheet(
+    anime: AnimeEntity,
+    titlePreference: String = "ENGLISH",
+    isOnHome: Boolean = anime.inHome,
+    onDismiss: () -> Unit,
+    onRemoveFromHome: () -> Unit,
+    onAddToHome: () -> Unit,
+    onViewDetails: () -> Unit,
+    onViewLibrary: () -> Unit,
+    onViewCommunity: () -> Unit,
+    onOpenQuickEdit: (() -> Unit)? = null
+) {
+    val colors = AppTheme.colors
+    val title = anime.getResolvedTitle(titlePreference)
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = colors.backgroundSecondary,
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AppSpacing.lg)
+                .padding(bottom = AppSpacing.xl)
+                .testTag("anime_card_context_menu"),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                ResilientPosterImage(
+                    imageUrl = anime.coverImage,
+                    contentDescription = title,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.size(width = 48.dp, height = 68.dp)
+                )
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = title,
+                        fontFamily = CormorantSerifFamily,
+                        fontSize = 21.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = colors.textPrimary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (anime.inWatchlist) {
+                            WatchStatusPill(status = anime.watchStatusEnum)
+                        }
+                        if (isOnHome) {
+                            Surface(
+                                shape = CircleShape,
+                                color = colors.accentPrimary.copy(alpha = 0.16f)
+                            ) {
+                                Text(
+                                    text = "ON HOME",
+                                    style = MicroUpperLabel.copy(fontSize = 8.sp, letterSpacing = 0.7.sp),
+                                    color = colors.accentPrimary,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            HorizontalDivider(color = colors.borderSubtle, thickness = 1.dp)
+
+            if (isOnHome) {
+                ContextMenuActionRow(
+                    icon = Icons.Filled.RemoveCircleOutline,
+                    label = "Remove from Home",
+                    subtitle = "Keep in Library, notes & Community intact",
+                    tint = colors.error,
+                    tag = "context_action_remove_from_home",
+                    onClick = onRemoveFromHome
+                )
+            } else {
+                ContextMenuActionRow(
+                    icon = Icons.Filled.Home,
+                    label = "Add to Home",
+                    subtitle = "Pin to your active weekly tracking dashboard",
+                    tint = colors.accentPrimary,
+                    tag = "context_action_add_to_home",
+                    onClick = onAddToHome
+                )
+            }
+
+            ContextMenuActionRow(
+                icon = Icons.Filled.Info,
+                label = "View Anime Details",
+                subtitle = "Episodes, seasons, cast & reviews",
+                tint = colors.textPrimary,
+                tag = "context_action_view_details",
+                onClick = onViewDetails
+            )
+
+            ContextMenuActionRow(
+                icon = Icons.Filled.Bookmarks,
+                label = "View in Library",
+                subtitle = "Open permanent anime collection",
+                tint = colors.textPrimary,
+                tag = "context_action_view_library",
+                onClick = onViewLibrary
+            )
+
+            ContextMenuActionRow(
+                icon = Icons.Filled.Group,
+                label = "View Community",
+                subtitle = "See discussions, notes & ratings",
+                tint = colors.textPrimary,
+                tag = "context_action_view_community",
+                onClick = onViewCommunity
+            )
+
+            if (onOpenQuickEdit != null) {
+                HorizontalDivider(color = colors.borderSubtle, thickness = 1.dp)
+                ContextMenuActionRow(
+                    icon = Icons.Filled.Edit,
+                    label = "Edit Status, Rating & Notes",
+                    subtitle = "Update status, star rating, or review note",
+                    tint = colors.highlight,
+                    tag = "context_action_edit_tracking",
+                    onClick = onOpenQuickEdit
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ContextMenuActionRow(
+    icon: ImageVector,
+    label: String,
+    subtitle: String,
+    tint: Color,
+    tag: String,
+    onClick: () -> Unit
+) {
+    val colors = AppTheme.colors
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = colors.elevatedSurface.copy(alpha = 0.55f),
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 52.dp)
+            .pointerHoverIcon(PointerIcon.Hand)
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick)
+            .testTag(tag)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = tint,
+                modifier = Modifier.size(20.dp)
+            )
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = tint,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp),
+                    color = colors.textMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }

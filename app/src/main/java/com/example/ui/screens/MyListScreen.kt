@@ -78,7 +78,7 @@ import com.example.ui.theme.AppTheme
 import com.example.ui.theme.CormorantSerifFamily
 import com.example.ui.theme.MicroUpperLabel
 import com.example.ui.theme.TabularNumSmall
-import com.example.ui.widgets.AnimeGridCard
+import com.example.ui.widgets.AnimeCardContextMenuSheet
 import com.example.ui.widgets.AnimeListRowCard
 import com.example.ui.widgets.AppCard
 import com.example.ui.widgets.AppEmptyState
@@ -87,7 +87,8 @@ import com.example.ui.widgets.AppPrimaryButton
 import com.example.ui.widgets.AppSearchField
 import com.example.ui.widgets.ObsidianAmbientBackground
 import com.example.ui.widgets.ObsidianTopBar
-import com.example.ui.widgets.QuickContextActionSheet
+import com.example.ui.widgets.PosterTrackerCard
+import com.example.ui.widgets.RemoveFromHomeConfirmDialog
 import com.example.ui.widgets.TrackingEditorDialog
 import com.example.ui.widgets.badgeColor
 import com.example.viewmodel.AnimeViewModel
@@ -104,6 +105,7 @@ fun MyListScreen(
     viewModel: AnimeViewModel,
     onSelectAnime: (Int) -> Unit,
     onNavigateToDiscover: () -> Unit,
+    onNavigateToCommunity: () -> Unit = {},
     onNavigateToProfile: () -> Unit = {}
 ) {
     val colors = AppTheme.colors
@@ -121,6 +123,7 @@ fun MyListScreen(
 
     var editingAnime by remember { mutableStateOf<AnimeEntity?>(null) }
     var contextAnime by remember { mutableStateOf<AnimeEntity?>(null) }
+    var pendingRemoveFromHome by remember { mutableStateOf<AnimeEntity?>(null) }
     var showCreateCollectionDialog by remember { mutableStateOf(false) }
     var inspectingCollection by remember { mutableStateOf<AnimeCollection?>(null) }
     var editingCollection by remember { mutableStateOf<AnimeCollection?>(null) }
@@ -444,13 +447,19 @@ fun MyListScreen(
                     } else {
                         items(filteredAnime, key = { it.id }) { anime ->
                             if (isGrid) {
-                                AnimeGridCard(
+                                PosterTrackerCard(
                                     anime = anime,
                                     titlePreference = preferences.titleLanguage,
                                     isInUserList = true,
+                                    showTrackingStepper = true,
                                     onClick = { onSelectAnime(anime.id) },
                                     onLongClick = { contextAnime = anime },
-                                    onQuickAddOrIncrement = { viewModel.incrementEpisode(anime.id) },
+                                    onDecrementEpisode = { viewModel.decrementEpisode(anime.id) },
+                                    onIncrementEpisode = { viewModel.incrementEpisode(anime.id) },
+                                    onCommitCustomEpisode = { ep ->
+                                        viewModel.commitEpisodeProgress(anime.id, ep).map { }
+                                    },
+                                    onOpenQuickEdit = { editingAnime = anime },
                                     modifier = Modifier.animateItem()
                                 )
                             } else {
@@ -473,30 +482,45 @@ fun MyListScreen(
     }
 
     contextAnime?.let { target ->
-        QuickContextActionSheet(
-            anime = target,
+        val liveTarget = watchlist.firstOrNull { it.id == target.id } ?: target
+        AnimeCardContextMenuSheet(
+            anime = liveTarget,
             titlePreference = preferences.titleLanguage,
-            isInUserList = true,
+            isOnHome = liveTarget.inHome,
             onDismiss = { contextAnime = null },
-            onSave = { status, progress, seasonNumber, scoreTenths, fav ->
-                viewModel.updateTracking(
-                    animeId = target.id,
-                    status = status,
-                    episodeProgress = progress,
-                    scoreTenths = scoreTenths,
-                    notes = target.userNotes.orEmpty(),
-                    isFavorite = fav,
-                    seasonNumber = seasonNumber
-                )
+            onRemoveFromHome = {
+                contextAnime = null
+                pendingRemoveFromHome = liveTarget
+            },
+            onAddToHome = {
+                viewModel.addToHome(liveTarget)
                 contextAnime = null
             },
-            onOpenFullEditor = {
+            onViewDetails = {
                 contextAnime = null
-                editingAnime = target
+                onSelectAnime(liveTarget.id)
             },
-            onRemove = {
-                viewModel.removeFromWatchlist(target.id)
+            onViewLibrary = {
                 contextAnime = null
+            },
+            onViewCommunity = {
+                contextAnime = null
+                onNavigateToCommunity()
+            },
+            onOpenQuickEdit = {
+                contextAnime = null
+                editingAnime = liveTarget
+            }
+        )
+    }
+
+    pendingRemoveFromHome?.let { target ->
+        RemoveFromHomeConfirmDialog(
+            animeTitle = target.getResolvedTitle(preferences.titleLanguage),
+            onDismiss = { pendingRemoveFromHome = null },
+            onConfirm = {
+                viewModel.removeFromHome(target.id)
+                pendingRemoveFromHome = null
             }
         )
     }

@@ -399,7 +399,80 @@ enum class WatchlistLayoutMode {
     LIST
 }
 
+sealed class EpisodeInputValidation {
+    data class Valid(val episodes: Int) : EpisodeInputValidation()
+    data class Invalid(val message: String) : EpisodeInputValidation()
+}
+
 object ProgressRules {
+    const val MAX_REASONABLE_UNKNOWN_EPISODES = 20_000
+
+    fun isOfficiallyFinished(officialStatus: String?): Boolean {
+        val norm = officialStatus?.trim()?.uppercase().orEmpty()
+        return norm == "FINISHED" || norm == "FINISHED_AIRING"
+    }
+
+    /**
+     * Automatic Anime Completion (Part 2) — strictly requires ALL 3 conditions:
+     * 1. The anime's official status is Completed (FINISHED / FINISHED_AIRING).
+     * 2. The official total episode count is known (> 0).
+     * 3. The user's watched episode count is >= total episode count.
+     */
+    fun shouldAutoComplete(
+        officialStatus: String?,
+        totalEpisodes: Int?,
+        watchedEpisodes: Int
+    ): Boolean {
+        if (!isOfficiallyFinished(officialStatus)) return false
+        if (totalEpisodes == null || totalEpisodes <= 0) return false
+        return watchedEpisodes >= totalEpisodes
+    }
+
+    /**
+     * Determines whether an anime should be automatically removed from Home
+     * (while preserving Library entry, progress, notes, ratings, and Community).
+     */
+    fun shouldRemoveFromHome(
+        watchStatus: WatchStatus,
+        officialStatus: String?,
+        totalEpisodes: Int?,
+        watchedEpisodes: Int
+    ): Boolean {
+        if (watchStatus == WatchStatus.DROPPED || watchStatus == WatchStatus.COMPLETED) return true
+        return shouldAutoComplete(officialStatus, totalEpisodes, watchedEpisodes)
+    }
+
+    /**
+     * Validates direct custom episode number input (Part 5).
+     */
+    fun validateEpisodeInput(rawInput: String, totalEpisodes: Int?): EpisodeInputValidation {
+        val trimmed = rawInput.trim()
+        if (trimmed.isEmpty()) {
+            return EpisodeInputValidation.Invalid("Enter a whole episode number")
+        }
+        if (trimmed.startsWith("-")) {
+            return EpisodeInputValidation.Invalid("Episode count cannot be negative")
+        }
+        if (trimmed.contains('.') || trimmed.contains(',')) {
+            return EpisodeInputValidation.Invalid("Whole numbers only (no decimals)")
+        }
+        if (!trimmed.all { it.isDigit() }) {
+            return EpisodeInputValidation.Invalid("Numbers only (0–9)")
+        }
+        val parsed = trimmed.toIntOrNull()
+            ?: return EpisodeInputValidation.Invalid("Episode number is too large")
+        if (parsed < 0) {
+            return EpisodeInputValidation.Invalid("Episode count cannot be negative")
+        }
+        if (totalEpisodes != null && totalEpisodes > 0 && parsed > totalEpisodes) {
+            return EpisodeInputValidation.Invalid("Cannot exceed $totalEpisodes episodes")
+        }
+        if ((totalEpisodes == null || totalEpisodes <= 0) && parsed > MAX_REASONABLE_UNKNOWN_EPISODES) {
+            return EpisodeInputValidation.Invalid("Please enter a reasonable episode count")
+        }
+        return EpisodeInputValidation.Valid(parsed)
+    }
+
     /**
      * Enforces episode progress bounds: never negative, and never exceeds totalEpisodes when known (> 0).
      */
@@ -413,11 +486,19 @@ object ProgressRules {
     }
 
     /**
-     * Calculates next progress for "+1" quick increment and indicates if total episodes were reached.
+     * Calculates next progress for "+1" quick increment and indicates if auto-completion triggers.
      */
-    fun incrementEpisode(current: Int, totalEpisodes: Int?): Pair<Int, Boolean> {
+    fun incrementEpisode(
+        current: Int,
+        totalEpisodes: Int?,
+        officialStatus: String? = null
+    ): Pair<Int, Boolean> {
         val next = clampEpisodeProgress(current + 1, totalEpisodes)
-        val isNowCompleted = totalEpisodes != null && totalEpisodes > 0 && next >= totalEpisodes
+        val isNowCompleted = if (officialStatus != null) {
+            shouldAutoComplete(officialStatus, totalEpisodes, next)
+        } else {
+            totalEpisodes != null && totalEpisodes > 0 && next >= totalEpisodes
+        }
         return next to isNowCompleted
     }
 }

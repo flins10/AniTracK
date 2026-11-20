@@ -200,8 +200,11 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     private val _privacySettings = MutableStateFlow(PrivacySettings())
     val privacySettings = _privacySettings.asStateFlow()
 
-    // Watchlist & Schedule
+    // Watchlist (Library) & Independent Home Schedule
     val watchlist: StateFlow<List<AnimeEntity>> = repository.watchlist
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    val homeAnime: StateFlow<List<AnimeEntity>> = repository.homeTrackedAnime
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val favorites: StateFlow<List<AnimeEntity>> = repository.favorites
@@ -211,6 +214,11 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     @OptIn(ExperimentalCoroutinesApi::class)
     val dayAnime: StateFlow<List<AnimeEntity>> = selectedDay
         .flatMapLatest { day -> repository.getPlannerAnimeByDay(day) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val homeDayAnime: StateFlow<List<AnimeEntity>> = selectedDay
+        .flatMapLatest { day -> repository.getHomeAnimeByDay(day) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     // Home Highlights
@@ -370,6 +378,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             val mine = trackedById[entity.id]
             return if (mine != null) {
                 entity.copy(
+                    inHome = mine.inHome,
                     inWatchlist = mine.inWatchlist,
                     isWishlist = mine.isWishlist,
                     isFavorite = mine.isFavorite,
@@ -383,6 +392,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                 )
             } else {
                 entity.copy(
+                    inHome = false,
                     inWatchlist = false,
                     isWishlist = false,
                     isFavorite = false,
@@ -1594,17 +1604,70 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     // WATCHLIST, PROGRESS, COLLECTIONS
     // ------------------------------------------------------------------------
 
-    fun addToWatchlist(anime: AnimeEntity, status: WatchStatus = WatchStatus.WATCHING) {
+    fun addToWatchlist(
+        anime: AnimeEntity,
+        status: WatchStatus = WatchStatus.WATCHING,
+        addToHome: Boolean = status == WatchStatus.WATCHING
+    ) {
         viewModelScope.launch {
-            val saved = repository.addToWatchlist(anime, status)
+            val saved = repository.addToWatchlist(anime, status, addToHome = addToHome)
             syncSingleEntryToCloud(saved)
-            val syncText = if (_authSession.value != null) "Synced" else "Saved"
+            val session = _authSession.value
+            if (session != null && saved.inHome) {
+                supabaseDb.addToHome(session, saved)
+            }
+            syncDisplayedCatalogPersonalFlags()
+            val syncText = if (session != null) "Synced" else "Saved"
             _dynamicIslandFeedback.value = DynamicIslandFeedback(
                 title = "Added • $syncText",
-                subtitle = "${saved.displayTitle} (${status.label})",
+                subtitle = "${saved.displayTitle} (${saved.watchStatusEnum.label})",
                 animeId = saved.id
             )
-            _userMessage.value = "Added ${saved.displayTitle} to ${status.label}."
+            _userMessage.value = "Added ${saved.displayTitle} to ${saved.watchStatusEnum.label}."
+        }
+    }
+
+    fun addToHome(anime: AnimeEntity) {
+        viewModelScope.launch {
+            val saved = repository.addToHome(anime)
+            val session = _authSession.value
+            if (session != null) {
+                dirtyPendingSyncIds.add(saved.id)
+                supabaseDb.addToHome(session, saved).onSuccess {
+                    dirtyPendingSyncIds.remove(saved.id)
+                }
+            }
+            persistCurrentOwnerVaultSnapshot()
+            syncDisplayedCatalogPersonalFlags()
+            val syncText = if (session != null) "Synced" else "Saved"
+            _dynamicIslandFeedback.value = DynamicIslandFeedback(
+                title = "Added to Home • $syncText",
+                subtitle = saved.displayTitle,
+                animeId = saved.id
+            )
+            _userMessage.value = "Added ${saved.displayTitle} to Home tracking."
+        }
+    }
+
+    fun removeFromHome(animeId: Int) {
+        viewModelScope.launch {
+            val updated = repository.removeFromHomeOnly(animeId) ?: return@launch
+            val session = _authSession.value
+            if (session != null) {
+                dirtyPendingSyncIds.add(animeId)
+                supabaseDb.removeFromHome(session, animeId).onSuccess {
+                    dirtyPendingSyncIds.remove(animeId)
+                }
+            }
+            persistCurrentOwnerVaultSnapshot()
+            syncDisplayedCatalogPersonalFlags()
+            val syncText = if (session != null) "Synced" else "Saved"
+            _dynamicIslandFeedback.value = DynamicIslandFeedback(
+                title = "Removed from Home • $syncText",
+                subtitle = "${updated.displayTitle} kept in Library",
+                animeId = updated.id
+            )
+            _userMessage.value = "Removed ${updated.displayTitle} from Home. Kept in Library."
         }
     }
 
@@ -1615,21 +1678,26 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             val prevStatus = before.watchStatusEnum
             val updated = repository.incrementEpisode(animeId) ?: return@launch
             syncSingleEntryToCloud(updated)
-            val syncText = if (_authSession.value != null) "Synced" else "Saved"
+            val session = _authSession.value
+            if (session != null && before.inHome && !updated.inHome) {
+                supabaseDb.removeFromHome(session, updated.id)
+            }
+            val syncText = if (session != null) "Synced" else "Saved"
+            val autoCompleted = prevStatus != WatchStatus.COMPLETED && updated.watchStatusEnum == WatchStatus.COMPLETED
             _dynamicIslandFeedback.value = DynamicIslandFeedback(
-                title = if (updated.watchStatusEnum == WatchStatus.COMPLETED) {
+                title = if (autoCompleted) {
                     "Completed • $syncText"
                 } else {
                     "Ep ${updated.watchedEpisodeCount} Logged • $syncText"
                 },
-                subtitle = updated.displayTitle,
+                subtitle = if (autoCompleted) "${updated.displayTitle} moved to Library" else updated.displayTitle,
                 animeId = updated.id,
                 previousEpisode = prevEpisode,
                 previousStatus = prevStatus,
                 canUndo = true
             )
-            _userMessage.value = if (updated.watchStatusEnum == WatchStatus.COMPLETED) {
-                "Completed ${updated.displayTitle}!"
+            _userMessage.value = if (autoCompleted) {
+                "Completed ${updated.displayTitle}! Removed from Home and kept in Library."
             } else {
                 "${updated.displayTitle}: Ep ${updated.watchedEpisodeCount}"
             }
@@ -1643,14 +1711,9 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             val prevEpisode = before.watchedEpisodeCount
             val prevStatus = before.watchStatusEnum
             val targetEpisode = (prevEpisode - 1).coerceAtLeast(0)
-            val nextStatus = if (prevStatus == WatchStatus.COMPLETED && (before.totalEpisodes == null || targetEpisode < before.totalEpisodes)) {
-                WatchStatus.WATCHING
-            } else {
-                prevStatus
-            }
             val updated = repository.updateUserTrackingState(
                 animeId = animeId,
-                status = nextStatus,
+                status = prevStatus,
                 episodeProgress = targetEpisode,
                 score = before.userScore,
                 notes = before.userNotes,
@@ -1669,35 +1732,78 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    suspend fun commitEpisodeProgress(animeId: Int, targetEpisode: Int): Result<AnimeEntity> {
+        val before = repository.getAnimeByIdSync(animeId)
+            ?: return Result.failure(Exception("Anime entry not found."))
+        val validation = com.example.model.ProgressRules.validateEpisodeInput(
+            rawInput = targetEpisode.toString(),
+            totalEpisodes = before.totalEpisodes
+        )
+        val validatedEp = when (validation) {
+            is com.example.model.EpisodeInputValidation.Invalid -> {
+                return Result.failure(Exception(validation.message))
+            }
+            is com.example.model.EpisodeInputValidation.Valid -> validation.episodes
+        }
+        val autoComplete = before.watchStatusEnum != WatchStatus.DROPPED &&
+            com.example.model.ProgressRules.shouldAutoComplete(
+                officialStatus = before.status,
+                totalEpisodes = before.totalEpisodes,
+                watchedEpisodes = validatedEp
+            )
+        // Preserve existing status when editing progress; only transition to Completed on strict official completion
+        val nextStatus = when {
+            autoComplete -> WatchStatus.COMPLETED
+            !before.inWatchlist -> WatchStatus.WATCHING
+            else -> before.watchStatusEnum
+        }
+        val updated = repository.updateUserTrackingState(
+            animeId = animeId,
+            status = nextStatus,
+            episodeProgress = validatedEp,
+            score = before.userScore,
+            notes = before.userNotes,
+            isFavorite = before.isFavorite
+        ) ?: return Result.failure(Exception("Unable to save episode progress."))
+
+        val session = _authSession.value
+        if (session != null) {
+            dirtyPendingSyncIds.add(animeId)
+            val cloudRes = supabaseDb.updateEpisodeProgress(session, updated, validatedEp)
+            if (cloudRes.isFailure) {
+                dirtyPendingSyncIds.remove(animeId)
+                // Restore previous value if cloud update fails
+                repository.restoreEntitySnapshot(before)
+                persistCurrentOwnerVaultSnapshot()
+                syncDisplayedCatalogPersonalFlags()
+                val msg = ErrorSanitizer.sanitize(cloudRes.exceptionOrNull(), "Failed to sync episode progress.")
+                return Result.failure(Exception(msg))
+            }
+            dirtyPendingSyncIds.remove(animeId)
+            if (before.inHome && !updated.inHome) {
+                supabaseDb.removeFromHome(session, animeId)
+            }
+        }
+        persistCurrentOwnerVaultSnapshot()
+        syncDisplayedCatalogPersonalFlags()
+
+        val syncText = if (session != null) "Synced" else "Saved"
+        _dynamicIslandFeedback.value = DynamicIslandFeedback(
+            title = if (autoComplete) "Completed • $syncText" else "Ep ${updated.watchedEpisodeCount} Logged • $syncText",
+            subtitle = if (autoComplete) "${updated.displayTitle} kept in Library" else updated.displayTitle,
+            animeId = updated.id,
+            previousEpisode = before.watchedEpisodeCount,
+            previousStatus = before.watchStatusEnum,
+            canUndo = true
+        )
+        return Result.success(updated)
+    }
+
     fun setEpisodeProgress(animeId: Int, targetEpisode: Int) {
         viewModelScope.launch {
-            val before = repository.getAnimeByIdSync(animeId) ?: return@launch
-            val prevEpisode = before.watchedEpisodeCount
-            val prevStatus = before.watchStatusEnum
-            val clamped = com.example.model.ProgressRules.clampEpisodeProgress(targetEpisode, before.totalEpisodes)
-            val nextStatus = when {
-                before.totalEpisodes != null && before.totalEpisodes > 0 && clamped >= before.totalEpisodes -> WatchStatus.COMPLETED
-                !before.inWatchlist || before.watchStatusEnum == WatchStatus.PLAN_TO_WATCH -> WatchStatus.WATCHING
-                else -> before.watchStatusEnum
+            commitEpisodeProgress(animeId, targetEpisode).onFailure { err ->
+                _userMessage.value = err.message ?: "Unable to update episode progress."
             }
-            val updated = repository.updateUserTrackingState(
-                animeId = animeId,
-                status = nextStatus,
-                episodeProgress = clamped,
-                score = before.userScore,
-                notes = before.userNotes,
-                isFavorite = before.isFavorite
-            ) ?: return@launch
-            syncSingleEntryToCloud(updated)
-            val syncText = if (_authSession.value != null) "Synced" else "Saved"
-            _dynamicIslandFeedback.value = DynamicIslandFeedback(
-                title = "Ep ${updated.watchedEpisodeCount} Logged • $syncText",
-                subtitle = updated.displayTitle,
-                animeId = updated.id,
-                previousEpisode = prevEpisode,
-                previousStatus = prevStatus,
-                canUndo = true
-            )
         }
     }
 
@@ -1738,6 +1844,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
         seasonNumber: Int? = null
     ) {
         viewModelScope.launch {
+            val before = repository.getAnimeByIdSync(animeId)
             val updated = repository.updateUserTrackingState(
                 animeId = animeId,
                 status = status,
@@ -1748,13 +1855,22 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                 isFavorite = isFavorite
             ) ?: return@launch
             syncSingleEntryToCloud(updated)
-            val syncText = if (_authSession.value != null) "Synced" else "Saved"
+            val session = _authSession.value
+            if (session != null && before?.inHome == true && !updated.inHome) {
+                supabaseDb.removeFromHome(session, updated.id)
+            }
+            syncDisplayedCatalogPersonalFlags()
+            val syncText = if (session != null) "Synced" else "Saved"
             _dynamicIslandFeedback.value = DynamicIslandFeedback(
                 title = "Updated • $syncText",
-                subtitle = "${updated.displayTitle} (S${updated.effectiveSeasonNumber} • ${status.label})",
+                subtitle = "${updated.displayTitle} (S${updated.effectiveSeasonNumber} • ${updated.watchStatusEnum.label})",
                 animeId = updated.id
             )
-            _userMessage.value = "Saved tracking updates for ${updated.displayTitle}."
+            _userMessage.value = when {
+                updated.watchStatusEnum == WatchStatus.DROPPED && before?.inHome == true ->
+                    "Marked ${updated.displayTitle} as Dropped. Removed from Home and preserved in Library."
+                else -> "Saved tracking updates for ${updated.displayTitle}."
+            }
         }
     }
 
@@ -1796,19 +1912,14 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             repository.removeFromWatchlist(animeId)
             _searchResults.value = _searchResults.value.map { item ->
                 if (item.id == animeId) {
-                    item.copy(inWatchlist = false, isWishlist = false, isPinned = false, isWatched = false, userStatus = null)
+                    item.copy(inHome = false, inWatchlist = false, isWishlist = false, isPinned = false, isWatched = false, userStatus = null)
                 } else item
             }
             val session = _authSession.value
             if (session != null) {
                 dirtyPendingSyncIds.remove(animeId)
+                supabaseDb.removeFromHome(session, animeId)
                 supabaseDb.deleteUserAnimeEntry(session, animeId)
-                _communityReviews.value = _communityReviews.value.filterNot {
-                    it.animeId == animeId && it.userId == session.userId
-                }
-                _animeReviews.value = _animeReviews.value.filterNot {
-                    it.animeId == animeId && it.userId == session.userId
-                }
             }
             persistCurrentOwnerVaultSnapshot()
             _dynamicIslandFeedback.value = DynamicIslandFeedback(
@@ -1816,7 +1927,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                 subtitle = "Watchlist entry cleared",
                 animeId = animeId
             )
-            _userMessage.value = "Removed from My List."
+            _userMessage.value = "Removed from My List. Community notes remain preserved."
         }
     }
 
@@ -1861,19 +1972,16 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                             it.userId == session.userId
                         }
                     }
-                } else {
-                    _communityReviews.value = _communityReviews.value.filterNot {
-                        it.animeId == entity.id && it.userId == session.userId
-                    }
-                    if (_selectedAnimeId.value == entity.id) {
-                        _animeReviews.value = _animeReviews.value.filterNot { it.userId == session.userId }
-                    }
                 }
                 refreshCommunityData()
             }
         }
     }
 
+    /**
+     * Independent Community note/rating submission:
+     * Posting a note, comment, review, or rating MUST NEVER add the anime to Home.
+     */
     fun submitCommunityCommentNote(
         animeId: Int,
         animeTitle: String,
@@ -1893,38 +2001,79 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             } else {
                 existing?.userScore
             }
-            val updated = if (existing != null) {
-                repository.updateUserTrackingState(
+            val rating10 = resolvedScoreTenths?.takeIf { it > 0 }?.let { it / 10.0 }
+            val finalNote = cleanNote.ifBlank { existing?.userNotes.orEmpty() }
+
+            // If the anime is ALREADY in the user's Library, mirror rating/note without altering inHome!
+            if (existing != null && existing.inWatchlist) {
+                val updated = repository.updateUserTrackingState(
                     animeId = animeId,
-                    status = if (existing.inWatchlist) existing.watchStatusEnum else WatchStatus.WATCHING,
+                    status = existing.watchStatusEnum,
                     episodeProgress = existing.watchedEpisodeCount,
                     seasonNumber = existing.userSeason,
                     score = resolvedScoreTenths,
-                    notes = cleanNote.ifBlank { existing.userNotes.orEmpty() },
-                    isFavorite = existing.isFavorite
+                    notes = finalNote,
+                    isFavorite = existing.isFavorite,
+                    explicitInHome = existing.inHome
                 )
-            } else {
-                val seeded = AnimeEntity(
-                    id = animeId,
-                    titleRomaji = animeTitle.ifBlank { "Anime #$animeId" },
-                    titleEnglish = animeTitle.ifBlank { "Anime #$animeId" },
-                    coverImage = coverImage,
-                    airingDayOfWeek = ((animeId.coerceAtLeast(1) % 7) + 1)
-                )
-                repository.addToWatchlist(seeded, WatchStatus.WATCHING)
-                repository.updateUserTrackingState(
-                    animeId = animeId,
-                    status = WatchStatus.WATCHING,
-                    episodeProgress = 0,
-                    seasonNumber = 1,
-                    score = resolvedScoreTenths,
-                    notes = cleanNote,
-                    isFavorite = false
-                )
+                if (updated != null) {
+                    persistCurrentOwnerVaultSnapshot()
+                }
             }
-            if (updated != null) {
-                syncSingleEntryToCloud(updated)
-                _userMessage.value = "Added your note to $animeTitle in Community."
+
+            val session = _authSession.value
+            val profile = _userProfile.value
+            if (session != null) {
+                val res = supabaseDb.upsertCommunityNote(
+                    session = session,
+                    animeId = animeId,
+                    animeTitle = animeTitle.ifBlank { existing?.displayTitle ?: "Anime #$animeId" },
+                    coverImage = coverImage.ifBlank { existing?.coverImage.orEmpty() },
+                    rating10 = rating10,
+                    reviewNotes = finalNote
+                )
+                res.onSuccess {
+                    if (profile != null) {
+                        val existingReview = _communityReviews.value.firstOrNull {
+                            it.animeId == animeId && it.userId == session.userId
+                        }
+                        val optimisticReview = CommunityReview(
+                            id = existingReview?.id ?: "note-${session.userId}-$animeId",
+                            userId = session.userId,
+                            username = profile.username,
+                            avatarKey = profile.avatarKey,
+                            avatarUrl = profile.avatarUrl,
+                            animeId = animeId,
+                            animeTitle = animeTitle.ifBlank { existing?.displayTitle ?: "Anime #$animeId" },
+                            animeCoverImage = coverImage.ifBlank { existing?.coverImage.orEmpty() },
+                            rating = rating10,
+                            reviewNotes = finalNote,
+                            status = existing?.watchStatusEnum ?: WatchStatus.WATCHING,
+                            episodeProgress = existing?.watchedEpisodeCount ?: 0,
+                            totalEpisodes = existing?.totalEpisodes,
+                            updatedAt = Instant.now().toString(),
+                            likesCount = existingReview?.likesCount ?: 0,
+                            likedByMe = existingReview?.likedByMe ?: false
+                        )
+                        _communityReviews.value = sortReviews(
+                            listOf(optimisticReview) + _communityReviews.value.filterNot {
+                                it.animeId == animeId && it.userId == session.userId
+                            },
+                            _reviewSortOption.value
+                        )
+                        if (_selectedAnimeId.value == animeId) {
+                            _animeReviews.value = listOf(optimisticReview) + _animeReviews.value.filterNot {
+                                it.userId == session.userId
+                            }
+                        }
+                    }
+                    refreshCommunityData()
+                    _userMessage.value = "Posted your note to $animeTitle in Community (Home unchanged)."
+                }.onFailure { err ->
+                    _userMessage.value = ErrorSanitizer.sanitize(err, "Unable to post community note right now.")
+                }
+            } else {
+                _userMessage.value = "Sign in to post notes to Community."
             }
         }
     }

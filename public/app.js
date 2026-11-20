@@ -288,9 +288,11 @@ const state = {
   showAvatarModal: false,
   showProfileEditModal: false,
 
-  // Home Schedule State
+  // Home Schedule State (Strictly independent from Library & Community)
   homeAllWeekDays: true,
   selectedDay: ((new Date().getDay() + 6) % 7) + 1,
+  homeTrackingIds: new Set(readScopedArray('home_ids', initialSession, initialGuestMode, initialGuestId).map(Number)),
+  homeTrackingHydrated: false,
 
   // Library (MyList) State (Isolated to active user or active guest)
   vault: readScopedArray('vault', initialSession, initialGuestMode, initialGuestId),
@@ -320,11 +322,16 @@ const state = {
   communityCommentDraftStars: 0,
   communityCommentDraftNote: '',
 
-  // Modals & Detail View
+  // Modals, Context Menu, Inline Episode Editor & Detail View
   detailAnime: null,
   detailRich: null,
   detailLoading: false,
   quickEditAnime: null,
+  contextMenu: null, // { animeId, x, y }
+  confirmRemoveHomeAnime: null, // { animeId, title }
+  inlineEpEdit: null, // { animeId, scope: 'card'|'detail', draft, saving, error }
+  toastMessage: '',
+  toastError: false,
 
   // Download Center & Admin Release Configuration State
   downloadsConfig: JSON.parse(localStorage.getItem('anime_universe_downloads_admin_override') || 'null') || {
@@ -446,9 +453,81 @@ function saveProfileCache() {
   localStorage.setItem(key, JSON.stringify(state.profile));
 }
 
+let toastTimer = null;
+function showToast(message, isError = false) {
+  state.toastMessage = String(message || '');
+  state.toastError = Boolean(isError);
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    state.toastMessage = '';
+    state.toastError = false;
+    const existingToast = document.getElementById('au-toast-banner');
+    if (existingToast) existingToast.remove();
+  }, 3200);
+}
+
+// Strict Lifecycle & Episode Validation Rules (1:1 Parity with Android, Desktop & Supabase)
+function isOfficiallyFinished(mediaStatus) {
+  const s = String(mediaStatus || '').trim().toUpperCase();
+  return s === 'FINISHED' || s === 'FINISHED_AIRING' || s === 'COMPLETED';
+}
+
+function shouldAutoComplete(mediaStatus, totalEpisodes, watchedEpisodes) {
+  const total = totalEpisodes !== null && totalEpisodes !== undefined ? Number(totalEpisodes) : null;
+  const watched = Number(watchedEpisodes || 0);
+  return isOfficiallyFinished(mediaStatus) && total !== null && Number.isFinite(total) && total > 0 && watched >= total;
+}
+
+function shouldRemoveFromHome(userStatus, mediaStatus, totalEpisodes, watchedEpisodes) {
+  if (String(userStatus || '').trim().toLowerCase() === 'dropped') return true;
+  return shouldAutoComplete(mediaStatus, totalEpisodes, watchedEpisodes);
+}
+
+function isAnimeOnHome(item) {
+  if (!item || !item.animeId) return false;
+  if (!state.homeTrackingIds.has(Number(item.animeId))) return false;
+  return !shouldRemoveFromHome(item.status, item.mediaStatus, item.totalEpisodes, item.watchedEpisodes);
+}
+
+function validateEpisodeInput(rawText, totalEpisodes) {
+  const trimmed = String(rawText ?? '').trim();
+  if (!trimmed) {
+    return { valid: false, error: 'Enter an episode number.' };
+  }
+  if (trimmed.startsWith('-')) {
+    return { valid: false, error: 'Episode number cannot be negative.' };
+  }
+  if (trimmed.includes('.') || trimmed.includes(',')) {
+    return { valid: false, error: 'Enter a whole number only.' };
+  }
+  if (!/^\d+$/.test(trimmed)) {
+    return { valid: false, error: 'Enter digits only.' };
+  }
+  const num = Number.parseInt(trimmed, 10);
+  if (!Number.isFinite(num) || num < 0) {
+    return { valid: false, error: 'Enter a valid non-negative number.' };
+  }
+  const total = totalEpisodes !== null && totalEpisodes !== undefined ? Number(totalEpisodes) : null;
+  if (total !== null && Number.isFinite(total) && total > 0 && num > total) {
+    return { valid: false, error: `Cannot exceed ${total} episodes.` };
+  }
+  if ((total === null || total <= 0) && num > 50000) {
+    return { valid: false, error: 'Episode number is out of range.' };
+  }
+  return { valid: true, value: num };
+}
+
+function saveHomeTrackingIds() {
+  const key = getStorageKeyForIdentity('home_ids', state.session, state.isGuestMode, state.guestId);
+  if (!key) return;
+  localStorage.setItem(key, JSON.stringify(Array.from(state.homeTrackingIds)));
+}
+
 function clearActiveUserMemoryState() {
   state.vault = [];
   state.collections = [];
+  state.homeTrackingIds = new Set();
+  state.homeTrackingHydrated = false;
   state.profile = {
     userId: null,
     username: 'Member',
@@ -460,6 +539,9 @@ function clearActiveUserMemoryState() {
   state.detailAnime = null;
   state.detailRich = null;
   state.quickEditAnime = null;
+  state.contextMenu = null;
+  state.confirmRemoveHomeAnime = null;
+  state.inlineEpEdit = null;
   state.myListStatusFilter = 'ALL';
   state.myListSentimentFilter = null;
   state.myListCollectionFilter = null;
@@ -474,9 +556,14 @@ function hydrateActiveIdentityState() {
     state.collections = readScopedArray('collections', state.session, false, null).filter(
       (c) => !c.ownerId || c.ownerId === state.session.userId
     );
+    state.homeTrackingIds = new Set(readScopedArray('home_ids', state.session, false, null).map(Number));
+    state.homeTrackingHydrated = false;
     state.profile = readScopedProfile(state.session, false, null);
     state.detailAnime = null;
     state.quickEditAnime = null;
+    state.contextMenu = null;
+    state.confirmRemoveHomeAnime = null;
+    state.inlineEpEdit = null;
   } else if (state.isGuestMode) {
     state.guestId = getOrCreateGuestId();
     state.vault = readScopedArray('vault', null, true, state.guestId).filter(
@@ -485,9 +572,23 @@ function hydrateActiveIdentityState() {
     state.collections = readScopedArray('collections', null, true, state.guestId).filter(
       (c) => !c.ownerId || c.ownerId === state.guestId
     );
+    const savedHomeIds = readScopedArray('home_ids', null, true, state.guestId).map(Number);
+    if (savedHomeIds.length > 0) {
+      state.homeTrackingIds = new Set(savedHomeIds);
+    } else {
+      state.homeTrackingIds = new Set(
+        state.vault
+          .filter((v) => v.inHome !== false && !shouldRemoveFromHome(v.status, v.mediaStatus, v.totalEpisodes, v.watchedEpisodes))
+          .map((v) => Number(v.animeId))
+      );
+    }
+    state.homeTrackingHydrated = true;
     state.profile = readScopedProfile(null, true, state.guestId);
     state.detailAnime = null;
     state.quickEditAnime = null;
+    state.contextMenu = null;
+    state.confirmRemoveHomeAnime = null;
+    state.inlineEpEdit = null;
   } else {
     clearActiveUserMemoryState();
   }
@@ -726,19 +827,19 @@ function formatAiringClock(airingUnix) {
   }
 }
 
-// Fetch User Watchlist, Collections, Profile & Community Reviews (Strictly isolated per user_id)
+// Fetch User Watchlist, Home Tracking, Collections, Profile & Community Reviews (Strictly isolated per user_id)
 async function loadCloudData(silent = false) {
   const activeUserId = state.session?.userId;
   if (!activeUserId) return;
   try {
     const uid = encodeURIComponent(activeUserId);
-    // Exact select string from SupabaseDatabaseService.kt line 1060 (no user_season column!)
     const watchlistSelect =
       'id,user_id,anime_id,status,episode_progress,total_episodes,personal_rating,review_notes,is_favorite,updated_at,' +
       'anime(anilist_id,title_english,title_romaji,title_native,cover_image,banner_image,genres,release_year,season,episodes,average_score,popularity,format,status,studios,next_airing_at,next_episode_number)';
 
-    const [normRows, colRows, prof, cmRows] = await Promise.all([
+    const [normRows, homeRows, colRows, prof, cmRows] = await Promise.all([
       supabaseRequest(`/rest/v1/user_anime?user_id=eq.${uid}&select=${watchlistSelect}&order=updated_at.desc`).catch(() => null),
+      supabaseRequest(`/rest/v1/home_tracking?user_id=eq.${uid}&select=anime_id,airing_day_of_week`).catch(() => null),
       supabaseRequest(`/rest/v1/collections?creator_id=eq.${uid}&select=*,collection_anime(anime_id)&order=updated_at.desc`).catch(() => null),
       supabaseRequest(`/rest/v1/profiles?id=eq.${uid}&select=*`).catch(() => []),
       supabaseRequest(`/rest/v1/community_members?user_id=eq.${uid}&select=status`).catch(() => [])
@@ -747,10 +848,18 @@ async function loadCloudData(silent = false) {
     // Guard against session switching while request was in flight
     if (!state.session || state.session.userId !== activeUserId) return;
 
+    const hasServerHomeTable = Array.isArray(homeRows);
+    if (hasServerHomeTable) {
+      state.homeTrackingIds = new Set(homeRows.map((h) => Number(h.anime_id)).filter(Boolean));
+      state.homeTrackingHydrated = true;
+      saveHomeTrackingIds();
+    }
+
     if (Array.isArray(normRows)) {
       const userScopedLocal = readScopedArray('vault', state.session, false, null).filter(
         (v) => !v.ownerId || v.ownerId === activeUserId
       );
+      const localHomeWasEmpty = !state.homeTrackingHydrated && state.homeTrackingIds.size === 0;
       state.vault = normRows
         .filter((r) => !r.user_id || r.user_id === activeUserId)
         .map((r) => {
@@ -762,6 +871,25 @@ async function loadCloudData(silent = false) {
           const dow = nextAir && nextAir > 0
             ? (((new Date(nextAir * 1000).getDay() + 6) % 7) + 1)
             : existingLocal.airingDayOfWeek || ((r.anime_id % 7) + 1);
+          const mediaStatus = anime.status || existingLocal.mediaStatus || 'RELEASING';
+          const totalEp = r.total_episodes || anime.episodes || existingLocal.totalEpisodes || null;
+          const watchedEp = r.episode_progress || 0;
+          const userStatus = r.status || 'watching';
+
+          if (!hasServerHomeTable && localHomeWasEmpty) {
+            const eligiblePreMigration =
+              userStatus !== 'dropped' &&
+              userStatus !== 'completed' &&
+              !shouldAutoComplete(mediaStatus, totalEp, watchedEp);
+            if (eligiblePreMigration) {
+              state.homeTrackingIds.add(Number(r.anime_id));
+            }
+          }
+
+          const onHome =
+            state.homeTrackingIds.has(Number(r.anime_id)) &&
+            !shouldRemoveFromHome(userStatus, mediaStatus, totalEp, watchedEp);
+
           return {
             ownerId: activeUserId,
             animeId: r.anime_id,
@@ -772,26 +900,31 @@ async function loadCloudData(silent = false) {
             coverImage: anime.cover_image || existingLocal.coverImage || '',
             bannerImage: anime.banner_image || existingLocal.bannerImage || '',
             format: anime.format || existingLocal.format || 'TV',
-            mediaStatus: anime.status || existingLocal.mediaStatus || 'RELEASING',
+            mediaStatus,
             seasonYear: anime.release_year || existingLocal.seasonYear || null,
             averageScore: anime.average_score || existingLocal.averageScore || null,
             countryOfOrigin: existingLocal.countryOfOrigin || 'JP',
             airingDayOfWeek: dow,
             airingTimeUnix: nextAir,
             nextEpisodeNumber: anime.next_episode_number || existingLocal.nextEpisodeNumber || null,
-            status: r.status || 'watching',
+            status: userStatus,
             season: existingLocal.season || 1,
-            watchedEpisodes: r.episode_progress || 0,
-            totalEpisodes: r.total_episodes || anime.episodes || existingLocal.totalEpisodes || null,
+            watchedEpisodes: watchedEp,
+            totalEpisodes: totalEp,
             rating10: r.personal_rating !== null && r.personal_rating !== undefined ? Number(r.personal_rating) : null,
             reviewNotes: r.review_notes || '',
             isPinned: Boolean(existingLocal.isPinned),
             isFavorite: Boolean(r.is_favorite ?? existingLocal.isFavorite),
             genres: Array.isArray(anime.genres) ? anime.genres : existingLocal.genres || [],
             synopsis: existingLocal.synopsis || '',
-            inWatchlist: true
+            inWatchlist: true,
+            inHome: onHome
           };
         });
+      if (!hasServerHomeTable && localHomeWasEmpty) {
+        state.homeTrackingHydrated = true;
+        saveHomeTrackingIds();
+      }
       saveLocalVault();
     }
 
@@ -805,11 +938,12 @@ async function loadCloudData(silent = false) {
       for (const gItem of itemsToMigrate) {
         if (!existingIds.has(gItem.animeId)) {
           existingIds.add(gItem.animeId);
-          await saveVaultEntry({ ...gItem, ownerId: activeUserId });
+          await saveVaultEntry({ ...gItem, ownerId: activeUserId }, { addToHome: Boolean(gItem.inHome) });
         }
       }
       if (oldGuestId) {
         localStorage.removeItem(`anime_universe_vault_guest_${oldGuestId}`);
+        localStorage.removeItem(`anime_universe_home_ids_guest_${oldGuestId}`);
         localStorage.removeItem(`anime_universe_collections_guest_${oldGuestId}`);
         localStorage.removeItem(`anime_universe_profile_guest_${oldGuestId}`);
       }
@@ -845,19 +979,27 @@ async function loadCloudData(silent = false) {
     }
 
     await loadCommunityReviews();
-    if (!silent || !document.activeElement || !['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) {
+    const isTyping =
+      Boolean(state.inlineEpEdit) ||
+      Boolean(state.contextMenu) ||
+      (document.activeElement && ['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName));
+    if (!silent || !isTyping) {
       renderApp();
     }
   } catch (_) {}
 }
 
-// Fetch Community Reviews — Includes ALL notes and ratings from active community members
+// Fetch Community Reviews — Independent of Home membership; merges community_notes + user_anime
 async function loadCommunityReviews() {
   try {
     const feedSelect =
       'id,user_id,anime_id,status,episode_progress,personal_rating,review_notes,updated_at,' +
       'anime(anilist_id,title_english,title_romaji,cover_image,episodes)';
-    const [normRows, memberRows] = await Promise.all([
+    const notesSelect =
+      'id,user_id,anime_id,rating,note_text,updated_at,' +
+      'anime(anilist_id,title_english,title_romaji,cover_image,episodes)';
+    const [noteRows, normRows, memberRows] = await Promise.all([
+      supabaseRequest(`/rest/v1/community_notes?select=${notesSelect}&order=updated_at.desc&limit=150`).catch(() => []),
       supabaseRequest(`/rest/v1/user_anime?select=${feedSelect}&order=updated_at.desc&limit=150`).catch(() => []),
       supabaseRequest('/rest/v1/community_members?select=user_id,status').catch(() => [])
     ]);
@@ -872,103 +1014,163 @@ async function loadCommunityReviews() {
       });
     }
 
-    if (Array.isArray(normRows)) {
-      const valid = normRows.filter((r) => {
-        if (!r || !r.user_id || excludedUsers.has(r.user_id)) return false;
-        const hasRating = r.personal_rating !== null && Number(r.personal_rating) > 0;
-        const hasNote = String(r.review_notes || '').trim().length > 0;
-        return hasRating || hasNote;
+    const combinedRaw = [];
+    if (Array.isArray(noteRows)) {
+      noteRows.forEach((n) => {
+        if (!n || !n.user_id || excludedUsers.has(n.user_id)) return;
+        const hasRating = n.rating !== null && n.rating !== undefined && Number(n.rating) > 0;
+        const hasNote = String(n.note_text || '').trim().length > 0;
+        if (!hasRating && !hasNote) return;
+        combinedRaw.push({
+          id: n.id,
+          source: 'community_notes',
+          user_id: n.user_id,
+          anime_id: Number(n.anime_id),
+          anime: n.anime || {},
+          rating: hasRating ? Number(n.rating) : null,
+          review_notes: String(n.note_text || '').trim(),
+          updated_at: n.updated_at || new Date().toISOString()
+        });
       });
-      const userIds = Array.from(new Set(valid.map((r) => r.user_id).filter(Boolean)));
-      const reviewIds = Array.from(new Set(valid.map((r) => r.id).filter(Boolean)));
-
-      const [profRows, likeRows] = await Promise.all([
-        userIds.length > 0
-          ? supabaseRequest(`/rest/v1/profiles?id=in.(${userIds.join(',')})&select=id,username,avatar_key,avatar_url`).catch(() => [])
-          : Promise.resolve([]),
-        reviewIds.length > 0
-          ? supabaseRequest(`/rest/v1/review_likes?review_id=in.(${reviewIds.join(',')})&select=review_id,user_id`).catch(() => [])
-          : Promise.resolve([])
-      ]);
-
-      const profMap = {};
-      if (Array.isArray(profRows)) {
-        profRows.forEach((p) => {
-          profMap[p.id] = {
-            username: p.username || 'Member',
-            avatar_key: normalizeAvatarKey(p.avatar_key, p.avatar_url)
-          };
-        });
-      }
-
-      const likesCountMap = {};
-      const likedByMeSet = new Set();
-      if (Array.isArray(likeRows)) {
-        likeRows.forEach((l) => {
-          if (!l.review_id) return;
-          likesCountMap[l.review_id] = (likesCountMap[l.review_id] || 0) + 1;
-          if (state.session && l.user_id === state.session.userId) {
-            likedByMeSet.add(l.review_id);
-          }
-        });
-      }
-
-      const mapped = valid.map((r) => {
-        const anime = r.anime || {};
-        const prof = profMap[r.user_id] || {
-          username: r.user_id === state.session?.userId ? state.profile.username : 'Member',
-          avatar_key: r.user_id === state.session?.userId ? state.profile.avatarKey : 'avatar_1'
-        };
-        const rawRating = r.personal_rating !== null && Number(r.personal_rating) > 0 ? Number(r.personal_rating) : null;
-        return {
-          id: r.id,
-          user_id: r.user_id,
-          username: prof.username,
-          avatar_key: prof.avatar_key,
-          anime_id: Number(r.anime_id),
-          anime_title:
-            (anime.title_english && anime.title_english !== 'null' ? anime.title_english : '') ||
-            anime.title_romaji ||
-            'Anime',
-          anime_cover_image: anime.cover_image || '',
-          rating: rawRating,
-          review_notes: String(r.review_notes || '').trim(),
-          updated_at: r.updated_at || new Date().toISOString(),
-          likes_count: likesCountMap[r.id] || 0,
-          liked_by_me: likedByMeSet.has(r.id)
-        };
-      });
-
-      // Ensure active signed-in member's own local notes/ratings are immediately present
-      if (state.session && state.profile.memberStatus !== 'left' && state.profile.memberStatus !== 'removed') {
-        state.vault.forEach((v) => {
-          const hasRating = v.rating10 !== null && Number(v.rating10) > 0;
-          const hasNote = String(v.reviewNotes || '').trim().length > 0;
-          if (!hasRating && !hasNote) return;
-          const alreadyIdx = mapped.findIndex(
-            (m) => m.user_id === state.session.userId && Number(m.anime_id) === Number(v.animeId)
-          );
-          if (alreadyIdx === -1) {
-            mapped.unshift({
-              id: `local_${state.session.userId}_${v.animeId}`,
-              user_id: state.session.userId,
-              username: state.profile.username || 'Member',
-              avatar_key: state.profile.avatarKey || 'avatar_1',
-              anime_id: Number(v.animeId),
-              anime_title: v.titleEnglish || v.title || 'Anime',
-              anime_cover_image: v.coverImage || '',
-              rating: hasRating ? Number(v.rating10) : null,
-              review_notes: String(v.reviewNotes || '').trim(),
-              updated_at: new Date().toISOString(),
-              likes_count: 0,
-              liked_by_me: false
-            });
-          }
-        });
-      }
-
-      state.communityReviews = mapped;
     }
+
+    if (Array.isArray(normRows)) {
+      normRows.forEach((r) => {
+        if (!r || !r.user_id || excludedUsers.has(r.user_id)) return;
+        const hasRating = r.personal_rating !== null && r.personal_rating !== undefined && Number(r.personal_rating) > 0;
+        const hasNote = String(r.review_notes || '').trim().length > 0;
+        if (!hasRating && !hasNote) return;
+        combinedRaw.push({
+          id: r.id,
+          source: 'user_anime',
+          user_id: r.user_id,
+          anime_id: Number(r.anime_id),
+          anime: r.anime || {},
+          rating: hasRating ? Number(r.personal_rating) : null,
+          review_notes: String(r.review_notes || '').trim(),
+          updated_at: r.updated_at || new Date().toISOString()
+        });
+      });
+    }
+
+    // Deduplicate per (user_id, anime_id) keeping the most recently updated entry (preferring community_notes on tie)
+    combinedRaw.sort((a, b) => {
+      const cmp = String(b.updated_at || '').localeCompare(String(a.updated_at || ''));
+      if (cmp !== 0) return cmp;
+      return a.source === 'community_notes' ? -1 : 1;
+    });
+    const dedupMap = new Map();
+    combinedRaw.forEach((row) => {
+      const key = `${row.user_id}_${row.anime_id}`;
+      if (!dedupMap.has(key)) {
+        dedupMap.set(key, row);
+      }
+    });
+    const valid = Array.from(dedupMap.values());
+
+    const userIds = Array.from(new Set(valid.map((r) => r.user_id).filter(Boolean)));
+    const noteIds = valid.filter((r) => r.source === 'community_notes').map((r) => r.id).filter(Boolean);
+    const reviewIds = valid.filter((r) => r.source === 'user_anime').map((r) => r.id).filter(Boolean);
+
+    const [profRows, reviewLikeRows, noteLikeRows] = await Promise.all([
+      userIds.length > 0
+        ? supabaseRequest(`/rest/v1/profiles?id=in.(${userIds.join(',')})&select=id,username,avatar_key,avatar_url`).catch(() => [])
+        : Promise.resolve([]),
+      reviewIds.length > 0
+        ? supabaseRequest(`/rest/v1/review_likes?review_id=in.(${reviewIds.join(',')})&select=review_id,user_id`).catch(() => [])
+        : Promise.resolve([]),
+      noteIds.length > 0
+        ? supabaseRequest(`/rest/v1/community_note_likes?note_id=in.(${noteIds.join(',')})&select=note_id,user_id`).catch(() => [])
+        : Promise.resolve([])
+    ]);
+
+    const profMap = {};
+    if (Array.isArray(profRows)) {
+      profRows.forEach((p) => {
+        profMap[p.id] = {
+          username: p.username || 'Member',
+          avatar_key: normalizeAvatarKey(p.avatar_key, p.avatar_url)
+        };
+      });
+    }
+
+    const likesCountMap = {};
+    const likedByMeSet = new Set();
+    if (Array.isArray(reviewLikeRows)) {
+      reviewLikeRows.forEach((l) => {
+        if (!l.review_id) return;
+        likesCountMap[l.review_id] = (likesCountMap[l.review_id] || 0) + 1;
+        if (state.session && l.user_id === state.session.userId) {
+          likedByMeSet.add(l.review_id);
+        }
+      });
+    }
+    if (Array.isArray(noteLikeRows)) {
+      noteLikeRows.forEach((l) => {
+        if (!l.note_id) return;
+        likesCountMap[l.note_id] = (likesCountMap[l.note_id] || 0) + 1;
+        if (state.session && l.user_id === state.session.userId) {
+          likedByMeSet.add(l.note_id);
+        }
+      });
+    }
+
+    const mapped = valid.map((r) => {
+      const anime = r.anime || {};
+      const prof = profMap[r.user_id] || {
+        username: r.user_id === state.session?.userId ? state.profile.username : 'Member',
+        avatar_key: r.user_id === state.session?.userId ? state.profile.avatarKey : 'avatar_1'
+      };
+      return {
+        id: r.id,
+        source: r.source,
+        user_id: r.user_id,
+        username: prof.username,
+        avatar_key: prof.avatar_key,
+        anime_id: Number(r.anime_id),
+        anime_title:
+          (anime.title_english && anime.title_english !== 'null' ? anime.title_english : '') ||
+          anime.title_romaji ||
+          'Anime',
+        anime_cover_image: anime.cover_image || '',
+        rating: r.rating,
+        review_notes: r.review_notes,
+        updated_at: r.updated_at || new Date().toISOString(),
+        likes_count: likesCountMap[r.id] || 0,
+        liked_by_me: likedByMeSet.has(r.id)
+      };
+    });
+
+    // Ensure active signed-in member's own local Library notes/ratings are immediately present
+    if (state.session && state.profile.memberStatus !== 'left' && state.profile.memberStatus !== 'removed') {
+      state.vault.forEach((v) => {
+        const hasRating = v.rating10 !== null && Number(v.rating10) > 0;
+        const hasNote = String(v.reviewNotes || '').trim().length > 0;
+        if (!hasRating && !hasNote) return;
+        const alreadyIdx = mapped.findIndex(
+          (m) => m.user_id === state.session.userId && Number(m.anime_id) === Number(v.animeId)
+        );
+        if (alreadyIdx === -1) {
+          mapped.unshift({
+            id: `local_${state.session.userId}_${v.animeId}`,
+            source: 'user_anime',
+            user_id: state.session.userId,
+            username: state.profile.username || 'Member',
+            avatar_key: state.profile.avatarKey || 'avatar_1',
+            anime_id: Number(v.animeId),
+            anime_title: v.titleEnglish || v.title || 'Anime',
+            anime_cover_image: v.coverImage || '',
+            rating: hasRating ? Number(v.rating10) : null,
+            review_notes: String(v.reviewNotes || '').trim(),
+            updated_at: new Date().toISOString(),
+            likes_count: 0,
+            liked_by_me: false
+          });
+        }
+      });
+    }
+
+    state.communityReviews = mapped;
   } catch (_) {}
 }
 
@@ -1259,50 +1461,96 @@ async function openAnimeDetail(animeId) {
   }
 }
 
-// Save Watchlist Entry to Supabase (Exact match to SupabaseDatabaseService.upsertUserAnimeEntry — NO user_season column!)
-async function saveVaultEntry(item) {
-  const cleanItem = { ...item, inWatchlist: true };
-  state.vault = [cleanItem, ...state.vault.filter((v) => v.animeId !== cleanItem.animeId)];
-  if (state.detailAnime && state.detailAnime.animeId === cleanItem.animeId) {
-    state.detailAnime = { ...cleanItem };
+async function ensureCatalogAnimeSynced(item) {
+  if (!state.session || !item || !item.animeId) return;
+  const catalogKey = `${item.titleEnglish || item.title}|${item.coverImage}|${item.totalEpisodes || 0}|${item.mediaStatus || ''}`;
+  if (syncedCatalogHashes.get(item.animeId) === catalogKey) return;
+  await supabaseRequest(
+    '/rest/v1/anime?on_conflict=anilist_id',
+    'POST',
+    {
+      anilist_id: Number(item.animeId),
+      title_english: String(item.titleEnglish || item.title || 'Anime').slice(0, 140),
+      title_romaji: String(item.titleRomaji || item.title || 'Anime').slice(0, 140),
+      title_native: String(item.titleNative || '').slice(0, 100) || null,
+      cover_image: item.coverImage || '',
+      banner_image: item.bannerImage || null,
+      episodes: item.totalEpisodes || null,
+      release_year: item.seasonYear || null,
+      average_score: item.averageScore || null,
+      status: item.mediaStatus || 'RELEASING',
+      format: item.format || 'TV',
+      genres: Array.isArray(item.genres) ? item.genres.slice(0, 5) : [],
+      next_airing_at: item.airingTimeUnix || null,
+      next_episode_number: item.nextEpisodeNumber || null
+    },
+    'resolution=merge-duplicates,return=minimal'
+  ).catch(() => {});
+  syncedCatalogHashes.set(item.animeId, catalogKey);
+}
+
+// Save Library Entry to Supabase — NEVER implicitly adds to Home unless opts.addToHome === true
+async function saveVaultEntry(item, opts = {}) {
+  const animeId = Number(item.animeId);
+  const existing = state.vault.find((v) => Number(v.animeId) === animeId);
+  let nextStatus = item.status || existing?.status || 'watching';
+  const totalEp = item.totalEpisodes ?? existing?.totalEpisodes ?? null;
+  const watchedEp = Math.max(0, Number(item.watchedEpisodes ?? existing?.watchedEpisodes ?? 0));
+  const mediaStatus = item.mediaStatus || existing?.mediaStatus || 'RELEASING';
+
+  // Part 2: Strict automatic completion ONLY when officially FINISHED + known total + watched >= total
+  if (shouldAutoComplete(mediaStatus, totalEp, watchedEp)) {
+    nextStatus = 'completed';
+  }
+
+  // Part 1, 2, 3: Determine Home membership independently
+  let nextInHome = opts.addToHome === true
+    ? true
+    : opts.removeFromHome === true
+    ? false
+    : state.homeTrackingIds.has(animeId);
+
+  if (shouldRemoveFromHome(nextStatus, mediaStatus, totalEp, watchedEp)) {
+    nextInHome = false;
+  }
+
+  if (nextInHome) {
+    state.homeTrackingIds.add(animeId);
+  } else {
+    state.homeTrackingIds.delete(animeId);
+  }
+  saveHomeTrackingIds();
+
+  const cleanItem = {
+    ...(existing || {}),
+    ...item,
+    animeId,
+    status: nextStatus,
+    watchedEpisodes: watchedEp,
+    totalEpisodes: totalEp,
+    mediaStatus,
+    inWatchlist: true,
+    inHome: nextInHome
+  };
+
+  state.vault = [cleanItem, ...state.vault.filter((v) => Number(v.animeId) !== animeId)];
+  if (state.detailAnime && Number(state.detailAnime.animeId) === animeId) {
+    state.detailAnime = { ...state.detailAnime, ...cleanItem };
   }
   saveLocalVault();
+
   if (!state.session) return;
   try {
-    const catalogKey = `${cleanItem.titleEnglish || cleanItem.title}|${cleanItem.coverImage}|${cleanItem.totalEpisodes || 0}`;
-    if (syncedCatalogHashes.get(cleanItem.animeId) !== catalogKey) {
-      await supabaseRequest(
-        '/rest/v1/anime?on_conflict=anilist_id',
-        'POST',
-        {
-          anilist_id: cleanItem.animeId,
-          title_english: String(cleanItem.titleEnglish || cleanItem.title || 'Anime').slice(0, 140),
-          title_romaji: String(cleanItem.titleRomaji || cleanItem.title || 'Anime').slice(0, 140),
-          title_native: String(cleanItem.titleNative || '').slice(0, 100) || null,
-          cover_image: cleanItem.coverImage || '',
-          banner_image: cleanItem.bannerImage || null,
-          episodes: cleanItem.totalEpisodes || null,
-          release_year: cleanItem.seasonYear || null,
-          average_score: cleanItem.averageScore || null,
-          status: cleanItem.mediaStatus || 'RELEASING',
-          format: cleanItem.format || 'TV',
-          genres: Array.isArray(cleanItem.genres) ? cleanItem.genres.slice(0, 5) : [],
-          next_airing_at: cleanItem.airingTimeUnix || null,
-          next_episode_number: cleanItem.nextEpisodeNumber || null
-        },
-        'resolution=merge-duplicates,return=minimal'
-      ).catch(() => {});
-      syncedCatalogHashes.set(cleanItem.animeId, catalogKey);
-    }
+    await ensureCatalogAnimeSynced(cleanItem);
 
     await supabaseRequest(
       '/rest/v1/user_anime?on_conflict=user_id,anime_id',
       'POST',
       {
         user_id: state.session.userId,
-        anime_id: cleanItem.animeId,
-        status: cleanItem.status || 'watching',
-        episode_progress: Math.max(0, Number(cleanItem.watchedEpisodes || 0)),
+        anime_id: animeId,
+        status: cleanItem.status,
+        episode_progress: cleanItem.watchedEpisodes,
         total_episodes: cleanItem.totalEpisodes || null,
         personal_rating: cleanItem.rating10 ? Math.min(10, Math.max(1, Number(cleanItem.rating10))) : null,
         review_notes: String(cleanItem.reviewNotes || '').trim().slice(0, 320),
@@ -1311,45 +1559,307 @@ async function saveVaultEntry(item) {
       'resolution=merge-duplicates,return=minimal'
     );
 
-    // Anyone joined in community automatically shares their note & rating to community
+    if (opts.addToHome === true && nextInHome) {
+      await syncAddToHomeCloud(animeId, cleanItem.airingDayOfWeek || null);
+    } else if (!nextInHome && (opts.removeFromHome === true || shouldRemoveFromHome(nextStatus, mediaStatus, totalEp, watchedEp))) {
+      await syncRemoveFromHomeCloud(animeId);
+    }
+
     const hasRating = cleanItem.rating10 !== null && Number(cleanItem.rating10) > 0;
     const hasNote = String(cleanItem.reviewNotes || '').trim().length > 0;
     if ((hasRating || hasNote) && state.profile.memberStatus !== 'left' && state.profile.memberStatus !== 'removed') {
-      await Promise.all([
-        supabaseRequest(
-          '/rest/v1/community_members?on_conflict=user_id',
-          'POST',
-          { user_id: state.session.userId, role: 'member', status: 'active' },
-          'resolution=merge-duplicates,return=minimal'
-        ).catch(() => {}),
-        supabaseRequest(
-          '/rest/v1/privacy_settings?on_conflict=user_id',
-          'POST',
-          {
-            user_id: state.session.userId,
-            reviews_visibility: 'community',
-            activity_visibility: 'community'
-          },
-          'resolution=merge-duplicates,return=minimal'
-        ).catch(() => {})
-      ]);
+      await syncCommunityNoteCloud(animeId, hasRating ? Number(cleanItem.rating10) : null, String(cleanItem.reviewNotes || '').trim());
     }
 
     await loadCommunityReviews();
-  } catch (_) {}
+  } catch (err) {
+    if (opts.throwOnError) throw err;
+  }
+}
+
+async function syncAddToHomeCloud(animeId, airingDay = null) {
+  if (!state.session) return;
+  try {
+    await supabaseRequest('/rest/v1/rpc/add_to_home', 'POST', {
+      p_anime_id: Number(animeId),
+      p_airing_day: airingDay && airingDay >= 1 && airingDay <= 7 ? Number(airingDay) : null
+    });
+  } catch (_) {
+    await supabaseRequest(
+      '/rest/v1/home_tracking?on_conflict=user_id,anime_id',
+      'POST',
+      {
+        user_id: state.session.userId,
+        anime_id: Number(animeId),
+        airing_day_of_week: airingDay && airingDay >= 1 && airingDay <= 7 ? Number(airingDay) : null
+      },
+      'resolution=merge-duplicates,return=minimal'
+    ).catch(() => {});
+  }
+}
+
+async function syncRemoveFromHomeCloud(animeId) {
+  if (!state.session) return;
+  try {
+    await supabaseRequest('/rest/v1/rpc/remove_from_home', 'POST', {
+      p_anime_id: Number(animeId)
+    });
+  } catch (_) {
+    const uid = encodeURIComponent(state.session.userId);
+    await supabaseRequest(`/rest/v1/home_tracking?user_id=eq.${uid}&anime_id=eq.${Number(animeId)}`, 'DELETE').catch(() => {});
+  }
+}
+
+async function syncCommunityNoteCloud(animeId, rating10Val, noteText) {
+  if (!state.session) return;
+  await Promise.all([
+    supabaseRequest(
+      '/rest/v1/community_members?on_conflict=user_id',
+      'POST',
+      { user_id: state.session.userId, role: 'member', status: 'active' },
+      'resolution=merge-duplicates,return=minimal'
+    ).catch(() => {}),
+    supabaseRequest(
+      '/rest/v1/privacy_settings?on_conflict=user_id',
+      'POST',
+      {
+        user_id: state.session.userId,
+        reviews_visibility: 'community',
+        activity_visibility: 'community'
+      },
+      'resolution=merge-duplicates,return=minimal'
+    ).catch(() => {})
+  ]);
+  try {
+    await supabaseRequest('/rest/v1/rpc/upsert_community_note', 'POST', {
+      p_anime_id: Number(animeId),
+      p_rating: rating10Val ? Math.min(10, Math.max(1, Number(rating10Val))) : null,
+      p_note_text: String(noteText || '').trim().slice(0, 600)
+    });
+  } catch (_) {
+    await supabaseRequest(
+      '/rest/v1/community_notes?on_conflict=user_id,anime_id',
+      'POST',
+      {
+        user_id: state.session.userId,
+        anime_id: Number(animeId),
+        rating: rating10Val ? Math.min(10, Math.max(1, Number(rating10Val))) : null,
+        note_text: String(noteText || '').trim().slice(0, 600)
+      },
+      'resolution=merge-duplicates,return=minimal'
+    ).catch(() => {});
+  }
+}
+
+// Part 1: Explicitly Add Anime to Home active tracking (and Library if not yet present)
+async function addToHome(item) {
+  if (!item || !item.animeId) return;
+  const animeId = Number(item.animeId);
+  const existing = state.vault.find((v) => Number(v.animeId) === animeId);
+  const base = existing ? { ...existing, ...item } : { ...item, status: 'watching', watchedEpisodes: 0 };
+  if (base.status === 'dropped') {
+    base.status = 'watching';
+  }
+  state.homeTrackingIds.add(animeId);
+  saveHomeTrackingIds();
+  await saveVaultEntry(base, { addToHome: true });
+  showToast('Added to Home tracking');
+  renderApp();
+}
+
+// Part 1 & Part 4: Remove ONLY from Home; preserve Library, progress, notes, ratings & Community
+async function removeFromHomeOnly(animeId) {
+  const aid = Number(animeId);
+  state.homeTrackingIds.delete(aid);
+  saveHomeTrackingIds();
+  state.vault = state.vault.map((v) => (Number(v.animeId) === aid ? { ...v, inHome: false } : v));
+  if (state.detailAnime && Number(state.detailAnime.animeId) === aid) {
+    state.detailAnime = { ...state.detailAnime, inHome: false };
+  }
+  saveLocalVault();
+  showToast('Removed from Home — preserved in Library');
+  renderApp();
+  await syncRemoveFromHomeCloud(aid);
+}
+
+// Part 1: Post a Community note/rating WITHOUT ever adding the anime to Home
+async function submitCommunityCommentNote(animeId, rating10Val, noteText, animeMeta = null) {
+  const aid = Number(animeId);
+  const cleanNote = String(noteText || '').trim();
+  const cleanRating = rating10Val && Number(rating10Val) > 0 ? Math.min(10, Math.max(1, Number(rating10Val))) : null;
+  if (!cleanNote && !cleanRating) return;
+
+  const existingVault = state.vault.find((v) => Number(v.animeId) === aid);
+  if (existingVault) {
+    // Preserve existing Home membership strictly; NEVER add to Home just because user rated/noted
+    await saveVaultEntry(
+      {
+        ...existingVault,
+        rating10: cleanRating ?? existingVault.rating10,
+        reviewNotes: cleanNote || existingVault.reviewNotes || ''
+      },
+      { addToHome: false }
+    );
+    showToast('Rating & note saved');
+    renderApp();
+    return;
+  }
+
+  // Anime is NOT in Home or Library: save purely to Community (community_notes) — NEVER adds to Home!
+  const meta = animeMeta || state.detailAnime || state.discover.find((d) => Number(d.animeId) === aid) || { animeId: aid };
+  if (state.detailAnime && Number(state.detailAnime.animeId) === aid) {
+    state.detailAnime = {
+      ...state.detailAnime,
+      rating10: cleanRating ?? state.detailAnime.rating10,
+      reviewNotes: cleanNote || state.detailAnime.reviewNotes || ''
+    };
+  }
+
+  // Update local community preview immediately
+  if (state.session) {
+    const newEntry = {
+      id: `local_note_${state.session.userId}_${aid}`,
+      source: 'community_notes',
+      user_id: state.session.userId,
+      username: state.profile.username || 'Member',
+      avatar_key: state.profile.avatarKey || 'avatar_1',
+      anime_id: aid,
+      anime_title: meta.titleEnglish || meta.title || meta.anime_title || 'Anime',
+      anime_cover_image: meta.coverImage || meta.anime_cover_image || '',
+      rating: cleanRating,
+      review_notes: cleanNote,
+      updated_at: new Date().toISOString(),
+      likes_count: 0,
+      liked_by_me: false
+    };
+    state.communityReviews = [
+      newEntry,
+      ...state.communityReviews.filter((r) => !(r.user_id === state.session.userId && Number(r.anime_id) === aid))
+    ];
+    renderApp();
+
+    try {
+      await ensureCatalogAnimeSynced({
+        animeId: aid,
+        title: meta.title || meta.anime_title || 'Anime',
+        titleEnglish: meta.titleEnglish || meta.title || meta.anime_title || 'Anime',
+        titleRomaji: meta.titleRomaji || meta.title || meta.anime_title || 'Anime',
+        coverImage: meta.coverImage || meta.anime_cover_image || ''
+      });
+      await syncCommunityNoteCloud(aid, cleanRating, cleanNote);
+      await loadCommunityReviews();
+    } catch (_) {}
+  }
+  showToast('Posted to Community (not added to Home)');
+  renderApp();
+}
+
+// Part 2 & Part 5: Atomic Episode Progress Update with strict auto-completion & rollback on cloud failure
+async function commitEpisodeProgress(animeId, targetEpisode) {
+  const aid = Number(animeId);
+  const existing = state.vault.find((v) => Number(v.animeId) === aid);
+  if (!existing) return { ok: false, error: 'Anime is not in your library yet.' };
+
+  const prevSnapshot = { ...existing };
+  const prevHomeHad = state.homeTrackingIds.has(aid);
+  const totalEp = existing.totalEpisodes ? Number(existing.totalEpisodes) : null;
+  const clamped = totalEp && totalEp > 0 ? Math.min(totalEp, Math.max(0, Number(targetEpisode))) : Math.max(0, Number(targetEpisode));
+  const autoCompleted = shouldAutoComplete(existing.mediaStatus, totalEp, clamped);
+  const nextStatus = autoCompleted ? 'completed' : existing.status;
+  const nextInHome = autoCompleted ? false : prevHomeHad && !shouldRemoveFromHome(nextStatus, existing.mediaStatus, totalEp, clamped);
+
+  if (nextInHome) state.homeTrackingIds.add(aid);
+  else state.homeTrackingIds.delete(aid);
+  saveHomeTrackingIds();
+
+  const updated = {
+    ...existing,
+    watchedEpisodes: clamped,
+    status: nextStatus,
+    inHome: nextInHome
+  };
+  state.vault = state.vault.map((v) => (Number(v.animeId) === aid ? updated : v));
+  if (state.detailAnime && Number(state.detailAnime.animeId) === aid) {
+    state.detailAnime = { ...state.detailAnime, ...updated };
+  }
+  saveLocalVault();
+
+  if (!state.session) {
+    if (autoCompleted) showToast('Completed! Moved from Home to Library.');
+    return { ok: true, autoCompleted };
+  }
+
+  try {
+    let rpcSucceeded = false;
+    try {
+      await supabaseRequest('/rest/v1/rpc/update_episode_progress', 'POST', {
+        p_anime_id: aid,
+        p_watched_episodes: clamped
+      });
+      rpcSucceeded = true;
+    } catch (rpcErr) {
+      const msg = String(rpcErr?.message || '');
+      // Fall back to direct table update ONLY if RPC does not exist yet (pre-migration)
+      if (msg.includes('404') || msg.includes('PGRST202') || msg.toLowerCase().includes('could not find the function')) {
+        await supabaseRequest(
+          '/rest/v1/user_anime?on_conflict=user_id,anime_id',
+          'POST',
+          {
+            user_id: state.session.userId,
+            anime_id: aid,
+            status: nextStatus,
+            episode_progress: clamped,
+            total_episodes: totalEp || null,
+            personal_rating: updated.rating10 ? Math.min(10, Math.max(1, Number(updated.rating10))) : null,
+            review_notes: String(updated.reviewNotes || '').trim().slice(0, 320),
+            is_favorite: Boolean(updated.isFavorite)
+          },
+          'resolution=merge-duplicates,return=minimal'
+        );
+        if (autoCompleted) {
+          await syncRemoveFromHomeCloud(aid);
+        }
+        rpcSucceeded = true;
+      } else {
+        throw rpcErr;
+      }
+    }
+    if (rpcSucceeded && autoCompleted) {
+      showToast('Completed! Moved from Home to Library.');
+    }
+    return { ok: true, autoCompleted };
+  } catch (err) {
+    // Rollback to previous episode progress, status & Home membership on failure
+    if (prevHomeHad) state.homeTrackingIds.add(aid);
+    else state.homeTrackingIds.delete(aid);
+    saveHomeTrackingIds();
+    state.vault = state.vault.map((v) => (Number(v.animeId) === aid ? prevSnapshot : v));
+    if (state.detailAnime && Number(state.detailAnime.animeId) === aid) {
+      state.detailAnime = { ...state.detailAnime, ...prevSnapshot };
+    }
+    saveLocalVault();
+    return { ok: false, error: err?.message || 'Failed to sync episode progress. Restored previous value.' };
+  }
 }
 
 async function removeFromVault(animeId) {
-  state.vault = state.vault.filter((v) => v.animeId !== animeId);
-  if (state.detailAnime && state.detailAnime.animeId === animeId) {
+  const aid = Number(animeId);
+  state.vault = state.vault.filter((v) => Number(v.animeId) !== aid);
+  state.homeTrackingIds.delete(aid);
+  saveHomeTrackingIds();
+  if (state.detailAnime && Number(state.detailAnime.animeId) === aid) {
     state.detailAnime.inWatchlist = false;
+    state.detailAnime.inHome = false;
   }
   saveLocalVault();
   renderApp();
   if (!state.session) return;
   try {
     const uid = encodeURIComponent(state.session.userId);
-    await supabaseRequest(`/rest/v1/user_anime?user_id=eq.${uid}&anime_id=eq.${animeId}`, 'DELETE').catch(() => {});
+    await Promise.all([
+      supabaseRequest(`/rest/v1/user_anime?user_id=eq.${uid}&anime_id=eq.${aid}`, 'DELETE').catch(() => {}),
+      syncRemoveFromHomeCloud(aid)
+    ]);
   } catch (_) {}
 }
 
@@ -1384,8 +1894,92 @@ function renderObsidianTopBar({ title, accentTitleTail = null, subtitle, leftAct
   `;
 }
 
+function renderInlineEpisodeStepper(effective, scope = 'card') {
+  const aid = Number(effective.animeId);
+  const total = effective.totalEpisodes && Number(effective.totalEpisodes) > 0 ? Number(effective.totalEpisodes) : null;
+  const watched = Number(effective.watchedEpisodes || 0);
+  const canDec = watched > 0;
+  const canInc = !total || watched < total;
+  const isDetail = scope === 'detail';
+  const isEditing = Boolean(state.inlineEpEdit && Number(state.inlineEpEdit.animeId) === aid && state.inlineEpEdit.scope === scope);
+  const editObj = isEditing ? state.inlineEpEdit : null;
+
+  if (isEditing && editObj) {
+    return `
+      <div class="inline-ep-wrap" onclick="event.stopPropagation()">
+        <div class="capsule-stepper editing ${isDetail ? 'detail-stepper' : ''}">
+          <div class="inline-ep-input-group">
+            <input
+              id="inline-ep-input-${scope}-${aid}"
+              class="inline-ep-input"
+              type="text"
+              inputmode="numeric"
+              pattern="[0-9]*"
+              maxlength="6"
+              value="${escapeHtml(editObj.draft)}"
+              data-inline-ep-input="${aid}"
+              data-inline-ep-scope="${scope}"
+              aria-label="Watched episodes"
+              ${editObj.saving ? 'disabled' : ''}
+            />
+            <span class="inline-ep-total">/ ${total || '∞'}</span>
+          </div>
+          <button
+            type="button"
+            class="inline-ep-action-btn save"
+            data-inline-ep-save="${aid}"
+            data-inline-ep-scope="${scope}"
+            title="Save episode (Enter)"
+            ${editObj.saving ? 'disabled' : ''}
+          >
+            ${editObj.saving ? '<span class="inline-ep-spinner"></span>' : '✓'}
+          </button>
+          <button
+            type="button"
+            class="inline-ep-action-btn cancel"
+            data-inline-ep-cancel="${aid}"
+            title="Cancel (Esc)"
+            ${editObj.saving ? 'disabled' : ''}
+          >✕</button>
+        </div>
+        ${editObj.error ? `<div class="inline-ep-error">${escapeHtml(editObj.error)}</div>` : ''}
+      </div>
+    `;
+  }
+
+  return `
+    <div class="inline-ep-wrap" onclick="event.stopPropagation()">
+      <div class="capsule-stepper ${isDetail ? 'detail-stepper' : ''}">
+        <button
+          type="button"
+          class="stepper-circle-btn"
+          style="${isDetail ? 'width:36px;height:36px;' : ''}"
+          data-dec-id="${aid}"
+          ${!canDec ? 'disabled' : ''}
+        >−</button>
+        <div
+          class="stepper-center-count editable-ep-trigger"
+          style="${isDetail ? 'font-size:18px;' : ''}"
+          data-inline-ep-trigger="${aid}"
+          data-inline-ep-scope="${scope}"
+          title="Click to type episode number directly"
+        >
+          ${isDetail ? `EP ${watched}` : `${watched}`}<span> / ${total || '∞'}</span>
+        </div>
+        <button
+          type="button"
+          class="stepper-circle-btn plus"
+          style="${isDetail ? 'width:36px;height:36px;' : ''}"
+          data-inc-id="${aid}"
+          ${!canInc ? 'disabled' : ''}
+        >+</button>
+      </div>
+    </div>
+  `;
+}
+
 function renderPosterTrackerCard(item, showTrackingStepper = true) {
-  const inVault = state.vault.find((v) => v.animeId === item.animeId);
+  const inVault = state.vault.find((v) => Number(v.animeId) === Number(item.animeId));
   const effective = inVault ? { ...item, ...inVault } : item;
   const isInUserList = Boolean(inVault);
   const title = resolveTitle(effective);
@@ -1401,9 +1995,7 @@ function renderPosterTrackerCard(item, showTrackingStepper = true) {
   const epBadge = isInUserList ? `EP ${Math.max(watched, effective.nextEpisodeNumber ? effective.nextEpisodeNumber - 1 : 0)}` : formatLabel;
   const airClock = formatAiringClock(effective.airingTimeUnix) || (effective.seasonYear ? String(effective.seasonYear) : '');
 
-  const isCompleted = isInUserList && (effective.status === 'completed' || (total && total > 0 && watched >= total));
-  const canDec = isInUserList && watched > 0;
-  const canInc = !isInUserList || !total || total <= 0 || watched < total;
+  const isCompleted = isInUserList && (effective.status === 'completed' || shouldAutoComplete(effective.mediaStatus, total, watched));
   const progressPct = total && total > 0 ? Math.min(100, Math.round((watched / total) * 100)) : watched > 0 ? 50 : 4;
   const hasNote = Boolean(effective.reviewNotes && effective.reviewNotes.trim());
 
@@ -1423,7 +2015,7 @@ function renderPosterTrackerCard(item, showTrackingStepper = true) {
   }
 
   return `
-    <div class="poster-tracker-card">
+    <div class="poster-tracker-card" data-card-anime-id="${effective.animeId}">
       <div class="poster-frame" data-open-detail="${effective.animeId}">
         <img src="${escapeHtml(effective.coverImage)}" alt="${escapeHtml(title)}" loading="lazy" />
         <div class="poster-scrim"></div>
@@ -1441,13 +2033,7 @@ function renderPosterTrackerCard(item, showTrackingStepper = true) {
               <div class="app-progress-bar">
                 <div class="app-progress-fill ${isCompleted ? 'completed' : ''}" style="width:${progressPct}%;"></div>
               </div>
-              <div class="capsule-stepper">
-                <button class="stepper-circle-btn" data-dec-id="${effective.animeId}" ${!canDec ? 'disabled' : ''}>−</button>
-                <div class="stepper-center-count" data-quick-edit="${effective.animeId}" title="Tap to type custom episode or rate">
-                  ${watched}<span>/${total && total > 0 ? total : '∞'}</span>
-                </div>
-                <button class="stepper-circle-btn plus" data-inc-id="${effective.animeId}" ${!canInc ? 'disabled' : ''}>+</button>
-              </div>
+              ${renderInlineEpisodeStepper(effective, 'card')}
               ${subStatusHtml}
               <div class="rate-note-row">
                 <button class="rate-note-pill ${userStars ? 'active' : ''}" data-quick-edit="${effective.animeId}">
@@ -1463,7 +2049,7 @@ function renderPosterTrackerCard(item, showTrackingStepper = true) {
                 <span class="tabular-num" style="font-size:10.5px;color:var(--text-secondary);">
                   ${isInUserList ? `${watched}/${total || '∞'}` : `${formatLabel}${total ? ` • ${total} ep` : ''}`}
                 </span>
-                <button class="stepper-circle-btn ${isInUserList ? '' : 'plus'}" data-quick-add="${effective.animeId}" title="${isInUserList ? 'Edit tracking' : 'Quick add to Watching'}">
+                <button class="stepper-circle-btn ${isInUserList ? '' : 'plus'}" data-quick-add="${effective.animeId}" title="${isInUserList ? 'Edit tracking' : 'Add to Home & Library'}">
                   ${isInUserList ? '✓' : '+'}
                 </button>
               </div>
@@ -1475,12 +2061,12 @@ function renderPosterTrackerCard(item, showTrackingStepper = true) {
 }
 
 // ============================================================================
-// SCREEN 1: HOME SCREEN (Matches Screenshot 3 1:1)
+// SCREEN 1: HOME SCREEN (Strictly displays ONLY explicitly tracked Home anime)
 // ============================================================================
 
 function renderHomeScreen() {
   const todayDow = ((new Date().getDay() + 6) % 7) + 1;
-  const activeShows = state.vault;
+  const activeShows = state.vault.filter((v) => isAnimeOnHome(v));
   const dayBuckets = {};
   for (let d = 1; d <= 7; d++) dayBuckets[d] = [];
   const anytimeShows = [];
@@ -2227,18 +2813,12 @@ function renderAnimeDetailScreen() {
             : ''
         }
 
-        <div class="micro-label" style="color:var(--accent-primary);">EPISODE PROGRESS</div>
+        <div class="micro-label" style="color:var(--accent-primary);">EPISODE PROGRESS • CLICK NUMBER TO EDIT</div>
         ${
           !a.inWatchlist
-            ? `<button class="btn-primary" id="btn-detail-add" style="width:100%;">+ ADD TO LIBRARY</button>`
+            ? `<button class="btn-primary" id="btn-detail-add" style="width:100%;">+ ADD TO HOME &amp; LIBRARY</button>`
             : `
-              <div class="capsule-stepper" style="height:48px;padding:6px;">
-                <button class="stepper-circle-btn" id="btn-detail-dec" style="width:36px;height:36px;">−</button>
-                <div class="stepper-center-count" style="font-size:18px;">
-                  EP ${watched} <span>/ ${total || '∞'}</span>
-                </div>
-                <button class="stepper-circle-btn plus" id="btn-detail-inc" style="width:36px;height:36px;">+</button>
-              </div>
+              ${renderInlineEpisodeStepper(a, 'detail')}
               <div class="capsule-strip" style="margin-bottom:0;">
                 ${WATCH_STATUSES.map(
                   (st) => `
@@ -2246,7 +2826,14 @@ function renderAnimeDetailScreen() {
                     ${st.label}
                   </button>`
                 ).join('')}
-                <button class="capsule-pill" id="btn-detail-remove" style="color:var(--error);border-color:rgba(229,90,107,0.4);">Remove</button>
+              </div>
+              <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:2px;">
+                ${
+                  isAnimeOnHome(a)
+                    ? `<button type="button" class="capsule-pill" id="btn-detail-remove-home" style="color:var(--accent-primary);border-color:var(--accent-border);">Remove from Home (Keep in Library)</button>`
+                    : `<button type="button" class="capsule-pill active" id="btn-detail-add-home">+ Add to Home Tracking</button>`
+                }
+                <button type="button" class="capsule-pill" id="btn-detail-remove" style="color:var(--error);border-color:rgba(229,90,107,0.4);">Remove from Library</button>
               </div>
             `
         }
@@ -3052,12 +3639,91 @@ function renderDownloadsScreen() {
 // MODALS: QUICK CONTEXT EDIT, COLLECTION MODAL & AVATAR CAROUSEL MODAL
 // ============================================================================
 
+function findAnimeByIdAnywhere(animeId) {
+  const aid = Number(animeId);
+  return (
+    state.vault.find((v) => Number(v.animeId) === aid) ||
+    state.discover.find((d) => Number(d.animeId) === aid) ||
+    (state.detailAnime && Number(state.detailAnime.animeId) === aid ? state.detailAnime : null)
+  );
+}
+
+function renderContextMenuOverlay() {
+  if (!state.contextMenu) return '';
+  const { animeId, x, y } = state.contextMenu;
+  const item = findAnimeByIdAnywhere(animeId);
+  if (!item) return '';
+  const title = resolveTitle(item);
+  const onHome = isAnimeOnHome(item);
+  const menuW = 248;
+  const menuH = 264;
+  const safeX = Math.max(12, Math.min(Number(x || 20), (window.innerWidth || 1024) - menuW - 12));
+  const safeY = Math.max(12, Math.min(Number(y || 20), (window.innerHeight || 768) - menuH - 12));
+
+  return `
+    <div class="anime-context-backdrop" id="anime-context-backdrop">
+      <div class="anime-context-menu" id="anime-context-menu" style="left:${safeX}px;top:${safeY}px;" onclick="event.stopPropagation()">
+        <div class="anime-context-header">
+          ${item.coverImage ? `<img src="${escapeHtml(item.coverImage)}" alt="" />` : ''}
+          <div class="anime-context-title">${escapeHtml(title)}</div>
+        </div>
+        ${
+          onHome
+            ? `<button type="button" class="anime-context-item danger" data-ctx-action="remove_home" data-ctx-anime-id="${animeId}">
+                 <span>✕</span><span>Remove from Home</span>
+               </button>`
+            : `<button type="button" class="anime-context-item accent" data-ctx-action="add_home" data-ctx-anime-id="${animeId}">
+                 <span>＋</span><span>Add to Home</span>
+               </button>`
+        }
+        <button type="button" class="anime-context-item" data-ctx-action="view_details" data-ctx-anime-id="${animeId}">
+          <span>ⓘ</span><span>View Anime Details</span>
+        </button>
+        <button type="button" class="anime-context-item" data-ctx-action="view_library" data-ctx-anime-id="${animeId}">
+          <span>▤</span><span>View in Library</span>
+        </button>
+        <button type="button" class="anime-context-item" data-ctx-action="view_community" data-ctx-anime-id="${animeId}">
+          <span>✦</span><span>View Community</span>
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function renderToastOverlay() {
+  if (!state.toastMessage) return '';
+  return `<div id="au-toast-banner" class="au-toast ${state.toastError ? 'error' : ''}">${escapeHtml(state.toastMessage)}</div>`;
+}
+
 function renderModals() {
+  const overlays = `${renderContextMenuOverlay()}${renderToastOverlay()}`;
+
+  if (state.confirmRemoveHomeAnime) {
+    const target = state.confirmRemoveHomeAnime;
+    return `
+      ${overlays}
+      <div class="modal-backdrop" id="modal-backdrop">
+        <div class="modal-sheet" style="max-width:440px;" onclick="event.stopPropagation()">
+          <h3 class="serif-heading" style="font-size:26px;color:var(--text-primary);">Remove from Home?</h3>
+          ${target.title ? `<div style="font-size:13px;font-weight:700;color:var(--accent-primary);margin-top:-6px;">${escapeHtml(target.title)}</div>` : ''}
+          <p style="font-size:14px;color:var(--text-secondary);line-height:1.6;">
+            This anime will be removed from your Home tracking list but will remain in your Library. Your notes, ratings, reviews, and Community discussions will not be affected.
+          </p>
+          <div style="display:flex;gap:10px;margin-top:6px;">
+            <button type="button" class="btn-secondary" id="btn-cancel-remove-home" style="flex:1;">Cancel</button>
+            <button type="button" class="btn-danger" id="btn-confirm-remove-home" style="flex:1;">Remove from Home</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   if (state.quickEditAnime) {
     const a = state.quickEditAnime;
     const title = resolveTitle(a);
     const stars = rating10ToStars(a.rating10) || 0;
     return `
+      ${overlays}
       <div class="modal-backdrop" id="modal-backdrop">
         <div class="modal-sheet" onclick="event.stopPropagation()">
           <div style="display:flex;gap:12px;align-items:center;">
@@ -3264,7 +3930,7 @@ function renderModals() {
     }
   }
 
-  return '';
+  return overlays;
 }
 
 // ============================================================================
@@ -3808,7 +4474,222 @@ function bindAppEvents() {
   document.querySelectorAll('[data-open-detail]').forEach((el) => {
     el.onclick = (e) => {
       e.stopPropagation();
+      if (state._suppressNextCardClick) {
+        state._suppressNextCardClick = false;
+        return;
+      }
       openAnimeDetail(Number(el.getAttribute('data-open-detail')));
+    };
+  });
+
+  // Part 4: Right-click (Desktop/Web) & Long-Press (Mobile Touch) Context Menu on Anime Cards
+  document.querySelectorAll('[data-card-anime-id]').forEach((card) => {
+    const aid = Number(card.getAttribute('data-card-anime-id'));
+    card.oncontextmenu = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      state.contextMenu = { animeId: aid, x: e.clientX, y: e.clientY };
+      renderApp();
+    };
+
+    let touchTimer = null;
+    let startX = 0;
+    let startY = 0;
+    card.ontouchstart = (e) => {
+      if (!e.touches || e.touches.length !== 1) return;
+      startX = e.touches[0].clientX;
+      startY = e.touches[0].clientY;
+      touchTimer = setTimeout(() => {
+        touchTimer = null;
+        state._suppressNextCardClick = true;
+        state.contextMenu = { animeId: aid, x: startX, y: startY };
+        renderApp();
+      }, 500);
+    };
+    card.ontouchmove = (e) => {
+      if (!touchTimer || !e.touches || e.touches.length !== 1) return;
+      const dx = Math.abs(e.touches[0].clientX - startX);
+      const dy = Math.abs(e.touches[0].clientY - startY);
+      if (dx > 10 || dy > 10) {
+        clearTimeout(touchTimer);
+        touchTimer = null;
+      }
+    };
+    card.ontouchend = () => {
+      if (touchTimer) {
+        clearTimeout(touchTimer);
+        touchTimer = null;
+      }
+    };
+    card.ontouchcancel = () => {
+      if (touchTimer) {
+        clearTimeout(touchTimer);
+        touchTimer = null;
+      }
+    };
+  });
+
+  const ctxBackdrop = document.getElementById('anime-context-backdrop');
+  if (ctxBackdrop) {
+    ctxBackdrop.onclick = () => {
+      state.contextMenu = null;
+      renderApp();
+    };
+    ctxBackdrop.oncontextmenu = (e) => {
+      e.preventDefault();
+      state.contextMenu = null;
+      renderApp();
+    };
+  }
+
+  document.querySelectorAll('[data-ctx-action]').forEach((btn) => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const action = btn.getAttribute('data-ctx-action');
+      const aid = Number(btn.getAttribute('data-ctx-anime-id'));
+      const item = findAnimeByIdAnywhere(aid);
+      state.contextMenu = null;
+      if (action === 'remove_home') {
+        state.confirmRemoveHomeAnime = { animeId: aid, title: item ? resolveTitle(item) : '' };
+        renderApp();
+      } else if (action === 'add_home') {
+        if (item) await addToHome(item);
+        else renderApp();
+      } else if (action === 'view_details') {
+        openAnimeDetail(aid);
+      } else if (action === 'view_library') {
+        state.tab = 'mylist';
+        state.myListStatusFilter = 'ALL';
+        state.myListSentimentFilter = null;
+        state.myListCollectionFilter = null;
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        renderApp();
+      } else if (action === 'view_community') {
+        state.tab = 'community';
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        renderApp();
+      }
+    };
+  });
+
+  const btnCancelRemoveHome = document.getElementById('btn-cancel-remove-home');
+  if (btnCancelRemoveHome) {
+    btnCancelRemoveHome.onclick = () => {
+      state.confirmRemoveHomeAnime = null;
+      renderApp();
+    };
+  }
+  const btnConfirmRemoveHome = document.getElementById('btn-confirm-remove-home');
+  if (btnConfirmRemoveHome) {
+    btnConfirmRemoveHome.onclick = async () => {
+      const target = state.confirmRemoveHomeAnime;
+      state.confirmRemoveHomeAnime = null;
+      if (target && target.animeId) {
+        await removeFromHomeOnly(target.animeId);
+      } else {
+        renderApp();
+      }
+    };
+  }
+
+  // Part 5: Inline Custom Episode Number Editor
+  const submitInlineEpisodeEdit = async (aid, scope) => {
+    const item = state.vault.find((v) => Number(v.animeId) === Number(aid));
+    if (!item || !state.inlineEpEdit || state.inlineEpEdit.saving) return;
+    const inputEl = document.getElementById(`inline-ep-input-${scope}-${aid}`);
+    const rawDraft = inputEl ? inputEl.value : state.inlineEpEdit.draft;
+    const check = validateEpisodeInput(rawDraft, item.totalEpisodes);
+    if (!check.valid) {
+      state.inlineEpEdit = { ...state.inlineEpEdit, draft: rawDraft, error: check.error };
+      renderApp();
+      setTimeout(() => {
+        const el = document.getElementById(`inline-ep-input-${scope}-${aid}`);
+        if (el) el.focus();
+      }, 15);
+      return;
+    }
+
+    state.inlineEpEdit = { ...state.inlineEpEdit, draft: String(check.value), saving: true, error: '' };
+    renderApp();
+    const res = await commitEpisodeProgress(aid, check.value);
+    if (res.ok) {
+      state.inlineEpEdit = null;
+      renderApp();
+    } else {
+      const restored = state.vault.find((v) => Number(v.animeId) === Number(aid));
+      state.inlineEpEdit = {
+        animeId: aid,
+        scope,
+        draft: String(restored ? restored.watchedEpisodes : item.watchedEpisodes || 0),
+        saving: false,
+        error: res.error || 'Failed to save episode progress.'
+      };
+      renderApp();
+    }
+  };
+
+  document.querySelectorAll('[data-inline-ep-trigger]').forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      const aid = Number(el.getAttribute('data-inline-ep-trigger'));
+      const scope = el.getAttribute('data-inline-ep-scope') || 'card';
+      const item = state.vault.find((v) => Number(v.animeId) === aid);
+      if (!item) return;
+      state.inlineEpEdit = {
+        animeId: aid,
+        scope,
+        draft: String(item.watchedEpisodes || 0),
+        saving: false,
+        error: ''
+      };
+      renderApp();
+      setTimeout(() => {
+        const inp = document.getElementById(`inline-ep-input-${scope}-${aid}`);
+        if (inp) {
+          inp.focus();
+          inp.select();
+        }
+      }, 15);
+    };
+  });
+
+  document.querySelectorAll('[data-inline-ep-input]').forEach((inp) => {
+    const aid = Number(inp.getAttribute('data-inline-ep-input'));
+    const scope = inp.getAttribute('data-inline-ep-scope') || 'card';
+    inp.oninput = (e) => {
+      if (state.inlineEpEdit && Number(state.inlineEpEdit.animeId) === aid) {
+        state.inlineEpEdit.draft = e.target.value;
+        state.inlineEpEdit.error = '';
+      }
+    };
+    inp.onkeydown = (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        e.stopPropagation();
+        submitInlineEpisodeEdit(aid, scope);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        state.inlineEpEdit = null;
+        renderApp();
+      }
+    };
+  });
+
+  document.querySelectorAll('[data-inline-ep-save]').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const aid = Number(btn.getAttribute('data-inline-ep-save'));
+      const scope = btn.getAttribute('data-inline-ep-scope') || 'card';
+      submitInlineEpisodeEdit(aid, scope);
+    };
+  });
+
+  document.querySelectorAll('[data-inline-ep-cancel]').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      state.inlineEpEdit = null;
+      renderApp();
     };
   });
 
@@ -3816,13 +4697,13 @@ function bindAppEvents() {
     btn.onclick = async (e) => {
       e.stopPropagation();
       const id = Number(btn.getAttribute('data-inc-id'));
-      const item = state.vault.find((v) => v.animeId === id);
+      const item = state.vault.find((v) => Number(v.animeId) === id);
       if (!item) return;
       const next = (item.watchedEpisodes || 0) + 1;
-      item.watchedEpisodes = item.totalEpisodes ? Math.min(item.totalEpisodes, next) : next;
-      if (item.totalEpisodes && item.watchedEpisodes >= item.totalEpisodes) item.status = 'completed';
+      const clamped = item.totalEpisodes && item.totalEpisodes > 0 ? Math.min(item.totalEpisodes, next) : next;
+      const res = await commitEpisodeProgress(id, clamped);
+      if (!res.ok) showToast(res.error || 'Failed to update progress', true);
       renderApp();
-      await saveVaultEntry(item);
     };
   });
 
@@ -3830,11 +4711,12 @@ function bindAppEvents() {
     btn.onclick = async (e) => {
       e.stopPropagation();
       const id = Number(btn.getAttribute('data-dec-id'));
-      const item = state.vault.find((v) => v.animeId === id);
+      const item = state.vault.find((v) => Number(v.animeId) === id);
       if (!item) return;
-      item.watchedEpisodes = Math.max(0, (item.watchedEpisodes || 0) - 1);
+      const next = Math.max(0, (item.watchedEpisodes || 0) - 1);
+      const res = await commitEpisodeProgress(id, next);
+      if (!res.ok) showToast(res.error || 'Failed to update progress', true);
       renderApp();
-      await saveVaultEntry(item);
     };
   });
 
@@ -3842,16 +4724,15 @@ function bindAppEvents() {
     btn.onclick = async (e) => {
       e.stopPropagation();
       const id = Number(btn.getAttribute('data-quick-add'));
-      const existing = state.vault.find((v) => v.animeId === id);
+      const existing = state.vault.find((v) => Number(v.animeId) === id);
       if (existing) {
         state.quickEditAnime = { ...existing };
         renderApp();
         return;
       }
-      const disc = state.discover.find((d) => d.animeId === id);
+      const disc = state.discover.find((d) => Number(d.animeId) === id);
       if (disc) {
-        await saveVaultEntry({ ...disc, status: 'watching', watchedEpisodes: 0 });
-        renderApp();
+        await addToHome(disc);
       }
     };
   });
@@ -3860,7 +4741,7 @@ function bindAppEvents() {
     btn.onclick = (e) => {
       e.stopPropagation();
       const id = Number(btn.getAttribute('data-quick-edit'));
-      const item = state.vault.find((v) => v.animeId === id);
+      const item = state.vault.find((v) => Number(v.animeId) === id);
       if (item) {
         state.quickEditAnime = { ...item };
         renderApp();
@@ -4004,32 +4885,11 @@ function bindAppEvents() {
 
       const allGroups = groupCommunityReviewsByAnime(state.communityReviews);
       const grp = allGroups.find((g) => Number(g.anime_id) === aid);
-      const existing = state.vault.find((v) => Number(v.animeId) === aid);
-      const rating10Val = stars > 0 ? Math.round(stars * 2) : existing?.rating10 || null;
+      const rating10Val = stars > 0 ? Math.round(stars * 2) : null;
 
-      const itemToSave = existing
-        ? {
-            ...existing,
-            rating10: rating10Val,
-            reviewNotes: noteText || existing.reviewNotes || ''
-          }
-        : {
-            animeId: aid,
-            title: grp?.anime_title || 'Anime',
-            titleEnglish: grp?.anime_title || 'Anime',
-            titleRomaji: grp?.anime_title || 'Anime',
-            coverImage: grp?.anime_cover_image || '',
-            status: 'watching',
-            season: 1,
-            watchedEpisodes: 0,
-            totalEpisodes: null,
-            rating10: rating10Val,
-            reviewNotes: noteText,
-            isPinned: false,
-            isFavorite: false
-          };
-
-      await saveVaultEntry(itemToSave);
+      // Part 1: Adding a community note/comment/rating NEVER adds the anime to Home
+      await submitCommunityCommentNote(aid, rating10Val, noteText, grp || null);
+      state.communityCommentDraftNote = '';
       renderApp();
     };
   }
@@ -4112,39 +4972,42 @@ function bindAppEvents() {
   if (btnDetailFav && state.detailAnime) {
     btnDetailFav.onclick = async () => {
       state.detailAnime.isFavorite = !state.detailAnime.isFavorite;
-      await saveVaultEntry(state.detailAnime);
+      await saveVaultEntry(state.detailAnime, { addToHome: false });
       renderApp();
     };
   }
   const btnDetailAdd = document.getElementById('btn-detail-add');
   if (btnDetailAdd && state.detailAnime) {
     btnDetailAdd.onclick = async () => {
-      await saveVaultEntry({ ...state.detailAnime, status: 'watching' });
+      await addToHome({ ...state.detailAnime, status: 'watching' });
+    };
+  }
+  const btnDetailRemoveHome = document.getElementById('btn-detail-remove-home');
+  if (btnDetailRemoveHome && state.detailAnime) {
+    btnDetailRemoveHome.onclick = () => {
+      state.confirmRemoveHomeAnime = {
+        animeId: state.detailAnime.animeId,
+        title: resolveTitle(state.detailAnime)
+      };
       renderApp();
     };
   }
-  const btnDetailInc = document.getElementById('btn-detail-inc');
-  if (btnDetailInc && state.detailAnime) {
-    btnDetailInc.onclick = async () => {
-      const next = (state.detailAnime.watchedEpisodes || 0) + 1;
-      state.detailAnime.watchedEpisodes = state.detailAnime.totalEpisodes ? Math.min(state.detailAnime.totalEpisodes, next) : next;
-      await saveVaultEntry(state.detailAnime);
-      renderApp();
-    };
-  }
-  const btnDetailDec = document.getElementById('btn-detail-dec');
-  if (btnDetailDec && state.detailAnime) {
-    btnDetailDec.onclick = async () => {
-      state.detailAnime.watchedEpisodes = Math.max(0, (state.detailAnime.watchedEpisodes || 0) - 1);
-      await saveVaultEntry(state.detailAnime);
-      renderApp();
+  const btnDetailAddHome = document.getElementById('btn-detail-add-home');
+  if (btnDetailAddHome && state.detailAnime) {
+    btnDetailAddHome.onclick = async () => {
+      await addToHome(state.detailAnime);
     };
   }
   document.querySelectorAll('[data-detail-status]').forEach((btn) => {
     btn.onclick = async () => {
       if (!state.detailAnime) return;
-      state.detailAnime.status = btn.getAttribute('data-detail-status');
-      await saveVaultEntry(state.detailAnime);
+      const nextStatus = btn.getAttribute('data-detail-status');
+      state.detailAnime.status = nextStatus;
+      // Part 3: Setting status to Dropped removes ONLY from Home, preserving Library, progress, notes, ratings & Community
+      await saveVaultEntry(state.detailAnime, { removeFromHome: nextStatus === 'dropped' });
+      if (nextStatus === 'dropped') {
+        showToast('Marked Dropped — removed from Home, kept in Library');
+      }
       renderApp();
     };
   });
@@ -4152,51 +5015,73 @@ function bindAppEvents() {
   if (btnDetailRemove && state.detailAnime) {
     btnDetailRemove.onclick = () => removeFromVault(state.detailAnime.animeId);
   }
+  const saveDetailRatingOrNote = async (rating10Val, noteText) => {
+    if (!state.detailAnime) return;
+    if (state.detailAnime.inWatchlist) {
+      // Preserve Home status; never auto-add to Home when rating/noting
+      await saveVaultEntry(
+        {
+          ...state.detailAnime,
+          rating10: rating10Val ?? state.detailAnime.rating10,
+          reviewNotes: noteText !== undefined ? noteText : state.detailAnime.reviewNotes
+        },
+        { addToHome: false }
+      );
+      renderApp();
+    } else {
+      // Not in Library/Home -> post to independent Community notes without adding to Home!
+      await submitCommunityCommentNote(
+        state.detailAnime.animeId,
+        rating10Val ?? state.detailAnime.rating10,
+        noteText !== undefined ? noteText : state.detailAnime.reviewNotes,
+        state.detailAnime
+      );
+    }
+  };
   document.querySelectorAll('[data-star-val]').forEach((btn) => {
     btn.onclick = async () => {
       if (!state.detailAnime) return;
       const clicked = Number(btn.getAttribute('data-star-val'));
       const currentStars = rating10ToStars(state.detailAnime.rating10) || 0;
       const nextStars = currentStars === clicked ? clicked - 0.5 : clicked;
-      state.detailAnime.rating10 = Math.round(nextStars * 2);
-      await saveVaultEntry(state.detailAnime);
-      renderApp();
+      const nextRating10 = Math.round(nextStars * 2);
+      state.detailAnime.rating10 = nextRating10;
+      await saveDetailRatingOrNote(nextRating10, undefined);
     };
   });
   document.querySelectorAll('[data-pick-sentiment-stars]').forEach((btn) => {
     btn.onclick = async () => {
       if (!state.detailAnime) return;
       const st = Number(btn.getAttribute('data-pick-sentiment-stars'));
-      state.detailAnime.rating10 = Math.round(st * 2);
-      await saveVaultEntry(state.detailAnime);
-      renderApp();
+      const nextRating10 = Math.round(st * 2);
+      state.detailAnime.rating10 = nextRating10;
+      await saveDetailRatingOrNote(nextRating10, undefined);
     };
   });
   const btnStarMinus = document.getElementById('btn-star-minus');
   if (btnStarMinus && state.detailAnime) {
     btnStarMinus.onclick = async () => {
       const cur = rating10ToStars(state.detailAnime.rating10) || 0;
-      state.detailAnime.rating10 = Math.round(Math.max(0.5, cur - 0.5) * 2);
-      await saveVaultEntry(state.detailAnime);
-      renderApp();
+      const nextRating10 = Math.round(Math.max(0.5, cur - 0.5) * 2);
+      state.detailAnime.rating10 = nextRating10;
+      await saveDetailRatingOrNote(nextRating10, undefined);
     };
   }
   const btnStarPlus = document.getElementById('btn-star-plus');
   if (btnStarPlus && state.detailAnime) {
     btnStarPlus.onclick = async () => {
       const cur = rating10ToStars(state.detailAnime.rating10) || 0;
-      state.detailAnime.rating10 = Math.round(Math.min(5.0, cur + 0.5) * 2);
-      await saveVaultEntry(state.detailAnime);
-      renderApp();
+      const nextRating10 = Math.round(Math.min(5.0, cur + 0.5) * 2);
+      state.detailAnime.rating10 = nextRating10;
+      await saveDetailRatingOrNote(nextRating10, undefined);
     };
   }
   const btnSaveNote = document.getElementById('btn-detail-save-note');
   if (btnSaveNote && state.detailAnime) {
     btnSaveNote.onclick = async () => {
-      const notes = document.getElementById('inp-detail-notes')?.value || '';
-      state.detailAnime.reviewNotes = notes.trim();
-      await saveVaultEntry(state.detailAnime);
-      renderApp();
+      const notes = (document.getElementById('inp-detail-notes')?.value || '').trim();
+      state.detailAnime.reviewNotes = notes;
+      await saveDetailRatingOrNote(state.detailAnime.rating10, notes);
     };
   }
 
@@ -4209,6 +5094,8 @@ function bindAppEvents() {
     state.showProfileEditModal = false;
     state.showCreateCollectionModal = false;
     state.communityCommentsAnimeId = null;
+    state.confirmRemoveHomeAnime = null;
+    state.contextMenu = null;
     renderApp();
   };
   if (backdrop) backdrop.onclick = closeModals;
@@ -4319,8 +5206,16 @@ function bindAppEvents() {
       };
     }
     if (qeInput) {
-      qeInput.oninput = (e) => {
-        state.quickEditAnime.watchedEpisodes = Math.max(0, parseInt(e.target.value || '0', 10));
+      qeInput.onfocus = () => qeInput.select();
+      qeInput.onkeydown = (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          document.getElementById('qe-save')?.click();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          state.quickEditAnime = null;
+          renderApp();
+        }
       };
     }
     document.querySelectorAll('[data-qe-star]').forEach((btn) => {
@@ -4335,16 +5230,34 @@ function bindAppEvents() {
     const qeSave = document.getElementById('qe-save');
     if (qeSave) {
       qeSave.onclick = async () => {
+        const rawEp = document.getElementById('qe-ep-input')?.value ?? String(state.quickEditAnime.watchedEpisodes || 0);
+        const check = validateEpisodeInput(rawEp, state.quickEditAnime.totalEpisodes);
+        if (!check.valid) {
+          showToast(check.error, true);
+          renderApp();
+          return;
+        }
         const notes = document.getElementById('qe-notes')?.value || '';
+        state.quickEditAnime.watchedEpisodes = check.value;
         state.quickEditAnime.reviewNotes = notes.trim();
         const toSave = { ...state.quickEditAnime };
         state.quickEditAnime = null;
-        await saveVaultEntry(toSave);
+        await saveVaultEntry(toSave, { addToHome: false });
         renderApp();
       };
     }
   }
 }
+
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    if (state.contextMenu || state.confirmRemoveHomeAnime) {
+      state.contextMenu = null;
+      state.confirmRemoveHomeAnime = null;
+      renderApp();
+    }
+  }
+});
 
 // Initial Boot & Automatic Background Sync Across All Platforms
 renderApp();

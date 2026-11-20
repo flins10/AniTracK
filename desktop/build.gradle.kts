@@ -92,10 +92,15 @@ compose.desktop {
             windows {
                 dirChooser = true
                 shortcut = true
+                iconFile.set(project.file("src/main/resources/icons/app_icon.ico"))
             }
             macOS {
                 bundleID = "com.aistudio.animeuniverse"
                 dockName = "Anime Universe"
+                iconFile.set(project.file("src/main/resources/icons/app_icon.icns"))
+            }
+            linux {
+                iconFile.set(project.file("src/main/resources/icons/app_icon.png"))
             }
         }
     }

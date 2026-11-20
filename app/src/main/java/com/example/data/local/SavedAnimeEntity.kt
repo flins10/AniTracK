@@ -36,6 +36,7 @@ data class SavedAnimeEntity(
     val synopsis: String? = null,
     val countryOfOrigin: String? = "JP",
     val inWatchlist: Boolean = false,
+    @ColumnInfo(defaultValue = "0") val inHome: Boolean = false,
     val isWishlist: Boolean = false,
     val isFavorite: Boolean = false,
     @ColumnInfo(defaultValue = "0") val isPinned: Boolean = false,
@@ -47,7 +48,7 @@ data class SavedAnimeEntity(
     val updatedAt: Long = System.currentTimeMillis()
 ) {
     val hasActiveUserState: Boolean
-        get() = inWatchlist || isWishlist || isFavorite || isPinned ||
+        get() = inWatchlist || inHome || isWishlist || isFavorite || isPinned ||
             watchedEpisodeCount > 0 || !userStatus.isNullOrBlank() ||
             !userNotes.isNullOrBlank()
 }
@@ -85,6 +86,7 @@ fun AnimeEntity.toSavedAnimeEntity(existingSavedAt: Long? = null): SavedAnimeEnt
         synopsis = synopsis,
         countryOfOrigin = countryOfOrigin,
         inWatchlist = inWatchlist,
+        inHome = inHome,
         isWishlist = isWishlist,
         isFavorite = isFavorite,
         isPinned = isPinned,
@@ -129,6 +131,7 @@ fun SavedAnimeEntity.toAnimeEntity(): AnimeEntity {
         synopsis = synopsis,
         countryOfOrigin = countryOfOrigin,
         inWatchlist = inWatchlist,
+        inHome = inHome,
         isWishlist = isWishlist,
         isFavorite = isFavorite,
         isPinned = isPinned,

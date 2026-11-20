@@ -72,12 +72,13 @@ import com.example.ui.theme.AppTheme
 import com.example.ui.theme.CormorantSerifFamily
 import com.example.ui.theme.MicroUpperLabel
 import com.example.ui.theme.TabularNumLarge
+import com.example.ui.widgets.AnimeCardContextMenuSheet
 import com.example.ui.widgets.AppEmptyState
 import com.example.ui.widgets.AppIconButton
 import com.example.ui.widgets.ObsidianAmbientBackground
 import com.example.ui.widgets.ObsidianTopBar
 import com.example.ui.widgets.PosterTrackerCard
-import com.example.ui.widgets.QuickContextActionSheet
+import com.example.ui.widgets.RemoveFromHomeConfirmDialog
 import com.example.ui.widgets.TrackingEditorDialog
 import com.example.viewmodel.AnimeViewModel
 import java.time.LocalDate
@@ -115,7 +116,8 @@ fun HomeScreen(
     val preferences by viewModel.preferences.collectAsState()
     val privacy by viewModel.privacySettings.collectAsState()
     val watchlist by viewModel.watchlist.collectAsState()
-    val dayAnime by viewModel.dayAnime.collectAsState()
+    val homeAnime by viewModel.homeAnime.collectAsState()
+    val dayAnime by viewModel.homeDayAnime.collectAsState()
     val selectedDay by viewModel.selectedDay.collectAsState()
     val isRefreshing by viewModel.isHomeRefreshing.collectAsState()
     val homeError by viewModel.homeError.collectAsState()
@@ -123,13 +125,14 @@ fun HomeScreen(
     var showAllWeekDays by rememberSaveable { mutableStateOf(true) }
     var contextAnime by remember { mutableStateOf<AnimeEntity?>(null) }
     var editingAnime by remember { mutableStateOf<AnimeEntity?>(null) }
+    var pendingRemoveFromHome by remember { mutableStateOf<AnimeEntity?>(null) }
 
     val savedIds = remember(watchlist) { watchlist.map { it.id }.toSet() }
     val todayDate = remember { LocalDate.now() }
     val todayDow = todayDate.dayOfWeek.value
 
-    val sortedWatchlist = remember(watchlist) {
-        watchlist.sortedWith(
+    val sortedHomeAnime = remember(homeAnime) {
+        homeAnime.sortedWith(
             compareByDescending<AnimeEntity> { it.isPinned }
                 .thenBy { it.watchStatusEnum != WatchStatus.WATCHING }
                 .thenBy { it.airingTimeUnix ?: Long.MAX_VALUE }
@@ -137,19 +140,19 @@ fun HomeScreen(
         )
     }
 
-    val dayCounts = remember(watchlist) {
+    val dayCounts = remember(homeAnime) {
         (1..7).associateWith { day ->
-            watchlist.count { it.airingDayOfWeek == day }
+            homeAnime.count { it.airingDayOfWeek == day }
         }
     }
 
-    // Order days starting from Today wrapping Mon..Sun, then Anytime/Completed
-    val dayWiseSections = remember(sortedWatchlist, todayDow) {
-        if (sortedWatchlist.isEmpty()) emptyList()
+    // Order days starting from Today wrapping Mon..Sun, then Anytime
+    val dayWiseSections = remember(sortedHomeAnime, todayDow) {
+        if (sortedHomeAnime.isEmpty()) emptyList()
         else buildList {
             val orderedDays = (0 until 7).map { offset -> ((todayDow - 1 + offset) % 7) + 1 }
             orderedDays.forEach { dow ->
-                val showsForDay = sortedWatchlist.filter { it.airingDayOfWeek == dow }
+                val showsForDay = sortedHomeAnime.filter { it.airingDayOfWeek == dow }
                 if (showsForDay.isNotEmpty()) {
                     val dayName = DAY_LABELS.firstOrNull { it.first == dow }?.second?.second ?: "Day $dow"
                     add(
@@ -162,12 +165,12 @@ fun HomeScreen(
                     )
                 }
             }
-            val anytimeShows = sortedWatchlist.filter { it.airingDayOfWeek !in 1..7 }
+            val anytimeShows = sortedHomeAnime.filter { it.airingDayOfWeek !in 1..7 }
             if (anytimeShows.isNotEmpty()) {
                 add(
                     DayAnimeSection(
                         key = "day_sec_anytime",
-                        title = "Anytime & Completed",
+                        title = "Active Tracking",
                         isToday = false,
                         items = anytimeShows
                     )
@@ -367,8 +370,12 @@ fun HomeScreen(
                                         titlePreference = preferences.titleLanguage,
                                         onSelectAnime = onSelectAnime,
                                         onOpenContext = { contextAnime = it },
+                                        onOpenQuickEdit = { editingAnime = it },
                                         onDecrement = { viewModel.decrementEpisode(it) },
                                         onIncrement = { viewModel.incrementEpisode(it) },
+                                        onCommitCustomEpisode = { id, ep ->
+                                            viewModel.commitEpisodeProgress(id, ep).map { }
+                                        },
                                         modifier = Modifier.animateItem()
                                     )
                                 }
@@ -450,8 +457,12 @@ fun HomeScreen(
                                     titlePreference = preferences.titleLanguage,
                                     onSelectAnime = onSelectAnime,
                                     onOpenContext = { contextAnime = it },
+                                    onOpenQuickEdit = { editingAnime = it },
                                     onDecrement = { viewModel.decrementEpisode(it) },
                                     onIncrement = { viewModel.incrementEpisode(it) },
+                                    onCommitCustomEpisode = { id, ep ->
+                                        viewModel.commitEpisodeProgress(id, ep).map { }
+                                    },
                                     modifier = Modifier.animateItem()
                                 )
                             }
@@ -463,35 +474,49 @@ fun HomeScreen(
     }
 
     contextAnime?.let { target ->
-        val liveTarget = watchlist.firstOrNull { it.id == target.id } ?: target
-        val isTargetInList = savedIds.contains(target.id) || liveTarget.inWatchlist
-        QuickContextActionSheet(
+        val liveTarget = homeAnime.firstOrNull { it.id == target.id }
+            ?: watchlist.firstOrNull { it.id == target.id }
+            ?: target
+        AnimeCardContextMenuSheet(
             anime = liveTarget,
             titlePreference = preferences.titleLanguage,
-            isInUserList = isTargetInList,
+            isOnHome = liveTarget.inHome,
             onDismiss = { contextAnime = null },
-            onSave = { status, progress, seasonNumber, scoreTenths, fav ->
-                viewModel.updateTracking(
-                    animeId = liveTarget.id,
-                    status = status,
-                    episodeProgress = progress,
-                    scoreTenths = scoreTenths,
-                    notes = liveTarget.userNotes.orEmpty(),
-                    isFavorite = fav,
-                    seasonNumber = seasonNumber
-                )
+            onRemoveFromHome = {
+                contextAnime = null
+                pendingRemoveFromHome = liveTarget
+            },
+            onAddToHome = {
+                viewModel.addToHome(liveTarget)
                 contextAnime = null
             },
-            onOpenFullEditor = {
+            onViewDetails = {
+                contextAnime = null
+                onSelectAnime(liveTarget.id)
+            },
+            onViewLibrary = {
+                contextAnime = null
+                onNavigateToMyList()
+            },
+            onViewCommunity = {
+                contextAnime = null
+                onNavigateToCommunity()
+            },
+            onOpenQuickEdit = {
                 contextAnime = null
                 editingAnime = liveTarget
-            },
-            onRemove = if (isTargetInList) {
-                {
-                    viewModel.removeFromWatchlist(liveTarget.id)
-                    contextAnime = null
-                }
-            } else null
+            }
+        )
+    }
+
+    pendingRemoveFromHome?.let { target ->
+        RemoveFromHomeConfirmDialog(
+            animeTitle = target.getResolvedTitle(preferences.titleLanguage),
+            onDismiss = { pendingRemoveFromHome = null },
+            onConfirm = {
+                viewModel.removeFromHome(target.id)
+                pendingRemoveFromHome = null
+            }
         )
     }
 
@@ -577,8 +602,10 @@ private fun TrackerGridRow(
     titlePreference: String,
     onSelectAnime: (Int) -> Unit,
     onOpenContext: (AnimeEntity) -> Unit,
+    onOpenQuickEdit: (AnimeEntity) -> Unit,
     onDecrement: (Int) -> Unit,
     onIncrement: (Int) -> Unit,
+    onCommitCustomEpisode: suspend (Int, Int) -> Result<Unit>,
     modifier: Modifier = Modifier
 ) {
     Row(
@@ -597,7 +624,8 @@ private fun TrackerGridRow(
                     onLongClick = { onOpenContext(anime) },
                     onDecrementEpisode = { onDecrement(anime.id) },
                     onIncrementEpisode = { onIncrement(anime.id) },
-                    onOpenQuickEdit = { onOpenContext(anime) }
+                    onCommitCustomEpisode = { ep -> onCommitCustomEpisode(anime.id, ep) },
+                    onOpenQuickEdit = { onOpenQuickEdit(anime) }
                 )
             }
         }

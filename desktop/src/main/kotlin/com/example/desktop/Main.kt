@@ -1,10 +1,12 @@
 package com.example.desktop
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -32,6 +34,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.isCtrlPressed
+import androidx.compose.ui.input.pointer.isSecondaryPressed
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.SpanStyle
@@ -310,7 +316,8 @@ data class DesktopAnimeItem(
     val synopsis: String = "",
     val notes: String = "",
     val updatedAt: String = "",
-    val inWatchlist: Boolean = false
+    val inWatchlist: Boolean = false,
+    val inHome: Boolean = false
 )
 
 data class DesktopCollectionItem(
@@ -881,12 +888,25 @@ private suspend fun refreshTokenIfNeeded(state: DesktopPersistedState): DesktopP
 }
 
 private data class CloudSyncSnapshot(
+    val refreshedSession: DesktopPersistedState,
     val username: String?,
     val avatarKey: String?,
     val watchlist: List<DesktopAnimeItem>?,
+    val homeIds: Set<Int>?,
     val collections: List<DesktopCollectionItem>?,
     val communityReviews: List<DesktopCommunityReview>
 )
+
+private fun parsePostgrestError(body: String, fallback: String): String {
+    return runCatching {
+        val obj = gson.fromJson(body, JsonObject::class.java)
+        obj?.get("message").asStringOrNull()
+            ?: obj?.get("error_description").asStringOrNull()
+            ?: obj?.get("details").asStringOrNull()
+            ?: obj?.get("hint").asStringOrNull()
+            ?: obj?.get("msg").asStringOrNull()
+    }.getOrNull()?.takeIf { it.isNotBlank() } ?: fallback
+}
 
 private suspend fun fetchFullCloudSnapshot(session: DesktopPersistedState): CloudSyncSnapshot = withContext(Dispatchers.IO) {
     val active = refreshTokenIfNeeded(session)
@@ -896,10 +916,36 @@ private suspend fun fetchFullCloudSnapshot(session: DesktopPersistedState): Clou
     var resolvedUsername: String? = null
     var resolvedAvatar: String? = null
     var watchlistResult: List<DesktopAnimeItem>? = null
+    var homeIdsResult: Set<Int>? = null
+    var homeDayOverrides = mutableMapOf<Int, Int>()
     var collectionsResult: List<DesktopCollectionItem>? = null
 
     if (uid.isNotBlank() && active.accessToken.isNotBlank()) {
-        // 1. User Watchlist (Notice: NO user_season column so PostgREST never returns 400!)
+        // 0. Independent Home Tracking membership
+        runCatching {
+            val htReq = Request.Builder()
+                .url("$SUPABASE_URL/rest/v1/home_tracking?user_id=eq.$uid&select=anime_id,airing_day_of_week")
+                .addHeader("apikey", SUPABASE_ANON_KEY)
+                .addHeader("Authorization", "Bearer $bearer")
+                .build()
+            httpClient.newCall(htReq).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val arr = gson.fromJson(resp.body?.string().orEmpty(), JsonArray::class.java) ?: JsonArray()
+                    val ids = mutableSetOf<Int>()
+                    arr.forEach { el ->
+                        val o = el.asJsonObject
+                        val aid = o.get("anime_id").asIntOrNull() ?: return@forEach
+                        ids.add(aid)
+                        o.get("airing_day_of_week").asIntOrNull()?.takeIf { it in 1..7 }?.let { dow ->
+                            homeDayOverrides[aid] = dow
+                        }
+                    }
+                    homeIdsResult = ids
+                }
+            }
+        }
+
+        // 1. User Library (public.user_anime)
         runCatching {
             val selectCols = "id,user_id,anime_id,status,episode_progress,total_episodes,personal_rating,review_notes,is_favorite,updated_at,anime(anilist_id,title_english,title_romaji,title_native,cover_image,banner_image,genres,release_year,season,episodes,average_score,popularity,format,status,studios,next_airing_at,next_episode_number)"
             val url = "$SUPABASE_URL/rest/v1/user_anime?user_id=eq.$uid&select=$selectCols&order=updated_at.desc"
@@ -924,6 +970,22 @@ private suspend fun fetchFullCloudSnapshot(session: DesktopPersistedState): Clou
                         val avg100 = animeObj?.get("average_score").asFloatOrNull() ?: 0f
                         val catalogStars = if (avg100 > 10f) avg100 / 20f else if (avg100 > 5f) avg100 / 2f else avg100
                         val nextAiringAt = animeObj?.get("next_airing_at").asLongOrNull()
+                        val officialStatus = animeObj?.get("status").asStringOrNull() ?: "RELEASING"
+                        val totalEps = row.get("total_episodes").asIntOrNull()?.takeIf { it > 0 }
+                            ?: animeObj?.get("episodes").asIntOrNull()?.takeIf { it > 0 }
+                        val watchedEps = row.get("episode_progress").asIntOrNull() ?: 0
+                        val rawWatchStatus = row.get("status").asStringOrNull() ?: "watching"
+                        val autoDone = DesktopTrackingRules.shouldAutoComplete(officialStatus, totalEps, watchedEps)
+                        val resolvedWatchStatus = if (autoDone && rawWatchStatus != "dropped") "completed" else rawWatchStatus
+                        val explicitHome = homeIdsResult
+                        val resolvedInHome = if (explicitHome != null) {
+                            explicitHome.contains(id) &&
+                                resolvedWatchStatus != "dropped" &&
+                                resolvedWatchStatus != "completed" &&
+                                !autoDone
+                        } else {
+                            resolvedWatchStatus == "watching" && !autoDone
+                        }
                         DesktopAnimeItem(
                             id = id,
                             title = title,
@@ -931,17 +993,18 @@ private suspend fun fetchFullCloudSnapshot(session: DesktopPersistedState): Clou
                             coverImage = animeObj?.get("cover_image").asStringOrNull().orEmpty(),
                             bannerImage = animeObj?.get("banner_image").asStringOrNull().orEmpty(),
                             format = animeObj?.get("format").asStringOrNull() ?: "TV",
-                            status = animeObj?.get("status").asStringOrNull() ?: "RELEASING",
-                            totalEpisodes = row.get("total_episodes").asIntOrNull() ?: animeObj?.get("episodes").asIntOrNull(),
-                            watchedEpisodes = row.get("episode_progress").asIntOrNull() ?: 0,
-                            watchStatus = row.get("status").asStringOrNull() ?: "watching",
+                            status = officialStatus,
+                            totalEpisodes = totalEps,
+                            watchedEpisodes = watchedEps,
+                            watchStatus = resolvedWatchStatus,
                             userStars = userStars,
                             catalogStars = catalogStars,
-                            airingDayOfWeek = computeDayOfWeek(id, nextAiringAt),
+                            airingDayOfWeek = homeDayOverrides[id] ?: computeDayOfWeek(id, nextAiringAt),
                             seasonYear = animeObj?.get("release_year").asIntOrNull(),
                             notes = row.get("review_notes").asStringOrNull().orEmpty(),
                             updatedAt = row.get("updated_at").asStringOrNull().orEmpty(),
-                            inWatchlist = true
+                            inWatchlist = true,
+                            inHome = resolvedInHome
                         )
                     }
                 }
@@ -1002,7 +1065,7 @@ private suspend fun fetchFullCloudSnapshot(session: DesktopPersistedState): Clou
         }
     }
 
-    // 4. Community Reviews (All active joined users' rated or noted entries)
+    // 4. Community Reviews (Prefer independent community_notes table, seamlessly fall back/merge with user_anime)
     val communityList = mutableListOf<DesktopCommunityReview>()
     runCatching {
         val leftOrRemovedUsers = mutableSetOf<String>()
@@ -1047,6 +1110,61 @@ private suspend fun fetchFullCloudSnapshot(session: DesktopPersistedState): Clou
             }
         }
 
+        val seenKeys = mutableSetOf<String>()
+        // 4a. Independent community_notes table
+        val cnSelect = "id,user_id,anime_id,rating,note_text,updated_at,anime(anilist_id,title_english,title_romaji,cover_image,episodes)"
+        val cnReq = Request.Builder()
+            .url("$SUPABASE_URL/rest/v1/community_notes?select=$cnSelect&order=updated_at.desc&limit=200")
+            .addHeader("apikey", SUPABASE_ANON_KEY)
+            .addHeader("Authorization", "Bearer $bearer")
+            .build()
+        runCatching {
+            httpClient.newCall(cnReq).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val arr = gson.fromJson(resp.body?.string().orEmpty(), JsonArray::class.java) ?: JsonArray()
+                    arr.forEach { el ->
+                        val row = el.asJsonObject
+                        val rowUserId = row.get("user_id").asStringOrNull().orEmpty()
+                        if (rowUserId.isNotBlank() && leftOrRemovedUsers.contains(rowUserId)) return@forEach
+                        val rawRating = row.get("rating").asFloatOrNull() ?: 0f
+                        val stars = if (rawRating > 5f) rawRating / 2f else rawRating
+                        val notes = row.get("note_text").asStringOrNull()?.trim().orEmpty()
+                        if (stars <= 0f && notes.isBlank()) return@forEach
+
+                        val animeObj = row.get("anime")?.takeIf { it.isJsonObject }?.asJsonObject
+                        val animeId = animeObj?.get("anilist_id").asIntOrNull() ?: row.get("anime_id").asIntOrNull() ?: 0
+                        val key = "$rowUserId:$animeId"
+                        if (!seenKeys.add(key)) return@forEach
+                        val title = animeObj?.get("title_english").asStringOrNull()?.takeIf { it.isNotBlank() }
+                            ?: animeObj?.get("title_romaji").asStringOrNull()?.takeIf { it.isNotBlank() }
+                            ?: "Anime #$animeId"
+                        val cover = animeObj?.get("cover_image").asStringOrNull().orEmpty()
+                        val (uname, avKey) = profMap[rowUserId] ?: (
+                            if (rowUserId == uid) (resolvedUsername ?: active.username) to (resolvedAvatar ?: active.avatarKey)
+                            else "Anime Lover" to DesktopAvatar.AVATAR_3.key
+                        )
+                        val updatedIso = row.get("updated_at").asStringOrNull().orEmpty()
+                        communityList.add(
+                            DesktopCommunityReview(
+                                id = row.get("id").asStringOrNull() ?: "$rowUserId-$animeId",
+                                userId = rowUserId,
+                                animeId = animeId,
+                                animeTitle = title,
+                                animeCover = cover,
+                                stars = stars,
+                                notes = notes,
+                                username = uname,
+                                avatarKey = avKey,
+                                updatedAt = updatedIso,
+                                formattedDate = formatIsoDate(updatedIso)
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        // 4b. Legacy user_anime reviews fallback (adds only entries not already in community_notes)
         val selectCols = "id,user_id,anime_id,status,episode_progress,personal_rating,review_notes,updated_at,anime(anilist_id,title_english,title_romaji,cover_image,episodes)"
         val revReq = Request.Builder()
             .url("$SUPABASE_URL/rest/v1/user_anime?select=$selectCols&order=updated_at.desc&limit=150")
@@ -1067,12 +1185,14 @@ private suspend fun fetchFullCloudSnapshot(session: DesktopPersistedState): Clou
 
                     val animeObj = row.get("anime")?.takeIf { it.isJsonObject }?.asJsonObject
                     val animeId = animeObj?.get("anilist_id").asIntOrNull() ?: row.get("anime_id").asIntOrNull() ?: 0
+                    val key = "$rowUserId:$animeId"
+                    if (!seenKeys.add(key)) return@forEach
                     val title = animeObj?.get("title_english").asStringOrNull()?.takeIf { it.isNotBlank() }
                         ?: animeObj?.get("title_romaji").asStringOrNull()?.takeIf { it.isNotBlank() }
                         ?: "Anime #$animeId"
                     val cover = animeObj?.get("cover_image").asStringOrNull().orEmpty()
                     val (uname, avKey) = profMap[rowUserId] ?: (
-                        if (rowUserId == uid) (resolvedUsername ?: session.username) to (resolvedAvatar ?: session.avatarKey)
+                        if (rowUserId == uid) (resolvedUsername ?: active.username) to (resolvedAvatar ?: active.avatarKey)
                         else "Anime Lover" to DesktopAvatar.AVATAR_3.key
                     )
                     val updatedIso = row.get("updated_at").asStringOrNull().orEmpty()
@@ -1097,47 +1217,90 @@ private suspend fun fetchFullCloudSnapshot(session: DesktopPersistedState): Clou
     }
 
     CloudSyncSnapshot(
+        refreshedSession = active,
         username = resolvedUsername,
         avatarKey = resolvedAvatar,
         watchlist = watchlistResult,
+        homeIds = homeIdsResult,
         collections = collectionsResult,
         communityReviews = communityList
     )
 }
 
-private suspend fun saveAnimeToSupabase(session: DesktopPersistedState, item: DesktopAnimeItem) = withContext(Dispatchers.IO) {
-    if (session.userId.isBlank() || session.accessToken.isBlank()) return@withContext
-    val active = refreshTokenIfNeeded(session)
-    runCatching {
-        // 1. Upsert anime catalog row
-        val animePayload = JsonObject().apply {
-            addProperty("anilist_id", item.id)
-            addProperty("title_english", item.title)
-            addProperty("title_romaji", item.titleRomaji.ifBlank { item.title })
-            addProperty("cover_image", item.coverImage)
-            addProperty("banner_image", item.bannerImage)
-            if (item.totalEpisodes != null) addProperty("episodes", item.totalEpisodes)
-            addProperty("format", item.format)
-            addProperty("status", item.status)
-            addProperty("average_score", (item.catalogStars * 20f).toInt())
-        }
-        val animeReq = Request.Builder()
-            .url("$SUPABASE_URL/rest/v1/anime?on_conflict=anilist_id")
-            .addHeader("apikey", SUPABASE_ANON_KEY)
-            .addHeader("Authorization", "Bearer ${active.accessToken}")
-            .addHeader("Content-Type", "application/json")
-            .addHeader("Prefer", "resolution=merge-duplicates,return=minimal")
-            .post(gson.toJson(animePayload).toRequestBody("application/json".toMediaType()))
-            .build()
-        httpClient.newCall(animeReq).execute().close()
+private fun ensureAnimeCatalogSync(active: DesktopPersistedState, item: DesktopAnimeItem) {
+    val animePayload = JsonObject().apply {
+        addProperty("anilist_id", item.id)
+        addProperty("title_english", item.title)
+        addProperty("title_romaji", item.titleRomaji.ifBlank { item.title })
+        addProperty("cover_image", item.coverImage)
+        if (item.bannerImage.isNotBlank()) addProperty("banner_image", item.bannerImage)
+        if (item.totalEpisodes != null && item.totalEpisodes > 0) addProperty("episodes", item.totalEpisodes)
+        addProperty("format", item.format)
+        addProperty("status", item.status)
+        addProperty("average_score", (item.catalogStars * 20f).toInt())
+    }
+    val animeReq = Request.Builder()
+        .url("$SUPABASE_URL/rest/v1/anime?on_conflict=anilist_id")
+        .addHeader("apikey", SUPABASE_ANON_KEY)
+        .addHeader("Authorization", "Bearer ${active.accessToken}")
+        .addHeader("Content-Type", "application/json")
+        .addHeader("Prefer", "resolution=merge-duplicates,return=minimal")
+        .post(gson.toJson(animePayload).toRequestBody("application/json".toMediaType()))
+        .build()
+    httpClient.newCall(animeReq).execute().close()
+}
 
-        // 2. Upsert user_anime row (personal_rating stored on 0..10 scale; NO user_season column)
+private fun ensureActiveCommunityMemberSync(active: DesktopPersistedState) {
+    val cmPayload = JsonObject().apply {
+        addProperty("user_id", active.userId)
+        addProperty("role", "member")
+        addProperty("status", "active")
+    }
+    val cmReq = Request.Builder()
+        .url("$SUPABASE_URL/rest/v1/community_members?on_conflict=user_id")
+        .addHeader("apikey", SUPABASE_ANON_KEY)
+        .addHeader("Authorization", "Bearer ${active.accessToken}")
+        .addHeader("Content-Type", "application/json")
+        .addHeader("Prefer", "resolution=merge-duplicates,return=minimal")
+        .post(gson.toJson(cmPayload).toRequestBody("application/json".toMediaType()))
+        .build()
+    runCatching { httpClient.newCall(cmReq).execute().close() }
+
+    val privPayload = JsonObject().apply {
+        addProperty("user_id", active.userId)
+        addProperty("reviews_visibility", "community")
+        addProperty("activity_visibility", "community")
+    }
+    val privReq = Request.Builder()
+        .url("$SUPABASE_URL/rest/v1/privacy_settings?on_conflict=user_id")
+        .addHeader("apikey", SUPABASE_ANON_KEY)
+        .addHeader("Authorization", "Bearer ${active.accessToken}")
+        .addHeader("Content-Type", "application/json")
+        .addHeader("Prefer", "resolution=merge-duplicates,return=minimal")
+        .post(gson.toJson(privPayload).toRequestBody("application/json".toMediaType()))
+        .build()
+    runCatching { httpClient.newCall(privReq).execute().close() }
+}
+
+private suspend fun saveAnimeToSupabase(
+    session: DesktopPersistedState,
+    item: DesktopAnimeItem,
+    syncHomeMembership: Boolean = true
+): Result<DesktopPersistedState> = withContext(Dispatchers.IO) {
+    if (session.isGuest || session.userId.isBlank() || session.accessToken.isBlank()) {
+        return@withContext Result.success(session)
+    }
+    runCatching {
+        val active = refreshTokenIfNeeded(session)
+        ensureAnimeCatalogSync(active, item)
+
+        // 1. Upsert permanent Library row in user_anime
         val userAnimePayload = JsonObject().apply {
             addProperty("user_id", active.userId)
             addProperty("anime_id", item.id)
             addProperty("status", item.watchStatus)
             addProperty("episode_progress", item.watchedEpisodes)
-            if (item.totalEpisodes != null) addProperty("total_episodes", item.totalEpisodes)
+            if (item.totalEpisodes != null && item.totalEpisodes > 0) addProperty("total_episodes", item.totalEpisodes)
             if (item.userStars > 0f) addProperty("personal_rating", item.userStars * 2f)
             addProperty("review_notes", item.notes)
             addProperty("updated_at", Instant.now().toString())
@@ -1150,54 +1313,262 @@ private suspend fun saveAnimeToSupabase(session: DesktopPersistedState, item: De
             .addHeader("Prefer", "resolution=merge-duplicates,return=minimal")
             .post(gson.toJson(userAnimePayload).toRequestBody("application/json".toMediaType()))
             .build()
-        httpClient.newCall(uaReq).execute().close()
+        httpClient.newCall(uaReq).execute().use { resp ->
+            if (!resp.isSuccessful) {
+                throw IllegalStateException(parsePostgrestError(resp.body?.string().orEmpty(), "Could not save anime (${resp.code})"))
+            }
+        }
 
-        // 3. Ensure active community_members & privacy_settings so notes/ratings are automatically shared
+        // 2. Sync independent Home tracking ONLY when explicitly requested or removed by lifecycle
+        if (syncHomeMembership) {
+            val shouldDropFromHome = DesktopTrackingRules.shouldRemoveFromHome(
+                watchStatus = item.watchStatus,
+                officialStatus = item.status,
+                totalEpisodes = item.totalEpisodes,
+                watchedEpisodes = item.watchedEpisodes
+            )
+            if (item.inHome && !shouldDropFromHome) {
+                val htPayload = JsonObject().apply {
+                    addProperty("user_id", active.userId)
+                    addProperty("anime_id", item.id)
+                    if (item.airingDayOfWeek in 1..7) addProperty("airing_day_of_week", item.airingDayOfWeek)
+                }
+                val htReq = Request.Builder()
+                    .url("$SUPABASE_URL/rest/v1/home_tracking?on_conflict=user_id,anime_id")
+                    .addHeader("apikey", SUPABASE_ANON_KEY)
+                    .addHeader("Authorization", "Bearer ${active.accessToken}")
+                    .addHeader("Content-Type", "application/json")
+                    .addHeader("Prefer", "resolution=merge-duplicates,return=minimal")
+                    .post(gson.toJson(htPayload).toRequestBody("application/json".toMediaType()))
+                    .build()
+                runCatching { httpClient.newCall(htReq).execute().close() }
+            } else if (!item.inHome || shouldDropFromHome) {
+                val delHtReq = Request.Builder()
+                    .url("$SUPABASE_URL/rest/v1/home_tracking?user_id=eq.${active.userId}&anime_id=eq.${item.id}")
+                    .addHeader("apikey", SUPABASE_ANON_KEY)
+                    .addHeader("Authorization", "Bearer ${active.accessToken}")
+                    .delete()
+                    .build()
+                runCatching { httpClient.newCall(delHtReq).execute().close() }
+            }
+        }
+
+        // 3. Also mirror rating/notes to independent community_notes if present (NEVER adds to Home)
         if (item.userStars > 0f || item.notes.isNotBlank()) {
-            val cmPayload = JsonObject().apply {
+            val cnPayload = JsonObject().apply {
                 addProperty("user_id", active.userId)
-                addProperty("role", "member")
-                addProperty("status", "active")
+                addProperty("anime_id", item.id)
+                if (item.userStars > 0f) addProperty("rating", item.userStars * 2f)
+                addProperty("note_text", item.notes.trim().take(500))
+                addProperty("updated_at", Instant.now().toString())
             }
-            val cmReq = Request.Builder()
-                .url("$SUPABASE_URL/rest/v1/community_members?on_conflict=user_id")
+            val cnReq = Request.Builder()
+                .url("$SUPABASE_URL/rest/v1/community_notes?on_conflict=user_id,anime_id")
                 .addHeader("apikey", SUPABASE_ANON_KEY)
                 .addHeader("Authorization", "Bearer ${active.accessToken}")
                 .addHeader("Content-Type", "application/json")
                 .addHeader("Prefer", "resolution=merge-duplicates,return=minimal")
-                .post(gson.toJson(cmPayload).toRequestBody("application/json".toMediaType()))
+                .post(gson.toJson(cnPayload).toRequestBody("application/json".toMediaType()))
                 .build()
-            runCatching { httpClient.newCall(cmReq).execute().close() }
+            runCatching { httpClient.newCall(cnReq).execute().close() }
+            ensureActiveCommunityMemberSync(active)
+        }
+        active
+    }
+}
 
-            val privPayload = JsonObject().apply {
-                addProperty("user_id", active.userId)
-                addProperty("reviews_visibility", "community")
-                addProperty("activity_visibility", "community")
-            }
-            val privReq = Request.Builder()
-                .url("$SUPABASE_URL/rest/v1/privacy_settings?on_conflict=user_id")
-                .addHeader("apikey", SUPABASE_ANON_KEY)
-                .addHeader("Authorization", "Bearer ${active.accessToken}")
-                .addHeader("Content-Type", "application/json")
-                .addHeader("Prefer", "resolution=merge-duplicates,return=minimal")
-                .post(gson.toJson(privPayload).toRequestBody("application/json".toMediaType()))
-                .build()
-            runCatching { httpClient.newCall(privReq).execute().close() }
+private suspend fun addAnimeToHomeInSupabase(
+    session: DesktopPersistedState,
+    item: DesktopAnimeItem
+): Result<DesktopPersistedState> = withContext(Dispatchers.IO) {
+    if (session.isGuest || session.userId.isBlank() || session.accessToken.isBlank()) {
+        return@withContext Result.success(session)
+    }
+    runCatching {
+        val active = refreshTokenIfNeeded(session)
+        ensureAnimeCatalogSync(active, item)
+        val rpcPayload = JsonObject().apply {
+            addProperty("p_anime_id", item.id)
+            if (item.airingDayOfWeek in 1..7) addProperty("p_airing_day", item.airingDayOfWeek)
+        }
+        val rpcReq = Request.Builder()
+            .url("$SUPABASE_URL/rest/v1/rpc/add_to_home")
+            .addHeader("apikey", SUPABASE_ANON_KEY)
+            .addHeader("Authorization", "Bearer ${active.accessToken}")
+            .addHeader("Content-Type", "application/json")
+            .post(gson.toJson(rpcPayload).toRequestBody("application/json".toMediaType()))
+            .build()
+        val rpcOk = httpClient.newCall(rpcReq).execute().use { it.isSuccessful }
+        if (!rpcOk) {
+            // Fallback before migration is applied
+            saveAnimeToSupabase(active, item.copy(inWatchlist = true, inHome = true), syncHomeMembership = true).getOrThrow()
+        } else {
+            active
         }
     }
 }
 
-private suspend fun deleteAnimeFromSupabase(session: DesktopPersistedState, animeId: Int) = withContext(Dispatchers.IO) {
-    if (session.userId.isBlank() || session.accessToken.isBlank()) return@withContext
-    val active = refreshTokenIfNeeded(session)
+private suspend fun removeAnimeFromHomeInSupabase(
+    session: DesktopPersistedState,
+    animeId: Int
+): Result<DesktopPersistedState> = withContext(Dispatchers.IO) {
+    if (session.isGuest || session.userId.isBlank() || session.accessToken.isBlank()) {
+        return@withContext Result.success(session)
+    }
     runCatching {
+        val active = refreshTokenIfNeeded(session)
+        val rpcPayload = JsonObject().apply { addProperty("p_anime_id", animeId) }
+        val rpcReq = Request.Builder()
+            .url("$SUPABASE_URL/rest/v1/rpc/remove_from_home")
+            .addHeader("apikey", SUPABASE_ANON_KEY)
+            .addHeader("Authorization", "Bearer ${active.accessToken}")
+            .addHeader("Content-Type", "application/json")
+            .post(gson.toJson(rpcPayload).toRequestBody("application/json".toMediaType()))
+            .build()
+        val rpcOk = httpClient.newCall(rpcReq).execute().use { it.isSuccessful }
+        if (!rpcOk) {
+            val delReq = Request.Builder()
+                .url("$SUPABASE_URL/rest/v1/home_tracking?user_id=eq.${active.userId}&anime_id=eq.$animeId")
+                .addHeader("apikey", SUPABASE_ANON_KEY)
+                .addHeader("Authorization", "Bearer ${active.accessToken}")
+                .delete()
+                .build()
+            runCatching { httpClient.newCall(delReq).execute().close() }
+        }
+        active
+    }
+}
+
+private suspend fun submitCommunityNoteInSupabase(
+    session: DesktopPersistedState,
+    animeId: Int,
+    animeTitle: String,
+    animeCover: String,
+    stars: Float,
+    note: String
+): Result<DesktopPersistedState> = withContext(Dispatchers.IO) {
+    if (session.isGuest || session.userId.isBlank() || session.accessToken.isBlank()) {
+        return@withContext Result.success(session)
+    }
+    runCatching {
+        val active = refreshTokenIfNeeded(session)
+        ensureAnimeCatalogSync(
+            active,
+            DesktopAnimeItem(id = animeId, title = animeTitle, coverImage = animeCover)
+        )
+        ensureActiveCommunityMemberSync(active)
+
+        val rpcPayload = JsonObject().apply {
+            addProperty("p_anime_id", animeId)
+            if (stars > 0f) addProperty("p_rating", stars * 2f)
+            addProperty("p_note_text", note.trim().take(500))
+        }
+        val rpcReq = Request.Builder()
+            .url("$SUPABASE_URL/rest/v1/rpc/upsert_community_note")
+            .addHeader("apikey", SUPABASE_ANON_KEY)
+            .addHeader("Authorization", "Bearer ${active.accessToken}")
+            .addHeader("Content-Type", "application/json")
+            .post(gson.toJson(rpcPayload).toRequestBody("application/json".toMediaType()))
+            .build()
+        val rpcOk = httpClient.newCall(rpcReq).execute().use { it.isSuccessful }
+        if (!rpcOk) {
+            // Direct community_notes table fallback (NEVER touches home_tracking!)
+            val cnPayload = JsonObject().apply {
+                addProperty("user_id", active.userId)
+                addProperty("anime_id", animeId)
+                if (stars > 0f) addProperty("rating", stars * 2f)
+                addProperty("note_text", note.trim().take(500))
+                addProperty("updated_at", Instant.now().toString())
+            }
+            val cnReq = Request.Builder()
+                .url("$SUPABASE_URL/rest/v1/community_notes?on_conflict=user_id,anime_id")
+                .addHeader("apikey", SUPABASE_ANON_KEY)
+                .addHeader("Authorization", "Bearer ${active.accessToken}")
+                .addHeader("Content-Type", "application/json")
+                .addHeader("Prefer", "resolution=merge-duplicates,return=minimal")
+                .post(gson.toJson(cnPayload).toRequestBody("application/json".toMediaType()))
+                .build()
+            httpClient.newCall(cnReq).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    throw IllegalStateException(parsePostgrestError(resp.body?.string().orEmpty(), "Could not post Community note (${resp.code})"))
+                }
+            }
+        }
+        active
+    }
+}
+
+private suspend fun updateEpisodeProgressInSupabase(
+    session: DesktopPersistedState,
+    item: DesktopAnimeItem,
+    watchedEpisodes: Int
+): Result<DesktopPersistedState> = withContext(Dispatchers.IO) {
+    if (session.isGuest || session.userId.isBlank() || session.accessToken.isBlank()) {
+        return@withContext Result.success(session)
+    }
+    runCatching {
+        val active = refreshTokenIfNeeded(session)
+        ensureAnimeCatalogSync(active, item)
+        val rpcPayload = JsonObject().apply {
+            addProperty("p_anime_id", item.id)
+            addProperty("p_watched_episodes", watchedEpisodes)
+        }
+        val rpcReq = Request.Builder()
+            .url("$SUPABASE_URL/rest/v1/rpc/update_episode_progress")
+            .addHeader("apikey", SUPABASE_ANON_KEY)
+            .addHeader("Authorization", "Bearer ${active.accessToken}")
+            .addHeader("Content-Type", "application/json")
+            .post(gson.toJson(rpcPayload).toRequestBody("application/json".toMediaType()))
+            .build()
+        val rpcRes = httpClient.newCall(rpcReq).execute().use { resp ->
+            resp.isSuccessful to resp.body?.string().orEmpty()
+        }
+        if (!rpcRes.first) {
+            // Fallback to direct user_anime update when RPC hasn't been deployed yet
+            val autoDone = DesktopTrackingRules.shouldAutoComplete(item.status, item.totalEpisodes, watchedEpisodes)
+            val nextStatus = if (autoDone && item.watchStatus != "dropped") "completed" else item.watchStatus
+            val updated = item.copy(
+                watchedEpisodes = watchedEpisodes,
+                watchStatus = nextStatus,
+                inHome = if (autoDone) false else item.inHome
+            )
+            saveAnimeToSupabase(active, updated, syncHomeMembership = autoDone).getOrThrow()
+        } else {
+            active
+        }
+    }
+}
+
+private suspend fun deleteAnimeFromSupabase(
+    session: DesktopPersistedState,
+    animeId: Int
+): Result<DesktopPersistedState> = withContext(Dispatchers.IO) {
+    if (session.isGuest || session.userId.isBlank() || session.accessToken.isBlank()) {
+        return@withContext Result.success(session)
+    }
+    runCatching {
+        val active = refreshTokenIfNeeded(session)
+        // Remove from Home tracking (if present) and permanent Library (explicit delete) — NEVER deletes community_notes!
+        val delHt = Request.Builder()
+            .url("$SUPABASE_URL/rest/v1/home_tracking?user_id=eq.${active.userId}&anime_id=eq.$animeId")
+            .addHeader("apikey", SUPABASE_ANON_KEY)
+            .addHeader("Authorization", "Bearer ${active.accessToken}")
+            .delete()
+            .build()
+        runCatching { httpClient.newCall(delHt).execute().close() }
+
         val req = Request.Builder()
             .url("$SUPABASE_URL/rest/v1/user_anime?user_id=eq.${active.userId}&anime_id=eq.$animeId")
             .addHeader("apikey", SUPABASE_ANON_KEY)
             .addHeader("Authorization", "Bearer ${active.accessToken}")
             .delete()
             .build()
-        httpClient.newCall(req).execute().close()
+        httpClient.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) {
+                throw IllegalStateException(parsePostgrestError(resp.body?.string().orEmpty(), "Could not delete anime (${resp.code})"))
+            }
+        }
+        active
     }
 }
 
@@ -1205,15 +1576,30 @@ private suspend fun createCollectionInSupabase(
     session: DesktopPersistedState,
     title: String,
     description: String
-): DesktopCollectionItem? = withContext(Dispatchers.IO) {
-    if (session.isGuest || session.userId.isBlank() || session.accessToken.isBlank()) return@withContext null
-    val active = refreshTokenIfNeeded(session)
+): Result<Pair<DesktopCollectionItem, DesktopPersistedState>> = withContext(Dispatchers.IO) {
+    val cleanTitle = title.trim()
+    val cleanDesc = description.trim()
+    if (cleanTitle.isEmpty()) {
+        return@withContext Result.failure(IllegalArgumentException("Collection name cannot be empty."))
+    }
+    if (session.isGuest || session.userId.isBlank() || session.accessToken.isBlank()) {
+        return@withContext Result.success(
+            DesktopCollectionItem(
+                id = "local-${System.currentTimeMillis()}",
+                title = cleanTitle,
+                description = cleanDesc,
+                count = 0
+            ) to session
+        )
+    }
     runCatching {
+        val active = refreshTokenIfNeeded(session)
         val payload = JsonObject().apply {
             addProperty("creator_id", active.userId)
-            addProperty("name", title.trim())
-            addProperty("description", description.trim())
-            addProperty("visibility", "public")
+            addProperty("name", cleanTitle.take(64))
+            addProperty("description", cleanDesc)
+            // Schema constraint: CHECK (visibility IN ('private', 'community'))
+            addProperty("visibility", "community")
         }
         val req = Request.Builder()
             .url("$SUPABASE_URL/rest/v1/collections")
@@ -1224,45 +1610,116 @@ private suspend fun createCollectionInSupabase(
             .post(gson.toJson(payload).toRequestBody("application/json".toMediaType()))
             .build()
         httpClient.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) return@withContext null
-            val arr = gson.fromJson(resp.body?.string().orEmpty(), JsonArray::class.java)
-            val row = arr?.firstOrNull()?.asJsonObject ?: return@withContext null
-            DesktopCollectionItem(
-                id = row.get("id").asStringOrNull() ?: "local-${System.currentTimeMillis()}",
-                title = row.get("name").asStringOrNull()?.takeIf { it.isNotBlank() }
-                    ?: row.get("title").asStringOrNull()?.takeIf { it.isNotBlank() }
-                    ?: title,
-                description = row.get("description").asStringOrNull() ?: description,
+            val body = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) {
+                throw IllegalStateException(parsePostgrestError(body, "Could not create collection (${resp.code})"))
+            }
+            val arr = gson.fromJson(body, JsonArray::class.java)
+            val row = arr?.firstOrNull()?.asJsonObject
+            val item = DesktopCollectionItem(
+                id = row?.get("id").asStringOrNull() ?: "local-${System.currentTimeMillis()}",
+                title = row?.get("name").asStringOrNull()?.takeIf { it.isNotBlank() } ?: cleanTitle,
+                description = row?.get("description").asStringOrNull() ?: cleanDesc,
                 count = 0
             )
+            item to active
         }
-    }.getOrNull()
+    }
 }
 
 private suspend fun updateProfileInSupabase(
     session: DesktopPersistedState,
     username: String,
     avatarKey: String
-) = withContext(Dispatchers.IO) {
-    if (session.userId.isBlank() || session.accessToken.isBlank()) return@withContext
-    val active = refreshTokenIfNeeded(session)
+): Result<DesktopPersistedState> = withContext(Dispatchers.IO) {
+    val cleanUsername = username.trim()
+    if (cleanUsername.length < 2 || cleanUsername.length > 32) {
+        return@withContext Result.failure(IllegalArgumentException("Username must be between 2 and 32 characters."))
+    }
+    if (session.isGuest || session.userId.isBlank() || session.accessToken.isBlank()) {
+        return@withContext Result.success(session.copy(username = cleanUsername, avatarKey = avatarKey))
+    }
     runCatching {
-        val payload = JsonObject().apply {
-            addProperty("id", active.userId)
-            addProperty("username", username.trim())
-            addProperty("avatar_key", avatarKey)
-            if (active.email.isNotBlank()) addProperty("email", active.email)
+        val active = refreshTokenIfNeeded(session)
+
+        // 1. Validate username uniqueness / cooldown if changed
+        if (!cleanUsername.equals(active.username.trim(), ignoreCase = true)) {
+            val checkPayload = JsonObject().apply { addProperty("p_username", cleanUsername) }
+            val checkReq = Request.Builder()
+                .url("$SUPABASE_URL/rest/v1/rpc/check_username_status")
+                .addHeader("apikey", SUPABASE_ANON_KEY)
+                .addHeader("Authorization", "Bearer ${active.accessToken}")
+                .addHeader("Content-Type", "application/json")
+                .post(gson.toJson(checkPayload).toRequestBody("application/json".toMediaType()))
+                .build()
+            runCatching {
+                httpClient.newCall(checkReq).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val obj = gson.fromJson(resp.body?.string().orEmpty(), JsonObject::class.java)
+                        val available = obj?.get("available")?.takeIf { !it.isJsonNull }?.asBoolean ?: true
+                        if (!available) {
+                            val reason = obj?.get("reason").asStringOrNull() ?: "That username is already taken."
+                            throw IllegalArgumentException(reason)
+                        }
+                    }
+                }
+            }.onFailure { err ->
+                if (err is IllegalArgumentException) throw err
+            }
+        }
+
+        // 2. PATCH ONLY valid public.profiles columns (NO email column!)
+        val patchPayload = JsonObject().apply {
+            addProperty("username", cleanUsername)
+            addProperty("avatar_key", DesktopAvatar.fromKey(avatarKey).key)
+            add("avatar_url", com.google.gson.JsonNull.INSTANCE)
             addProperty("updated_at", Instant.now().toString())
         }
-        val req = Request.Builder()
-            .url("$SUPABASE_URL/rest/v1/profiles?on_conflict=id")
+        val patchReq = Request.Builder()
+            .url("$SUPABASE_URL/rest/v1/profiles?id=eq.${active.userId}")
             .addHeader("apikey", SUPABASE_ANON_KEY)
             .addHeader("Authorization", "Bearer ${active.accessToken}")
             .addHeader("Content-Type", "application/json")
-            .addHeader("Prefer", "resolution=merge-duplicates,return=minimal")
-            .post(gson.toJson(payload).toRequestBody("application/json".toMediaType()))
+            .addHeader("Prefer", "return=representation")
+            .patch(gson.toJson(patchPayload).toRequestBody("application/json".toMediaType()))
             .build()
-        httpClient.newCall(req).execute().close()
+        httpClient.newCall(patchReq).execute().use { resp ->
+            val body = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) {
+                throw IllegalStateException(parsePostgrestError(body, "Could not update profile (${resp.code})"))
+            }
+            val arr = runCatching { gson.fromJson(body, JsonArray::class.java) }.getOrNull()
+            if (arr == null || arr.size() == 0) {
+                // Row didn't exist yet -> INSERT profile row cleanly without email
+                val insertPayload = JsonObject().apply {
+                    addProperty("id", active.userId)
+                    addProperty("username", cleanUsername)
+                    addProperty("avatar_key", DesktopAvatar.fromKey(avatarKey).key)
+                    add("avatar_url", com.google.gson.JsonNull.INSTANCE)
+                    addProperty("role", "member")
+                    addProperty("can_generate_invites", false)
+                    addProperty("updated_at", Instant.now().toString())
+                }
+                val insReq = Request.Builder()
+                    .url("$SUPABASE_URL/rest/v1/profiles")
+                    .addHeader("apikey", SUPABASE_ANON_KEY)
+                    .addHeader("Authorization", "Bearer ${active.accessToken}")
+                    .addHeader("Content-Type", "application/json")
+                    .addHeader("Prefer", "return=representation")
+                    .post(gson.toJson(insertPayload).toRequestBody("application/json".toMediaType()))
+                    .build()
+                httpClient.newCall(insReq).execute().use { insResp ->
+                    val insBody = insResp.body?.string().orEmpty()
+                    if (!insResp.isSuccessful) {
+                        throw IllegalStateException(parsePostgrestError(insBody, "Could not create profile (${insResp.code})"))
+                    }
+                }
+            }
+        }
+
+        val finalState = active.copy(username = cleanUsername, avatarKey = DesktopAvatar.fromKey(avatarKey).key)
+        DesktopStorage.saveActive(finalState)
+        finalState
     }
 }
 
@@ -1370,9 +1827,11 @@ private suspend fun fetchAniListDiscover(
 // ============================================================================
 
 fun main() = application {
+    val windowIcon = remember { loadDesktopWindowIconPainter() }
     Window(
         onCloseRequest = ::exitApplication,
         title = "Anime Universe",
+        icon = windowIcon,
         state = rememberWindowState(size = DpSize(1340.dp, 860.dp))
     ) {
         MaterialTheme(
@@ -1404,11 +1863,47 @@ fun AnimeUniverseDesktopRoot() {
     var isGuestMode by remember { mutableStateOf(initialPersisted.isGuest) }
 
     var currentScreen by remember { mutableStateOf(DesktopScreen.HOME) }
+    var previousScreen by remember { mutableStateOf(DesktopScreen.HOME) }
     var selectedAnime by remember { mutableStateOf<DesktopAnimeItem?>(null) }
 
-    var watchlist by remember { mutableStateOf(initialPersisted.watchlist) }
+    // Normalize persisted watchlist for backward compatibility with older vaults that didn't store inHome
+    var watchlist by remember {
+        mutableStateOf(
+            initialPersisted.watchlist.map { item ->
+                val autoDone = DesktopTrackingRules.shouldAutoComplete(item.status, item.totalEpisodes, item.watchedEpisodes)
+                val normalizedStatus = if (autoDone && item.watchStatus != "dropped") "completed" else item.watchStatus
+                val normalizedHome = item.inHome && normalizedStatus != "dropped" && normalizedStatus != "completed" && !autoDone
+                item.copy(watchStatus = normalizedStatus, inHome = normalizedHome)
+            }
+        )
+    }
     var collections by remember { mutableStateOf(initialPersisted.collections) }
     var communityReviews by remember { mutableStateOf<List<DesktopCommunityReview>>(emptyList()) }
+
+    // Optimistic sync guards so 15s cloud poll never reverts in-flight edits or re-adds removed shows
+    val dirtyAnimeUntilMs = remember { ConcurrentHashMap<Int, Long>() }
+    val deletedAnimeUntilMs = remember { ConcurrentHashMap<Int, Long>() }
+    val removedHomeUntilMs = remember { ConcurrentHashMap<Int, Long>() }
+    var profileDirtyUntilMs by remember { mutableStateOf(0L) }
+
+    // Non-intrusive toast/feedback banner
+    var toastMessage by remember { mutableStateOf<String?>(null) }
+    var toastIsError by remember { mutableStateOf(false) }
+
+    fun showToast(message: String, isError: Boolean = false) {
+        toastMessage = message
+        toastIsError = isError
+    }
+
+    LaunchedEffect(toastMessage) {
+        if (toastMessage != null) {
+            delay(3600L)
+            toastMessage = null
+        }
+    }
+
+    // Remove from Home Confirmation Dialog State
+    var pendingRemoveFromHome by remember { mutableStateOf<DesktopAnimeItem?>(null) }
 
     // Home State
     var homeAllWeek by remember { mutableStateOf(true) }
@@ -1422,17 +1917,56 @@ fun AnimeUniverseDesktopRoot() {
     var discoverSearch by remember { mutableStateOf("") }
     var safeMode by remember { mutableStateOf(true) }
     var quickJumpQuery by remember { mutableStateOf("") }
+    var discoverListView by remember { mutableStateOf(false) }
+    var discoverShowFilters by remember { mutableStateOf(true) }
 
     // Library State
     var libStatusFilter by remember { mutableStateOf("all") }
     var libRatingFilter by remember { mutableStateOf("all") }
     var libSearchQuery by remember { mutableStateOf("") }
     var libSortMode by remember { mutableStateOf("recent") }
+    var libListView by remember { mutableStateOf(false) }
     var showCreateCollectionDialog by remember { mutableStateOf(false) }
 
     // Community State
     var commRatingFilter by remember { mutableStateOf("all") }
     var commSortMode by remember { mutableStateOf("newest") }
+
+    // Independent Home active tracking list
+    val homeWatchlist = remember(watchlist) {
+        watchlist.filter { item ->
+            item.inHome &&
+                item.watchStatus != "dropped" &&
+                item.watchStatus != "completed" &&
+                !DesktopTrackingRules.shouldAutoComplete(item.status, item.totalEpisodes, item.watchedEpisodes)
+        }
+    }
+
+    fun openDetailFrom(source: DesktopScreen, item: DesktopAnimeItem) {
+        previousScreen = source
+        val latest = watchlist.firstOrNull { it.id == item.id } ?: item
+        selectedAnime = latest
+        currentScreen = DesktopScreen.DETAIL
+    }
+
+    fun openInLibrary(item: DesktopAnimeItem) {
+        libStatusFilter = "all"
+        libRatingFilter = "all"
+        libSearchQuery = item.title
+        currentScreen = DesktopScreen.LIBRARY
+    }
+
+    fun openInCommunity(item: DesktopAnimeItem) {
+        commRatingFilter = "all"
+        currentScreen = DesktopScreen.COMMUNITY
+    }
+
+    fun persistLocalWatchlist(nextList: List<DesktopAnimeItem>, updatedSession: DesktopPersistedState = sessionState) {
+        watchlist = nextList
+        val nextSession = updatedSession.copy(watchlist = nextList)
+        sessionState = nextSession
+        DesktopStorage.saveActive(nextSession)
+    }
 
     suspend fun syncWithCloud() {
         val capturedAuth = isAuthenticated
@@ -1447,17 +1981,55 @@ fun AnimeUniverseDesktopRoot() {
         if (capturedAuth && sessionState.userId != capturedUserId) return
         if (capturedGuest && sessionState.guestId != capturedGuestId) return
 
+        val nowMs = System.currentTimeMillis()
         if (capturedAuth && !sessionState.isGuest && capturedUserId.isNotBlank()) {
-            var nextState = sessionState
-            if (!snap.username.isNullOrBlank()) {
-                nextState = nextState.copy(username = snap.username)
-            }
-            if (!snap.avatarKey.isNullOrBlank()) {
-                nextState = nextState.copy(avatarKey = snap.avatarKey)
+            var nextState = sessionState.copy(
+                accessToken = snap.refreshedSession.accessToken.ifBlank { sessionState.accessToken },
+                refreshToken = snap.refreshedSession.refreshToken.ifBlank { sessionState.refreshToken },
+                expiresAt = maxOf(snap.refreshedSession.expiresAt, sessionState.expiresAt)
+            )
+            if (nowMs >= profileDirtyUntilMs) {
+                if (!snap.username.isNullOrBlank()) {
+                    nextState = nextState.copy(username = snap.username)
+                }
+                if (!snap.avatarKey.isNullOrBlank()) {
+                    nextState = nextState.copy(avatarKey = snap.avatarKey)
+                }
             }
             if (snap.watchlist != null) {
-                watchlist = snap.watchlist
-                nextState = nextState.copy(watchlist = snap.watchlist)
+                val localById = watchlist.associateBy { it.id }
+                val mergedCloud = snap.watchlist
+                    .filter { item ->
+                        val delUntil = deletedAnimeUntilMs[item.id] ?: 0L
+                        nowMs >= delUntil
+                    }
+                    .map { cloudItem ->
+                        val dirtyUntil = dirtyAnimeUntilMs[cloudItem.id] ?: 0L
+                        val localItem = localById[cloudItem.id]
+                        if (nowMs < dirtyUntil && localItem != null) {
+                            localItem
+                        } else {
+                            val homeRemUntil = removedHomeUntilMs[cloudItem.id] ?: 0L
+                            val finalInHome = if (nowMs < homeRemUntil) false else cloudItem.inHome
+                            cloudItem.copy(inHome = finalInHome)
+                        }
+                    }
+                val cloudIds = mergedCloud.map { it.id }.toSet()
+                val localPendingAdditions = watchlist.filter { item ->
+                    !cloudIds.contains(item.id) &&
+                        nowMs < (dirtyAnimeUntilMs[item.id] ?: 0L) &&
+                        nowMs >= (deletedAnimeUntilMs[item.id] ?: 0L)
+                }
+                val finalList = localPendingAdditions + mergedCloud
+                watchlist = finalList
+                nextState = nextState.copy(watchlist = finalList)
+                selectedAnime?.let { sel ->
+                    finalList.firstOrNull { it.id == sel.id }?.let { updatedSel ->
+                        if (nowMs >= (dirtyAnimeUntilMs[sel.id] ?: 0L)) {
+                            selectedAnime = updatedSel
+                        }
+                    }
+                }
             }
             if (snap.collections != null) {
                 collections = snap.collections
@@ -1468,6 +2040,211 @@ fun AnimeUniverseDesktopRoot() {
         }
         if (snap.communityReviews.isNotEmpty()) {
             communityReviews = snap.communityReviews
+        }
+    }
+
+    fun handleAddToHome(item: DesktopAnimeItem) {
+        val existing = watchlist.firstOrNull { it.id == item.id } ?: item
+        val nextStatus = if (existing.watchStatus == "plan_to_watch" || existing.watchStatus == "dropped") "watching" else existing.watchStatus
+        val autoDone = DesktopTrackingRules.shouldAutoComplete(existing.status, existing.totalEpisodes, existing.watchedEpisodes)
+        val updated = existing.copy(
+            inWatchlist = true,
+            inHome = !autoDone,
+            watchStatus = if (autoDone) "completed" else nextStatus,
+            updatedAt = Instant.now().toString()
+        )
+        dirtyAnimeUntilMs[updated.id] = System.currentTimeMillis() + 20_000L
+        deletedAnimeUntilMs.remove(updated.id)
+        removedHomeUntilMs.remove(updated.id)
+        val nextList = listOf(updated) + watchlist.filter { it.id != updated.id }
+        persistLocalWatchlist(nextList)
+        if (selectedAnime?.id == updated.id) selectedAnime = updated
+        showToast(if (autoDone) "${updated.title} is already completed in Library" else "Added ${updated.title} to Home & Library")
+        if (isAuthenticated && !sessionState.isGuest) {
+            scope.launch {
+                val res = if (autoDone) {
+                    saveAnimeToSupabase(sessionState, updated, syncHomeMembership = true)
+                } else {
+                    addAnimeToHomeInSupabase(sessionState, updated)
+                }
+                res.onSuccess { active ->
+                    sessionState = sessionState.copy(
+                        accessToken = active.accessToken,
+                        refreshToken = active.refreshToken,
+                        expiresAt = active.expiresAt
+                    )
+                    DesktopStorage.saveActive(sessionState)
+                }.onFailure { err ->
+                    showToast(err.message ?: "Failed to sync addition to cloud", isError = true)
+                }
+            }
+        }
+    }
+
+    fun handleConfirmRemoveFromHome(item: DesktopAnimeItem) {
+        pendingRemoveFromHome = null
+        val existing = watchlist.firstOrNull { it.id == item.id } ?: item
+        val updated = existing.copy(
+            inWatchlist = true,
+            inHome = false,
+            updatedAt = Instant.now().toString()
+        )
+        removedHomeUntilMs[updated.id] = System.currentTimeMillis() + 25_000L
+        dirtyAnimeUntilMs[updated.id] = System.currentTimeMillis() + 20_000L
+        val nextList = watchlist.map { if (it.id == updated.id) updated else it }
+        persistLocalWatchlist(nextList)
+        if (selectedAnime?.id == updated.id) selectedAnime = updated
+        showToast("Removed ${updated.title} from Home — kept in Library & Community")
+        if (isAuthenticated && !sessionState.isGuest) {
+            scope.launch {
+                removeAnimeFromHomeInSupabase(sessionState, updated.id)
+                    .onSuccess { active ->
+                        sessionState = sessionState.copy(
+                            accessToken = active.accessToken,
+                            refreshToken = active.refreshToken,
+                            expiresAt = active.expiresAt
+                        )
+                        DesktopStorage.saveActive(sessionState)
+                    }
+                    .onFailure { err ->
+                        showToast(err.message ?: "Could not remove from Home on server", isError = true)
+                    }
+            }
+        }
+    }
+
+    suspend fun handleCommitEpisodeProgress(item: DesktopAnimeItem, targetEpisodes: Int): Result<Unit> {
+        val current = watchlist.firstOrNull { it.id == item.id } ?: item
+        val autoDone = DesktopTrackingRules.shouldAutoComplete(current.status, current.totalEpisodes, targetEpisodes)
+        val nextStatus = if (autoDone && current.watchStatus != "dropped") "completed" else current.watchStatus
+        val nextInHome = if (autoDone) false else current.inHome
+        val updated = current.copy(
+            inWatchlist = true,
+            watchedEpisodes = targetEpisodes,
+            watchStatus = nextStatus,
+            inHome = nextInHome,
+            updatedAt = Instant.now().toString()
+        )
+        val prevList = watchlist
+        dirtyAnimeUntilMs[updated.id] = System.currentTimeMillis() + 20_000L
+        if (autoDone) {
+            removedHomeUntilMs[updated.id] = System.currentTimeMillis() + 25_000L
+        }
+        val nextList = if (watchlist.any { it.id == updated.id }) {
+            watchlist.map { if (it.id == updated.id) updated else it }
+        } else {
+            listOf(updated) + watchlist
+        }
+        persistLocalWatchlist(nextList)
+        if (selectedAnime?.id == updated.id) selectedAnime = updated
+
+        if (!isAuthenticated || sessionState.isGuest) {
+            if (autoDone) showToast("${updated.title} completed — moved to Library")
+            return Result.success(Unit)
+        }
+        val res = updateEpisodeProgressInSupabase(sessionState, updated, targetEpisodes)
+        return res.fold(
+            onSuccess = { active ->
+                sessionState = sessionState.copy(
+                    accessToken = active.accessToken,
+                    refreshToken = active.refreshToken,
+                    expiresAt = active.expiresAt
+                )
+                DesktopStorage.saveActive(sessionState)
+                if (autoDone) {
+                    showToast("${updated.title} completed — archived in Library")
+                }
+                Result.success(Unit)
+            },
+            onFailure = { err ->
+                // Restore previous value on failure
+                dirtyAnimeUntilMs.remove(updated.id)
+                persistLocalWatchlist(prevList)
+                if (selectedAnime?.id == updated.id) {
+                    selectedAnime = prevList.firstOrNull { it.id == updated.id } ?: current
+                }
+                showToast(err.message ?: "Failed to save episode progress", isError = true)
+                Result.failure(err)
+            }
+        )
+    }
+
+    fun handleSaveAnimeFromDetail(editedItem: DesktopAnimeItem, returnToPrevious: Boolean = true) {
+        val autoDone = DesktopTrackingRules.shouldAutoComplete(editedItem.status, editedItem.totalEpisodes, editedItem.watchedEpisodes)
+        val finalStatus = if (autoDone && editedItem.watchStatus != "dropped") "completed" else editedItem.watchStatus
+        val dropFromHome = DesktopTrackingRules.shouldRemoveFromHome(finalStatus, editedItem.status, editedItem.totalEpisodes, editedItem.watchedEpisodes)
+        val finalInHome = if (dropFromHome) false else editedItem.inHome
+        val finalItem = editedItem.copy(
+            inWatchlist = true,
+            watchStatus = finalStatus,
+            inHome = finalInHome,
+            updatedAt = Instant.now().toString()
+        )
+        dirtyAnimeUntilMs[finalItem.id] = System.currentTimeMillis() + 20_000L
+        deletedAnimeUntilMs.remove(finalItem.id)
+        if (!finalInHome) {
+            removedHomeUntilMs[finalItem.id] = System.currentTimeMillis() + 25_000L
+        } else {
+            removedHomeUntilMs.remove(finalItem.id)
+        }
+        selectedAnime = finalItem
+        val nextList = listOf(finalItem) + watchlist.filter { it.id != finalItem.id }
+        persistLocalWatchlist(nextList)
+        val msg = when {
+            finalStatus == "dropped" -> "${finalItem.title} marked Dropped — removed from Home, kept in Library"
+            autoDone -> "${finalItem.title} completed — moved to Library"
+            else -> "Saved ${finalItem.title}"
+        }
+        showToast(msg)
+        if (isAuthenticated && !sessionState.isGuest) {
+            scope.launch {
+                saveAnimeToSupabase(sessionState, finalItem, syncHomeMembership = true)
+                    .onSuccess { active ->
+                        sessionState = sessionState.copy(
+                            accessToken = active.accessToken,
+                            refreshToken = active.refreshToken,
+                            expiresAt = active.expiresAt
+                        )
+                        DesktopStorage.saveActive(sessionState)
+                    }
+                    .onFailure { err ->
+                        showToast(err.message ?: "Cloud sync failed for ${finalItem.title}", isError = true)
+                    }
+            }
+        }
+        if (returnToPrevious) {
+            currentScreen = if (previousScreen == DesktopScreen.DETAIL) DesktopScreen.LIBRARY else previousScreen
+        }
+    }
+
+    fun handleDeleteFromLibrary(toRemove: DesktopAnimeItem) {
+        val prevList = watchlist
+        deletedAnimeUntilMs[toRemove.id] = System.currentTimeMillis() + 30_000L
+        dirtyAnimeUntilMs.remove(toRemove.id)
+        removedHomeUntilMs[toRemove.id] = System.currentTimeMillis() + 30_000L
+        val nextList = watchlist.filter { it.id != toRemove.id }
+        persistLocalWatchlist(nextList)
+        showToast("Deleted ${toRemove.title} from Library (Community posts preserved)")
+        if (isAuthenticated && !sessionState.isGuest) {
+            scope.launch {
+                deleteAnimeFromSupabase(sessionState, toRemove.id)
+                    .onSuccess { active ->
+                        sessionState = sessionState.copy(
+                            accessToken = active.accessToken,
+                            refreshToken = active.refreshToken,
+                            expiresAt = active.expiresAt
+                        )
+                        DesktopStorage.saveActive(sessionState)
+                    }
+                    .onFailure { err ->
+                        deletedAnimeUntilMs.remove(toRemove.id)
+                        persistLocalWatchlist(prevList)
+                        showToast(err.message ?: "Could not delete ${toRemove.title}", isError = true)
+                    }
+            }
+        }
+        if (currentScreen == DesktopScreen.DETAIL) {
+            currentScreen = if (previousScreen == DesktopScreen.DETAIL) DesktopScreen.LIBRARY else previousScreen
         }
     }
 
@@ -1555,20 +2332,30 @@ fun AnimeUniverseDesktopRoot() {
             onCreate = { title, desc ->
                 showCreateCollectionDialog = false
                 scope.launch {
-                    val created = if (isAuthenticated && !sessionState.isGuest) {
-                        createCollectionInSupabase(sessionState, title, desc)
-                    } else null
-                    val finalCol = created ?: DesktopCollectionItem(
-                        id = "local-${System.currentTimeMillis()}",
-                        title = title,
-                        description = desc,
-                        count = 0
-                    )
-                    collections = listOf(finalCol) + collections
-                    sessionState = sessionState.copy(collections = collections)
-                    DesktopStorage.saveActive(sessionState)
+                    val res = createCollectionInSupabase(sessionState, title, desc)
+                    res.onSuccess { (createdCol, active) ->
+                        collections = listOf(createdCol) + collections
+                        sessionState = sessionState.copy(
+                            accessToken = active.accessToken,
+                            refreshToken = active.refreshToken,
+                            expiresAt = active.expiresAt,
+                            collections = collections
+                        )
+                        DesktopStorage.saveActive(sessionState)
+                        showToast("Collection \"${createdCol.title}\" created")
+                    }.onFailure { err ->
+                        showToast(err.message ?: "Failed to create collection", isError = true)
+                    }
                 }
             }
+        )
+    }
+
+    pendingRemoveFromHome?.let { target ->
+        DesktopRemoveFromHomeDialog(
+            animeTitle = target.title,
+            onDismiss = { pendingRemoveFromHome = null },
+            onConfirm = { handleConfirmRemoveFromHome(target) }
         )
     }
 
@@ -1697,7 +2484,7 @@ fun AnimeUniverseDesktopRoot() {
                     when (currentScreen) {
                         DesktopScreen.HOME -> {
                             DesktopHomeScreen(
-                                watchlist = watchlist,
+                                watchlist = homeWatchlist,
                                 avatarKey = sessionState.avatarKey,
                                 homeAllWeek = homeAllWeek,
                                 selectedDay = selectedDay,
@@ -1709,10 +2496,12 @@ fun AnimeUniverseDesktopRoot() {
                                 onOpenExplore = { currentScreen = DesktopScreen.EXPLORE },
                                 onOpenLibrary = { currentScreen = DesktopScreen.LIBRARY },
                                 onOpenProfile = { currentScreen = DesktopScreen.PROFILE },
-                                onOpenDetail = { item ->
-                                    selectedAnime = item
-                                    currentScreen = DesktopScreen.DETAIL
-                                }
+                                onOpenDetail = { item -> openDetailFrom(DesktopScreen.HOME, item) },
+                                onRequestRemoveFromHome = { item -> pendingRemoveFromHome = item },
+                                onAddToHome = { item -> handleAddToHome(item) },
+                                onViewInLibrary = { item -> openInLibrary(item) },
+                                onViewCommunity = { item -> openInCommunity(item) },
+                                onCommitEpisodes = { item, eps -> handleCommitEpisodeProgress(item, eps) }
                             )
                         }
 
@@ -1726,6 +2515,10 @@ fun AnimeUniverseDesktopRoot() {
                                 discoverGenre = discoverGenre,
                                 searchQuery = discoverSearch,
                                 safeMode = safeMode,
+                                isListView = discoverListView,
+                                showFilters = discoverShowFilters,
+                                onToggleListView = { discoverListView = !discoverListView },
+                                onToggleFilters = { discoverShowFilters = !discoverShowFilters },
                                 onSearchChange = { q ->
                                     discoverSearch = q
                                     scope.launch {
@@ -1738,11 +2531,11 @@ fun AnimeUniverseDesktopRoot() {
                                 onSelectGenre = { g -> discoverGenre = g },
                                 onToggleSafe = { safeMode = !safeMode },
                                 onOpenProfile = { currentScreen = DesktopScreen.PROFILE },
-                                onOpenDetail = { item ->
-                                    val existing = watchlist.firstOrNull { it.id == item.id }
-                                    selectedAnime = existing ?: item
-                                    currentScreen = DesktopScreen.DETAIL
-                                }
+                                onOpenDetail = { item -> openDetailFrom(DesktopScreen.EXPLORE, item) },
+                                onAddToHome = { item -> handleAddToHome(item) },
+                                onRequestRemoveFromHome = { item -> pendingRemoveFromHome = item },
+                                onViewInLibrary = { item -> openInLibrary(item) },
+                                onViewCommunity = { item -> openInCommunity(item) }
                             )
                         }
 
@@ -1755,16 +2548,19 @@ fun AnimeUniverseDesktopRoot() {
                                 ratingFilter = libRatingFilter,
                                 searchQuery = libSearchQuery,
                                 sortMode = libSortMode,
+                                isListView = libListView,
+                                onToggleListView = { libListView = !libListView },
                                 onStatusChange = { libStatusFilter = it },
                                 onRatingChange = { libRatingFilter = it },
                                 onSearchChange = { libSearchQuery = it },
                                 onSortChange = { libSortMode = it },
                                 onCreateCollectionClick = { showCreateCollectionDialog = true },
                                 onOpenProfile = { currentScreen = DesktopScreen.PROFILE },
-                                onOpenDetail = { item ->
-                                    selectedAnime = item
-                                    currentScreen = DesktopScreen.DETAIL
-                                }
+                                onOpenDetail = { item -> openDetailFrom(DesktopScreen.LIBRARY, item) },
+                                onAddToHome = { item -> handleAddToHome(item) },
+                                onRequestRemoveFromHome = { item -> pendingRemoveFromHome = item },
+                                onViewCommunity = { item -> openInCommunity(item) },
+                                onCommitEpisodes = { item, eps -> handleCommitEpisodeProgress(item, eps) }
                             )
                         }
 
@@ -1788,7 +2584,6 @@ fun AnimeUniverseDesktopRoot() {
                                         )
                                     }
                                 if (communityReviews.isNotEmpty()) {
-                                    // Merge local active edits so user's freshly saved note shows immediately
                                     val cloudWithoutLocalDuplicates = communityReviews.filterNot { c ->
                                         localUserReviews.any { l ->
                                             l.animeId == c.animeId &&
@@ -1814,88 +2609,100 @@ fun AnimeUniverseDesktopRoot() {
                                     val found = watchlist.firstOrNull { it.id == animeId }
                                         ?: discoverItems.firstOrNull { it.id == animeId }
                                     if (found != null) {
-                                        selectedAnime = found
-                                        currentScreen = DesktopScreen.DETAIL
+                                        openDetailFrom(DesktopScreen.COMMUNITY, found)
                                     }
                                 },
                                 onSubmitCommentNote = { animeId, animeTitle, animeCover, stars, note ->
-                                    val existing = watchlist.firstOrNull { it.id == animeId }
-                                        ?: discoverItems.firstOrNull { it.id == animeId }
+                                    // Independent Community post: NEVER adds anime to Home!
                                     val nowIso = Instant.now().toString()
-                                    val updatedItem = if (existing != null) {
-                                        existing.copy(
-                                            inWatchlist = true,
-                                            userStars = if (stars > 0f) stars else existing.userStars,
-                                            notes = note.trim().ifBlank { existing.notes },
-                                            updatedAt = nowIso
-                                        )
-                                    } else {
-                                        DesktopAnimeItem(
-                                            id = animeId,
-                                            title = animeTitle,
-                                            coverImage = animeCover,
-                                            inWatchlist = true,
-                                            userStars = stars,
-                                            notes = note.trim(),
-                                            updatedAt = nowIso
+                                    val cleanNote = note.trim()
+                                    val newRev = DesktopCommunityReview(
+                                        id = "${sessionState.userId.ifBlank { "local" }}-$animeId",
+                                        userId = sessionState.userId,
+                                        animeId = animeId,
+                                        animeTitle = animeTitle,
+                                        animeCover = animeCover,
+                                        stars = stars,
+                                        notes = cleanNote,
+                                        username = sessionState.username,
+                                        avatarKey = sessionState.avatarKey,
+                                        updatedAt = nowIso,
+                                        formattedDate = formatIsoDate(nowIso)
+                                    )
+                                    communityReviews = listOf(newRev) + communityReviews.filterNot {
+                                        it.animeId == animeId && (
+                                            (sessionState.userId.isNotBlank() && it.userId == sessionState.userId) ||
+                                                it.username.equals(sessionState.username, ignoreCase = true)
                                         )
                                     }
-                                    val nextList = listOf(updatedItem) + watchlist.filter { it.id != updatedItem.id }
-                                    watchlist = nextList
-                                    sessionState = sessionState.copy(watchlist = nextList)
-                                    DesktopStorage.saveActive(sessionState)
+                                    // Update local Library rating/note ONLY if already in Library (NEVER add to Home or Library!)
+                                    if (watchlist.any { it.id == animeId }) {
+                                        val nextList = watchlist.map {
+                                            if (it.id == animeId) it.copy(
+                                                userStars = if (stars > 0f) stars else it.userStars,
+                                                notes = cleanNote.ifBlank { it.notes },
+                                                updatedAt = nowIso
+                                            ) else it
+                                        }
+                                        persistLocalWatchlist(nextList)
+                                    }
+                                    showToast("Posted note to Community")
                                     if (isAuthenticated && !sessionState.isGuest) {
                                         scope.launch {
-                                            saveAnimeToSupabase(sessionState, updatedItem)
-                                            syncWithCloud()
+                                            submitCommunityNoteInSupabase(sessionState, animeId, animeTitle, animeCover, stars, cleanNote)
+                                                .onSuccess { active ->
+                                                    sessionState = sessionState.copy(
+                                                        accessToken = active.accessToken,
+                                                        refreshToken = active.refreshToken,
+                                                        expiresAt = active.expiresAt
+                                                    )
+                                                    DesktopStorage.saveActive(sessionState)
+                                                }
+                                                .onFailure { err ->
+                                                    showToast(err.message ?: "Failed to post Community note", isError = true)
+                                                }
                                         }
                                     }
                                 }
                             )
                         }
 
-                        DesktopScreen.PROFILE -> {
+                        DesktopScreen.PROFILE, DesktopScreen.SETTINGS -> {
                             DesktopProfileScreen(
                                 session = sessionState,
                                 watchlist = watchlist,
                                 collectionsCount = collections.size,
                                 onUpdateProfile = { newName, newAv ->
-                                    val updated = sessionState.copy(username = newName, avatarKey = newAv)
-                                    sessionState = updated
-                                    DesktopStorage.saveActive(updated)
-                                    if (isAuthenticated && !updated.isGuest) {
-                                        scope.launch {
-                                            updateProfileInSupabase(updated, newName, newAv)
-                                            syncWithCloud()
+                                    val cleanName = newName.trim()
+                                    if (cleanName.length < 2 || cleanName.length > 32) {
+                                        Result.failure(IllegalArgumentException("Username must be 2–32 characters."))
+                                    } else {
+                                        profileDirtyUntilMs = System.currentTimeMillis() + 25_000L
+                                        val prev = sessionState
+                                        val optimistic = sessionState.copy(username = cleanName, avatarKey = newAv)
+                                        sessionState = optimistic
+                                        DesktopStorage.saveActive(optimistic)
+                                        if (isAuthenticated && !optimistic.isGuest) {
+                                            val res = updateProfileInSupabase(optimistic, cleanName, newAv)
+                                            res.fold(
+                                                onSuccess = { saved ->
+                                                    sessionState = saved.copy(watchlist = watchlist, collections = collections)
+                                                    DesktopStorage.saveActive(sessionState)
+                                                    showToast("Profile updated!")
+                                                    Result.success(Unit)
+                                                },
+                                                onFailure = { err ->
+                                                    profileDirtyUntilMs = 0L
+                                                    sessionState = prev
+                                                    DesktopStorage.saveActive(prev)
+                                                    showToast(err.message ?: "Could not save profile", isError = true)
+                                                    Result.failure(err)
+                                                }
+                                            )
+                                        } else {
+                                            showToast("Profile updated!")
+                                            Result.success(Unit)
                                         }
-                                    }
-                                },
-                                onSignOut = {
-                                    val wasAuth = isAuthenticated && !sessionState.isGuest
-                                    DesktopStorage.saveActive(sessionState)
-                                    DesktopStorage.onSignOut(wasAuth)
-                                    sessionState = DesktopPersistedState()
-                                    watchlist = emptyList()
-                                    collections = emptyList()
-                                    communityReviews = emptyList()
-                                    selectedAnime = null
-                                    isAuthenticated = false
-                                    isGuestMode = false
-                                }
-                            )
-                        }
-
-                        DesktopScreen.SETTINGS -> {
-                            DesktopProfileScreen(
-                                session = sessionState,
-                                watchlist = watchlist,
-                                collectionsCount = collections.size,
-                                onUpdateProfile = { newName, newAv ->
-                                    val updated = sessionState.copy(username = newName, avatarKey = newAv)
-                                    sessionState = updated
-                                    DesktopStorage.saveActive(updated)
-                                    if (isAuthenticated && !updated.isGuest) {
-                                        scope.launch { updateProfileInSupabase(updated, newName, newAv) }
                                     }
                                 },
                                 onSignOut = {
@@ -1916,37 +2723,60 @@ fun AnimeUniverseDesktopRoot() {
                         DesktopScreen.DETAIL -> {
                             val item = selectedAnime
                             if (item != null) {
+                                val liveItem = watchlist.firstOrNull { it.id == item.id } ?: item
                                 DesktopDetailScreen(
-                                    item = item,
-                                    onBack = { currentScreen = DesktopScreen.LIBRARY },
-                                    onSave = { updatedItem ->
-                                        selectedAnime = updatedItem
-                                        val nextList = listOf(updatedItem) + watchlist.filter { it.id != updatedItem.id }
-                                        watchlist = nextList
-                                        sessionState = sessionState.copy(watchlist = nextList)
-                                        DesktopStorage.saveActive(sessionState)
-                                        if (isAuthenticated && !sessionState.isGuest) {
-                                            scope.launch {
-                                                saveAnimeToSupabase(sessionState, updatedItem)
-                                                syncWithCloud()
-                                            }
-                                        }
-                                        currentScreen = DesktopScreen.LIBRARY
+                                    item = liveItem,
+                                    onBack = {
+                                        currentScreen = if (previousScreen == DesktopScreen.DETAIL) DesktopScreen.HOME else previousScreen
                                     },
-                                    onDelete = { toRemove ->
-                                        val nextList = watchlist.filter { it.id != toRemove.id }
-                                        watchlist = nextList
-                                        sessionState = sessionState.copy(watchlist = nextList)
-                                        DesktopStorage.saveActive(sessionState)
-                                        if (isAuthenticated && !sessionState.isGuest) {
-                                            scope.launch {
-                                                deleteAnimeFromSupabase(sessionState, toRemove.id)
-                                                syncWithCloud()
-                                            }
-                                        }
-                                        currentScreen = DesktopScreen.LIBRARY
-                                    }
+                                    onSave = { updatedItem -> handleSaveAnimeFromDetail(updatedItem, returnToPrevious = true) },
+                                    onCommitEpisodes = { eps -> handleCommitEpisodeProgress(liveItem, eps) },
+                                    onAddToHome = { handleAddToHome(liveItem) },
+                                    onRequestRemoveFromHome = { pendingRemoveFromHome = liveItem },
+                                    onDelete = { toRemove -> handleDeleteFromLibrary(toRemove) }
                                 )
+                            }
+                        }
+                    }
+                }
+
+                // Floating Toast Banner (top-right)
+                toastMessage?.let { msg ->
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = if (toastIsError) Color(0xFF361920) else Color(0xFF2B271F),
+                        border = BorderStroke(
+                            1.dp,
+                            if (toastIsError) CrimsonWaste.copy(alpha = 0.75f) else ChampagneGold.copy(alpha = 0.75f)
+                        ),
+                        shadowElevation = 10.dp,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(top = 18.dp, end = 24.dp)
+                            .widthIn(max = 420.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (toastIsError) Icons.Filled.ErrorOutline else Icons.Filled.CheckCircle,
+                                contentDescription = null,
+                                tint = if (toastIsError) CrimsonWaste else ChampagneGold,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = msg,
+                                color = IvoryText,
+                                fontSize = 13.sp,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                            IconButton(
+                                onClick = { toastMessage = null },
+                                modifier = Modifier.size(22.dp)
+                            ) {
+                                Icon(Icons.Default.Close, contentDescription = "Dismiss", tint = WarmSilver, modifier = Modifier.size(14.dp))
                             }
                         }
                     }
@@ -2383,7 +3213,12 @@ private fun DesktopHomeScreen(
     onOpenExplore: () -> Unit,
     onOpenLibrary: () -> Unit,
     onOpenProfile: () -> Unit,
-    onOpenDetail: (DesktopAnimeItem) -> Unit
+    onOpenDetail: (DesktopAnimeItem) -> Unit,
+    onRequestRemoveFromHome: (DesktopAnimeItem) -> Unit,
+    onAddToHome: (DesktopAnimeItem) -> Unit,
+    onViewInLibrary: (DesktopAnimeItem) -> Unit,
+    onViewCommunity: (DesktopAnimeItem) -> Unit,
+    onCommitEpisodes: suspend (DesktopAnimeItem, Int) -> Result<Unit>
 ) {
     val today = LocalDate.now()
     val todayDow = today.dayOfWeek.value
@@ -2622,7 +3457,14 @@ private fun DesktopHomeScreen(
                         item = show,
                         showSentimentBadge = true,
                         showFormatBadge = false,
-                        onClick = { onOpenDetail(show) }
+                        isOnHome = true,
+                        showEpisodeStepper = true,
+                        onClick = { onOpenDetail(show) },
+                        onRequestRemoveFromHome = { onRequestRemoveFromHome(show) },
+                        onAddToHome = { onAddToHome(show) },
+                        onViewInLibrary = { onViewInLibrary(show) },
+                        onViewCommunity = { onViewCommunity(show) },
+                        onCommitEpisodes = { eps -> onCommitEpisodes(show, eps) }
                     )
                 }
             }
@@ -2644,12 +3486,20 @@ private fun DesktopDiscoverScreen(
     discoverGenre: String,
     searchQuery: String,
     safeMode: Boolean,
+    isListView: Boolean,
+    showFilters: Boolean,
+    onToggleListView: () -> Unit,
+    onToggleFilters: () -> Unit,
     onSearchChange: (String) -> Unit,
     onSelectMode: (String) -> Unit,
     onSelectGenre: (String) -> Unit,
     onToggleSafe: () -> Unit,
     onOpenProfile: () -> Unit,
-    onOpenDetail: (DesktopAnimeItem) -> Unit
+    onOpenDetail: (DesktopAnimeItem) -> Unit,
+    onAddToHome: (DesktopAnimeItem) -> Unit,
+    onRequestRemoveFromHome: (DesktopAnimeItem) -> Unit,
+    onViewInLibrary: (DesktopAnimeItem) -> Unit,
+    onViewCommunity: (DesktopAnimeItem) -> Unit
 ) {
     // Top Bar matching Screenshot 4
     Row(
@@ -2671,8 +3521,16 @@ private fun DesktopDiscoverScreen(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            CircleIconActionButton(icon = Icons.AutoMirrored.Filled.ViewList, onClick = {})
-            CircleIconActionButton(icon = Icons.Outlined.Tune, onClick = {})
+            CircleIconActionButton(
+                icon = if (isListView) Icons.Outlined.GridView else Icons.AutoMirrored.Filled.ViewList,
+                active = isListView,
+                onClick = onToggleListView
+            )
+            CircleIconActionButton(
+                icon = Icons.Outlined.Tune,
+                active = showFilters,
+                onClick = onToggleFilters
+            )
             AvatarCircleButton(avatarKey = avatarKey, onClick = onOpenProfile)
         }
     }
@@ -2768,28 +3626,30 @@ private fun DesktopDiscoverScreen(
         }
     }
 
-    Spacer(modifier = Modifier.height(10.dp))
+    if (showFilters) {
+        Spacer(modifier = Modifier.height(10.dp))
 
-    // Genre Row matching Screenshot 4
-    val genres = listOf(
-        "All Genres", "Action", "Adventure", "Comedy", "Drama",
-        "Fantasy", "Romance", "Sci-Fi", "Slice of Life", "Supernatural", "Mystery", "Thriller"
-    )
-    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        items(genres) { g ->
-            val active = discoverGenre == g
-            Surface(
-                shape = CircleShape,
-                color = if (active) Color(0xFF2B271F) else Color.Transparent,
-                border = BorderStroke(1.dp, if (active) ChampagneGold.copy(alpha = 0.65f) else ObsidianBorder),
-                modifier = Modifier.height(36.dp).clip(CircleShape).clickable { onSelectGenre(g) }
-            ) {
-                Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 16.dp)) {
-                    Text(
-                        g,
-                        fontSize = 13.sp,
-                        color = if (active) ChampagneGoldSoft else WarmSilver
-                    )
+        // Genre Row matching Screenshot 4
+        val genres = listOf(
+            "All Genres", "Action", "Adventure", "Comedy", "Drama",
+            "Fantasy", "Romance", "Sci-Fi", "Slice of Life", "Supernatural", "Mystery", "Thriller"
+        )
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(genres) { g ->
+                val active = discoverGenre == g
+                Surface(
+                    shape = CircleShape,
+                    color = if (active) Color(0xFF2B271F) else Color.Transparent,
+                    border = BorderStroke(1.dp, if (active) ChampagneGold.copy(alpha = 0.65f) else ObsidianBorder),
+                    modifier = Modifier.height(36.dp).clip(CircleShape).clickable { onSelectGenre(g) }
+                ) {
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 16.dp)) {
+                        Text(
+                            g,
+                            fontSize = 13.sp,
+                            color = if (active) ChampagneGoldSoft else WarmSilver
+                        )
+                    }
                 }
             }
         }
@@ -2807,7 +3667,7 @@ private fun DesktopDiscoverScreen(
     ) {
         Text(modeHeading, fontFamily = FontFamily.Serif, fontSize = 26.sp, color = IvoryText)
         Text(
-            "${discoverItems.size} TITLES",
+            if (loading) "LOADING..." else "${discoverItems.size} TITLES",
             fontSize = 11.sp,
             fontWeight = FontWeight.SemiBold,
             letterSpacing = 1.8.sp,
@@ -2817,21 +3677,54 @@ private fun DesktopDiscoverScreen(
 
     Spacer(modifier = Modifier.height(10.dp))
 
-    LazyVerticalGrid(
-        columns = GridCells.Adaptive(minSize = 195.dp),
-        verticalArrangement = Arrangement.spacedBy(18.dp),
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
-        contentPadding = PaddingValues(bottom = 48.dp)
-    ) {
-        items(discoverItems, key = { it.id }) { item ->
-            val tracked = watchlist.firstOrNull { it.id == item.id }
-            val merged = tracked ?: item
-            ScreenshotPosterCard(
-                item = merged,
-                showSentimentBadge = tracked != null,
-                showFormatBadge = true,
-                onClick = { onOpenDetail(merged) }
-            )
+    if (isListView) {
+        LazyColumn(
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(bottom = 48.dp)
+        ) {
+            items(discoverItems, key = { it.id }) { item ->
+                val tracked = watchlist.firstOrNull { it.id == item.id }
+                val merged = tracked ?: item
+                val isOnHome = tracked?.inHome == true
+                DesktopAnimeListRow(
+                    item = merged,
+                    isOnHome = isOnHome,
+                    showEpisodeStepper = false,
+                    onClick = { onOpenDetail(merged) },
+                    onAddToHome = { onAddToHome(merged) },
+                    onRequestRemoveFromHome = { onRequestRemoveFromHome(merged) },
+                    onViewInLibrary = { onViewInLibrary(merged) },
+                    onViewCommunity = { onViewCommunity(merged) },
+                    onCommitEpisodes = null
+                )
+            }
+        }
+    } else {
+        LazyVerticalGrid(
+            columns = GridCells.Adaptive(minSize = 195.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            contentPadding = PaddingValues(bottom = 48.dp)
+        ) {
+            items(discoverItems, key = { it.id }) { item ->
+                val tracked = watchlist.firstOrNull { it.id == item.id }
+                val merged = tracked ?: item
+                val isOnHome = tracked?.inHome == true
+                ScreenshotPosterCard(
+                    item = merged,
+                    showSentimentBadge = tracked != null,
+                    showFormatBadge = true,
+                    isOnHome = isOnHome,
+                    showQuickHomeButton = true,
+                    showEpisodeStepper = false,
+                    onClick = { onOpenDetail(merged) },
+                    onRequestRemoveFromHome = { onRequestRemoveFromHome(merged) },
+                    onAddToHome = { onAddToHome(merged) },
+                    onViewInLibrary = { onViewInLibrary(merged) },
+                    onViewCommunity = { onViewCommunity(merged) },
+                    onCommitEpisodes = null
+                )
+            }
         }
     }
 }
@@ -2849,13 +3742,19 @@ private fun DesktopLibraryScreen(
     ratingFilter: String,
     searchQuery: String,
     sortMode: String,
+    isListView: Boolean,
+    onToggleListView: () -> Unit,
     onStatusChange: (String) -> Unit,
     onRatingChange: (String) -> Unit,
     onSearchChange: (String) -> Unit,
     onSortChange: (String) -> Unit,
     onCreateCollectionClick: () -> Unit,
     onOpenProfile: () -> Unit,
-    onOpenDetail: (DesktopAnimeItem) -> Unit
+    onOpenDetail: (DesktopAnimeItem) -> Unit,
+    onAddToHome: (DesktopAnimeItem) -> Unit,
+    onRequestRemoveFromHome: (DesktopAnimeItem) -> Unit,
+    onViewCommunity: (DesktopAnimeItem) -> Unit,
+    onCommitEpisodes: suspend (DesktopAnimeItem, Int) -> Result<Unit>
 ) {
     // Top Bar matching Screenshot 2
     Row(
@@ -2878,7 +3777,11 @@ private fun DesktopLibraryScreen(
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             CircleIconActionButton(icon = Icons.Outlined.CollectionsBookmark, onClick = onCreateCollectionClick)
-            CircleIconActionButton(icon = Icons.AutoMirrored.Filled.ViewList, onClick = {})
+            CircleIconActionButton(
+                icon = if (isListView) Icons.Outlined.GridView else Icons.AutoMirrored.Filled.ViewList,
+                active = isListView,
+                onClick = onToggleListView
+            )
             AvatarCircleButton(avatarKey = avatarKey, onClick = onOpenProfile)
         }
     }
@@ -3065,79 +3968,107 @@ private fun DesktopLibraryScreen(
             }
     }
 
-    LazyVerticalGrid(
-        columns = GridCells.Adaptive(minSize = 195.dp),
-        verticalArrangement = Arrangement.spacedBy(18.dp),
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
-        contentPadding = PaddingValues(bottom = 48.dp)
-    ) {
-        // Collections Header + Empty/List Card matching Screenshot 2
-        item(span = { GridItemSpan(maxLineSpan) }, key = "collections-section") {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Collections", fontFamily = FontFamily.Serif, fontSize = 24.sp, color = IvoryText)
-                    Text(
-                        "+  NEW",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 1.4.sp,
-                        color = ChampagneGold,
-                        modifier = Modifier.clickable(onClick = onCreateCollectionClick)
-                    )
-                }
-
-                if (collections.isEmpty()) {
-                    Surface(
-                        shape = RoundedCornerShape(18.dp),
-                        color = ObsidianInputBg,
-                        border = BorderStroke(1.dp, ObsidianBorder),
-                        modifier = Modifier.fillMaxWidth()
+    if (isListView) {
+        LazyColumn(
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(bottom = 48.dp)
+        ) {
+            items(filteredList, key = { it.id }) { item ->
+                DesktopAnimeListRow(
+                    item = item,
+                    isOnHome = item.inHome,
+                    showEpisodeStepper = true,
+                    onClick = { onOpenDetail(item) },
+                    onAddToHome = { onAddToHome(item) },
+                    onRequestRemoveFromHome = { onRequestRemoveFromHome(item) },
+                    onViewInLibrary = { onOpenDetail(item) },
+                    onViewCommunity = { onViewCommunity(item) },
+                    onCommitEpisodes = { eps -> onCommitEpisodes(item, eps) }
+                )
+            }
+        }
+    } else {
+        LazyVerticalGrid(
+            columns = GridCells.Adaptive(minSize = 195.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            contentPadding = PaddingValues(bottom = 48.dp)
+        ) {
+            // Collections Header + Empty/List Card matching Screenshot 2
+            item(span = { GridItemSpan(maxLineSpan) }, key = "collections-section") {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
+                        Text("Collections", fontFamily = FontFamily.Serif, fontSize = 24.sp, color = IvoryText)
                         Text(
-                            "Create custom collections such as \"Absolute Cinema\" or \"Donghua Favorites\".",
-                            color = WarmSilver,
-                            fontSize = 14.sp,
-                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp)
+                            "+  NEW",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.4.sp,
+                            color = ChampagneGold,
+                            modifier = Modifier.clickable(onClick = onCreateCollectionClick)
                         )
                     }
-                } else {
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        items(collections, key = { it.id }) { col ->
-                            Surface(
-                                shape = RoundedCornerShape(18.dp),
-                                color = ObsidianInputBg,
-                                border = BorderStroke(1.dp, ObsidianBorder),
-                                modifier = Modifier.width(240.dp)
-                            ) {
-                                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Text(col.title, fontFamily = FontFamily.Serif, fontSize = 18.sp, color = IvoryText)
-                                    Text(
-                                        col.description.ifBlank { "${col.count} anime" },
-                                        fontSize = 12.sp,
-                                        color = WarmSilver,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
+
+                    if (collections.isEmpty()) {
+                        Surface(
+                            shape = RoundedCornerShape(18.dp),
+                            color = ObsidianInputBg,
+                            border = BorderStroke(1.dp, ObsidianBorder),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                "Create custom collections such as \"Absolute Cinema\" or \"Donghua Favorites\".",
+                                color = WarmSilver,
+                                fontSize = 14.sp,
+                                modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp)
+                            )
+                        }
+                    } else {
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            items(collections, key = { it.id }) { col ->
+                                Surface(
+                                    shape = RoundedCornerShape(18.dp),
+                                    color = ObsidianInputBg,
+                                    border = BorderStroke(1.dp, ObsidianBorder),
+                                    modifier = Modifier.width(240.dp)
+                                ) {
+                                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Text(col.title, fontFamily = FontFamily.Serif, fontSize = 18.sp, color = IvoryText)
+                                        Text(
+                                            col.description.ifBlank { "${col.count} anime" },
+                                            fontSize = 12.sp,
+                                            color = WarmSilver,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
+                    Spacer(modifier = Modifier.height(4.dp))
                 }
-                Spacer(modifier = Modifier.height(4.dp))
             }
-        }
 
-        items(filteredList, key = { it.id }) { item ->
-            ScreenshotPosterCard(
-                item = item,
-                showSentimentBadge = true,
-                showFormatBadge = false,
-                onClick = { onOpenDetail(item) }
-            )
+            items(filteredList, key = { it.id }) { item ->
+                ScreenshotPosterCard(
+                    item = item,
+                    showSentimentBadge = true,
+                    showFormatBadge = false,
+                    isOnHome = item.inHome,
+                    showEpisodeStepper = true,
+                    onClick = { onOpenDetail(item) },
+                    onRequestRemoveFromHome = { onRequestRemoveFromHome(item) },
+                    onAddToHome = { onAddToHome(item) },
+                    onViewInLibrary = { onOpenDetail(item) },
+                    onViewCommunity = { onViewCommunity(item) },
+                    onCommitEpisodes = { eps -> onCommitEpisodes(item, eps) }
+                )
+            }
         }
     }
 }
@@ -3771,96 +4702,174 @@ private fun DesktopCommunityScreen(
 // SHARED POSTER CARD & TOP BAR ACTIONS (Matches Screenshots 2, 3, 4)
 // ============================================================================
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ScreenshotPosterCard(
     item: DesktopAnimeItem,
     showSentimentBadge: Boolean,
     showFormatBadge: Boolean,
-    onClick: () -> Unit
+    isOnHome: Boolean = item.inHome,
+    showQuickHomeButton: Boolean = false,
+    showEpisodeStepper: Boolean = false,
+    onClick: () -> Unit,
+    onRequestRemoveFromHome: (() -> Unit)? = null,
+    onAddToHome: (() -> Unit)? = null,
+    onViewInLibrary: (() -> Unit)? = null,
+    onViewCommunity: (() -> Unit)? = null,
+    onCommitEpisodes: (suspend (Int) -> Result<Unit>)? = null
 ) {
     val tier = if (showSentimentBadge) SentimentTier.fromStars(item.userStars) else null
     val displayStars = if (item.userStars > 0f) item.userStars else item.catalogStars
+    var menuExpanded by remember(item.id) { mutableStateOf(false) }
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-    ) {
-        Surface(
-            shape = RoundedCornerShape(22.dp),
-            color = ObsidianCard,
-            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.07f)),
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(2f / 3f)
-                .clip(RoundedCornerShape(22.dp))
-        ) {
-            Box(modifier = Modifier.fillMaxSize()) {
-                NetworkPosterImage(
-                    url = item.coverImage,
-                    contentDescription = item.title,
-                    modifier = Modifier.fillMaxSize()
-                )
-
-                // Top-left Sentiment Pill (e.g., WORTH in emerald, CINEMA in gold)
-                if (tier != null) {
-                    Surface(
-                        shape = CircleShape,
-                        color = tier.textColor,
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(12.dp)
-                    ) {
-                        Text(
-                            tier.shortLabel,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            letterSpacing = 1.sp,
-                            color = ChampagneOnGold,
-                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 4.dp)
-                        )
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Box(modifier = Modifier.fillMaxWidth()) {
+            Surface(
+                shape = RoundedCornerShape(22.dp),
+                color = ObsidianCard,
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.07f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(2f / 3f)
+                    .clip(RoundedCornerShape(22.dp))
+                    .pointerInput(item.id) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                if (event.type == PointerEventType.Press &&
+                                    (event.buttons.isSecondaryPressed || event.keyboardModifiers.isCtrlPressed)
+                                ) {
+                                    event.changes.forEach { it.consume() }
+                                    menuExpanded = true
+                                }
+                            }
+                        }
                     }
-                }
+                    .combinedClickable(
+                        onClick = onClick,
+                        onLongClick = { menuExpanded = true }
+                    )
+            ) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    NetworkPosterImage(
+                        url = item.coverImage,
+                        contentDescription = item.title,
+                        modifier = Modifier.fillMaxSize()
+                    )
 
-                // Top-right Star Rating Pill (★ 4.0)
-                if (displayStars > 0f) {
-                    Surface(
-                        shape = CircleShape,
-                        color = Color(0xD911141E),
-                        border = BorderStroke(1.dp, ChampagneGold.copy(alpha = 0.65f)),
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(12.dp)
-                    ) {
-                        Text(
-                            "★ ${String.format(Locale.US, "%.1f", displayStars)}",
-                            fontSize = 11.5.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = IvoryText,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                        )
+                    // Top-left Sentiment Pill (e.g., WORTH in emerald, CINEMA in gold)
+                    if (tier != null) {
+                        Surface(
+                            shape = CircleShape,
+                            color = tier.textColor,
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(12.dp)
+                        ) {
+                            Text(
+                                tier.shortLabel,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                letterSpacing = 1.sp,
+                                color = ChampagneOnGold,
+                                modifier = Modifier.padding(horizontal = 11.dp, vertical = 4.dp)
+                            )
+                        }
                     }
-                }
 
-                // Bottom-left Format Pill on Discover (e.g. TV)
-                if (showFormatBadge) {
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = Color(0xCC11141E),
-                        modifier = Modifier
-                            .align(Alignment.BottomStart)
-                            .padding(12.dp)
-                    ) {
-                        Text(
-                            item.format,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = IvoryText,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                        )
+                    // Top-right Star Rating Pill (★ 4.0)
+                    if (displayStars > 0f) {
+                        Surface(
+                            shape = CircleShape,
+                            color = Color(0xD911141E),
+                            border = BorderStroke(1.dp, ChampagneGold.copy(alpha = 0.65f)),
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(12.dp)
+                        ) {
+                            Text(
+                                "★ ${String.format(Locale.US, "%.1f", displayStars)}",
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = IvoryText,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+
+                    // Bottom-left Format Pill on Discover (e.g. TV)
+                    if (showFormatBadge) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xCC11141E),
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(12.dp)
+                        ) {
+                            Text(
+                                item.format,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = IvoryText,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+
+                    // Bottom-right quick + Add / In Home button on Discover cards
+                    if (showQuickHomeButton && (onAddToHome != null || onRequestRemoveFromHome != null)) {
+                        Surface(
+                            shape = CircleShape,
+                            color = if (isOnHome) Color(0xE6142A23) else Color(0xE6E5C17B),
+                            border = BorderStroke(
+                                1.dp,
+                                if (isOnHome) EmeraldWorth.copy(alpha = 0.7f) else ChampagneGold
+                            ),
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(10.dp)
+                                .clip(CircleShape)
+                                .clickable {
+                                    if (isOnHome) onRequestRemoveFromHome?.invoke() else onAddToHome?.invoke()
+                                }
+                        ) {
+                            Text(
+                                text = if (isOnHome) "✓ Home" else "+ Add",
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isOnHome) EmeraldWorth else ChampagneOnGold,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                            )
+                        }
                     }
                 }
             }
+
+            DesktopPosterContextMenu(
+                expanded = menuExpanded,
+                isOnHome = isOnHome,
+                onDismiss = { menuExpanded = false },
+                onRemoveFromHome = {
+                    menuExpanded = false
+                    onRequestRemoveFromHome?.invoke()
+                },
+                onAddToHome = {
+                    menuExpanded = false
+                    onAddToHome?.invoke()
+                },
+                onViewDetails = {
+                    menuExpanded = false
+                    onClick()
+                },
+                onViewLibrary = {
+                    menuExpanded = false
+                    onViewInLibrary?.invoke()
+                },
+                onViewCommunity = {
+                    menuExpanded = false
+                    onViewCommunity?.invoke()
+                }
+            )
         }
 
         Spacer(modifier = Modifier.height(8.dp))
@@ -3872,7 +4881,222 @@ private fun ScreenshotPosterCard(
             color = IvoryText,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(horizontal = 4.dp)
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(horizontal = 4.dp)
+        )
+
+        if (showEpisodeStepper && onCommitEpisodes != null) {
+            Spacer(modifier = Modifier.height(6.dp))
+            DesktopInlineEpisodeStepper(
+                watchedEpisodes = item.watchedEpisodes,
+                totalEpisodes = item.totalEpisodes,
+                compact = true,
+                onCommitEpisode = onCommitEpisodes,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+    }
+}
+
+@Composable
+private fun DesktopPosterContextMenu(
+    expanded: Boolean,
+    isOnHome: Boolean,
+    onDismiss: () -> Unit,
+    onRemoveFromHome: () -> Unit,
+    onAddToHome: () -> Unit,
+    onViewDetails: () -> Unit,
+    onViewLibrary: () -> Unit,
+    onViewCommunity: () -> Unit
+) {
+    DropdownMenu(
+        expanded = expanded,
+        onDismissRequest = onDismiss,
+        modifier = Modifier
+            .background(ObsidianCard)
+            .border(1.dp, ObsidianBorder, RoundedCornerShape(12.dp))
+    ) {
+        if (isOnHome) {
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        "Remove from Home",
+                        color = CrimsonWaste,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        Icons.Outlined.Home,
+                        contentDescription = null,
+                        tint = CrimsonWaste,
+                        modifier = Modifier.size(18.dp)
+                    )
+                },
+                onClick = onRemoveFromHome
+            )
+        } else {
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        "Add to Home",
+                        color = ChampagneGold,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        Icons.Filled.Add,
+                        contentDescription = null,
+                        tint = ChampagneGold,
+                        modifier = Modifier.size(18.dp)
+                    )
+                },
+                onClick = onAddToHome
+            )
+        }
+        DropdownMenuItem(
+            text = { Text("View Anime Details", color = IvoryText, fontSize = 13.sp) },
+            leadingIcon = {
+                Icon(Icons.Outlined.Info, contentDescription = null, tint = WarmSilver, modifier = Modifier.size(18.dp))
+            },
+            onClick = onViewDetails
+        )
+        DropdownMenuItem(
+            text = { Text("View in Library", color = IvoryText, fontSize = 13.sp) },
+            leadingIcon = {
+                Icon(Icons.Outlined.BookmarkBorder, contentDescription = null, tint = WarmSilver, modifier = Modifier.size(18.dp))
+            },
+            onClick = onViewLibrary
+        )
+        DropdownMenuItem(
+            text = { Text("View Community", color = IvoryText, fontSize = 13.sp) },
+            leadingIcon = {
+                Icon(Icons.Outlined.Group, contentDescription = null, tint = WarmSilver, modifier = Modifier.size(18.dp))
+            },
+            onClick = onViewCommunity
+        )
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun DesktopAnimeListRow(
+    item: DesktopAnimeItem,
+    isOnHome: Boolean,
+    showEpisodeStepper: Boolean,
+    onClick: () -> Unit,
+    onAddToHome: () -> Unit,
+    onRequestRemoveFromHome: () -> Unit,
+    onViewInLibrary: () -> Unit,
+    onViewCommunity: () -> Unit,
+    onCommitEpisodes: (suspend (Int) -> Result<Unit>)?
+) {
+    var menuExpanded by remember(item.id) { mutableStateOf(false) }
+    val displayStars = if (item.userStars > 0f) item.userStars else item.catalogStars
+
+    Box(modifier = Modifier.fillMaxWidth()) {
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = ObsidianCard,
+            border = BorderStroke(1.dp, ObsidianBorder),
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(18.dp))
+                .pointerInput(item.id) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            if (event.type == PointerEventType.Press &&
+                                (event.buttons.isSecondaryPressed || event.keyboardModifiers.isCtrlPressed)
+                            ) {
+                                event.changes.forEach { it.consume() }
+                                menuExpanded = true
+                            }
+                        }
+                    }
+                }
+                .combinedClickable(
+                    onClick = onClick,
+                    onLongClick = { menuExpanded = true }
+                )
+        ) {
+            Row(
+                modifier = Modifier.padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                NetworkPosterImage(
+                    url = item.coverImage,
+                    contentDescription = item.title,
+                    modifier = Modifier
+                        .size(width = 58.dp, height = 84.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                )
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(item.title, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = IvoryText, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        "${item.format} • ${item.watchStatus.replace('_', ' ').uppercase()}${if (displayStars > 0f) " • ★ ${String.format(Locale.US, "%.1f", displayStars)}" else ""}",
+                        fontSize = 11.5.sp,
+                        color = WarmSilver
+                    )
+                }
+                if (showEpisodeStepper && onCommitEpisodes != null) {
+                    DesktopInlineEpisodeStepper(
+                        watchedEpisodes = item.watchedEpisodes,
+                        totalEpisodes = item.totalEpisodes,
+                        compact = true,
+                        onCommitEpisode = onCommitEpisodes,
+                        modifier = Modifier.width(156.dp)
+                    )
+                }
+                Surface(
+                    shape = CircleShape,
+                    color = if (isOnHome) Color(0xFF142A23) else ChampagneGold,
+                    border = BorderStroke(1.dp, if (isOnHome) EmeraldWorth.copy(alpha = 0.6f) else ChampagneGold),
+                    modifier = Modifier.clip(CircleShape).clickable {
+                        if (isOnHome) onRequestRemoveFromHome() else onAddToHome()
+                    }
+                ) {
+                    Text(
+                        if (isOnHome) "✓ Home" else "+ Home",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isOnHome) EmeraldWorth else ChampagneOnGold,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    )
+                }
+            }
+        }
+
+        DesktopPosterContextMenu(
+            expanded = menuExpanded,
+            isOnHome = isOnHome,
+            onDismiss = { menuExpanded = false },
+            onRemoveFromHome = {
+                menuExpanded = false
+                onRequestRemoveFromHome()
+            },
+            onAddToHome = {
+                menuExpanded = false
+                onAddToHome()
+            },
+            onViewDetails = {
+                menuExpanded = false
+                onClick()
+            },
+            onViewLibrary = {
+                menuExpanded = false
+                onViewInLibrary()
+            },
+            onViewCommunity = {
+                menuExpanded = false
+                onViewCommunity()
+            }
         )
     }
 }
@@ -3880,19 +5104,20 @@ private fun ScreenshotPosterCard(
 @Composable
 private fun CircleIconActionButton(
     icon: ImageVector,
+    active: Boolean = false,
     onClick: () -> Unit
 ) {
     Surface(
         shape = CircleShape,
-        color = ObsidianPillBg,
-        border = BorderStroke(1.dp, ObsidianBorder),
+        color = if (active) Color(0xFF2B271F) else ObsidianPillBg,
+        border = BorderStroke(1.dp, if (active) ChampagneGold.copy(alpha = 0.7f) else ObsidianBorder),
         modifier = Modifier
             .size(44.dp)
             .clip(CircleShape)
             .clickable(onClick = onClick)
     ) {
         Box(contentAlignment = Alignment.Center) {
-            Icon(icon, contentDescription = null, tint = IvoryText, modifier = Modifier.size(20.dp))
+            Icon(icon, contentDescription = null, tint = if (active) ChampagneGold else IvoryText, modifier = Modifier.size(20.dp))
         }
     }
 }
@@ -3921,11 +5146,15 @@ private fun DesktopProfileScreen(
     session: DesktopPersistedState,
     watchlist: List<DesktopAnimeItem>,
     collectionsCount: Int,
-    onUpdateProfile: (String, String) -> Unit,
+    onUpdateProfile: suspend (String, String) -> Result<Unit>,
     onSignOut: () -> Unit
 ) {
+    val scope = rememberCoroutineScope()
     var nameInput by remember(session.username) { mutableStateOf(session.username) }
     var selectedAvatar by remember(session.avatarKey) { mutableStateOf(session.avatarKey) }
+    var isSaving by remember { mutableStateOf(false) }
+    var feedbackMessage by remember { mutableStateOf<String?>(null) }
+    var feedbackError by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -3952,7 +5181,7 @@ private fun DesktopProfileScreen(
                     val preset = DesktopAvatar.fromKey(selectedAvatar)
                     DesktopAvatarImage(
                         avatarKey = preset.key,
-                        username = session.username,
+                        username = nameInput.ifBlank { session.username },
                         modifier = Modifier
                             .size(88.dp)
                             .clip(CircleShape)
@@ -3978,9 +5207,13 @@ private fun DesktopProfileScreen(
 
                 OutlinedTextField(
                     value = nameInput,
-                    onValueChange = { nameInput = it },
+                    onValueChange = {
+                        nameInput = it
+                        feedbackMessage = null
+                    },
                     label = { Text("Display Username") },
                     singleLine = true,
+                    enabled = !isSaving,
                     modifier = Modifier.fillMaxWidth()
                 )
 
@@ -4006,20 +5239,62 @@ private fun DesktopProfileScreen(
                                     if (isSel) ChampagneGold else ObsidianBorder,
                                     CircleShape
                                 )
-                                .clickable { selectedAvatar = av.key }
+                                .clickable(enabled = !isSaving) {
+                                    selectedAvatar = av.key
+                                    feedbackMessage = null
+                                }
                         )
                     }
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                feedbackMessage?.let { msg ->
+                    Text(
+                        text = msg,
+                        fontSize = 12.5.sp,
+                        color = if (feedbackError) CrimsonWaste else EmeraldWorth
+                    )
+                }
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Button(
-                        onClick = { onUpdateProfile(nameInput.ifBlank { session.username }, selectedAvatar) },
+                        enabled = !isSaving,
+                        onClick = {
+                            if (isSaving) return@Button
+                            isSaving = true
+                            feedbackMessage = null
+                            scope.launch {
+                                val targetName = nameInput.trim().ifBlank { session.username }
+                                val res = onUpdateProfile(targetName, selectedAvatar)
+                                isSaving = false
+                                res.onSuccess {
+                                    feedbackError = false
+                                    feedbackMessage = "Profile saved and synced."
+                                }.onFailure { err ->
+                                    feedbackError = true
+                                    feedbackMessage = err.message ?: "Failed to update profile."
+                                }
+                            }
+                        },
                         shape = CircleShape,
                         colors = ButtonDefaults.buttonColors(containerColor = ChampagneGold, contentColor = ChampagneOnGold)
                     ) {
-                        Text("Save Profile", fontWeight = FontWeight.Bold)
+                        if (isSaving) {
+                            CircularProgressIndicator(
+                                strokeWidth = 2.dp,
+                                color = ChampagneOnGold,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Saving...", fontWeight = FontWeight.Bold)
+                        } else {
+                            Text("Save Profile", fontWeight = FontWeight.Bold)
+                        }
                     }
                     OutlinedButton(
+                        enabled = !isSaving,
                         onClick = onSignOut,
                         shape = CircleShape,
                         border = BorderStroke(1.dp, CrimsonWaste.copy(alpha = 0.6f))
@@ -4037,12 +5312,15 @@ private fun DesktopDetailScreen(
     item: DesktopAnimeItem,
     onBack: () -> Unit,
     onSave: (DesktopAnimeItem) -> Unit,
+    onCommitEpisodes: suspend (Int) -> Result<Unit>,
+    onAddToHome: () -> Unit,
+    onRequestRemoveFromHome: () -> Unit,
     onDelete: (DesktopAnimeItem) -> Unit
 ) {
-    var watchStatus by remember(item.id) { mutableStateOf(item.watchStatus) }
-    var watchedEps by remember(item.id) { mutableStateOf(item.watchedEpisodes) }
-    var stars by remember(item.id) { mutableStateOf(item.userStars) }
-    var notes by remember(item.id) { mutableStateOf(item.notes) }
+    var watchStatus by remember(item.id, item.watchStatus) { mutableStateOf(item.watchStatus) }
+    var watchedEps by remember(item.id, item.watchedEpisodes) { mutableStateOf(item.watchedEpisodes) }
+    var stars by remember(item.id, item.userStars) { mutableStateOf(item.userStars) }
+    var notes by remember(item.id, item.notes) { mutableStateOf(item.notes) }
 
     Column(
         modifier = Modifier
@@ -4051,20 +5329,46 @@ private fun DesktopDetailScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Row(
+            modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = IvoryText)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = IvoryText)
+                }
+                Text(
+                    item.title,
+                    fontFamily = FontFamily.Serif,
+                    fontSize = 28.sp,
+                    color = IvoryText,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
-            Text(
-                item.title,
-                fontFamily = FontFamily.Serif,
-                fontSize = 28.sp,
-                color = IvoryText,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+
+            // Explicit Home tracking toggle (independent of Library & Community)
+            if (item.inHome) {
+                OutlinedButton(
+                    onClick = onRequestRemoveFromHome,
+                    shape = CircleShape,
+                    border = BorderStroke(1.dp, CrimsonWaste.copy(alpha = 0.65f))
+                ) {
+                    Text("Remove from Home", color = CrimsonWaste, fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp)
+                }
+            } else {
+                Button(
+                    onClick = onAddToHome,
+                    shape = CircleShape,
+                    colors = ButtonDefaults.buttonColors(containerColor = ChampagneGold, contentColor = ChampagneOnGold)
+                ) {
+                    Text("+ Add to Home", fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
+                }
+            }
         }
 
         Surface(
@@ -4123,36 +5427,30 @@ private fun DesktopDetailScreen(
                         }
                     }
 
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Text("Episodes Watched:", color = WarmSilver, fontSize = 14.sp)
-                        Surface(
-                            shape = CircleShape,
-                            color = ObsidianPillBg,
-                            modifier = Modifier.size(32.dp).clip(CircleShape).clickable {
-                                watchedEps = (watchedEps - 1).coerceAtLeast(0)
+                    Text(
+                        "EPISODE PROGRESS (CLICK NUMBER TO TYPE DIRECTLY)",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.5.sp,
+                        color = ChampagneGold
+                    )
+
+                    DesktopInlineEpisodeStepper(
+                        watchedEpisodes = watchedEps,
+                        totalEpisodes = item.totalEpisodes,
+                        compact = false,
+                        onCommitEpisode = { nextEps ->
+                            val res = onCommitEpisodes(nextEps)
+                            res.onSuccess {
+                                watchedEps = nextEps
+                                if (DesktopTrackingRules.shouldAutoComplete(item.status, item.totalEpisodes, nextEps)) {
+                                    watchStatus = "completed"
+                                }
                             }
-                        ) {
-                            Box(contentAlignment = Alignment.Center) { Text("−", color = IvoryText) }
-                        }
-                        Text(
-                            "$watchedEps / ${item.totalEpisodes ?: "∞"}",
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = IvoryText
-                        )
-                        Surface(
-                            shape = CircleShape,
-                            color = ChampagneGold,
-                            modifier = Modifier.size(32.dp).clip(CircleShape).clickable {
-                                watchedEps += 1
-                            }
-                        ) {
-                            Box(contentAlignment = Alignment.Center) { Text("+", color = ChampagneOnGold) }
-                        }
-                    }
+                            res
+                        },
+                        modifier = Modifier.widthIn(max = 280.dp)
+                    )
 
                     Text(
                         "YOUR RATING & SENTIMENT",
@@ -4196,10 +5494,19 @@ private fun DesktopDetailScreen(
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Button(
                             onClick = {
+                                val effectiveStatus = if (
+                                    watchStatus != "dropped" &&
+                                    DesktopTrackingRules.shouldAutoComplete(item.status, item.totalEpisodes, watchedEps)
+                                ) "completed" else watchStatus
+                                val keepHome = item.inHome &&
+                                    effectiveStatus != "dropped" &&
+                                    effectiveStatus != "completed" &&
+                                    !DesktopTrackingRules.shouldAutoComplete(item.status, item.totalEpisodes, watchedEps)
                                 onSave(
                                     item.copy(
                                         inWatchlist = true,
-                                        watchStatus = watchStatus,
+                                        inHome = keepHome,
+                                        watchStatus = effectiveStatus,
                                         watchedEpisodes = watchedEps,
                                         userStars = stars,
                                         notes = notes,
@@ -4218,7 +5525,7 @@ private fun DesktopDetailScreen(
                                 shape = CircleShape,
                                 border = BorderStroke(1.dp, CrimsonWaste.copy(alpha = 0.6f))
                             ) {
-                                Text("Remove", color = CrimsonWaste)
+                                Text("Delete from Library", color = CrimsonWaste)
                             }
                         }
                     }

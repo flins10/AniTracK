@@ -1095,9 +1095,184 @@ class SupabaseDatabaseService {
         }
     }
 
+    suspend fun fetchHomeTrackingIds(session: AuthSession): Result<Set<Int>?> = withContext(Dispatchers.IO) {
+        if (!AppConfig.isSupabaseConfigured) return@withContext Result.success(null)
+        try {
+            val req = requestBuilder(
+                "/rest/v1/home_tracking?user_id=eq.${session.userId}&select=anime_id",
+                session.accessToken
+            ).get().build()
+            client.newCall(req).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) {
+                    if (resp.code == 404 || body.contains("PGRST205", ignoreCase = true) || body.contains("home_tracking", ignoreCase = true)) {
+                        return@withContext Result.success(null)
+                    }
+                    return@withContext Result.failure(Exception(parsePostgrestError(body, "Failed to load Home list")))
+                }
+                val arr = JSONArray(body)
+                val ids = mutableSetOf<Int>()
+                for (i in 0 until arr.length()) {
+                    val id = arr.getJSONObject(i).optInt("anime_id", 0)
+                    if (id > 0) ids.add(id)
+                }
+                Result.success(ids)
+            }
+        } catch (_: Exception) {
+            Result.success(null)
+        }
+    }
+
+    suspend fun addToHome(session: AuthSession, anime: AnimeEntity): Result<Unit> = withContext(Dispatchers.IO) {
+        if (!AppConfig.isSupabaseConfigured) return@withContext Result.failure(Exception("Supabase not configured"))
+        upsertAnimeCatalog(session, anime).onFailure { return@withContext Result.failure(it) }
+        try {
+            val payload = JSONObject()
+                .put("p_anime_id", anime.id)
+                .put("p_airing_day", anime.airingDayOfWeek.coerceIn(1, 7))
+            val rpcReq = requestBuilder("/rest/v1/rpc/add_to_home", session.accessToken)
+                .post(payload.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+            client.newCall(rpcReq).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (resp.isSuccessful) return@withContext Result.success(Unit)
+                if (resp.code != 404 && !body.contains("PGRST202", ignoreCase = true) && !body.contains("Could not find", ignoreCase = true)) {
+                    return@withContext Result.failure(Exception(parsePostgrestError(body, "Failed to add to Home")))
+                }
+            }
+            // Fallback before SQL migration is deployed
+            val htPayload = JSONObject()
+                .put("user_id", session.userId)
+                .put("anime_id", anime.id)
+                .put("airing_day_of_week", anime.airingDayOfWeek.coerceIn(1, 7))
+            runCatching {
+                val htReq = requestBuilder("/rest/v1/home_tracking?on_conflict=user_id,anime_id", session.accessToken)
+                    .addHeader("Prefer", "resolution=merge-duplicates,return=minimal")
+                    .post(htPayload.toString().toRequestBody("application/json".toMediaType()))
+                    .build()
+                client.newCall(htReq).execute().close()
+            }
+            upsertUserAnimeEntry(session, anime)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun removeFromHome(session: AuthSession, animeId: Int): Result<Unit> = withContext(Dispatchers.IO) {
+        if (!AppConfig.isSupabaseConfigured) return@withContext Result.failure(Exception("Supabase not configured"))
+        try {
+            val payload = JSONObject().put("p_anime_id", animeId)
+            val rpcReq = requestBuilder("/rest/v1/rpc/remove_from_home", session.accessToken)
+                .post(payload.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+            client.newCall(rpcReq).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (resp.isSuccessful) return@withContext Result.success(Unit)
+                if (resp.code != 404 && !body.contains("PGRST202", ignoreCase = true) && !body.contains("Could not find", ignoreCase = true)) {
+                    return@withContext Result.failure(Exception(parsePostgrestError(body, "Failed to remove from Home")))
+                }
+            }
+            // Fallback direct delete on home_tracking (never deletes user_anime Library entry)
+            val delReq = requestBuilder(
+                "/rest/v1/home_tracking?user_id=eq.${session.userId}&anime_id=eq.$animeId",
+                session.accessToken
+            ).delete().build()
+            runCatching { client.newCall(delReq).execute().close() }
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun upsertCommunityNote(
+        session: AuthSession,
+        animeId: Int,
+        animeTitle: String,
+        coverImage: String,
+        rating10: Double?,
+        reviewNotes: String
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        if (!AppConfig.isSupabaseConfigured) return@withContext Result.failure(Exception("Supabase not configured"))
+        val catalogSeed = AnimeEntity(
+            id = animeId,
+            titleRomaji = animeTitle.ifBlank { "Anime #$animeId" },
+            titleEnglish = animeTitle.ifBlank { null },
+            coverImage = coverImage
+        )
+        runCatching { upsertAnimeCatalog(session, catalogSeed) }
+        try {
+            val cleanNote = reviewNotes.trim().take(500)
+            val cleanRating = rating10?.takeIf { it > 0.0 }?.coerceIn(0.5, 10.0)
+            val payload = JSONObject()
+                .put("p_anime_id", animeId)
+                .put("p_rating", cleanRating ?: JSONObject.NULL)
+                .put("p_note_text", cleanNote)
+            val rpcReq = requestBuilder("/rest/v1/rpc/upsert_community_note", session.accessToken)
+                .post(payload.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+            client.newCall(rpcReq).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (resp.isSuccessful) return@withContext Result.success(Unit)
+                if (resp.code != 404 && !body.contains("PGRST202", ignoreCase = true) && !body.contains("Could not find", ignoreCase = true)) {
+                    return@withContext Result.failure(Exception(parsePostgrestError(body, "Failed to save community note")))
+                }
+            }
+            // Fallback direct upsert into community_notes (never touches home_tracking)
+            val tablePayload = JSONObject()
+                .put("user_id", session.userId)
+                .put("anime_id", animeId)
+                .put("rating", cleanRating ?: JSONObject.NULL)
+                .put("note_text", cleanNote)
+            val tableReq = requestBuilder("/rest/v1/community_notes?on_conflict=user_id,anime_id", session.accessToken)
+                .addHeader("Prefer", "resolution=merge-duplicates,return=minimal")
+                .post(tablePayload.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+            client.newCall(tableReq).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (resp.isSuccessful) return@withContext Result.success(Unit)
+                return@withContext Result.failure(Exception(parsePostgrestError(body, "Failed to save community note")))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun updateEpisodeProgress(
+        session: AuthSession,
+        anime: AnimeEntity,
+        targetEpisodes: Int
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        if (!AppConfig.isSupabaseConfigured) return@withContext Result.failure(Exception("Supabase not configured"))
+        upsertAnimeCatalog(session, anime).onFailure { return@withContext Result.failure(it) }
+        try {
+            val payload = JSONObject()
+                .put("p_anime_id", anime.id)
+                .put("p_watched_episodes", targetEpisodes)
+            val rpcReq = requestBuilder("/rest/v1/rpc/update_episode_progress", session.accessToken)
+                .post(payload.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+            client.newCall(rpcReq).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (resp.isSuccessful) return@withContext Result.success(Unit)
+                if (resp.code != 404 && !body.contains("PGRST202", ignoreCase = true) && !body.contains("Could not find", ignoreCase = true)) {
+                    return@withContext Result.failure(Exception(parsePostgrestError(body, "Failed to update episode progress")))
+                }
+            }
+            // Fallback when RPC isn't deployed yet
+            upsertUserAnimeEntry(session, anime.copy(watchedEpisodeCount = targetEpisodes))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     suspend fun fetchUserWatchlist(session: AuthSession, targetUserId: String = session.userId): Result<List<AnimeEntity>> = withContext(Dispatchers.IO) {
         if (!AppConfig.isSupabaseConfigured) return@withContext Result.failure(Exception("Cloud account service is currently unavailable."))
         try {
+            val homeIds: Set<Int>? = if (targetUserId == session.userId) {
+                fetchHomeTrackingIds(session).getOrNull()
+            } else {
+                null
+            }
             val compactSelect = "id,user_id,anime_id,status,episode_progress,total_episodes,personal_rating,review_notes,is_favorite,updated_at," +
                 "anime(anilist_id,title_english,title_romaji,title_native,cover_image,banner_image,genres,release_year,season,episodes,average_score,popularity,format,status,studios,next_airing_at,next_episode_number)"
             val req = requestBuilder(
@@ -1112,8 +1287,10 @@ class SupabaseDatabaseService {
                     for (i in 0 until arr.length()) {
                         val row = arr.getJSONObject(i)
                         val a = row.optJSONObject("anime") ?: continue
+                        val animeId = a.getInt("anilist_id")
                         val statusStr = row.optString("status", "plan_to_watch")
                         val watchStatus = WatchStatus.fromDbValue(statusStr)
+                        val officialStatus = a.optString("status", "RELEASING")
                         val totalEps = if (a.isNull("episodes")) null else a.optInt("episodes")
                         val progress = row.optInt("episode_progress", 0)
                         val personalRating = if (row.isNull("personal_rating")) null else (row.optDouble("personal_rating") * 10).toInt()
@@ -1136,19 +1313,30 @@ class SupabaseDatabaseService {
                                 .atZone(java.time.ZoneId.systemDefault())
                                 .dayOfWeek.value
                         } else {
-                            ((a.getInt("anilist_id").coerceAtLeast(1) % 7) + 1)
+                            ((animeId.coerceAtLeast(1) % 7) + 1)
+                        }
+                        val autoRemoveFromHome = com.example.model.ProgressRules.shouldRemoveFromHome(
+                            watchStatus = watchStatus,
+                            officialStatus = officialStatus,
+                            totalEpisodes = totalEps,
+                            watchedEpisodes = progress
+                        )
+                        val resolvedInHome = if (homeIds != null) {
+                            homeIds.contains(animeId) && !autoRemoveFromHome
+                        } else {
+                            watchStatus == WatchStatus.WATCHING && !autoRemoveFromHome
                         }
 
                         add(
                             AnimeEntity(
-                                id = a.getInt("anilist_id"),
+                                id = animeId,
                                 titleRomaji = a.optString("title_romaji", "Untitled"),
                                 titleEnglish = a.optString("title_english").takeIf { it.isNotBlank() && it != "null" },
                                 titleNative = a.optString("title_native").takeIf { it.isNotBlank() && it != "null" },
                                 coverImage = a.optString("cover_image", ""),
                                 bannerImage = a.optString("banner_image").takeIf { it.isNotBlank() && it != "null" },
                                 format = a.optString("format", "TV"),
-                                status = a.optString("status", "RELEASING"),
+                                status = officialStatus,
                                 totalEpisodes = totalEps,
                                 currentEpisode = maxOf(progress, 1),
                                 watchedEpisodeCount = progress,
@@ -1165,6 +1353,7 @@ class SupabaseDatabaseService {
                                 score = if (a.isNull("average_score")) null else a.optInt("average_score"),
                                 popularity = if (a.isNull("popularity")) null else a.optInt("popularity"),
                                 synopsis = a.optString("description").takeIf { it.isNotBlank() && it != "null" },
+                                inHome = resolvedInHome,
                                 inWatchlist = true,
                                 isWishlist = watchStatus == WatchStatus.PLAN_TO_WATCH,
                                 isFavorite = row.optBoolean("is_favorite", false),
@@ -1458,10 +1647,28 @@ class SupabaseDatabaseService {
                 JSONArray(body)
             }
 
+            // Also fetch independent community_notes (when deployed) so Community works independently of Home/Library
+            val communityNotesArr = runCatching {
+                val notesSelect = "id,user_id,anime_id,rating,note_text,updated_at,anime(anilist_id,title_english,title_romaji,cover_image,episodes)"
+                val notesReq = requestBuilder(
+                    "/rest/v1/community_notes?select=$notesSelect$animeFilterQuery&order=updated_at.desc&limit=${limit.coerceIn(10, 200)}&offset=${offset.coerceAtLeast(0)}",
+                    session.accessToken
+                ).get().build()
+                client.newCall(notesReq).execute().use { notesResp ->
+                    if (notesResp.isSuccessful) JSONArray(notesResp.body?.string().orEmpty()) else JSONArray()
+                }
+            }.getOrDefault(JSONArray())
+
             // Backfill any missing contributor profiles so new users always see every contributor's username and avatar
             val missingUserIds = mutableSetOf<String>()
             for (i in 0 until arr.length()) {
                 val uid = arr.getJSONObject(i).optString("user_id")
+                if (uid.isNotBlank() && !memberById.containsKey(uid)) {
+                    missingUserIds.add(uid)
+                }
+            }
+            for (i in 0 until communityNotesArr.length()) {
+                val uid = communityNotesArr.getJSONObject(i).optString("user_id")
                 if (uid.isNotBlank() && !memberById.containsKey(uid)) {
                     missingUserIds.add(uid)
                 }
@@ -1520,7 +1727,7 @@ class SupabaseDatabaseService {
                 }
             }
 
-            // Batch-fetch review likes for the returned reviews (no N+1 queries)
+            // Batch-fetch review likes + independent community note likes (no N+1 queries)
             val reviewLikesCount = mutableMapOf<String, Int>()
             val likedByCurrentUser = mutableSetOf<String>()
             runCatching {
@@ -1545,10 +1752,74 @@ class SupabaseDatabaseService {
                     }
                 }
             }
+            runCatching {
+                val noteLikesReq = requestBuilder(
+                    "/rest/v1/community_note_likes?select=note_id,user_id&limit=1000",
+                    session.accessToken
+                ).get().build()
+                client.newCall(noteLikesReq).execute().use { likesResp ->
+                    if (likesResp.isSuccessful) {
+                        val likesArr = JSONArray(likesResp.body?.string().orEmpty())
+                        for (i in 0 until likesArr.length()) {
+                            val lObj = likesArr.getJSONObject(i)
+                            val nId = lObj.optString("note_id")
+                            val uId = lObj.optString("user_id")
+                            if (nId.isNotBlank()) {
+                                reviewLikesCount[nId] = (reviewLikesCount[nId] ?: 0) + 1
+                                if (uId == session.userId) {
+                                    likedByCurrentUser.add(nId)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
-            val reviews = mutableListOf<CommunityReview>()
+            val reviewsByKey = LinkedHashMap<String, CommunityReview>()
             val activity = mutableListOf<CommunityActivityItem>()
 
+            // First ingest independent community_notes
+            for (i in 0 until communityNotesArr.length()) {
+                val row = communityNotesArr.getJSONObject(i)
+                val rowId = row.optString("id")
+                val uid = row.optString("user_id")
+                val member = memberById[uid] ?: continue
+                if (member.status != MemberStatus.ACTIVE) continue
+                val anime = row.optJSONObject("anime")
+                val animeId = anime?.optInt("anilist_id")?.takeIf { it > 0 } ?: row.optInt("anime_id", 0)
+                if (animeId <= 0) continue
+                val animeTitle = anime?.optString("title_english")?.takeIf { it.isNotBlank() && it != "null" }
+                    ?: anime?.optString("title_romaji")?.takeIf { it.isNotBlank() && it != "null" }
+                    ?: "Anime #$animeId"
+                val coverImage = anime?.optString("cover_image", "").orEmpty()
+                val rating = if (row.isNull("rating")) null else row.optDouble("rating")
+                val notes = row.optString("note_text", "").trim()
+                val totalEps = if (anime == null || anime.isNull("episodes")) null else anime.optInt("episodes")
+                val updatedAt = row.optString("updated_at", "")
+                val hasNoteOrRating = notes.isNotBlank() || (rating != null && rating > 0.0)
+                if (hasNoteOrRating) {
+                    reviewsByKey["$uid-$animeId"] = CommunityReview(
+                        id = rowId,
+                        userId = uid,
+                        username = member.username,
+                        avatarKey = member.avatarKey,
+                        avatarUrl = member.avatarUrl,
+                        animeId = animeId,
+                        animeTitle = animeTitle,
+                        animeCoverImage = coverImage,
+                        rating = rating,
+                        reviewNotes = notes,
+                        status = WatchStatus.WATCHING,
+                        episodeProgress = 0,
+                        totalEpisodes = totalEps,
+                        updatedAt = updatedAt,
+                        likesCount = reviewLikesCount[rowId] ?: 0,
+                        likedByMe = likedByCurrentUser.contains(rowId)
+                    )
+                }
+            }
+
+            // Next ingest user_anime reviews & activity (enriching matching community_notes with watch progress)
             for (i in 0 until arr.length()) {
                 val row = arr.getJSONObject(i)
                 val rowId = row.getString("id")
@@ -1569,12 +1840,19 @@ class SupabaseDatabaseService {
                 val totalEps = if (anime == null || anime.isNull("episodes")) null else anime.optInt("episodes")
                 val updatedAt = row.optString("updated_at", "")
 
-                // Anyone joined in Community automatically shares their notes & ratings for unified anime templates
-                val canShowReview = member.status == MemberStatus.ACTIVE
-                val hasNoteOrRating = notes.isNotBlank() || (rating != null && rating > 0.0)
-                if (canShowReview && hasNoteOrRating) {
-                    reviews.add(
-                        CommunityReview(
+                val key = "$uid-$animeId"
+                val existingNote = reviewsByKey[key]
+                if (existingNote != null) {
+                    reviewsByKey[key] = existingNote.copy(
+                        status = status,
+                        episodeProgress = progress,
+                        totalEpisodes = totalEps ?: existingNote.totalEpisodes
+                    )
+                } else {
+                    val canShowReview = member.status == MemberStatus.ACTIVE
+                    val hasNoteOrRating = notes.isNotBlank() || (rating != null && rating > 0.0)
+                    if (canShowReview && hasNoteOrRating) {
+                        reviewsByKey[key] = CommunityReview(
                             id = rowId,
                             userId = uid,
                             username = member.username,
@@ -1592,7 +1870,7 @@ class SupabaseDatabaseService {
                             likesCount = reviewLikesCount[rowId] ?: 0,
                             likedByMe = likedByCurrentUser.contains(rowId)
                         )
-                    )
+                    }
                 }
 
                 val canShowActivity = member.status == MemberStatus.ACTIVE || uid == session.userId || member.privacy.activityVisibility == VisibilityLevel.COMMUNITY
@@ -1616,7 +1894,7 @@ class SupabaseDatabaseService {
                     )
                 }
             }
-            Result.success(reviews to activity)
+            Result.success(reviewsByKey.values.toList() to activity)
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -1635,6 +1913,21 @@ class SupabaseDatabaseService {
                 .post(payload.toString().toRequestBody("application/json".toMediaType()))
                 .build()
             client.newCall(rpcReq).execute().use { resp ->
+                val body = resp.body?.string().orEmpty().trim()
+                if (resp.isSuccessful && body.startsWith("{")) {
+                    val obj = JSONObject(body)
+                    return@withContext Result.success(
+                        obj.optBoolean("liked", !currentlyLiked) to obj.optInt("likes_count", maxOf(0, currentCount + if (!currentlyLiked) 1 else -1))
+                    )
+                }
+            }
+
+            // Try independent community_note_likes RPC when reviewId is a community_notes UUID
+            val notePayload = JSONObject().put("p_note_id", reviewId)
+            val noteRpcReq = requestBuilder("/rest/v1/rpc/toggle_community_note_like", session.accessToken)
+                .post(notePayload.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+            client.newCall(noteRpcReq).execute().use { resp ->
                 val body = resp.body?.string().orEmpty().trim()
                 if (resp.isSuccessful && body.startsWith("{")) {
                     val obj = JSONObject(body)

@@ -38,6 +38,8 @@ import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.RemoveCircleOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -102,8 +104,10 @@ import com.example.ui.widgets.AppCard
 import com.example.ui.widgets.AppPrimaryButton
 import com.example.ui.widgets.AppProgressBar
 import com.example.ui.widgets.AppSecondaryButton
+import com.example.ui.widgets.InlineEpisodeNumberStepper
 import com.example.ui.widgets.ObsidianAmbientBackground
 import com.example.ui.widgets.RatingBadge
+import com.example.ui.widgets.RemoveFromHomeConfirmDialog
 import com.example.ui.widgets.ResilientPosterImage
 import com.example.ui.widgets.StarRatingRow
 import com.example.ui.widgets.TrackingEditorDialog
@@ -138,6 +142,7 @@ fun AnimeDetailScreen(
     var synopsisExpanded by remember { mutableStateOf(false) }
     var showTrackingEditor by remember { mutableStateOf(false) }
     var showCollectionPicker by remember { mutableStateOf(false) }
+    var showRemoveFromHomeConfirm by remember { mutableStateOf(false) }
 
     LaunchedEffect(animeId) {
         viewModel.selectAnimeDetail(animeId)
@@ -345,7 +350,10 @@ fun AnimeDetailScreen(
                     val total = current.totalEpisodes
                     val canInc = !current.inWatchlist || total == null || total <= 0 || current.watchedEpisodeCount < total
                     val canDec = current.inWatchlist && current.watchedEpisodeCount > 0
-                    val isCompleted = current.inWatchlist && (current.watchStatusEnum == WatchStatus.COMPLETED || (total != null && total > 0 && current.watchedEpisodeCount >= total))
+                    val isCompleted = current.inWatchlist && (
+                        current.watchStatusEnum == WatchStatus.COMPLETED ||
+                            ProgressRules.shouldAutoComplete(current.status, total, current.watchedEpisodeCount)
+                    )
 
                     AppCard(
                         shape = RoundedCornerShape(24.dp),
@@ -453,18 +461,21 @@ fun AnimeDetailScreen(
                                 )
                             } else {
                                 DetailEpisodeStepperControl(
+                                    animeId = current.id,
                                     watchedEpisodeCount = current.watchedEpisodeCount,
                                     totalEpisodes = total,
                                     subtitle = if (activeSeasonEntry != null && seasonEntries.size > 1) {
-                                        "SEASON ${activeSeasonEntry.seasonNumber} • EPISODES WATCHED"
+                                        "SEASON ${activeSeasonEntry.seasonNumber} • TAP NUMBER TO EDIT"
                                     } else {
-                                        "EPISODES WATCHED"
+                                        "EPISODES WATCHED • TAP NUMBER TO EDIT"
                                     },
                                     canDecrement = canDec,
                                     canIncrement = canInc,
                                     onDecrement = { viewModel.decrementEpisode(current.id) },
                                     onIncrement = { viewModel.incrementEpisode(current.id) },
-                                    onSetCustomEpisode = { clamped -> viewModel.setEpisodeProgress(current.id, clamped) }
+                                    onCommitCustomEpisode = { targetEp ->
+                                        viewModel.commitEpisodeProgress(current.id, targetEp).map { }
+                                    }
                                 )
 
                                 // Soft Capsule Edit / Star Rating & Review Studio button
@@ -563,6 +574,44 @@ fun AnimeDetailScreen(
                                 )
                             }
 
+                            if (current.inHome) {
+                                OutlinedButton(
+                                    onClick = { showRemoveFromHomeConfirm = true },
+                                    shape = CircleShape,
+                                    border = BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.55f)),
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        containerColor = colors.accentPrimary.copy(alpha = 0.08f),
+                                        contentColor = colors.accentPrimary
+                                    ),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 48.dp)
+                                        .testTag("detail_remove_from_home")
+                                ) {
+                                    Icon(Icons.Filled.RemoveCircleOutline, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Remove from Home (Keep in Library)", fontWeight = FontWeight.SemiBold)
+                                }
+                            } else if (current.inWatchlist) {
+                                OutlinedButton(
+                                    onClick = { viewModel.addToHome(current) },
+                                    shape = CircleShape,
+                                    border = BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.55f)),
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        containerColor = colors.accentPrimary.copy(alpha = 0.08f),
+                                        contentColor = colors.accentPrimary
+                                    ),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 48.dp)
+                                        .testTag("detail_add_to_home")
+                                ) {
+                                    Icon(Icons.Filled.Home, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Add to Home Tracking", fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+
                             if (current.inWatchlist || current.hasActiveUserState) {
                                 OutlinedButton(
                                     onClick = { viewModel.removeFromWatchlist(current.id) },
@@ -579,7 +628,7 @@ fun AnimeDetailScreen(
                                 ) {
                                     Icon(Icons.Filled.DeleteOutline, contentDescription = null, modifier = Modifier.size(18.dp))
                                     Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Remove from My List", fontWeight = FontWeight.SemiBold)
+                                    Text("Remove from Library", fontWeight = FontWeight.SemiBold)
                                 }
                             }
 
@@ -1091,10 +1140,22 @@ fun AnimeDetailScreen(
             }
         )
     }
+
+    if (showRemoveFromHomeConfirm) {
+        RemoveFromHomeConfirmDialog(
+            animeTitle = resolvedTitle,
+            onDismiss = { showRemoveFromHomeConfirm = false },
+            onConfirm = {
+                viewModel.removeFromHome(current.id)
+                showRemoveFromHomeConfirm = false
+            }
+        )
+    }
 }
 
 @Composable
 internal fun DetailEpisodeStepperControl(
+    animeId: Int,
     watchedEpisodeCount: Int,
     totalEpisodes: Int?,
     subtitle: String,
@@ -1102,183 +1163,33 @@ internal fun DetailEpisodeStepperControl(
     canIncrement: Boolean,
     onDecrement: () -> Unit,
     onIncrement: () -> Unit,
-    onSetCustomEpisode: (Int) -> Unit
+    onCommitCustomEpisode: suspend (Int) -> Result<Unit>
 ) {
     val colors = AppTheme.colors
-    var showCustomEpisodeDialog by remember { mutableStateOf(false) }
-    var episodeInput by remember(watchedEpisodeCount) {
-        mutableStateOf(watchedEpisodeCount.toString())
-    }
 
-    Row(
+    Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp)
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        Surface(
-            shape = CircleShape,
-            color = colors.elevatedSurface.copy(alpha = if (canDecrement) 0.90f else 0.40f),
-            modifier = Modifier
-                .size(52.dp)
-                .clip(CircleShape)
-                .clickable(enabled = canDecrement, onClick = onDecrement)
-                .testTag("detail_decrement_ep")
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Text(
-                    text = "−",
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Light,
-                    color = if (canDecrement) colors.textPrimary else colors.textMuted
-                )
-            }
-        }
-
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .heightIn(min = 52.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .pointerHoverIcon(PointerIcon.Hand)
-                .clickable {
-                    episodeInput = watchedEpisodeCount.toString()
-                    showCustomEpisodeDialog = true
-                }
-                .padding(vertical = 4.dp)
-                .testTag("detail_episode_center"),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Text(
-                text = buildAnnotatedString {
-                    append("$watchedEpisodeCount")
-                    withStyle(
-                        SpanStyle(
-                            color = colors.textMuted,
-                            fontSize = 22.sp
-                        )
-                    ) {
-                        append(" / ${totalEpisodes?.takeIf { it > 0 }?.toString() ?: "∞"}")
-                    }
-                },
-                style = CormorantDisplayNumeral,
-                color = colors.textPrimary
-            )
-            Text(
-                text = subtitle,
-                style = MicroUpperLabel.copy(fontSize = 8.sp, letterSpacing = 1.6.sp),
-                color = colors.textSecondary
-            )
-        }
-
-        Surface(
-            shape = CircleShape,
-            color = if (canIncrement) colors.accentPrimary else colors.elevatedSurface.copy(alpha = 0.40f),
-            modifier = Modifier
-                .size(52.dp)
-                .clip(CircleShape)
-                .clickable(enabled = canIncrement, onClick = onIncrement)
-                .testTag("detail_increment_ep")
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Text(
-                    text = "+",
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = if (canIncrement) colors.onAccentPrimary else colors.textMuted
-                )
-            }
-        }
-    }
-
-    if (showCustomEpisodeDialog) {
-        val commitCustomEpisode = {
-            val parsed = episodeInput.toIntOrNull()
-            if (parsed != null) {
-                onSetCustomEpisode(ProgressRules.clampEpisodeProgress(parsed, totalEpisodes))
-            }
-            showCustomEpisodeDialog = false
-        }
-        AlertDialog(
-            onDismissRequest = { showCustomEpisodeDialog = false },
-            properties = DialogProperties(usePlatformDefaultWidth = false),
-            shape = RoundedCornerShape(AppRadius.xl),
-            containerColor = colors.backgroundSecondary,
+        InlineEpisodeNumberStepper(
+            animeId = animeId,
+            watchedEpisodeCount = watchedEpisodeCount,
+            totalEpisodes = totalEpisodes,
+            canDecrement = canDecrement,
+            canIncrement = canIncrement,
+            compact = false,
+            onDecrement = onDecrement,
+            onIncrement = onIncrement,
+            onCommitCustomEpisode = onCommitCustomEpisode,
             modifier = Modifier
                 .fillMaxWidth()
-                .widthIn(max = 400.dp)
-                .padding(horizontal = 24.dp)
-                .testTag("detail_custom_episode_dialog"),
-            title = {
-                Text(
-                    text = "Set Episode",
-                    fontFamily = CormorantSerifFamily,
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = colors.textPrimary
-                )
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)) {
-                    Text(
-                        text = if (totalEpisodes != null && totalEpisodes > 0) {
-                            "Enter any episode number between 0 and $totalEpisodes."
-                        } else {
-                            "Enter your watched episode number."
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = colors.textSecondary
-                    )
-                    OutlinedTextField(
-                        value = episodeInput,
-                        onValueChange = { raw ->
-                            episodeInput = raw.filter { it.isDigit() }.take(5)
-                        },
-                        label = { Text("Episode #") },
-                        singleLine = true,
-                        textStyle = TabularNumMedium.copy(
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = colors.textPrimary
-                        ),
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Number,
-                            imeAction = ImeAction.Done
-                        ),
-                        keyboardActions = KeyboardActions(
-                            onDone = { commitCustomEpisode() }
-                        ),
-                        shape = RoundedCornerShape(16.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedContainerColor = colors.elevatedSurface.copy(alpha = 0.65f),
-                            unfocusedContainerColor = colors.elevatedSurface.copy(alpha = 0.45f),
-                            focusedBorderColor = colors.accentPrimary,
-                            unfocusedBorderColor = colors.borderSubtle
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("detail_episode_input")
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = { commitCustomEpisode() },
-                    modifier = Modifier
-                        .heightIn(min = 48.dp)
-                        .testTag("detail_set_episode_button")
-                ) {
-                    Text("Set Episode", color = colors.accentPrimary, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = { showCustomEpisodeDialog = false },
-                    modifier = Modifier.heightIn(min = 48.dp)
-                ) {
-                    Text("Cancel", color = colors.textSecondary)
-                }
-            }
+                .testTag("detail_episode_center")
+        )
+        Text(
+            text = subtitle,
+            style = MicroUpperLabel.copy(fontSize = 8.sp, letterSpacing = 1.6.sp),
+            color = colors.textSecondary
         )
     }
 }
