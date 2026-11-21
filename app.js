@@ -47,18 +47,18 @@ const BUILT_IN_AVATARS = [
   { key: 'avatar_9', name: 'Solar Halo', img: '/assets/avatar_9.png', c1: '#FBBF24', c2: '#64748B' }
 ];
 
-const SANDRONE_IMAGE_SRC = '/assets/aistudio/117029-removebg-preview_a7bd2144.png';
+const SANDRONE_IMAGE_SRC = '/assets/sandrone/sandrone.png';
 const SANDRONE_VOICE_CLIPS = [
-  '/assets/aistudio/s_2a7b087c.mp3',
-  '/assets/aistudio/s1_9f22134b.mp3',
-  '/assets/aistudio/s2_1eb199af.mp3',
-  '/assets/aistudio/s3_186666cd.mp3',
-  '/assets/aistudio/s4_f2c388e7.mp3',
-  '/assets/aistudio/s5_208121d9.mp3',
-  '/assets/aistudio/s6_5675dac2.mp3',
-  '/assets/aistudio/s7_9691e270.mp3',
-  '/assets/aistudio/s8_653b32e5.mp3',
-  '/assets/aistudio/s9_19fa5bf7.mp3'
+  '/assets/sandrone/s.mp3',
+  '/assets/sandrone/s1.mp3',
+  '/assets/sandrone/s2.mp3',
+  '/assets/sandrone/s3.mp3',
+  '/assets/sandrone/s4.mp3',
+  '/assets/sandrone/s5.mp3',
+  '/assets/sandrone/s6.mp3',
+  '/assets/sandrone/s7.mp3',
+  '/assets/sandrone/s8.mp3',
+  '/assets/sandrone/s9.mp3'
 ];
 
 let sandroneAudio = null;
@@ -192,7 +192,8 @@ const SVG_ICONS = {
   apple: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83zM15.96 6.33c.67-.81 1.12-1.94 1-3.08-.96.04-2.13.64-2.82 1.45-.61.7-.115 1.86-.99 2.97 1.08.08 2.14-.53 2.81-1.34z"/></svg>`,
   clock: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>`,
   checkCircle: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>`,
-  comment: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H5.17L4 17.17V4h16v12z"/></svg>`
+  comment: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H5.17L4 17.17V4h16v12z"/></svg>`,
+  bell: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg>`
 };
 
 function getCurrentAnimeSeason() {
@@ -401,6 +402,54 @@ const state = {
   communityCommentsAnimeId: null,
   communityCommentDraftStars: 0,
   communityCommentDraftNote: '',
+  communityNoteSaving: false,
+  communityNoteFeedback: '',
+  communityNoteError: '',
+
+  // Detail Rating & Note Feedback
+  detailRatingSaving: false,
+  detailRatingFeedback: '',
+  detailRatingError: '',
+
+  // Anime Discussion (Comments, @Mentions & Target-User Reply Threads)
+  discussion: {
+    animeId: null,
+    comments: [],
+    totalComments: 0,
+    hasMore: false,
+    loading: false,
+    loadingMore: false,
+    submitting: false,
+    success: '',
+    error: '',
+    draft: '',
+    activeReplyTarget: null, // { commentId, targetUserId, targetUsername }
+    replyDraft: '',
+    editingCommentId: null,
+    editingCommentDraft: '',
+    editingReplyId: null,
+    editingReplyCommentId: null,
+    editingReplyThreadId: null,
+    editingReplyDraft: '',
+    expandedThreads: {},
+    mentionSuggestions: [],
+    mentionActiveScope: null, // 'comment' | 'reply' | 'edit_comment' | 'edit_reply'
+    mentionActiveStart: -1,
+    mentionActiveEnd: -1,
+    highlightTarget: null // { commentId, threadId, replyId }
+  },
+
+  // Notifications State
+  notifications: {
+    items: [],
+    unreadCount: 0,
+    totalCount: 0,
+    hasMore: false,
+    loading: false,
+    loadingMore: false,
+    error: ''
+  },
+  pendingNotificationJump: null, // { animeId, commentId, threadId, replyId }
 
   // Modals, Context Menu, Inline Episode Editor & Detail View
   detailAnime: null,
@@ -1072,7 +1121,7 @@ async function loadCloudData(silent = false) {
       }
     }
 
-    await loadCommunityReviews();
+    await Promise.all([loadCommunityReviews(), refreshUnreadNotificationCount()]);
     const isTyping =
       Boolean(state.inlineEpEdit) ||
       Boolean(state.contextMenu) ||
@@ -2033,8 +2082,35 @@ async function openAnimeDetail(animeId) {
       };
   state.detailRich = null;
   state.detailLoading = true;
+  state.detailRatingSaving = false;
+  state.detailRatingFeedback = '';
+  state.detailRatingError = '';
+  state.discussion = {
+    ...state.discussion,
+    animeId,
+    comments: state.discussion.animeId === animeId ? state.discussion.comments : [],
+    totalComments: state.discussion.animeId === animeId ? state.discussion.totalComments : 0,
+    hasMore: false,
+    loading: true,
+    loadingMore: false,
+    submitting: false,
+    success: '',
+    error: '',
+    draft: '',
+    activeReplyTarget: null,
+    replyDraft: '',
+    editingCommentId: null,
+    editingCommentDraft: '',
+    editingReplyId: null,
+    editingReplyCommentId: null,
+    editingReplyThreadId: null,
+    editingReplyDraft: '',
+    mentionSuggestions: [],
+    mentionActiveScope: null
+  };
   window.scrollTo({ top: 0, behavior: 'smooth' });
   renderApp();
+  loadAnimeDiscussion(animeId, true);
 
   const gql = `
     query($id: Int) {
@@ -2361,11 +2437,11 @@ async function removeFromHomeOnly(animeId) {
 }
 
 // Part 1: Post a Community note/rating WITHOUT ever adding the anime to Home
-async function submitCommunityCommentNote(animeId, rating10Val, noteText, animeMeta = null) {
+async function submitCommunityCommentNote(animeId, rating10Val, noteText, animeMeta = null, opts = {}) {
   const aid = Number(animeId);
   const cleanNote = String(noteText || '').trim();
   const cleanRating = rating10Val && Number(rating10Val) > 0 ? Math.min(10, Math.max(1, Number(rating10Val))) : null;
-  if (!cleanNote && !cleanRating) return;
+  if (!cleanNote && !cleanRating) return { ok: false, error: 'Please select a rating or write a note first.' };
 
   const existingVault = state.vault.find((v) => Number(v.animeId) === aid);
   if (existingVault) {
@@ -2376,11 +2452,11 @@ async function submitCommunityCommentNote(animeId, rating10Val, noteText, animeM
         rating10: cleanRating ?? existingVault.rating10,
         reviewNotes: cleanNote || existingVault.reviewNotes || ''
       },
-      { addToHome: false }
+      { addToHome: false, throwOnError: Boolean(opts.throwOnError) }
     );
-    showToast('Rating & note saved');
+    if (!opts.silentToast) showToast('Rating & note saved');
     renderApp();
-    return;
+    return { ok: true };
   }
 
   // Anime is NOT in Home or Library: save purely to Community (community_notes) — NEVER adds to Home!
@@ -2426,10 +2502,657 @@ async function submitCommunityCommentNote(animeId, rating10Val, noteText, animeM
       });
       await syncCommunityNoteCloud(aid, cleanRating, cleanNote);
       await loadCommunityReviews();
-    } catch (_) {}
+    } catch (err) {
+      if (opts.throwOnError) throw err;
+    }
   }
-  showToast('Posted to Community (not added to Home)');
+  if (!opts.silentToast) showToast('Posted to Community (not added to Home)');
   renderApp();
+  return { ok: true };
+}
+
+// ============================================================================
+// ANIME DISCUSSION, @MENTIONS, TARGET-USER REPLY THREADS & NOTIFICATIONS RPCs
+// ============================================================================
+
+const MAX_MENTIONS_PER_CONTENT = 5;
+const MENTION_REGEX = /(^|[^A-Za-z0-9_])@([A-Za-z0-9_]{2,32})\b/g;
+let mentionSearchTimer = null;
+let mentionSearchSeq = 0;
+
+function extractMentionTokens(text) {
+  const input = String(text || '');
+  const tokens = [];
+  let m;
+  MENTION_REGEX.lastIndex = 0;
+  while ((m = MENTION_REGEX.exec(input)) !== null) {
+    const prefixLen = m[1] ? m[1].length : 0;
+    const start = m.index + prefixLen;
+    const username = m[2];
+    tokens.push({
+      username,
+      normalized: username.toLowerCase(),
+      start,
+      end: start + 1 + username.length
+    });
+  }
+  return tokens;
+}
+
+function validateContentMentions(text) {
+  const tokens = extractMentionTokens(text);
+  const uniqueSet = new Set(tokens.map((t) => t.normalized));
+  if (tokens.length > MAX_MENTIONS_PER_CONTENT) {
+    return {
+      ok: false,
+      totalMentions: tokens.length,
+      uniqueCount: uniqueSet.size,
+      error: `Maximum ${MAX_MENTIONS_PER_CONTENT} @mention entries allowed per comment or reply (currently ${tokens.length}).`
+    };
+  }
+  return {
+    ok: true,
+    totalMentions: tokens.length,
+    uniqueCount: uniqueSet.size,
+    error: ''
+  };
+}
+
+function detectActiveMentionQuery(text, cursorPos) {
+  const safeText = String(text || '');
+  const pos = Math.max(0, Math.min(safeText.length, Number(cursorPos || 0)));
+  const before = safeText.slice(0, pos);
+  const m = before.match(/(?:^|[^A-Za-z0-9_])@([A-Za-z0-9_]{0,32})$/);
+  if (!m) return null;
+  const query = m[1] || '';
+  const start = pos - query.length - 1;
+  return { query, start, end: pos };
+}
+
+function insertMentionAutocomplete(text, start, end, username) {
+  const safeText = String(text || '');
+  const prefix = safeText.slice(0, start);
+  const suffix = safeText.slice(end);
+  const needsSpace = suffix.length === 0 || !/^\s/.test(suffix);
+  const insertion = `@${username}${needsSpace ? ' ' : ''}`;
+  return {
+    text: `${prefix}${insertion}${suffix}`,
+    cursor: prefix.length + insertion.length
+  };
+}
+
+function renderMentionHighlightedHtml(text) {
+  const raw = String(text || '');
+  const tokens = extractMentionTokens(raw);
+  if (tokens.length === 0) return escapeHtml(raw);
+  let out = '';
+  let last = 0;
+  for (const t of tokens) {
+    out += escapeHtml(raw.slice(last, t.start));
+    out += `<span class="discussion-mention-tag">${escapeHtml(raw.slice(t.start, t.end))}</span>`;
+    last = t.end;
+  }
+  out += escapeHtml(raw.slice(last));
+  return out;
+}
+
+function formatDiscussionTimestamp(isoStr) {
+  if (!isoStr) return '';
+  try {
+    const d = new Date(isoStr);
+    if (isNaN(d.getTime())) return String(isoStr).slice(0, 10);
+    const diffSec = Math.floor((Date.now() - d.getTime()) / 1000);
+    if (diffSec < 45) return 'Just now';
+    if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+    if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
+    if (diffSec < 86400 * 7) return `${Math.floor(diffSec / 86400)}d ago`;
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  } catch (_) {
+    return String(isoStr).slice(0, 10);
+  }
+}
+
+function mergeReplyIntoDiscussionComments(comments, commentId, threadDto, replyDto) {
+  return comments.map((c) => {
+    if (c.id !== commentId) return c;
+    const threads = Array.isArray(c.threads) ? [...c.threads] : [];
+    const idx = threads.findIndex(
+      (th) => th.id === threadDto.id || th.target_user_id === threadDto.target_user_id
+    );
+    if (idx >= 0) {
+      const existing = threads[idx];
+      const existingReplies = Array.isArray(existing.replies) ? existing.replies : [];
+      const mergedReplies = existingReplies.some((r) => r.id === replyDto.id)
+        ? existingReplies.map((r) => (r.id === replyDto.id ? replyDto : r))
+        : [...existingReplies, replyDto];
+      threads[idx] = {
+        ...existing,
+        ...threadDto,
+        reply_count: mergedReplies.length,
+        replies: mergedReplies
+      };
+    } else {
+      threads.push({
+        ...threadDto,
+        reply_count: 1,
+        replies: [replyDto]
+      });
+    }
+    return { ...c, threads };
+  });
+}
+
+function applyPendingDiscussionHighlight(animeId) {
+  const jump = state.pendingNotificationJump;
+  if (!jump || Number(jump.animeId) !== Number(animeId)) return;
+  if (jump.threadId) {
+    state.discussion.expandedThreads[jump.threadId] = true;
+  }
+  state.discussion.highlightTarget = {
+    commentId: jump.commentId || null,
+    threadId: jump.threadId || null,
+    replyId: jump.replyId || null
+  };
+  state.pendingNotificationJump = null;
+  renderApp();
+  setTimeout(() => {
+    const targetId = jump.replyId
+      ? `discussion-reply-${jump.replyId}`
+      : jump.threadId
+      ? `discussion-thread-${jump.threadId}`
+      : jump.commentId
+      ? `discussion-comment-${jump.commentId}`
+      : 'anime-discussion-section';
+    const el = document.getElementById(targetId);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, 120);
+}
+
+async function loadAnimeDiscussion(animeId, reset = true) {
+  const aid = Number(animeId);
+  if (!aid) return;
+  const offset = reset ? 0 : state.discussion.comments.length;
+  if (reset) {
+    state.discussion.loading = true;
+    state.discussion.error = '';
+  } else {
+    state.discussion.loadingMore = true;
+  }
+  renderApp();
+  try {
+    const data = await supabaseRequest('/rest/v1/rpc/get_anime_discussion_page', 'POST', {
+      p_anime_id: aid,
+      p_limit: 15,
+      p_offset: offset
+    });
+    if (Number(state.discussion.animeId) !== aid) return;
+    const incoming = Array.isArray(data?.comments) ? data.comments : [];
+    const merged = reset
+      ? incoming
+      : [
+          ...state.discussion.comments,
+          ...incoming.filter((inc) => !state.discussion.comments.some((old) => old.id === inc.id))
+        ];
+    state.discussion.comments = merged;
+    state.discussion.totalComments = Number(data?.total_comments ?? merged.length);
+    state.discussion.hasMore = Boolean(data?.has_more);
+    state.discussion.loading = false;
+    state.discussion.loadingMore = false;
+    // Default-expand threads that have <= 3 replies or match a jump target
+    for (const c of incoming) {
+      for (const th of c.threads || []) {
+        if (state.discussion.expandedThreads[th.id] === undefined && (th.replies?.length || 0) <= 2) {
+          state.discussion.expandedThreads[th.id] = true;
+        }
+      }
+    }
+    if (state.pendingNotificationJump && Number(state.pendingNotificationJump.animeId) === aid) {
+      applyPendingDiscussionHighlight(aid);
+    } else {
+      renderApp();
+    }
+  } catch (err) {
+    if (Number(state.discussion.animeId) !== aid) return;
+    state.discussion.loading = false;
+    state.discussion.loadingMore = false;
+    state.discussion.error = err?.message || 'Unable to load discussion right now.';
+    renderApp();
+  }
+}
+
+function updateMentionDropdownDom(scope, suggestions) {
+  const box = document.getElementById(`mention-dropdown-${scope}`);
+  if (!box) return;
+  if (!suggestions || suggestions.length === 0) {
+    box.style.display = 'none';
+    box.innerHTML = '';
+    return;
+  }
+  box.style.display = 'flex';
+  box.innerHTML = suggestions
+    .map(
+      (u) => `
+      <button type="button" class="mention-autocomplete-item" data-pick-mention="${escapeHtml(u.username)}" data-pick-mention-scope="${escapeHtml(scope)}">
+        ${renderAvatarCircle(u.avatar_key || 'avatar_1', u.username, 26)}
+        <span>@${escapeHtml(u.username)}</span>
+      </button>`
+    )
+    .join('');
+  box.querySelectorAll('[data-pick-mention]').forEach((btn) => {
+    btn.onmousedown = (e) => {
+      e.preventDefault();
+      applySelectedMention(btn.getAttribute('data-pick-mention-scope'), btn.getAttribute('data-pick-mention'));
+    };
+  });
+}
+
+function applySelectedMention(scope, username) {
+  const inputMap = {
+    comment: 'inp-discussion-comment',
+    reply: 'inp-discussion-reply',
+    edit_comment: 'inp-discussion-edit-comment',
+    edit_reply: 'inp-discussion-edit-reply'
+  };
+  const el = document.getElementById(inputMap[scope]);
+  if (!el) return;
+  const start = state.discussion.mentionActiveStart;
+  const end = state.discussion.mentionActiveEnd;
+  if (start < 0 || end < start) return;
+  const res = insertMentionAutocomplete(el.value, start, end, username);
+  el.value = res.text;
+  if (scope === 'comment') state.discussion.draft = res.text;
+  else if (scope === 'reply') state.discussion.replyDraft = res.text;
+  else if (scope === 'edit_comment') state.discussion.editingCommentDraft = res.text;
+  else if (scope === 'edit_reply') state.discussion.editingReplyDraft = res.text;
+  state.discussion.mentionSuggestions = [];
+  state.discussion.mentionActiveScope = null;
+  updateMentionDropdownDom(scope, []);
+  updateMentionCounterDom(scope, res.text);
+  el.focus();
+  el.setSelectionRange(res.cursor, res.cursor);
+}
+
+function updateMentionCounterDom(scope, text) {
+  const counterEl = document.getElementById(`mention-counter-${scope}`);
+  if (!counterEl) return;
+  const v = validateContentMentions(text);
+  counterEl.textContent = `${v.totalMentions}/${MAX_MENTIONS_PER_CONTENT} @mentions`;
+  counterEl.classList.toggle('over-limit', !v.ok);
+}
+
+function handleDiscussionInputMentionCheck(scope, inputEl) {
+  const text = inputEl.value;
+  if (scope === 'comment') state.discussion.draft = text;
+  else if (scope === 'reply') state.discussion.replyDraft = text;
+  else if (scope === 'edit_comment') state.discussion.editingCommentDraft = text;
+  else if (scope === 'edit_reply') state.discussion.editingReplyDraft = text;
+  updateMentionCounterDom(scope, text);
+
+  if (!state.session) return;
+  const active = detectActiveMentionQuery(text, inputEl.selectionStart ?? text.length);
+  if (!active) {
+    state.discussion.mentionSuggestions = [];
+    state.discussion.mentionActiveScope = null;
+    updateMentionDropdownDom(scope, []);
+    return;
+  }
+  state.discussion.mentionActiveScope = scope;
+  state.discussion.mentionActiveStart = active.start;
+  state.discussion.mentionActiveEnd = active.end;
+  clearTimeout(mentionSearchTimer);
+  const seq = ++mentionSearchSeq;
+  mentionSearchTimer = setTimeout(async () => {
+    try {
+      const rows = await supabaseRequest('/rest/v1/rpc/search_mentionable_users', 'POST', {
+        p_query: active.query,
+        p_limit: 6
+      });
+      if (seq !== mentionSearchSeq) return;
+      const list = Array.isArray(rows) ? rows : [];
+      state.discussion.mentionSuggestions = list;
+      updateMentionDropdownDom(scope, list);
+    } catch (_) {
+      if (seq !== mentionSearchSeq) return;
+      updateMentionDropdownDom(scope, []);
+    }
+  }, 160);
+}
+
+async function postAnimeComment() {
+  if (!state.session || !state.detailAnime || state.discussion.submitting) return;
+  const body = (document.getElementById('inp-discussion-comment')?.value ?? state.discussion.draft ?? '').trim();
+  if (!body) {
+    state.discussion.error = 'Please write a comment before posting.';
+    state.discussion.success = '';
+    renderApp();
+    return;
+  }
+  const check = validateContentMentions(body);
+  if (!check.ok) {
+    state.discussion.error = check.error;
+    state.discussion.success = '';
+    renderApp();
+    return;
+  }
+  state.discussion.submitting = true;
+  state.discussion.error = '';
+  state.discussion.success = '';
+  renderApp();
+  try {
+    const a = state.detailAnime;
+    const res = await supabaseRequest('/rest/v1/rpc/create_anime_comment', 'POST', {
+      p_anime_id: Number(a.animeId),
+      p_content: body,
+      p_anime_title: a.titleEnglish || a.title || 'Anime',
+      p_anime_cover: a.coverImage || ''
+    });
+    const created = res?.comment || res;
+    if (created && created.id) {
+      state.discussion.comments = [
+        { ...created, threads: Array.isArray(created.threads) ? created.threads : [] },
+        ...state.discussion.comments.filter((c) => c.id !== created.id)
+      ];
+      state.discussion.totalComments = Number(res?.total_comments ?? Math.max(state.discussion.comments.length, state.discussion.totalComments + 1));
+    }
+    state.discussion.draft = '';
+    state.discussion.mentionSuggestions = [];
+    state.discussion.mentionActiveScope = null;
+    state.discussion.success = 'Comment posted successfully';
+    showToast('Comment posted successfully');
+  } catch (err) {
+    state.discussion.error = err?.message || 'Failed to post comment. Please try again.';
+    showToast(state.discussion.error, true);
+  } finally {
+    state.discussion.submitting = false;
+    renderApp();
+  }
+}
+
+async function saveEditedAnimeComment(commentId) {
+  if (!state.session || state.discussion.submitting) return;
+  const body = (document.getElementById('inp-discussion-edit-comment')?.value ?? state.discussion.editingCommentDraft ?? '').trim();
+  if (!body) {
+    state.discussion.error = 'Comment cannot be empty.';
+    renderApp();
+    return;
+  }
+  const check = validateContentMentions(body);
+  if (!check.ok) {
+    state.discussion.error = check.error;
+    renderApp();
+    return;
+  }
+  state.discussion.submitting = true;
+  state.discussion.error = '';
+  state.discussion.success = '';
+  renderApp();
+  try {
+    const updated = await supabaseRequest('/rest/v1/rpc/update_anime_comment', 'POST', {
+      p_comment_id: commentId,
+      p_content: body
+    });
+    state.discussion.comments = state.discussion.comments.map((c) =>
+      c.id === commentId
+        ? { ...c, content: updated?.content || body, updated_at: updated?.updated_at || new Date().toISOString() }
+        : c
+    );
+    state.discussion.editingCommentId = null;
+    state.discussion.editingCommentDraft = '';
+    state.discussion.success = 'Comment updated successfully';
+    showToast('Comment updated');
+  } catch (err) {
+    state.discussion.error = err?.message || 'Failed to update comment.';
+  } finally {
+    state.discussion.submitting = false;
+    renderApp();
+  }
+}
+
+async function deleteAnimeComment(commentId) {
+  if (!state.session || state.discussion.submitting) return;
+  state.discussion.submitting = true;
+  state.discussion.error = '';
+  state.discussion.success = '';
+  renderApp();
+  try {
+    await supabaseRequest('/rest/v1/rpc/delete_anime_comment', 'POST', { p_comment_id: commentId });
+    state.discussion.comments = state.discussion.comments.filter((c) => c.id !== commentId);
+    state.discussion.totalComments = Math.max(0, state.discussion.totalComments - 1);
+    if (state.discussion.activeReplyTarget?.commentId === commentId) {
+      state.discussion.activeReplyTarget = null;
+      state.discussion.replyDraft = '';
+    }
+    state.discussion.success = 'Comment deleted';
+    showToast('Comment deleted');
+  } catch (err) {
+    state.discussion.error = err?.message || 'Failed to delete comment.';
+  } finally {
+    state.discussion.submitting = false;
+    renderApp();
+  }
+}
+
+async function postThreadReply() {
+  const target = state.discussion.activeReplyTarget;
+  if (!state.session || !target || state.discussion.submitting) return;
+  const body = (document.getElementById('inp-discussion-reply')?.value ?? state.discussion.replyDraft ?? '').trim();
+  if (!body) {
+    state.discussion.error = 'Please write a reply before posting.';
+    state.discussion.success = '';
+    renderApp();
+    return;
+  }
+  const check = validateContentMentions(body);
+  if (!check.ok) {
+    state.discussion.error = check.error;
+    state.discussion.success = '';
+    renderApp();
+    return;
+  }
+  state.discussion.submitting = true;
+  state.discussion.error = '';
+  state.discussion.success = '';
+  renderApp();
+  try {
+    const res = await supabaseRequest('/rest/v1/rpc/create_thread_reply', 'POST', {
+      p_comment_id: target.commentId,
+      p_target_user_id: target.targetUserId,
+      p_content: body
+    });
+    if (res && res.thread && res.reply) {
+      state.discussion.comments = mergeReplyIntoDiscussionComments(
+        state.discussion.comments,
+        target.commentId,
+        res.thread,
+        res.reply
+      );
+      state.discussion.expandedThreads[res.thread.id] = true;
+    }
+    state.discussion.replyDraft = '';
+    state.discussion.activeReplyTarget = null;
+    state.discussion.mentionSuggestions = [];
+    state.discussion.mentionActiveScope = null;
+    state.discussion.success = `Reply posted in @${target.targetUsername}'s thread`;
+    showToast('Reply posted successfully');
+  } catch (err) {
+    state.discussion.error = err?.message || 'Failed to post reply.';
+    showToast(state.discussion.error, true);
+  } finally {
+    state.discussion.submitting = false;
+    renderApp();
+  }
+}
+
+async function saveEditedThreadReply(commentId, threadId, replyId) {
+  if (!state.session || state.discussion.submitting) return;
+  const body = (document.getElementById('inp-discussion-edit-reply')?.value ?? state.discussion.editingReplyDraft ?? '').trim();
+  if (!body) {
+    state.discussion.error = 'Reply cannot be empty.';
+    renderApp();
+    return;
+  }
+  const check = validateContentMentions(body);
+  if (!check.ok) {
+    state.discussion.error = check.error;
+    renderApp();
+    return;
+  }
+  state.discussion.submitting = true;
+  state.discussion.error = '';
+  state.discussion.success = '';
+  renderApp();
+  try {
+    const updated = await supabaseRequest('/rest/v1/rpc/update_thread_reply', 'POST', {
+      p_reply_id: replyId,
+      p_content: body
+    });
+    state.discussion.comments = state.discussion.comments.map((c) => {
+      if (c.id !== commentId) return c;
+      return {
+        ...c,
+        threads: (c.threads || []).map((th) => {
+          if (th.id !== threadId) return th;
+          return {
+            ...th,
+            replies: (th.replies || []).map((r) =>
+              r.id === replyId
+                ? { ...r, content: updated?.content || body, updated_at: updated?.updated_at || new Date().toISOString() }
+                : r
+            )
+          };
+        })
+      };
+    });
+    state.discussion.editingReplyId = null;
+    state.discussion.editingReplyCommentId = null;
+    state.discussion.editingReplyThreadId = null;
+    state.discussion.editingReplyDraft = '';
+    state.discussion.success = 'Reply updated successfully';
+    showToast('Reply updated');
+  } catch (err) {
+    state.discussion.error = err?.message || 'Failed to update reply.';
+  } finally {
+    state.discussion.submitting = false;
+    renderApp();
+  }
+}
+
+async function deleteThreadReply(commentId, threadId, replyId) {
+  if (!state.session || state.discussion.submitting) return;
+  state.discussion.submitting = true;
+  state.discussion.error = '';
+  state.discussion.success = '';
+  renderApp();
+  try {
+    await supabaseRequest('/rest/v1/rpc/delete_thread_reply', 'POST', { p_reply_id: replyId });
+    state.discussion.comments = state.discussion.comments.map((c) => {
+      if (c.id !== commentId) return c;
+      const nextThreads = (c.threads || [])
+        .map((th) => {
+          if (th.id !== threadId) return th;
+          const nextReplies = (th.replies || []).filter((r) => r.id !== replyId);
+          return { ...th, replies: nextReplies, reply_count: nextReplies.length };
+        })
+        .filter((th) => (th.replies || []).length > 0);
+      return { ...c, threads: nextThreads };
+    });
+    state.discussion.success = 'Reply deleted';
+    showToast('Reply deleted');
+  } catch (err) {
+    state.discussion.error = err?.message || 'Failed to delete reply.';
+  } finally {
+    state.discussion.submitting = false;
+    renderApp();
+  }
+}
+
+async function refreshUnreadNotificationCount() {
+  if (!state.session) {
+    state.notifications.unreadCount = 0;
+    return;
+  }
+  try {
+    const count = await supabaseRequest('/rest/v1/rpc/get_unread_notification_count', 'POST', {});
+    const numeric = Number(count || 0);
+    if (!Number.isNaN(numeric)) {
+      state.notifications.unreadCount = Math.max(0, numeric);
+    }
+  } catch (_) {}
+}
+
+async function loadUserNotifications(reset = true) {
+  if (!state.session) {
+    state.notifications.items = [];
+    state.notifications.unreadCount = 0;
+    state.notifications.loading = false;
+    renderApp();
+    return;
+  }
+  const offset = reset ? 0 : state.notifications.items.length;
+  if (reset) {
+    state.notifications.loading = true;
+    state.notifications.error = '';
+  } else {
+    state.notifications.loadingMore = true;
+  }
+  renderApp();
+  try {
+    const data = await supabaseRequest('/rest/v1/rpc/get_user_notifications', 'POST', {
+      p_limit: 25,
+      p_offset: offset
+    });
+    const incoming = Array.isArray(data?.notifications) ? data.notifications : [];
+    state.notifications.items = reset
+      ? incoming
+      : [
+          ...state.notifications.items,
+          ...incoming.filter((n) => !state.notifications.items.some((old) => old.id === n.id))
+        ];
+    state.notifications.unreadCount = Number(data?.unread_count ?? 0);
+    state.notifications.totalCount = Number(data?.total_count ?? state.notifications.items.length);
+    state.notifications.hasMore = Boolean(data?.has_more);
+    state.notifications.loading = false;
+    state.notifications.loadingMore = false;
+    renderApp();
+  } catch (err) {
+    state.notifications.loading = false;
+    state.notifications.loadingMore = false;
+    state.notifications.error = err?.message || 'Unable to load notifications.';
+    renderApp();
+  }
+}
+
+async function markNotificationRead(notificationId) {
+  if (!state.session || !notificationId) return;
+  let wasUnread = false;
+  state.notifications.items = state.notifications.items.map((n) => {
+    if (n.id === notificationId && !n.is_read) {
+      wasUnread = true;
+      return { ...n, is_read: true };
+    }
+    return n;
+  });
+  if (wasUnread) {
+    state.notifications.unreadCount = Math.max(0, state.notifications.unreadCount - 1);
+  }
+  try {
+    await supabaseRequest('/rest/v1/rpc/mark_notification_read', 'POST', {
+      p_notification_id: notificationId
+    });
+  } catch (_) {}
+}
+
+async function markAllNotificationsRead() {
+  if (!state.session || state.notifications.unreadCount <= 0) return;
+  state.notifications.items = state.notifications.items.map((n) => ({ ...n, is_read: true }));
+  state.notifications.unreadCount = 0;
+  renderApp();
+  try {
+    await supabaseRequest('/rest/v1/rpc/mark_all_notifications_read', 'POST', {});
+    showToast('All notifications marked as read');
+  } catch (_) {}
 }
 
 // Part 2 & Part 5: Atomic Episode Progress Update with strict auto-completion & rollback on cloud failure
@@ -3570,7 +4293,19 @@ function renderAnimeDetailScreen() {
         <textarea id="inp-detail-notes" class="auth-input" style="height:96px;padding:12px;resize:vertical;" placeholder="Write your thoughts on this anime...">${escapeHtml(
           a.reviewNotes || ''
         )}</textarea>
-        <button class="btn-primary" id="btn-detail-save-note">SAVE RATING &amp; NOTE</button>
+        <button class="btn-primary" id="btn-detail-save-note" ${state.detailRatingSaving ? 'disabled' : ''}>
+          ${state.detailRatingSaving ? 'SAVING...' : 'SAVE RATING & NOTE'}
+        </button>
+        ${
+          state.detailRatingFeedback
+            ? `<div class="feedback-banner success" id="detail-rating-feedback">✓ ${escapeHtml(state.detailRatingFeedback)}</div>`
+            : ''
+        }
+        ${
+          state.detailRatingError
+            ? `<div class="feedback-banner error" id="detail-rating-error">! ${escapeHtml(state.detailRatingError)}</div>`
+            : ''
+        }
       </div>
 
       <div class="app-card" style="border-radius:24px;margin-bottom:16px;display:flex;flex-direction:column;gap:12px;">
@@ -3582,6 +4317,405 @@ function renderAnimeDetailScreen() {
           ${(a.genres || []).map((g) => `<span class="capsule-pill">${escapeHtml(g)}</span>`).join('')}
         </div>
       </div>
+
+      ${renderAnimeDiscussionSection(a)}
+    </div>
+  `;
+}
+
+function renderAnimeDiscussionSection(anime) {
+  const d = state.discussion;
+  const currentUserId = state.session?.userId || null;
+  const draftCheck = validateContentMentions(d.draft);
+  const replyCheck = validateContentMentions(d.replyDraft);
+  const hl = d.highlightTarget || {};
+
+  return `
+    <div class="app-card" id="anime-discussion-section" style="border-radius:24px;margin-bottom:24px;display:flex;flex-direction:column;gap:14px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+        <div>
+          <div class="micro-label" style="color:var(--accent-primary);">COMMUNITY DISCUSSION</div>
+          <h2 class="serif-heading" style="font-size:24px;line-height:28px;">
+            Comments <span class="tabular-num" style="color:var(--accent-primary);font-size:18px;">(${d.totalComments})</span>
+          </h2>
+        </div>
+        <button type="button" class="discussion-action-btn" id="btn-discussion-refresh">Refresh</button>
+      </div>
+
+      ${
+        state.session
+          ? `
+            <div class="discussion-composer-wrap">
+              <textarea
+                id="inp-discussion-comment"
+                class="auth-input"
+                style="height:88px;padding:12px;resize:vertical;"
+                placeholder="Share your thoughts on ${escapeHtml(resolveTitle(anime))}... Use @username to tag members (up to 5)"
+                ${d.submitting ? 'disabled' : ''}
+              >${escapeHtml(d.draft || '')}</textarea>
+              <div id="mention-dropdown-comment" class="mention-autocomplete-dropdown" style="display:none;"></div>
+              <div class="discussion-mention-bar">
+                <span id="mention-counter-comment" class="mention-counter-pill ${draftCheck.ok ? '' : 'over-limit'}">
+                  ${draftCheck.totalMentions}/${MAX_MENTIONS_PER_CONTENT} @mentions
+                </span>
+                <button type="button" class="btn-primary" id="btn-post-discussion-comment" style="height:40px;padding:0 20px;font-size:12.5px;" ${
+                  d.submitting ? 'disabled' : ''
+                }>
+                  ${d.submitting ? 'POSTING...' : 'POST COMMENT'}
+                </button>
+              </div>
+            </div>
+          `
+          : `
+            <div style="padding:12px 14px;border-radius:16px;background:var(--elevated-surface);border:1px solid var(--border-subtle);font-size:13px;color:var(--text-secondary);">
+              Sign in to post comments, @mention members, and reply in threads.
+            </div>
+          `
+      }
+
+      ${d.success ? `<div class="feedback-banner success">✓ ${escapeHtml(d.success)}</div>` : ''}
+      ${d.error ? `<div class="feedback-banner error">! ${escapeHtml(d.error)}</div>` : ''}
+
+      ${
+        d.loading
+          ? `<div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:13px;">Loading discussion...</div>`
+          : d.comments.length === 0
+          ? `<div style="padding:24px 16px;text-align:center;border-radius:18px;background:var(--elevated-surface);border:1px dashed var(--border-subtle);color:var(--text-secondary);font-size:13.5px;">
+               No comments yet. Start the discussion for ${escapeHtml(resolveTitle(anime))}!
+             </div>`
+          : `
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              ${d.comments
+                .map((c) => {
+                  const isOwnComment = currentUserId && c.user_id === currentUserId;
+                  const isEditingThis = d.editingCommentId === c.id;
+                  const isReplyingOnThisComment = d.activeReplyTarget && d.activeReplyTarget.commentId === c.id;
+                  const isCommentHighlighted = hl.commentId === c.id && !hl.replyId && !hl.threadId;
+                  const threads = Array.isArray(c.threads) ? c.threads : [];
+
+                  return `
+                    <div class="discussion-comment-card ${isCommentHighlighted ? 'highlight-pulse' : ''}" id="discussion-comment-${escapeHtml(c.id)}">
+                      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+                        <div style="display:flex;align-items:center;gap:10px;min-width:0;">
+                          ${renderAvatarCircle(c.avatar_key || 'avatar_1', c.username, 36)}
+                          <div style="min-width:0;">
+                            <div style="font-size:14px;font-weight:700;color:var(--text-primary);">${escapeHtml(c.username || 'Member')}</div>
+                            <div style="font-size:11.5px;color:var(--text-muted);">
+                              ${escapeHtml(formatDiscussionTimestamp(c.created_at))}${
+                                c.updated_at && c.updated_at !== c.created_at ? ' • edited' : ''
+                              }
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      ${
+                        isEditingThis
+                          ? `
+                            <div class="discussion-composer-wrap">
+                              <textarea id="inp-discussion-edit-comment" class="auth-input" style="height:78px;padding:10px;resize:vertical;">${escapeHtml(
+                                d.editingCommentDraft
+                              )}</textarea>
+                              <div id="mention-dropdown-edit_comment" class="mention-autocomplete-dropdown" style="display:none;"></div>
+                              <div class="discussion-mention-bar">
+                                <span id="mention-counter-edit_comment" class="mention-counter-pill ${
+                                  validateContentMentions(d.editingCommentDraft).ok ? '' : 'over-limit'
+                                }">${validateContentMentions(d.editingCommentDraft).totalMentions}/${MAX_MENTIONS_PER_CONTENT} @mentions</span>
+                                <div style="display:flex;gap:8px;">
+                                  <button type="button" class="discussion-action-btn" data-cancel-edit-comment>Cancel</button>
+                                  <button type="button" class="btn-primary" data-save-edit-comment="${escapeHtml(c.id)}" style="height:34px;padding:0 14px;font-size:12px;" ${
+                                    d.submitting ? 'disabled' : ''
+                                  }>Save</button>
+                                </div>
+                              </div>
+                            </div>
+                          `
+                          : `<div class="discussion-comment-body">${renderMentionHighlightedHtml(c.content ?? c.body ?? '')}</div>`
+                      }
+
+                      <div class="discussion-action-row">
+                        ${
+                          state.session
+                            ? `<button
+                                 type="button"
+                                 class="discussion-action-btn"
+                                 data-start-reply-comment="${escapeHtml(c.id)}"
+                                 data-reply-target-uid="${escapeHtml(c.user_id)}"
+                                 data-reply-target-name="${escapeHtml(c.username || 'Member')}"
+                               >Reply to @${escapeHtml(c.username || 'Member')}</button>`
+                            : ''
+                        }
+                        ${
+                          isOwnComment && !isEditingThis
+                            ? `
+                              <button type="button" class="discussion-action-btn" data-edit-comment="${escapeHtml(c.id)}">Edit</button>
+                              <button type="button" class="discussion-action-btn danger" data-delete-comment="${escapeHtml(c.id)}">Delete</button>
+                            `
+                            : ''
+                        }
+                      </div>
+
+                      ${
+                        threads.length > 0
+                          ? `
+                            <div class="discussion-threads-container">
+                              ${threads
+                                .map((th) => {
+                                  const isExpanded = Boolean(d.expandedThreads[th.id]);
+                                  const replies = Array.isArray(th.replies) ? th.replies : [];
+                                  const isThreadHighlighted = hl.threadId === th.id && !hl.replyId;
+                                  return `
+                                    <div class="reply-thread-card ${isThreadHighlighted ? 'highlight-pulse' : ''}" id="discussion-thread-${escapeHtml(th.id)}">
+                                      <button type="button" class="reply-thread-header" data-toggle-thread="${escapeHtml(th.id)}">
+                                        <span>
+                                          Thread for <strong style="color:var(--accent-primary);">@${escapeHtml(th.target_username || 'Member')}</strong>
+                                          <span style="color:var(--text-muted);font-weight:500;"> • ${replies.length} ${replies.length === 1 ? 'reply' : 'replies'}</span>
+                                        </span>
+                                        <span style="color:var(--accent-primary);font-size:11.5px;">${isExpanded ? 'Hide ▲' : 'Show ▼'}</span>
+                                      </button>
+
+                                      ${
+                                        isExpanded
+                                          ? `
+                                            <div class="reply-thread-body">
+                                              ${replies
+                                                .map((r) => {
+                                                  const isOwnReply = currentUserId && r.user_id === currentUserId;
+                                                  const isEditingReply = d.editingReplyId === r.id;
+                                                  const isReplyHighlighted = hl.replyId === r.id;
+                                                  return `
+                                                    <div class="reply-item ${isReplyHighlighted ? 'highlight-pulse' : ''}" id="discussion-reply-${escapeHtml(r.id)}">
+                                                      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                                                        <div style="display:flex;align-items:center;gap:8px;min-width:0;">
+                                                          ${renderAvatarCircle(r.avatar_key || 'avatar_1', r.username, 28)}
+                                                          <div style="min-width:0;">
+                                                            <span style="font-size:13px;font-weight:700;color:var(--text-primary);">${escapeHtml(r.username || 'Member')}</span>
+                                                            <span style="font-size:11px;color:var(--text-muted);margin-left:6px;">
+                                                              ${escapeHtml(formatDiscussionTimestamp(r.created_at))}${
+                                                                r.updated_at && r.updated_at !== r.created_at ? ' • edited' : ''
+                                                              }
+                                                            </span>
+                                                          </div>
+                                                        </div>
+                                                      </div>
+
+                                                      ${
+                                                        isEditingReply
+                                                          ? `
+                                                            <div class="discussion-composer-wrap">
+                                                              <textarea id="inp-discussion-edit-reply" class="auth-input" style="height:68px;padding:10px;resize:vertical;">${escapeHtml(
+                                                                d.editingReplyDraft
+                                                              )}</textarea>
+                                                              <div id="mention-dropdown-edit_reply" class="mention-autocomplete-dropdown" style="display:none;"></div>
+                                                              <div class="discussion-mention-bar">
+                                                                <span id="mention-counter-edit_reply" class="mention-counter-pill ${
+                                                                  validateContentMentions(d.editingReplyDraft).ok ? '' : 'over-limit'
+                                                                }">${validateContentMentions(d.editingReplyDraft).totalMentions}/${MAX_MENTIONS_PER_CONTENT} @mentions</span>
+                                                                <div style="display:flex;gap:6px;">
+                                                                  <button type="button" class="discussion-action-btn" data-cancel-edit-reply>Cancel</button>
+                                                                  <button type="button" class="btn-primary" data-save-edit-reply="${escapeHtml(r.id)}" data-edit-reply-cid="${escapeHtml(c.id)}" data-edit-reply-tid="${escapeHtml(th.id)}" style="height:32px;padding:0 12px;font-size:11.5px;" ${
+                                                                    d.submitting ? 'disabled' : ''
+                                                                  }>Save</button>
+                                                                </div>
+                                                              </div>
+                                                            </div>
+                                                          `
+                                                          : `<div class="discussion-comment-body" style="font-size:13.5px;">${renderMentionHighlightedHtml(r.content ?? r.body ?? '')}</div>`
+                                                      }
+
+                                                      <div class="discussion-action-row">
+                                                        ${
+                                                          state.session
+                                                            ? `<button
+                                                                 type="button"
+                                                                 class="discussion-action-btn"
+                                                                 data-start-reply-comment="${escapeHtml(c.id)}"
+                                                                 data-reply-target-uid="${escapeHtml(r.user_id)}"
+                                                                 data-reply-target-name="${escapeHtml(r.username || 'Member')}"
+                                                               >Reply to @${escapeHtml(r.username || 'Member')}</button>`
+                                                            : ''
+                                                        }
+                                                        ${
+                                                          isOwnReply && !isEditingReply
+                                                            ? `
+                                                              <button type="button" class="discussion-action-btn" data-edit-reply="${escapeHtml(r.id)}" data-edit-reply-cid="${escapeHtml(c.id)}" data-edit-reply-tid="${escapeHtml(th.id)}">Edit</button>
+                                                              <button type="button" class="discussion-action-btn danger" data-delete-reply="${escapeHtml(r.id)}" data-delete-reply-cid="${escapeHtml(c.id)}" data-delete-reply-tid="${escapeHtml(th.id)}">Delete</button>
+                                                            `
+                                                            : ''
+                                                        }
+                                                      </div>
+                                                    </div>
+                                                  `;
+                                                })
+                                                .join('')}
+
+                                              ${
+                                                state.session
+                                                  ? `<button
+                                                       type="button"
+                                                       class="discussion-action-btn"
+                                                       style="align-self:flex-start;"
+                                                       data-start-reply-comment="${escapeHtml(c.id)}"
+                                                       data-reply-target-uid="${escapeHtml(th.target_user_id)}"
+                                                       data-reply-target-name="${escapeHtml(th.target_username || 'Member')}"
+                                                     >+ Join @${escapeHtml(th.target_username || 'Member')}'s thread</button>`
+                                                  : ''
+                                              }
+                                            </div>
+                                          `
+                                          : ''
+                                      }
+                                    </div>
+                                  `;
+                                })
+                                .join('')}
+                            </div>
+                          `
+                          : ''
+                      }
+
+                      ${
+                        isReplyingOnThisComment
+                          ? `
+                            <div class="discussion-inline-reply-box">
+                              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                                <span style="font-size:12px;font-weight:700;color:var(--accent-primary);">
+                                  Replying in @${escapeHtml(d.activeReplyTarget.targetUsername)}'s thread
+                                </span>
+                                <button type="button" class="discussion-action-btn" id="btn-cancel-reply-composer">Cancel</button>
+                              </div>
+                              <textarea
+                                id="inp-discussion-reply"
+                                class="auth-input"
+                                style="height:72px;padding:10px;resize:vertical;"
+                                placeholder="Write a reply... (Target @${escapeHtml(d.activeReplyTarget.targetUsername)} is notified automatically)"
+                                ${d.submitting ? 'disabled' : ''}
+                              >${escapeHtml(d.replyDraft || '')}</textarea>
+                              <div id="mention-dropdown-reply" class="mention-autocomplete-dropdown" style="display:none;"></div>
+                              <div class="discussion-mention-bar">
+                                <span id="mention-counter-reply" class="mention-counter-pill ${replyCheck.ok ? '' : 'over-limit'}">
+                                  ${replyCheck.totalMentions}/${MAX_MENTIONS_PER_CONTENT} @mentions
+                                </span>
+                                <button type="button" class="btn-primary" id="btn-post-thread-reply" style="height:36px;padding:0 16px;font-size:12px;" ${
+                                  d.submitting ? 'disabled' : ''
+                                }>${d.submitting ? 'POSTING...' : 'POST REPLY'}</button>
+                              </div>
+                            </div>
+                          `
+                          : ''
+                      }
+                    </div>
+                  `;
+                })
+                .join('')}
+            </div>
+          `
+      }
+
+      ${
+        d.hasMore
+          ? `<button type="button" class="btn-secondary" id="btn-discussion-load-more" style="width:100%;" ${d.loadingMore ? 'disabled' : ''}>
+               ${d.loadingMore ? 'LOADING MORE...' : 'LOAD MORE COMMENTS'}
+             </button>`
+          : ''
+      }
+    </div>
+  `;
+}
+
+// ============================================================================
+// SCREEN 8: NOTIFICATIONS SCREEN
+// ============================================================================
+
+function renderNotificationsScreen() {
+  const nState = state.notifications;
+  return `
+    <div style="max-width:860px;margin:0 auto;display:flex;flex-direction:column;gap:16px;">
+      <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+        <div>
+          <div class="micro-label" style="color:var(--accent-primary);">COMMUNITY ALERTS</div>
+          <h1 class="serif-heading" style="font-size:34px;line-height:38px;">Notifications</h1>
+          <div style="font-size:13px;color:var(--text-secondary);margin-top:4px;">
+            ${nState.unreadCount > 0 ? `${nState.unreadCount} unread notification${nState.unreadCount === 1 ? '' : 's'}` : 'All caught up'}
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <button type="button" class="btn-secondary" id="btn-notif-refresh" style="height:40px;padding:0 14px;font-size:12.5px;">Refresh</button>
+          ${
+            nState.unreadCount > 0
+              ? `<button type="button" class="btn-primary" id="btn-notif-mark-all" style="height:40px;padding:0 16px;font-size:12.5px;">Mark all read</button>`
+              : ''
+          }
+        </div>
+      </div>
+
+      ${nState.error ? `<div class="feedback-banner error">! ${escapeHtml(nState.error)}</div>` : ''}
+
+      ${
+        !state.session
+          ? `<div class="app-card" style="border-radius:24px;text-align:center;padding:32px 20px;color:var(--text-secondary);">
+               Sign in to receive @mention and thread reply notifications.
+             </div>`
+          : nState.loading
+          ? `<div class="app-card" style="border-radius:24px;text-align:center;padding:32px 20px;color:var(--text-secondary);">
+               Loading notifications...
+             </div>`
+          : nState.items.length === 0
+          ? `<div class="app-card" style="border-radius:24px;text-align:center;padding:40px 20px;color:var(--text-secondary);">
+               <div style="font-size:15px;font-weight:600;color:var(--text-primary);margin-bottom:6px;">No notifications yet</div>
+               <div style="font-size:13px;">When someone @mentions you or replies to you in an anime thread, it will appear here.</div>
+             </div>`
+          : `
+            <div style="display:flex;flex-direction:column;gap:10px;">
+              ${nState.items
+                .map((n) => {
+                  const nType = n.notification_type || n.type;
+                  const nPreview = n.preview_text || n.content_preview || '';
+                  const typeLabel =
+                    nType === 'thread_reply'
+                      ? 'replied to your thread'
+                      : nType === 'mention_reply'
+                      ? 'mentioned you in a reply'
+                      : 'mentioned you in a comment';
+                  return `
+                    <button
+                      type="button"
+                      class="notification-item ${n.is_read ? '' : 'unread'}"
+                      data-open-notification="${escapeHtml(n.id)}"
+                      data-notif-anime="${n.anime_id}"
+                      data-notif-comment="${escapeHtml(n.comment_id || '')}"
+                      data-notif-thread="${escapeHtml(n.thread_id || '')}"
+                      data-notif-reply="${escapeHtml(n.reply_id || '')}"
+                    >
+                      ${renderAvatarCircle(n.sender_avatar_key || 'avatar_1', n.sender_username || 'Member', 40)}
+                      <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px;">
+                        <div style="font-size:14px;color:var(--text-primary);line-height:1.4;">
+                          <strong style="color:var(--highlight);">@${escapeHtml(n.sender_username || 'Member')}</strong>
+                          <span> ${typeLabel}</span>
+                          ${n.anime_title ? ` on <strong style="color:var(--accent-primary);">${escapeHtml(n.anime_title)}</strong>` : ''}
+                        </div>
+                        ${
+                          nPreview
+                            ? `<div style="font-size:13px;color:var(--text-secondary);line-height:1.45;">“${escapeHtml(nPreview)}”</div>`
+                            : ''
+                        }
+                        <div style="font-size:11.5px;color:var(--text-muted);">${escapeHtml(formatDiscussionTimestamp(n.created_at))}</div>
+                      </div>
+                      ${!n.is_read ? '<span class="notification-unread-dot" title="Unread"></span>' : ''}
+                    </button>
+                  `;
+                })
+                .join('')}
+            </div>
+            ${
+              nState.hasMore
+                ? `<button type="button" class="btn-secondary" id="btn-notif-load-more" style="width:100%;" ${nState.loadingMore ? 'disabled' : ''}>
+                     ${nState.loadingMore ? 'LOADING...' : 'LOAD MORE NOTIFICATIONS'}
+                   </button>`
+                : ''
+            }
+          `
+      }
     </div>
   `;
 }
@@ -4621,9 +5755,22 @@ function renderModals() {
                         style="height:44px;flex:1;"
                         placeholder="Write your note for this anime..."
                         value="${escapeHtml(state.communityCommentDraftNote || '')}"
+                        ${state.communityNoteSaving ? 'disabled' : ''}
                       />
-                      <button type="button" class="btn-primary" id="btn-comm-modal-submit" style="height:44px;padding:0 18px;">POST</button>
+                      <button type="button" class="btn-primary" id="btn-comm-modal-submit" style="height:44px;padding:0 18px;" ${
+                        state.communityNoteSaving ? 'disabled' : ''
+                      }>${state.communityNoteSaving ? 'POSTING...' : 'POST'}</button>
                     </div>
+                    ${
+                      state.communityNoteFeedback
+                        ? `<div class="feedback-banner success" style="margin-top:8px;">✓ ${escapeHtml(state.communityNoteFeedback)}</div>`
+                        : ''
+                    }
+                    ${
+                      state.communityNoteError
+                        ? `<div class="feedback-banner error" style="margin-top:8px;">! ${escapeHtml(state.communityNoteError)}</div>`
+                        : ''
+                    }
                   </div>`
                 : ''
             }
@@ -4660,11 +5807,16 @@ function renderApp() {
     return;
   }
 
+  const unreadBadge = state.notifications.unreadCount > 0
+    ? (state.notifications.unreadCount > 99 ? '99+' : String(state.notifications.unreadCount))
+    : '';
+
   const sidebarTabs = [
     { id: 'home', title: 'Home', icon: SVG_ICONS.home },
     { id: 'discover', title: 'Explore', icon: SVG_ICONS.explore },
     { id: 'mylist', title: 'Library', icon: SVG_ICONS.library },
     { id: 'community', title: 'Community', icon: SVG_ICONS.community },
+    { id: 'notifications', title: 'Alerts', icon: SVG_ICONS.bell, badge: unreadBadge },
     { id: 'profile', title: 'Profile', icon: SVG_ICONS.profile }
   ];
 
@@ -4672,7 +5824,8 @@ function renderApp() {
     { id: 'home', title: 'Home', icon: SVG_ICONS.home },
     { id: 'discover', title: 'Explore', icon: SVG_ICONS.explore },
     { id: 'mylist', title: 'Library', icon: SVG_ICONS.library },
-    { id: 'community', title: 'Community', icon: SVG_ICONS.community }
+    { id: 'community', title: 'Community', icon: SVG_ICONS.community },
+    { id: 'notifications', title: 'Alerts', icon: SVG_ICONS.bell, badge: unreadBadge }
   ];
 
   let screenHtml = '';
@@ -4680,6 +5833,7 @@ function renderApp() {
   else if (state.tab === 'discover') screenHtml = renderDiscoverScreen();
   else if (state.tab === 'mylist') screenHtml = renderMyListScreen();
   else if (state.tab === 'community') screenHtml = renderCommunityScreen();
+  else if (state.tab === 'notifications') screenHtml = renderNotificationsScreen();
   else if (state.tab === 'downloads') screenHtml = renderDownloadsScreen();
   else if (state.tab === 'profile') screenHtml = renderProfileScreen();
   else if (state.tab === 'settings') screenHtml = renderSettingsScreen();
@@ -4699,6 +5853,7 @@ function renderApp() {
             <button class="sidebar-item ${state.tab === t.id ? 'active' : ''}" data-nav="${t.id}">
               ${t.icon}
               <span>${t.title}</span>
+              ${t.badge ? `<span class="nav-unread-badge-inline">${t.badge}</span>` : ''}
             </button>`
           )
           .join('')}
@@ -4715,7 +5870,10 @@ function renderApp() {
           .map(
             (t) => `
             <button class="rail-item ${state.tab === t.id ? 'active' : ''}" data-nav="${t.id}">
-              ${t.icon}
+              <span class="nav-icon-badge-wrap">
+                ${t.icon}
+                ${t.badge ? `<span class="nav-unread-badge">${t.badge}</span>` : ''}
+              </span>
               <span>${t.title}</span>
             </button>`
           )
@@ -4732,7 +5890,7 @@ function renderApp() {
         ${screenHtml}
       </main>
 
-      <!-- MidnightBottomNavigationBar (<600px, 4 Capsule Tabs) -->
+      <!-- MidnightBottomNavigationBar (<600px, Capsule Tabs) -->
       ${
         state.tab !== 'detail' && state.tab !== 'profile' && state.tab !== 'settings' && state.tab !== 'downloads'
           ? `
@@ -4742,7 +5900,10 @@ function renderApp() {
                   .map(
                     (t) => `
                     <button class="dock-tab ${state.tab === t.id ? 'active' : ''}" data-nav="${t.id}">
-                      ${t.icon}
+                      <span class="nav-icon-badge-wrap">
+                        ${t.icon}
+                        ${t.badge ? `<span class="nav-unread-badge">${t.badge}</span>` : ''}
+                      </span>
                       <span class="dock-tab-label">${t.title}</span>
                     </button>`
                   )
@@ -5273,6 +6434,9 @@ function bindAppEvents() {
       state.tab = target;
       window.scrollTo({ top: 0, behavior: 'smooth' });
       renderApp();
+      if (target === 'notifications') {
+        loadUserNotifications(true);
+      }
     };
   });
 
@@ -5701,6 +6865,9 @@ function bindAppEvents() {
       state.communityCommentsAnimeId = aid;
       state.communityCommentDraftStars = existing && existing.rating10 ? rating10ToStars(existing.rating10) || 0 : 0;
       state.communityCommentDraftNote = existing ? existing.reviewNotes || '' : '';
+      state.communityNoteSaving = false;
+      state.communityNoteFeedback = '';
+      state.communityNoteError = '';
       renderApp();
     };
   });
@@ -5730,20 +6897,39 @@ function bindAppEvents() {
   const btnCommModalSubmit = document.getElementById('btn-comm-modal-submit');
   if (btnCommModalSubmit) {
     btnCommModalSubmit.onclick = async () => {
+      if (state.communityNoteSaving) return;
       const aid = Number(state.communityCommentsAnimeId);
       if (!aid) return;
       const noteText = (document.getElementById('inp-comm-modal-note')?.value ?? state.communityCommentDraftNote ?? '').trim();
       const stars = Number(state.communityCommentDraftStars || 0);
-      if (!noteText && stars <= 0) return;
+      if (!noteText && stars <= 0) {
+        state.communityNoteError = 'Please select a star rating or enter a comment.';
+        state.communityNoteFeedback = '';
+        renderApp();
+        return;
+      }
 
       const allGroups = groupCommunityReviewsByAnime(state.communityReviews);
       const grp = allGroups.find((g) => Number(g.anime_id) === aid);
       const rating10Val = stars > 0 ? Math.round(stars * 2) : null;
 
-      // Part 1: Adding a community note/comment/rating NEVER adds the anime to Home
-      await submitCommunityCommentNote(aid, rating10Val, noteText, grp || null);
-      state.communityCommentDraftNote = '';
+      state.communityNoteSaving = true;
+      state.communityNoteFeedback = '';
+      state.communityNoteError = '';
       renderApp();
+      try {
+        // Part 1: Adding a community note/comment/rating NEVER adds the anime to Home
+        await submitCommunityCommentNote(aid, rating10Val, noteText, grp || null, { throwOnError: true, silentToast: true });
+        state.communityCommentDraftNote = '';
+        state.communityNoteFeedback = noteText ? 'Comment posted successfully' : 'Rating saved';
+        showToast(state.communityNoteFeedback);
+      } catch (err) {
+        state.communityNoteError = err?.message || 'Failed to post. Please try again.';
+        showToast(state.communityNoteError, true);
+      } finally {
+        state.communityNoteSaving = false;
+        renderApp();
+      }
     };
   }
 
@@ -5868,27 +7054,52 @@ function bindAppEvents() {
   if (btnDetailRemove && state.detailAnime) {
     btnDetailRemove.onclick = () => removeFromVault(state.detailAnime.animeId);
   }
-  const saveDetailRatingOrNote = async (rating10Val, noteText) => {
-    if (!state.detailAnime) return;
-    if (state.detailAnime.inWatchlist) {
-      // Preserve Home status; never auto-add to Home when rating/noting
-      await saveVaultEntry(
-        {
-          ...state.detailAnime,
-          rating10: rating10Val ?? state.detailAnime.rating10,
-          reviewNotes: noteText !== undefined ? noteText : state.detailAnime.reviewNotes
-        },
-        { addToHome: false }
-      );
+  const saveDetailRatingOrNote = async (rating10Val, noteText, actionKind = 'rating') => {
+    if (!state.detailAnime || state.detailRatingSaving) return;
+    const hadRatingBefore = Boolean(state.detailAnime.rating10 && Number(state.detailAnime.rating10) > 0);
+    state.detailRatingSaving = true;
+    state.detailRatingFeedback = '';
+    state.detailRatingError = '';
+    const nextRating10 = rating10Val ?? state.detailAnime.rating10;
+    const nextNotes = noteText !== undefined ? noteText : state.detailAnime.reviewNotes;
+    state.detailAnime = { ...state.detailAnime, rating10: nextRating10, reviewNotes: nextNotes };
+    renderApp();
+    try {
+      if (state.detailAnime.inWatchlist) {
+        // Preserve Home status; never auto-add to Home when rating/noting
+        await saveVaultEntry(
+          {
+            ...state.detailAnime,
+            rating10: nextRating10,
+            reviewNotes: nextNotes
+          },
+          { addToHome: false, throwOnError: true }
+        );
+      } else {
+        // Not in Library/Home -> post to independent Community notes without adding to Home!
+        await submitCommunityCommentNote(
+          state.detailAnime.animeId,
+          nextRating10,
+          nextNotes,
+          state.detailAnime,
+          { throwOnError: true, silentToast: true }
+        );
+      }
+      const starsStr = nextRating10 ? `${(Number(nextRating10) / 2).toFixed(1)} ★` : '';
+      const msg =
+        actionKind === 'note'
+          ? (String(nextNotes || '').trim() ? 'Review note & rating saved successfully' : 'Rating saved successfully')
+          : hadRatingBefore
+          ? `Rating updated to ${starsStr}`
+          : `Rating saved (${starsStr})`;
+      state.detailRatingFeedback = msg;
+      showToast(msg);
+    } catch (err) {
+      state.detailRatingError = err?.message || 'Failed to save rating. Please try again.';
+      showToast(state.detailRatingError, true);
+    } finally {
+      state.detailRatingSaving = false;
       renderApp();
-    } else {
-      // Not in Library/Home -> post to independent Community notes without adding to Home!
-      await submitCommunityCommentNote(
-        state.detailAnime.animeId,
-        rating10Val ?? state.detailAnime.rating10,
-        noteText !== undefined ? noteText : state.detailAnime.reviewNotes,
-        state.detailAnime
-      );
     }
   };
   document.querySelectorAll('[data-star-val]').forEach((btn) => {
@@ -5898,8 +7109,7 @@ function bindAppEvents() {
       const currentStars = rating10ToStars(state.detailAnime.rating10) || 0;
       const nextStars = currentStars === clicked ? clicked - 0.5 : clicked;
       const nextRating10 = Math.round(nextStars * 2);
-      state.detailAnime.rating10 = nextRating10;
-      await saveDetailRatingOrNote(nextRating10, undefined);
+      await saveDetailRatingOrNote(nextRating10, undefined, 'rating');
     };
   });
   document.querySelectorAll('[data-pick-sentiment-stars]').forEach((btn) => {
@@ -5907,8 +7117,7 @@ function bindAppEvents() {
       if (!state.detailAnime) return;
       const st = Number(btn.getAttribute('data-pick-sentiment-stars'));
       const nextRating10 = Math.round(st * 2);
-      state.detailAnime.rating10 = nextRating10;
-      await saveDetailRatingOrNote(nextRating10, undefined);
+      await saveDetailRatingOrNote(nextRating10, undefined, 'rating');
     };
   });
   const btnStarMinus = document.getElementById('btn-star-minus');
@@ -5916,8 +7125,7 @@ function bindAppEvents() {
     btnStarMinus.onclick = async () => {
       const cur = rating10ToStars(state.detailAnime.rating10) || 0;
       const nextRating10 = Math.round(Math.max(0.5, cur - 0.5) * 2);
-      state.detailAnime.rating10 = nextRating10;
-      await saveDetailRatingOrNote(nextRating10, undefined);
+      await saveDetailRatingOrNote(nextRating10, undefined, 'rating');
     };
   }
   const btnStarPlus = document.getElementById('btn-star-plus');
@@ -5925,18 +7133,165 @@ function bindAppEvents() {
     btnStarPlus.onclick = async () => {
       const cur = rating10ToStars(state.detailAnime.rating10) || 0;
       const nextRating10 = Math.round(Math.min(5.0, cur + 0.5) * 2);
-      state.detailAnime.rating10 = nextRating10;
-      await saveDetailRatingOrNote(nextRating10, undefined);
+      await saveDetailRatingOrNote(nextRating10, undefined, 'rating');
     };
   }
   const btnSaveNote = document.getElementById('btn-detail-save-note');
   if (btnSaveNote && state.detailAnime) {
     btnSaveNote.onclick = async () => {
       const notes = (document.getElementById('inp-detail-notes')?.value || '').trim();
-      state.detailAnime.reviewNotes = notes;
-      await saveDetailRatingOrNote(state.detailAnime.rating10, notes);
+      await saveDetailRatingOrNote(state.detailAnime.rating10, notes, 'note');
     };
   }
+
+  // Anime Discussion & Threaded Reply events
+  const inpDiscComment = document.getElementById('inp-discussion-comment');
+  if (inpDiscComment) {
+    inpDiscComment.oninput = () => handleDiscussionInputMentionCheck('comment', inpDiscComment);
+    inpDiscComment.onclick = () => handleDiscussionInputMentionCheck('comment', inpDiscComment);
+  }
+  const inpDiscReply = document.getElementById('inp-discussion-reply');
+  if (inpDiscReply) {
+    inpDiscReply.oninput = () => handleDiscussionInputMentionCheck('reply', inpDiscReply);
+    inpDiscReply.onclick = () => handleDiscussionInputMentionCheck('reply', inpDiscReply);
+  }
+  const inpDiscEditComment = document.getElementById('inp-discussion-edit-comment');
+  if (inpDiscEditComment) {
+    inpDiscEditComment.oninput = () => handleDiscussionInputMentionCheck('edit_comment', inpDiscEditComment);
+  }
+  const inpDiscEditReply = document.getElementById('inp-discussion-edit-reply');
+  if (inpDiscEditReply) {
+    inpDiscEditReply.oninput = () => handleDiscussionInputMentionCheck('edit_reply', inpDiscEditReply);
+  }
+  const btnPostDiscComment = document.getElementById('btn-post-discussion-comment');
+  if (btnPostDiscComment) btnPostDiscComment.onclick = () => postAnimeComment();
+  const btnRefreshDisc = document.getElementById('btn-discussion-refresh');
+  if (btnRefreshDisc && state.detailAnime) {
+    btnRefreshDisc.onclick = () => loadAnimeDiscussion(state.detailAnime.animeId, true);
+  }
+  const btnLoadMoreDisc = document.getElementById('btn-discussion-load-more');
+  if (btnLoadMoreDisc && state.detailAnime) {
+    btnLoadMoreDisc.onclick = () => loadAnimeDiscussion(state.detailAnime.animeId, false);
+  }
+  document.querySelectorAll('[data-start-reply-comment]').forEach((btn) => {
+    btn.onclick = () => {
+      state.discussion.activeReplyTarget = {
+        commentId: btn.getAttribute('data-start-reply-comment'),
+        targetUserId: btn.getAttribute('data-reply-target-uid'),
+        targetUsername: btn.getAttribute('data-reply-target-name') || 'Member'
+      };
+      state.discussion.replyDraft = '';
+      state.discussion.error = '';
+      renderApp();
+      setTimeout(() => document.getElementById('inp-discussion-reply')?.focus(), 40);
+    };
+  });
+  const btnCancelReply = document.getElementById('btn-cancel-reply-composer');
+  if (btnCancelReply) {
+    btnCancelReply.onclick = () => {
+      state.discussion.activeReplyTarget = null;
+      state.discussion.replyDraft = '';
+      renderApp();
+    };
+  }
+  const btnPostReply = document.getElementById('btn-post-thread-reply');
+  if (btnPostReply) btnPostReply.onclick = () => postThreadReply();
+
+  document.querySelectorAll('[data-toggle-thread]').forEach((btn) => {
+    btn.onclick = () => {
+      const tid = btn.getAttribute('data-toggle-thread');
+      state.discussion.expandedThreads[tid] = !state.discussion.expandedThreads[tid];
+      renderApp();
+    };
+  });
+  document.querySelectorAll('[data-edit-comment]').forEach((btn) => {
+    btn.onclick = () => {
+      const cid = btn.getAttribute('data-edit-comment');
+      const target = state.discussion.comments.find((c) => c.id === cid);
+      if (!target) return;
+      state.discussion.editingCommentId = cid;
+      state.discussion.editingCommentDraft = target.content ?? target.body ?? '';
+      renderApp();
+    };
+  });
+  document.querySelectorAll('[data-cancel-edit-comment]').forEach((btn) => {
+    btn.onclick = () => {
+      state.discussion.editingCommentId = null;
+      state.discussion.editingCommentDraft = '';
+      renderApp();
+    };
+  });
+  document.querySelectorAll('[data-save-edit-comment]').forEach((btn) => {
+    btn.onclick = () => saveEditedAnimeComment(btn.getAttribute('data-save-edit-comment'));
+  });
+  document.querySelectorAll('[data-delete-comment]').forEach((btn) => {
+    btn.onclick = () => deleteAnimeComment(btn.getAttribute('data-delete-comment'));
+  });
+  document.querySelectorAll('[data-edit-reply]').forEach((btn) => {
+    btn.onclick = () => {
+      const rid = btn.getAttribute('data-edit-reply');
+      const cid = btn.getAttribute('data-edit-reply-cid');
+      const tid = btn.getAttribute('data-edit-reply-tid');
+      const comment = state.discussion.comments.find((c) => c.id === cid);
+      const thread = comment?.threads?.find((th) => th.id === tid);
+      const reply = thread?.replies?.find((r) => r.id === rid);
+      if (!reply) return;
+      state.discussion.editingReplyId = rid;
+      state.discussion.editingReplyCommentId = cid;
+      state.discussion.editingReplyThreadId = tid;
+      state.discussion.editingReplyDraft = reply.content ?? reply.body ?? '';
+      renderApp();
+    };
+  });
+  document.querySelectorAll('[data-cancel-edit-reply]').forEach((btn) => {
+    btn.onclick = () => {
+      state.discussion.editingReplyId = null;
+      state.discussion.editingReplyCommentId = null;
+      state.discussion.editingReplyThreadId = null;
+      state.discussion.editingReplyDraft = '';
+      renderApp();
+    };
+  });
+  document.querySelectorAll('[data-save-edit-reply]').forEach((btn) => {
+    btn.onclick = () =>
+      saveEditedThreadReply(
+        btn.getAttribute('data-edit-reply-cid'),
+        btn.getAttribute('data-edit-reply-tid'),
+        btn.getAttribute('data-save-edit-reply')
+      );
+  });
+  document.querySelectorAll('[data-delete-reply]').forEach((btn) => {
+    btn.onclick = () =>
+      deleteThreadReply(
+        btn.getAttribute('data-delete-reply-cid'),
+        btn.getAttribute('data-delete-reply-tid'),
+        btn.getAttribute('data-delete-reply')
+      );
+  });
+
+  // Notifications Screen events
+  const btnNotifRefresh = document.getElementById('btn-notif-refresh');
+  if (btnNotifRefresh) btnNotifRefresh.onclick = () => loadUserNotifications(true);
+  const btnNotifMarkAll = document.getElementById('btn-notif-mark-all');
+  if (btnNotifMarkAll) btnNotifMarkAll.onclick = () => markAllNotificationsRead();
+  const btnNotifLoadMore = document.getElementById('btn-notif-load-more');
+  if (btnNotifLoadMore) btnNotifLoadMore.onclick = () => loadUserNotifications(false);
+  document.querySelectorAll('[data-open-notification]').forEach((btn) => {
+    btn.onclick = async () => {
+      const notifId = btn.getAttribute('data-open-notification');
+      const animeId = Number(btn.getAttribute('data-notif-anime'));
+      const commentId = btn.getAttribute('data-notif-comment') || null;
+      const threadId = btn.getAttribute('data-notif-thread') || null;
+      const replyId = btn.getAttribute('data-notif-reply') || null;
+      await markNotificationRead(notifId);
+      if (animeId > 0) {
+        state.pendingNotificationJump = { animeId, commentId, threadId, replyId };
+        await openAnimeDetail(animeId);
+      } else {
+        renderApp();
+      }
+    };
+  });
 
   // Modal bindings
   const backdrop = document.getElementById('modal-backdrop');

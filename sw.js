@@ -1,4 +1,4 @@
-const CACHE_NAME = 'anime-universe-pwa-v2.10.0';
+const CACHE_NAME = 'anime-universe-pwa-v2.11.0';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -9,7 +9,7 @@ const STATIC_ASSETS = [
   '/icon-192.png',
   '/icon-512.png',
   '/assets/img_login_mascot.png',
-  '/assets/aistudio/117029-removebg-preview_a7bd2144.png',
+  '/assets/sandrone/sandrone.png',
   '/assets/avatar_1.png',
   '/assets/avatar_2.png',
   '/assets/avatar_3.png',

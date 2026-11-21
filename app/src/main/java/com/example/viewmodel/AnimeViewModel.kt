@@ -16,6 +16,7 @@ import com.example.data.repository.AppPreferencesState
 import com.example.data.repository.OwnerVaultStore
 import com.example.data.repository.PreferencesRepository
 import com.example.model.AnimeCollection
+import com.example.model.AnimeCommentItem
 import com.example.model.AnimeRichDetail
 import com.example.model.AuthSession
 import com.example.model.BuiltInAvatar
@@ -26,9 +27,12 @@ import com.example.model.CommunityReview
 import com.example.model.DatabaseStorageStats
 import com.example.model.InvitationCode
 import com.example.model.MemberStatus
+import com.example.model.MentionableUser
+import com.example.model.NotificationJumpTarget
 import com.example.model.PrivacySettings
 import com.example.model.StarRatingUtils
 import com.example.model.ThemeModePreference
+import com.example.model.UserNotificationItem
 import com.example.model.UserProfile
 import com.example.model.VisibilityLevel
 import com.example.model.WatchStatus
@@ -36,6 +40,8 @@ import com.example.model.WatchlistLayoutMode
 import com.example.service.AniListMetadataProvider
 import com.example.service.AppUpdateInfo
 import com.example.service.SupabaseDatabaseService
+import com.example.service.SupabaseDiscussionService
+import com.example.util.DiscussionRules
 import com.example.util.ErrorSanitizer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -92,6 +98,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     private val ownerVaultStore = OwnerVaultStore(application)
     private val supabaseAuth = SupabaseAuthService(application)
     private val supabaseDb = SupabaseDatabaseService()
+    private val supabaseDiscussion = SupabaseDiscussionService()
 
     @Volatile
     private var activeOwnerKey: String? = null
@@ -110,6 +117,82 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     private val _dynamicIslandFeedback = MutableStateFlow<DynamicIslandFeedback?>(null)
     val dynamicIslandFeedback = _dynamicIslandFeedback.asStateFlow()
     fun dismissDynamicIslandFeedback() { _dynamicIslandFeedback.value = null }
+
+    // Explicit Rating & Community Note Submission Feedback State
+    private val _ratingFeedbackMessage = MutableStateFlow<String?>(null)
+    val ratingFeedbackMessage = _ratingFeedbackMessage.asStateFlow()
+    fun clearRatingFeedback() { _ratingFeedbackMessage.value = null }
+
+    private val _isSubmittingCommunityNote = MutableStateFlow(false)
+    val isSubmittingCommunityNote = _isSubmittingCommunityNote.asStateFlow()
+
+    private val _communityNoteFeedback = MutableStateFlow<String?>(null)
+    val communityNoteFeedback = _communityNoteFeedback.asStateFlow()
+
+    private val _communityNoteError = MutableStateFlow<String?>(null)
+    val communityNoteError = _communityNoteError.asStateFlow()
+    fun clearCommunityNoteFeedback() {
+        _communityNoteFeedback.value = null
+        _communityNoteError.value = null
+    }
+
+    // Discussion Comments, Mentions & Threaded Replies State
+    private val _discussionComments = MutableStateFlow<List<AnimeCommentItem>>(emptyList())
+    val discussionComments = _discussionComments.asStateFlow()
+
+    private val _discussionTotalCount = MutableStateFlow(0)
+    val discussionTotalCount = _discussionTotalCount.asStateFlow()
+
+    private val _discussionHasMore = MutableStateFlow(false)
+    val discussionHasMore = _discussionHasMore.asStateFlow()
+
+    private val _isDiscussionLoading = MutableStateFlow(false)
+    val isDiscussionLoading = _isDiscussionLoading.asStateFlow()
+
+    private val _isDiscussionSubmitting = MutableStateFlow(false)
+    val isDiscussionSubmitting = _isDiscussionSubmitting.asStateFlow()
+
+    private val _discussionSuccessMessage = MutableStateFlow<String?>(null)
+    val discussionSuccessMessage = _discussionSuccessMessage.asStateFlow()
+
+    private val _discussionErrorMessage = MutableStateFlow<String?>(null)
+    val discussionErrorMessage = _discussionErrorMessage.asStateFlow()
+
+    private val _mentionSuggestions = MutableStateFlow<List<MentionableUser>>(emptyList())
+    val mentionSuggestions = _mentionSuggestions.asStateFlow()
+    private var mentionSearchJob: Job? = null
+
+    // Notifications State
+    private val _notifications = MutableStateFlow<List<UserNotificationItem>>(emptyList())
+    val notifications = _notifications.asStateFlow()
+
+    private val _unreadNotificationCount = MutableStateFlow(0)
+    val unreadNotificationCount = _unreadNotificationCount.asStateFlow()
+
+    private val _hasMoreNotifications = MutableStateFlow(false)
+    val hasMoreNotifications = _hasMoreNotifications.asStateFlow()
+
+    private val _isNotificationsLoading = MutableStateFlow(false)
+    val isNotificationsLoading = _isNotificationsLoading.asStateFlow()
+
+    private val _notificationsError = MutableStateFlow<String?>(null)
+    val notificationsError = _notificationsError.asStateFlow()
+
+    private val _pendingNotificationJump = MutableStateFlow<NotificationJumpTarget?>(null)
+    val pendingNotificationJump = _pendingNotificationJump.asStateFlow()
+
+    fun setPendingNotificationJump(target: NotificationJumpTarget) {
+        _pendingNotificationJump.value = target
+    }
+
+    fun consumePendingNotificationJump() {
+        _pendingNotificationJump.value = null
+    }
+
+    fun clearDiscussionFeedback() {
+        _discussionSuccessMessage.value = null
+        _discussionErrorMessage.value = null
+    }
 
     private val _focusedArtworkUrl = MutableStateFlow<String?>(null)
     val focusedArtworkUrl = _focusedArtworkUrl.asStateFlow()
@@ -555,6 +638,11 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                             _communityActivity.value = activity
                         }
                     }
+                }
+            }
+            supabaseDiscussion.fetchUnreadNotificationCount(activeSession).onSuccess { unread ->
+                if (_authSession.value?.userId == capturedUserId) {
+                    _unreadNotificationCount.value = unread
                 }
             }
         }
@@ -1576,8 +1664,15 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
         _selectedAnimeId.value = animeId
         _selectedRichDetail.value = null
         _animeReviews.value = emptyList()
+        _ratingFeedbackMessage.value = null
+        _discussionComments.value = emptyList()
+        _discussionTotalCount.value = 0
+        _discussionHasMore.value = false
+        _discussionSuccessMessage.value = null
+        _discussionErrorMessage.value = null
         viewModelScope.launch {
             _isDetailLoading.value = true
+            launch { loadAnimeDiscussion(animeId, reset = true) }
             metadataProvider.getMediaDetails(animeId).onSuccess { media ->
                 if (media != null) {
                     val existing = repository.getAnimeByIdSync(media.id)
@@ -1862,15 +1957,27 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             }
             syncDisplayedCatalogPersonalFlags()
             val syncText = if (session != null) "Synced" else "Saved"
+            val hadPreviousScore = (before?.userScore ?: 0) > 0
+            val newStars = StarRatingUtils.score100ToStars(updated.userScore)
+            val ratingBanner = when {
+                newStars > 0f && hadPreviousScore && before?.userScore != updated.userScore ->
+                    "Rating updated to ${StarRatingUtils.formatStars(newStars)}★"
+                newStars > 0f && !hadPreviousScore ->
+                    "Rating saved (${StarRatingUtils.formatStars(newStars)}★)"
+                !notes.isNullOrBlank() && notes.trim() != before?.userNotes?.trim().orEmpty() ->
+                    "Review & tracking saved"
+                else -> "Tracking saved for ${updated.displayTitle}"
+            }
+            _ratingFeedbackMessage.value = ratingBanner
             _dynamicIslandFeedback.value = DynamicIslandFeedback(
-                title = "Updated • $syncText",
+                title = "$ratingBanner • $syncText",
                 subtitle = "${updated.displayTitle} (S${updated.effectiveSeasonNumber} • ${updated.watchStatusEnum.label})",
                 animeId = updated.id
             )
             _userMessage.value = when {
                 updated.watchStatusEnum == WatchStatus.DROPPED && before?.inHome == true ->
                     "Marked ${updated.displayTitle} as Dropped. Removed from Home and preserved in Library."
-                else -> "Saved tracking updates for ${updated.displayTitle}."
+                else -> ratingBanner
             }
         }
     }
@@ -1988,93 +2095,120 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
         animeTitle: String,
         coverImage: String,
         ratingStars: Float,
-        noteText: String
+        noteText: String,
+        onSuccessCallback: () -> Unit = {}
     ) {
+        if (_isSubmittingCommunityNote.value) return
         val cleanNote = noteText.trim()
         if (cleanNote.isBlank() && ratingStars <= 0f) {
+            _communityNoteError.value = "Write a note or select a star rating first."
             _userMessage.value = "Write a note or select a star rating first."
             return
         }
         viewModelScope.launch {
-            val existing = repository.getAnimeByIdSync(animeId)
-            val resolvedScoreTenths = if (ratingStars > 0f) {
-                StarRatingUtils.starsToScore100(ratingStars)
-            } else {
-                existing?.userScore
-            }
-            val rating10 = resolvedScoreTenths?.takeIf { it > 0 }?.let { it / 10.0 }
-            val finalNote = cleanNote.ifBlank { existing?.userNotes.orEmpty() }
-
-            // If the anime is ALREADY in the user's Library, mirror rating/note without altering inHome!
-            if (existing != null && existing.inWatchlist) {
-                val updated = repository.updateUserTrackingState(
-                    animeId = animeId,
-                    status = existing.watchStatusEnum,
-                    episodeProgress = existing.watchedEpisodeCount,
-                    seasonNumber = existing.userSeason,
-                    score = resolvedScoreTenths,
-                    notes = finalNote,
-                    isFavorite = existing.isFavorite,
-                    explicitInHome = existing.inHome
-                )
-                if (updated != null) {
-                    persistCurrentOwnerVaultSnapshot()
+            _isSubmittingCommunityNote.value = true
+            _communityNoteError.value = null
+            _communityNoteFeedback.value = null
+            try {
+                val existing = repository.getAnimeByIdSync(animeId)
+                val resolvedScoreTenths = if (ratingStars > 0f) {
+                    StarRatingUtils.starsToScore100(ratingStars)
+                } else {
+                    existing?.userScore
                 }
-            }
+                val rating10 = resolvedScoreTenths?.takeIf { it > 0 }?.let { it / 10.0 }
+                val finalNote = cleanNote.ifBlank { existing?.userNotes.orEmpty() }
 
-            val session = _authSession.value
-            val profile = _userProfile.value
-            if (session != null) {
-                val res = supabaseDb.upsertCommunityNote(
-                    session = session,
-                    animeId = animeId,
-                    animeTitle = animeTitle.ifBlank { existing?.displayTitle ?: "Anime #$animeId" },
-                    coverImage = coverImage.ifBlank { existing?.coverImage.orEmpty() },
-                    rating10 = rating10,
-                    reviewNotes = finalNote
-                )
-                res.onSuccess {
-                    if (profile != null) {
-                        val existingReview = _communityReviews.value.firstOrNull {
-                            it.animeId == animeId && it.userId == session.userId
-                        }
-                        val optimisticReview = CommunityReview(
-                            id = existingReview?.id ?: "note-${session.userId}-$animeId",
-                            userId = session.userId,
-                            username = profile.username,
-                            avatarKey = profile.avatarKey,
-                            avatarUrl = profile.avatarUrl,
-                            animeId = animeId,
-                            animeTitle = animeTitle.ifBlank { existing?.displayTitle ?: "Anime #$animeId" },
-                            animeCoverImage = coverImage.ifBlank { existing?.coverImage.orEmpty() },
-                            rating = rating10,
-                            reviewNotes = finalNote,
-                            status = existing?.watchStatusEnum ?: WatchStatus.WATCHING,
-                            episodeProgress = existing?.watchedEpisodeCount ?: 0,
-                            totalEpisodes = existing?.totalEpisodes,
-                            updatedAt = Instant.now().toString(),
-                            likesCount = existingReview?.likesCount ?: 0,
-                            likedByMe = existingReview?.likedByMe ?: false
-                        )
-                        _communityReviews.value = sortReviews(
-                            listOf(optimisticReview) + _communityReviews.value.filterNot {
-                                it.animeId == animeId && it.userId == session.userId
-                            },
-                            _reviewSortOption.value
-                        )
-                        if (_selectedAnimeId.value == animeId) {
-                            _animeReviews.value = listOf(optimisticReview) + _animeReviews.value.filterNot {
-                                it.userId == session.userId
+                // If the anime is ALREADY in the user's Library, mirror rating/note without altering inHome!
+                if (existing != null && existing.inWatchlist) {
+                    val updated = repository.updateUserTrackingState(
+                        animeId = animeId,
+                        status = existing.watchStatusEnum,
+                        episodeProgress = existing.watchedEpisodeCount,
+                        seasonNumber = existing.userSeason,
+                        score = resolvedScoreTenths,
+                        notes = finalNote,
+                        isFavorite = existing.isFavorite,
+                        explicitInHome = existing.inHome
+                    )
+                    if (updated != null) {
+                        persistCurrentOwnerVaultSnapshot()
+                    }
+                }
+
+                val session = _authSession.value
+                val profile = _userProfile.value
+                if (session != null) {
+                    val existingReview = _communityReviews.value.firstOrNull {
+                        it.animeId == animeId && it.userId == session.userId
+                    }
+                    val res = supabaseDb.upsertCommunityNote(
+                        session = session,
+                        animeId = animeId,
+                        animeTitle = animeTitle.ifBlank { existing?.displayTitle ?: "Anime #$animeId" },
+                        coverImage = coverImage.ifBlank { existing?.coverImage.orEmpty() },
+                        rating10 = rating10,
+                        reviewNotes = finalNote
+                    )
+                    res.onSuccess {
+                        if (profile != null) {
+                            val optimisticReview = CommunityReview(
+                                id = existingReview?.id ?: "note-${session.userId}-$animeId",
+                                userId = session.userId,
+                                username = profile.username,
+                                avatarKey = profile.avatarKey,
+                                avatarUrl = profile.avatarUrl,
+                                animeId = animeId,
+                                animeTitle = animeTitle.ifBlank { existing?.displayTitle ?: "Anime #$animeId" },
+                                animeCoverImage = coverImage.ifBlank { existing?.coverImage.orEmpty() },
+                                rating = rating10,
+                                reviewNotes = finalNote,
+                                status = existing?.watchStatusEnum ?: WatchStatus.WATCHING,
+                                episodeProgress = existing?.watchedEpisodeCount ?: 0,
+                                totalEpisodes = existing?.totalEpisodes,
+                                updatedAt = Instant.now().toString(),
+                                likesCount = existingReview?.likesCount ?: 0,
+                                likedByMe = existingReview?.likedByMe ?: false
+                            )
+                            _communityReviews.value = sortReviews(
+                                listOf(optimisticReview) + _communityReviews.value.filterNot {
+                                    it.animeId == animeId && it.userId == session.userId
+                                },
+                                _reviewSortOption.value
+                            )
+                            if (_selectedAnimeId.value == animeId) {
+                                _animeReviews.value = listOf(optimisticReview) + _animeReviews.value.filterNot {
+                                    it.userId == session.userId
+                                }
                             }
                         }
+                        refreshCommunityData()
+                        val msg = when {
+                            cleanNote.isNotBlank() && ratingStars > 0f ->
+                                "Comment & ${StarRatingUtils.formatStars(ratingStars)}★ rating saved successfully"
+                            cleanNote.isNotBlank() -> "Comment posted successfully"
+                            existingReview != null -> "Rating updated to ${StarRatingUtils.formatStars(ratingStars)}★"
+                            else -> "Rating saved (${StarRatingUtils.formatStars(ratingStars)}★)"
+                        }
+                        _communityNoteFeedback.value = msg
+                        _dynamicIslandFeedback.value = DynamicIslandFeedback(
+                            title = msg,
+                            subtitle = animeTitle,
+                            animeId = animeId
+                        )
+                        _userMessage.value = msg
+                        onSuccessCallback()
+                    }.onFailure { err ->
+                        val msg = ErrorSanitizer.sanitize(err, "Unable to post community note right now.")
+                        _communityNoteError.value = msg
+                        _userMessage.value = msg
                     }
-                    refreshCommunityData()
-                    _userMessage.value = "Posted your note to $animeTitle in Community (Home unchanged)."
-                }.onFailure { err ->
-                    _userMessage.value = ErrorSanitizer.sanitize(err, "Unable to post community note right now.")
+                } else {
+                    _communityNoteError.value = "Sign in to post notes to Community."
+                    _userMessage.value = "Sign in to post notes to Community."
                 }
-            } else {
-                _userMessage.value = "Sign in to post notes to Community."
+            } finally {
+                _isSubmittingCommunityNote.value = false
             }
         }
     }
@@ -2409,6 +2543,315 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                 _userMessage.value = "Backup exported successfully."
             } catch (e: Exception) {
                 _userMessage.value = "Export failed: ${ErrorSanitizer.sanitize(e, "Unable to write backup file.")}"
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // ANIME DISCUSSION COMMENTS, @MENTIONS, REPLY THREADS & NOTIFICATIONS
+    // ------------------------------------------------------------------------
+
+    fun loadAnimeDiscussion(animeId: Int, reset: Boolean = true) {
+        val session = _authSession.value ?: return
+        viewModelScope.launch {
+            _isDiscussionLoading.value = true
+            val offset = if (reset) 0 else _discussionComments.value.size
+            supabaseDiscussion.fetchAnimeDiscussionPage(session, animeId, limit = 15, offset = offset)
+                .onSuccess { page ->
+                    if (_selectedAnimeId.value == animeId) {
+                        _discussionTotalCount.value = page.totalComments
+                        _discussionHasMore.value = page.hasMore
+                        _discussionComments.value = if (reset) {
+                            page.comments
+                        } else {
+                            val existingIds = _discussionComments.value.map { it.id }.toSet()
+                            _discussionComments.value + page.comments.filterNot { it.id in existingIds }
+                        }
+                    }
+                }
+                .onFailure { err ->
+                    if (reset && _selectedAnimeId.value == animeId) {
+                        _discussionErrorMessage.value = err.message
+                    }
+                }
+            _isDiscussionLoading.value = false
+        }
+    }
+
+    fun loadMoreAnimeDiscussion(animeId: Int) {
+        if (_isDiscussionLoading.value || !_discussionHasMore.value) return
+        loadAnimeDiscussion(animeId, reset = false)
+    }
+
+    fun searchMentionUsers(query: String) {
+        val session = _authSession.value ?: return
+        mentionSearchJob?.cancel()
+        mentionSearchJob = viewModelScope.launch {
+            delay(160)
+            supabaseDiscussion.searchMentionableUsers(session, query, limit = 8)
+                .onSuccess { _mentionSuggestions.value = it }
+        }
+    }
+
+    fun clearMentionSuggestions() {
+        mentionSearchJob?.cancel()
+        _mentionSuggestions.value = emptyList()
+    }
+
+    fun postAnimeComment(
+        animeId: Int,
+        animeTitle: String,
+        animeCover: String,
+        content: String,
+        onSuccess: () -> Unit = {}
+    ) {
+        if (_isDiscussionSubmitting.value) return
+        val session = _authSession.value
+        if (session == null) {
+            _discussionErrorMessage.value = "Sign in to post a comment."
+            return
+        }
+        val check = DiscussionRules.validateContentMentions(content)
+        if (!check.isValid) {
+            _discussionErrorMessage.value = check.errorMessage ?: "Invalid comment."
+            return
+        }
+        viewModelScope.launch {
+            _isDiscussionSubmitting.value = true
+            _discussionErrorMessage.value = null
+            _discussionSuccessMessage.value = null
+            supabaseDiscussion.createAnimeComment(session, animeId, content, animeTitle, animeCover)
+                .onSuccess { (created, total) ->
+                    _discussionComments.value = listOf(created) + _discussionComments.value.filterNot { it.id == created.id }
+                    _discussionTotalCount.value = total
+                    _discussionSuccessMessage.value = "Comment posted successfully"
+                    _dynamicIslandFeedback.value = DynamicIslandFeedback(
+                        title = "Comment posted successfully",
+                        subtitle = animeTitle,
+                        animeId = animeId
+                    )
+                    onSuccess()
+                }
+                .onFailure { err ->
+                    _discussionErrorMessage.value = err.message ?: "Unable to post comment right now."
+                }
+            _isDiscussionSubmitting.value = false
+        }
+    }
+
+    fun editAnimeComment(
+        commentId: String,
+        newContent: String,
+        onSuccess: () -> Unit = {}
+    ) {
+        if (_isDiscussionSubmitting.value) return
+        val session = _authSession.value ?: return
+        val check = DiscussionRules.validateContentMentions(newContent)
+        if (!check.isValid) {
+            _discussionErrorMessage.value = check.errorMessage ?: "Invalid comment."
+            return
+        }
+        viewModelScope.launch {
+            _isDiscussionSubmitting.value = true
+            _discussionErrorMessage.value = null
+            supabaseDiscussion.updateAnimeComment(session, commentId, newContent)
+                .onSuccess { (updatedText, updatedAt, mentions) ->
+                    _discussionComments.value = _discussionComments.value.map { c ->
+                        if (c.id == commentId) c.copy(content = updatedText, updatedAt = updatedAt, mentions = mentions) else c
+                    }
+                    _discussionSuccessMessage.value = "Comment updated successfully"
+                    onSuccess()
+                }
+                .onFailure { err ->
+                    _discussionErrorMessage.value = err.message ?: "Unable to update comment."
+                }
+            _isDiscussionSubmitting.value = false
+        }
+    }
+
+    fun deleteAnimeComment(commentId: String) {
+        if (_isDiscussionSubmitting.value) return
+        val session = _authSession.value ?: return
+        viewModelScope.launch {
+            _isDiscussionSubmitting.value = true
+            _discussionErrorMessage.value = null
+            supabaseDiscussion.deleteAnimeComment(session, commentId)
+                .onSuccess { total ->
+                    _discussionComments.value = _discussionComments.value.filterNot { it.id == commentId }
+                    _discussionTotalCount.value = total
+                    _discussionSuccessMessage.value = "Comment deleted"
+                }
+                .onFailure { err ->
+                    _discussionErrorMessage.value = err.message ?: "Unable to delete comment."
+                }
+            _isDiscussionSubmitting.value = false
+        }
+    }
+
+    fun postThreadReply(
+        commentId: String,
+        targetUserId: String,
+        content: String,
+        onSuccess: (threadId: String) -> Unit = {}
+    ) {
+        if (_isDiscussionSubmitting.value) return
+        val session = _authSession.value
+        if (session == null) {
+            _discussionErrorMessage.value = "Sign in to post a reply."
+            return
+        }
+        val check = DiscussionRules.validateContentMentions(content)
+        if (!check.isValid) {
+            _discussionErrorMessage.value = check.errorMessage ?: "Invalid reply."
+            return
+        }
+        viewModelScope.launch {
+            _isDiscussionSubmitting.value = true
+            _discussionErrorMessage.value = null
+            _discussionSuccessMessage.value = null
+            supabaseDiscussion.createThreadReply(session, commentId, targetUserId, content)
+                .onSuccess { created ->
+                    _discussionComments.value = _discussionComments.value.map { comment ->
+                        if (comment.id == commentId) {
+                            DiscussionRules.mergeReplyIntoComment(comment, created.thread, created.reply)
+                        } else {
+                            comment
+                        }
+                    }
+                    _discussionSuccessMessage.value = "Reply posted successfully"
+                    onSuccess(created.thread.id)
+                }
+                .onFailure { err ->
+                    _discussionErrorMessage.value = err.message ?: "Unable to post reply right now."
+                }
+            _isDiscussionSubmitting.value = false
+        }
+    }
+
+    fun editThreadReply(
+        commentId: String,
+        threadId: String,
+        replyId: String,
+        newContent: String,
+        onSuccess: () -> Unit = {}
+    ) {
+        if (_isDiscussionSubmitting.value) return
+        val session = _authSession.value ?: return
+        val check = DiscussionRules.validateContentMentions(newContent)
+        if (!check.isValid) {
+            _discussionErrorMessage.value = check.errorMessage ?: "Invalid reply."
+            return
+        }
+        viewModelScope.launch {
+            _isDiscussionSubmitting.value = true
+            _discussionErrorMessage.value = null
+            supabaseDiscussion.updateThreadReply(session, replyId, newContent)
+                .onSuccess { (updatedText, updatedAt, mentions) ->
+                    _discussionComments.value = _discussionComments.value.map { comment ->
+                        if (comment.id != commentId) comment
+                        else comment.copy(
+                            threads = comment.threads.map { thread ->
+                                if (thread.id != threadId) thread
+                                else thread.copy(
+                                    replies = thread.replies.map { r ->
+                                        if (r.id == replyId) r.copy(content = updatedText, updatedAt = updatedAt, mentions = mentions) else r
+                                    }
+                                )
+                            }
+                        )
+                    }
+                    _discussionSuccessMessage.value = "Reply updated successfully"
+                    onSuccess()
+                }
+                .onFailure { err ->
+                    _discussionErrorMessage.value = err.message ?: "Unable to update reply."
+                }
+            _isDiscussionSubmitting.value = false
+        }
+    }
+
+    fun deleteThreadReply(commentId: String, threadId: String, replyId: String) {
+        if (_isDiscussionSubmitting.value) return
+        val session = _authSession.value ?: return
+        viewModelScope.launch {
+            _isDiscussionSubmitting.value = true
+            _discussionErrorMessage.value = null
+            supabaseDiscussion.deleteThreadReply(session, replyId)
+                .onSuccess { (_, threadRemoved) ->
+                    _discussionComments.value = _discussionComments.value.map { comment ->
+                        if (comment.id != commentId) comment
+                        else {
+                            val nextThreads = comment.threads.mapNotNull { thread ->
+                                if (thread.id != threadId) thread
+                                else {
+                                    val remaining = thread.replies.filterNot { it.id == replyId }
+                                    if (threadRemoved || remaining.isEmpty()) null else thread.copy(replies = remaining)
+                                }
+                            }
+                            comment.copy(threads = nextThreads)
+                        }
+                    }
+                    _discussionSuccessMessage.value = "Reply deleted"
+                }
+                .onFailure { err ->
+                    _discussionErrorMessage.value = err.message ?: "Unable to delete reply."
+                }
+            _isDiscussionSubmitting.value = false
+        }
+    }
+
+    fun refreshNotifications(reset: Boolean = true) {
+        val session = _authSession.value ?: return
+        viewModelScope.launch {
+            _isNotificationsLoading.value = true
+            _notificationsError.value = null
+            val offset = if (reset) 0 else _notifications.value.size
+            supabaseDiscussion.fetchNotifications(session, limit = 30, offset = offset)
+                .onSuccess { page ->
+                    _unreadNotificationCount.value = page.unreadCount
+                    _hasMoreNotifications.value = page.hasMore
+                    _notifications.value = if (reset) {
+                        page.notifications
+                    } else {
+                        val existing = _notifications.value.map { it.id }.toSet()
+                        _notifications.value + page.notifications.filterNot { it.id in existing }
+                    }
+                }
+                .onFailure { err ->
+                    _notificationsError.value = err.message
+                }
+            _isNotificationsLoading.value = false
+        }
+    }
+
+    fun loadMoreNotifications() {
+        if (_isNotificationsLoading.value || !_hasMoreNotifications.value) return
+        refreshNotifications(reset = false)
+    }
+
+    fun markNotificationRead(notificationId: String) {
+        val session = _authSession.value ?: return
+        val wasUnread = _notifications.value.any { it.id == notificationId && !it.isRead }
+        if (wasUnread) {
+            _notifications.value = _notifications.value.map {
+                if (it.id == notificationId) it.copy(isRead = true) else it
+            }
+            _unreadNotificationCount.value = (_unreadNotificationCount.value - 1).coerceAtLeast(0)
+        }
+        viewModelScope.launch {
+            supabaseDiscussion.markNotificationRead(session, notificationId).onSuccess { unread ->
+                _unreadNotificationCount.value = unread
+            }
+        }
+    }
+
+    fun markAllNotificationsRead() {
+        val session = _authSession.value ?: return
+        _notifications.value = _notifications.value.map { it.copy(isRead = true) }
+        _unreadNotificationCount.value = 0
+        viewModelScope.launch {
+            supabaseDiscussion.markAllNotificationsRead(session).onSuccess {
+                _unreadNotificationCount.value = 0
             }
         }
     }

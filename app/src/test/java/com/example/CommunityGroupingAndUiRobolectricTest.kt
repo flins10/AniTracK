@@ -157,7 +157,7 @@ class CommunityGroupingAndUiRobolectricTest {
                         onDismiss = { showDialog = false },
                         onOpenAnimeDetail = {},
                         onToggleLike = {},
-                        onSubmitComment = { _, _ -> }
+                        onSubmitComment = { _, _, _ -> }
                     )
                 }
             }

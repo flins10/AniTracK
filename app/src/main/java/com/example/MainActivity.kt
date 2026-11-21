@@ -36,11 +36,13 @@ import androidx.compose.material.icons.filled.Bookmarks
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.outlined.Bookmarks
 import androidx.compose.material.icons.outlined.Explore
 import androidx.compose.material.icons.outlined.Group
 import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -90,6 +92,7 @@ import com.example.ui.screens.CommunityScreen
 import com.example.ui.screens.DiscoverScreen
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.MyListScreen
+import com.example.ui.screens.NotificationsScreen
 import com.example.ui.screens.ProfileScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.theme.AnimeUniverseTheme
@@ -125,6 +128,7 @@ enum class MainNavTab(
     Discover("discover", "Explore", Icons.Filled.Explore, Icons.Outlined.Explore),
     MyList("mylist", "Library", Icons.Filled.Bookmarks, Icons.Outlined.Bookmarks),
     Community("community", "Community", Icons.Filled.Group, Icons.Outlined.Group),
+    Notifications("notifications", "Alerts", Icons.Filled.Notifications, Icons.Outlined.Notifications),
     Profile("profile", "Profile", Icons.Filled.Person, Icons.Outlined.Person)
 }
 
@@ -392,16 +396,18 @@ private fun AnimeUniverseMainScaffold(
     val trending by viewModel.trendingAnime.collectAsState()
     val preferences by viewModel.preferences.collectAsState()
     val feedback by viewModel.dynamicIslandFeedback.collectAsState()
+    val unreadNotificationCount by viewModel.unreadNotificationCount.collectAsState()
 
     var showQuickSearch by remember { mutableStateOf(false) }
 
-    val allDestinations = remember {
+    val allDestinations = remember(unreadNotificationCount) {
         MainNavTab.entries.map {
             NavDestinationItem(
                 route = it.route,
                 title = it.title,
                 selectedIcon = it.selectedIcon,
-                unselectedIcon = it.unselectedIcon
+                unselectedIcon = it.unselectedIcon,
+                badgeCount = if (it == MainNavTab.Notifications) unreadNotificationCount else 0
             )
         }
     }
@@ -509,6 +515,16 @@ private fun AnimeUniverseMainScaffold(
                     CommunityScreen(
                         viewModel = viewModel,
                         onSelectAnime = { id -> navController.navigate("detail/$id") },
+                        onNavigateToProfile = { navigateToTab(MainNavTab.Profile) }
+                    )
+                }
+
+                composable(MainNavTab.Notifications.route) {
+                    NotificationsScreen(
+                        viewModel = viewModel,
+                        onOpenNotificationTarget = { target ->
+                            navController.navigate("detail/${target.animeId}")
+                        },
                         onNavigateToProfile = { navigateToTab(MainNavTab.Profile) }
                     )
                 }

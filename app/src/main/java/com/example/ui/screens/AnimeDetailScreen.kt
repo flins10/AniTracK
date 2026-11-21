@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -88,6 +89,7 @@ import com.example.model.SentimentCategory
 import com.example.model.StarRatingUtils
 import com.example.model.VisibilityLevel
 import com.example.model.WatchStatus
+import com.example.ui.components.AnimeDiscussionSection
 import com.example.ui.components.formatCompactCountdown
 import com.example.ui.theme.AppRadius
 import com.example.ui.theme.AppSpacing
@@ -134,6 +136,10 @@ fun AnimeDetailScreen(
     val preferences by viewModel.preferences.collectAsState()
     val privacy by viewModel.privacySettings.collectAsState()
     val profile by viewModel.userProfile.collectAsState()
+    val ratingFeedback by viewModel.ratingFeedbackMessage.collectAsState()
+    val pendingJump by viewModel.pendingNotificationJump.collectAsState()
+    val discussionComments by viewModel.discussionComments.collectAsState()
+    val listState = rememberLazyListState()
 
     val ratedAndNotedReviews = remember(reviews) {
         reviews.filter { (it.rating ?: 0.0) > 0.0 || it.reviewNotes.isNotBlank() }
@@ -146,6 +152,16 @@ fun AnimeDetailScreen(
 
     LaunchedEffect(animeId) {
         viewModel.selectAnimeDetail(animeId)
+    }
+
+    val activeJumpForThisAnime = pendingJump?.takeIf { it.animeId == animeId }
+    LaunchedEffect(activeJumpForThisAnime, discussionComments.size) {
+        if (activeJumpForThisAnime != null && discussionComments.isNotEmpty()) {
+            val totalItems = listState.layoutInfo.totalItemsCount
+            if (totalItems > 0) {
+                listState.animateScrollToItem(totalItems - 1)
+            }
+        }
     }
 
     val current = anime
@@ -206,6 +222,7 @@ fun AnimeDetailScreen(
             contentAlignment = Alignment.TopCenter
         ) {
             LazyColumn(
+                state = listState,
                 modifier = Modifier
                     .widthIn(max = 980.dp)
                     .fillMaxSize()
@@ -663,6 +680,24 @@ fun AnimeDetailScreen(
                                     }
                                 }
                             }
+
+                            if (!ratingFeedback.isNullOrBlank()) {
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = colors.success.copy(alpha = 0.14f),
+                                    border = BorderStroke(1.dp, colors.success.copy(alpha = 0.45f)),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("detail_rating_feedback_banner")
+                                ) {
+                                    Text(
+                                        text = "✓ $ratingFeedback",
+                                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                        color = colors.success,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -1070,6 +1105,18 @@ fun AnimeDetailScreen(
                             }
                         }
                     }
+                }
+
+                // Editorial Big-Card 3: ANIME DISCUSSION (Comments, @Mentions & Target-User Reply Threads)
+                item(key = "anime_discussion_section_item") {
+                    AnimeDiscussionSection(
+                        animeId = current.id,
+                        animeTitle = resolvedTitle,
+                        animeCover = current.coverImage,
+                        viewModel = viewModel,
+                        highlightTarget = activeJumpForThisAnime,
+                        modifier = Modifier.padding(horizontal = AppSpacing.md)
+                    )
                 }
             }
         }

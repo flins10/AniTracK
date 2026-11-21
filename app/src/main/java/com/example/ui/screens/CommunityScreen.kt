@@ -126,6 +126,9 @@ fun CommunityScreen(
     val isLoading by viewModel.isCommunityLoading.collectAsState()
     val error by viewModel.communityError.collectAsState()
     val reviewSort by viewModel.reviewSortOption.collectAsState()
+    val isSubmittingNote by viewModel.isSubmittingCommunityNote.collectAsState()
+    val noteSuccessFeedback by viewModel.communityNoteFeedback.collectAsState()
+    val noteErrorFeedback by viewModel.communityNoteError.collectAsState()
 
     var selectedSentimentKey by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedCommentsAnimeId by rememberSaveable { mutableStateOf<Int?>(null) }
@@ -548,20 +551,28 @@ fun CommunityScreen(
                 group = selectedCommentsGroup,
                 initialMyRatingStars = StarRatingUtils.rating10ToStars(myExistingReview?.rating),
                 initialMyNote = myExistingReview?.reviewNotes.orEmpty(),
-                onDismiss = { selectedCommentsAnimeId = null },
+                isSubmitting = isSubmittingNote,
+                successMessage = noteSuccessFeedback,
+                errorMessage = noteErrorFeedback,
+                onDismiss = {
+                    viewModel.clearCommunityNoteFeedback()
+                    selectedCommentsAnimeId = null
+                },
                 onOpenAnimeDetail = {
                     val targetId = selectedCommentsGroup.animeId
+                    viewModel.clearCommunityNoteFeedback()
                     selectedCommentsAnimeId = null
                     onSelectAnime(targetId)
                 },
                 onToggleLike = { rev -> viewModel.toggleReviewLike(rev) },
-                onSubmitComment = { stars, note ->
+                onSubmitComment = { stars, note, onDone ->
                     viewModel.submitCommunityCommentNote(
                         animeId = selectedCommentsGroup.animeId,
                         animeTitle = selectedCommentsGroup.animeTitle,
                         coverImage = selectedCommentsGroup.animeCoverImage,
                         ratingStars = stars,
-                        noteText = note
+                        noteText = note,
+                        onSuccessCallback = onDone
                     )
                 }
             )
@@ -846,10 +857,13 @@ internal fun CommunityCommentsDialog(
     group: CommunityAnimeGroup,
     initialMyRatingStars: Float,
     initialMyNote: String,
+    isSubmitting: Boolean = false,
+    successMessage: String? = null,
+    errorMessage: String? = null,
     onDismiss: () -> Unit,
     onOpenAnimeDetail: () -> Unit,
     onToggleLike: (CommunityReview) -> Unit,
-    onSubmitComment: (ratingStars: Float, noteText: String) -> Unit
+    onSubmitComment: (ratingStars: Float, noteText: String, onDone: () -> Unit) -> Unit
 ) {
     val colors = AppTheme.colors
     val avgStars = StarRatingUtils.rating10ToStars(group.averageRating10)
@@ -1110,9 +1124,46 @@ internal fun CommunityCommentsDialog(
                         }
                     }
 
+                    if (!successMessage.isNullOrBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = colors.success.copy(alpha = 0.15f),
+                            border = BorderStroke(1.dp, colors.success.copy(alpha = 0.45f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("community_comment_success_banner")
+                        ) {
+                            Text(
+                                text = "✓ $successMessage",
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                color = colors.success,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                            )
+                        }
+                    }
+
+                    if (!errorMessage.isNullOrBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = colors.error.copy(alpha = 0.14f),
+                            border = BorderStroke(1.dp, colors.error.copy(alpha = 0.45f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("community_comment_error_banner")
+                        ) {
+                            Text(
+                                text = errorMessage,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.error,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                            )
+                        }
+                    }
+
                     OutlinedTextField(
                         value = noteDraft,
                         onValueChange = { noteDraft = it },
+                        enabled = !isSubmitting,
                         placeholder = { Text("Share your thoughts on ${group.animeTitle}...", fontSize = 13.sp) },
                         maxLines = 3,
                         shape = RoundedCornerShape(16.dp),
@@ -1128,9 +1179,17 @@ internal fun CommunityCommentsDialog(
                     )
 
                     AppPrimaryButton(
-                        text = if (initialMyNote.isNotBlank() || initialMyRatingStars > 0f) "Update Note in Community" else "Post Note to Community",
-                        enabled = noteDraft.trim().isNotEmpty() || selectedStars > 0f,
-                        onClick = { onSubmitComment(selectedStars, noteDraft) },
+                        text = when {
+                            isSubmitting -> "Posting..."
+                            initialMyNote.isNotBlank() || initialMyRatingStars > 0f -> "Update Note in Community"
+                            else -> "Post Note to Community"
+                        },
+                        enabled = !isSubmitting && (noteDraft.trim().isNotEmpty() || selectedStars > 0f),
+                        onClick = {
+                            onSubmitComment(selectedStars, noteDraft) {
+                                noteDraft = ""
+                            }
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("community_comment_submit_button")

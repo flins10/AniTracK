@@ -107,31 +107,31 @@ import kotlin.math.abs
 // 1:1 Screenshot Visual Parity & Real Supabase Cloud Auto-Sync
 // ============================================================================
 
-private val PureObsidian = Color(0xFF0A0C12)
-private val ObsidianSidebar = Color(0xFF0E1017)
-private val ObsidianCard = Color(0xFF12151E)
-private val ObsidianQuoteBox = Color(0xFF171B26)
-private val ObsidianPillBg = Color(0xFF171A24)
-private val ObsidianInputBg = Color(0xFF141822)
-private val ObsidianBorder = Color(0xFF262B3A)
-private val ChampagneGold = Color(0xFFE5C17B)
-private val ChampagneGoldSoft = Color(0xFFF3DFA8)
-private val ChampagneGoldBronze = Color(0xFFC29B53)
-private val ChampagneOnGold = Color(0xFF110E08)
-private val IvoryText = Color(0xFFF4EFE6)
-private val WarmSilver = Color(0xFF9499A6)
-private val AshMuted = Color(0xFF636875)
-private val EmeraldWorth = Color(0xFF5CE092)
-private val EmeraldWorthBg = Color(0xFF153328)
-private val AmberBoring = Color(0xFFF0B45B)
-private val CrimsonWaste = Color(0xFFF26D7D)
-private val SilverAvg = Color(0xFFB5BAC7)
+internal val PureObsidian = Color(0xFF0A0C12)
+internal val ObsidianSidebar = Color(0xFF0E1017)
+internal val ObsidianCard = Color(0xFF12151E)
+internal val ObsidianQuoteBox = Color(0xFF171B26)
+internal val ObsidianPillBg = Color(0xFF171A24)
+internal val ObsidianInputBg = Color(0xFF141822)
+internal val ObsidianBorder = Color(0xFF262B3A)
+internal val ChampagneGold = Color(0xFFE5C17B)
+internal val ChampagneGoldSoft = Color(0xFFF3DFA8)
+internal val ChampagneGoldBronze = Color(0xFFC29B53)
+internal val ChampagneOnGold = Color(0xFF110E08)
+internal val IvoryText = Color(0xFFF4EFE6)
+internal val WarmSilver = Color(0xFF9499A6)
+internal val AshMuted = Color(0xFF636875)
+internal val EmeraldWorth = Color(0xFF5CE092)
+internal val EmeraldWorthBg = Color(0xFF153328)
+internal val AmberBoring = Color(0xFFF0B45B)
+internal val CrimsonWaste = Color(0xFFF26D7D)
+internal val SilverAvg = Color(0xFFB5BAC7)
 
-private val httpClient = OkHttpClient.Builder()
+internal val httpClient = OkHttpClient.Builder()
     .connectTimeout(15, TimeUnit.SECONDS)
     .readTimeout(20, TimeUnit.SECONDS)
     .build()
-private val gson = Gson()
+internal val gson = Gson()
 private val imageCache = ConcurrentHashMap<String, ImageBitmap>()
 
 // Vault Shards (Matches Android VaultMaterial & Web app.js)
@@ -159,11 +159,11 @@ private fun reconstructVault(s0: IntArray, s1: IntArray, s2: IntArray, len: Int,
     return String(bytes, Charsets.UTF_8)
 }
 
-private val SUPABASE_URL: String by lazy {
+internal val SUPABASE_URL: String by lazy {
     System.getenv("SUPABASE_URL")?.takeIf { it.isNotBlank() }
         ?: reconstructVault(U0, U1, U2, 40, 0x37).trimEnd('/')
 }
-private val SUPABASE_ANON_KEY: String by lazy {
+internal val SUPABASE_ANON_KEY: String by lazy {
     System.getenv("SUPABASE_ANON_KEY")?.takeIf { it.isNotBlank() }
         ?: reconstructVault(K0, K1, K2, 46, 0x6B).trim()
 }
@@ -248,7 +248,7 @@ private fun loadLocalDrawableBitmap(fileName: String): ImageBitmap? {
 }
 
 @Composable
-private fun DesktopAvatarImage(
+internal fun DesktopAvatarImage(
     avatarKey: String?,
     username: String = "A",
     modifier: Modifier = Modifier
@@ -601,6 +601,7 @@ enum class DesktopScreen(val route: String, val title: String, val icon: ImageVe
     EXPLORE("explore", "Explore", Icons.Outlined.Explore),
     LIBRARY("library", "Library", Icons.Outlined.BookmarkBorder),
     COMMUNITY("community", "Community", Icons.Outlined.Group),
+    NOTIFICATIONS("notifications", "Alerts", Icons.Outlined.Notifications),
     PROFILE("profile", "Profile", Icons.Outlined.Person),
     SETTINGS("settings", "Settings", Icons.Outlined.Settings),
     DETAIL("detail", "Detail", Icons.Outlined.Movie)
@@ -896,7 +897,7 @@ private suspend fun resendSignupOtpSupabase(emailInput: String): Result<Unit> = 
     }
 }
 
-private suspend fun refreshTokenIfNeeded(state: DesktopPersistedState): DesktopPersistedState = withContext(Dispatchers.IO) {
+internal suspend fun refreshTokenIfNeeded(state: DesktopPersistedState): DesktopPersistedState = withContext(Dispatchers.IO) {
     if (state.isGuest || state.userId.isBlank() || state.accessToken.isBlank() || state.refreshToken.isBlank()) {
         return@withContext state
     }
@@ -937,7 +938,7 @@ private data class CloudSyncSnapshot(
     val communityReviews: List<DesktopCommunityReview>
 )
 
-private fun parsePostgrestError(body: String, fallback: String): String {
+internal fun parsePostgrestError(body: String, fallback: String): String {
     return runCatching {
         val obj = gson.fromJson(body, JsonObject::class.java)
         obj?.get("message").asStringOrNull()
@@ -2477,6 +2478,51 @@ fun AnimeUniverseDesktopRoot() {
     var commRatingFilter by remember { mutableStateOf("all") }
     var commSortMode by remember { mutableStateOf("newest") }
 
+    // Notifications & Deep-link Jump State
+    var desktopNotifications by remember { mutableStateOf<List<DesktopUserNotification>>(emptyList()) }
+    var unreadNotificationCount by remember { mutableStateOf(0) }
+    var notificationsHasMore by remember { mutableStateOf(false) }
+    var notificationsLoading by remember { mutableStateOf(false) }
+    var notificationsError by remember { mutableStateOf<String?>(null) }
+    var pendingNotificationJump by remember { mutableStateOf<DesktopNotificationJumpTarget?>(null) }
+
+    fun loadDesktopNotifications(reset: Boolean = true) {
+        if (!isAuthenticated || sessionState.isGuest) {
+            desktopNotifications = emptyList()
+            unreadNotificationCount = 0
+            return
+        }
+        val offset = if (reset) 0 else desktopNotifications.size
+        if (reset) {
+            notificationsLoading = true
+            notificationsError = null
+        }
+        scope.launch {
+            DesktopDiscussionService.fetchNotifications(sessionState, limit = 25, offset = offset)
+                .onSuccess { (page, active) ->
+                    sessionState = sessionState.copy(
+                        accessToken = active.accessToken,
+                        refreshToken = active.refreshToken,
+                        expiresAt = active.expiresAt
+                    )
+                    DesktopStorage.saveActive(sessionState)
+                    desktopNotifications = if (reset) {
+                        page.notifications
+                    } else {
+                        desktopNotifications + page.notifications.filterNot { inc ->
+                            desktopNotifications.any { it.id == inc.id }
+                        }
+                    }
+                    unreadNotificationCount = page.unreadCount
+                    notificationsHasMore = page.hasMore
+                }
+                .onFailure { err ->
+                    notificationsError = err.message ?: "Unable to load notifications."
+                }
+            notificationsLoading = false
+        }
+    }
+
     // Independent Home active tracking list
     val homeWatchlist = remember(watchlist) {
         watchlist.filter { item ->
@@ -2586,6 +2632,8 @@ fun AnimeUniverseDesktopRoot() {
             }
             sessionState = nextState
             DesktopStorage.saveActive(nextState)
+            DesktopDiscussionService.getUnreadNotificationCount(nextState)
+                .onSuccess { unreadNotificationCount = it }
         }
         if (snap.communityReviews.isNotEmpty()) {
             communityReviews = snap.communityReviews
@@ -2966,7 +3014,7 @@ fun AnimeUniverseDesktopRoot() {
     ) {
         val isWide = maxWidth >= 820.dp
         val mainTabs = listOf(DesktopScreen.HOME, DesktopScreen.EXPLORE, DesktopScreen.LIBRARY, DesktopScreen.COMMUNITY)
-        val sidebarTabs = mainTabs + DesktopScreen.PROFILE
+        val sidebarTabs = mainTabs + listOf(DesktopScreen.NOTIFICATIONS, DesktopScreen.PROFILE)
 
         Row(modifier = Modifier.fillMaxSize()) {
             if (isWide) {
@@ -3024,7 +3072,7 @@ fun AnimeUniverseDesktopRoot() {
 
                             Spacer(modifier = Modifier.height(22.dp))
 
-                            // Navigation Links (Home, Explore, Library, Community, Profile)
+                            // Navigation Links (Home, Explore, Library, Community, Alerts, Profile)
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 sidebarTabs.forEach { tab ->
                                     val selected = currentScreen == tab
@@ -3036,7 +3084,12 @@ fun AnimeUniverseDesktopRoot() {
                                             .fillMaxWidth()
                                             .height(54.dp)
                                             .clip(RoundedCornerShape(16.dp))
-                                            .clickable { currentScreen = tab }
+                                            .clickable {
+                                                currentScreen = tab
+                                                if (tab == DesktopScreen.NOTIFICATIONS) {
+                                                    loadDesktopNotifications(reset = true)
+                                                }
+                                            }
                                     ) {
                                         Row(
                                             modifier = Modifier.fillMaxSize().padding(horizontal = 18.dp),
@@ -3050,6 +3103,7 @@ fun AnimeUniverseDesktopRoot() {
                                                         DesktopScreen.EXPLORE -> Icons.Outlined.Explore
                                                         DesktopScreen.LIBRARY -> Icons.Filled.Bookmark
                                                         DesktopScreen.COMMUNITY -> Icons.Filled.Group
+                                                        DesktopScreen.NOTIFICATIONS -> Icons.Filled.Notifications
                                                         else -> Icons.Outlined.Person
                                                     }
                                                 } else tab.icon,
@@ -3061,8 +3115,23 @@ fun AnimeUniverseDesktopRoot() {
                                                 tab.title,
                                                 color = if (selected) ChampagneGoldSoft else WarmSilver,
                                                 fontSize = 15.5.sp,
-                                                fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal
+                                                fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
+                                                modifier = Modifier.weight(1f)
                                             )
+                                            if (tab == DesktopScreen.NOTIFICATIONS && unreadNotificationCount > 0) {
+                                                Surface(
+                                                    shape = CircleShape,
+                                                    color = CrimsonWaste
+                                                ) {
+                                                    Text(
+                                                        text = if (unreadNotificationCount > 99) "99+" else unreadNotificationCount.toString(),
+                                                        color = Color.White,
+                                                        fontSize = 10.5.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -3271,6 +3340,64 @@ fun AnimeUniverseDesktopRoot() {
                             )
                         }
 
+                        DesktopScreen.NOTIFICATIONS -> {
+                            DesktopNotificationsScreen(
+                                session = sessionState,
+                                isAuthenticated = isAuthenticated,
+                                notifications = desktopNotifications,
+                                unreadCount = unreadNotificationCount,
+                                hasMore = notificationsHasMore,
+                                loading = notificationsLoading,
+                                error = notificationsError,
+                                onRefresh = { loadDesktopNotifications(reset = true) },
+                                onLoadMore = { loadDesktopNotifications(reset = false) },
+                                onMarkAllRead = {
+                                    desktopNotifications = desktopNotifications.map { it.copy(isRead = true) }
+                                    unreadNotificationCount = 0
+                                    scope.launch {
+                                        DesktopDiscussionService.markAllNotificationsRead(sessionState)
+                                        showToast("All notifications marked as read")
+                                    }
+                                },
+                                onOpenNotification = { notif ->
+                                    if (!notif.isRead) {
+                                        desktopNotifications = desktopNotifications.map {
+                                            if (it.id == notif.id) it.copy(isRead = true) else it
+                                        }
+                                        unreadNotificationCount = (unreadNotificationCount - 1).coerceAtLeast(0)
+                                        scope.launch {
+                                            DesktopDiscussionService.markNotificationRead(sessionState, notif.id)
+                                        }
+                                    }
+                                    pendingNotificationJump = DesktopNotificationJumpTarget(
+                                        animeId = notif.animeId,
+                                        commentId = notif.commentId,
+                                        threadId = notif.threadId,
+                                        replyId = notif.replyId
+                                    )
+                                    val cached = watchlist.firstOrNull { it.id == notif.animeId }
+                                        ?: discoverItems.firstOrNull { it.id == notif.animeId }
+                                    if (cached != null) {
+                                        openDetailFrom(DesktopScreen.NOTIFICATIONS, cached)
+                                    } else {
+                                        val stub = DesktopAnimeItem(
+                                            id = notif.animeId,
+                                            title = notif.animeTitle.ifBlank { "Anime #${notif.animeId}" },
+                                            coverImage = notif.animeCover
+                                        )
+                                        openDetailFrom(DesktopScreen.NOTIFICATIONS, stub)
+                                        scope.launch {
+                                            DesktopSeasonResolver.fetchSingleAnimeItem(notif.animeId)?.let { fetched ->
+                                                if (selectedAnime?.id == notif.animeId) {
+                                                    selectedAnime = fetched
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            )
+                        }
+
                         DesktopScreen.PROFILE, DesktopScreen.SETTINGS -> {
                             DesktopProfileScreen(
                                 session = sessionState,
@@ -3317,6 +3444,8 @@ fun AnimeUniverseDesktopRoot() {
                                     watchlist = emptyList()
                                     collections = emptyList()
                                     communityReviews = emptyList()
+                                    desktopNotifications = emptyList()
+                                    unreadNotificationCount = 0
                                     selectedAnime = null
                                     isAuthenticated = false
                                     isGuestMode = false
@@ -3330,6 +3459,19 @@ fun AnimeUniverseDesktopRoot() {
                                 val liveItem = watchlist.firstOrNull { it.id == item.id } ?: item
                                 DesktopDetailScreen(
                                     item = liveItem,
+                                    session = sessionState,
+                                    isAuthenticated = isAuthenticated,
+                                    notificationJumpTarget = pendingNotificationJump,
+                                    onNotificationJumpConsumed = { pendingNotificationJump = null },
+                                    onSessionUpdated = { active ->
+                                        sessionState = sessionState.copy(
+                                            accessToken = active.accessToken,
+                                            refreshToken = active.refreshToken,
+                                            expiresAt = active.expiresAt
+                                        )
+                                        DesktopStorage.saveActive(sessionState)
+                                    },
+                                    onShowToast = { msg, err -> showToast(msg, err) },
                                     onBack = {
                                         currentScreen = if (previousScreen == DesktopScreen.DETAIL) DesktopScreen.HOME else previousScreen
                                     },
@@ -3348,7 +3490,7 @@ fun AnimeUniverseDesktopRoot() {
                                             }
                                         }
                                     },
-                                    onSave = { updatedItem -> handleSaveAnimeFromDetail(updatedItem, returnToPrevious = true) },
+                                    onSave = { updatedItem -> handleSaveAnimeFromDetail(updatedItem, returnToPrevious = false) },
                                     onCommitEpisodes = { eps -> handleCommitEpisodeProgress(liveItem, eps) },
                                     onAddToHome = { handleAddToHome(liveItem) },
                                     onRequestRemoveFromHome = { pendingRemoveFromHome = liveItem },
@@ -5672,8 +5814,13 @@ private fun DesktopCommunityScreen(
                             modifier = Modifier.fillMaxWidth()
                         )
 
+                        var commPosting by remember(selectedCommentsGroup.animeId) { mutableStateOf(false) }
+                        var commSuccessMsg by remember(selectedCommentsGroup.animeId) { mutableStateOf<String?>(null) }
+
                         Button(
                             onClick = {
+                                if (commPosting) return@Button
+                                commPosting = true
                                 onSubmitCommentNote(
                                     selectedCommentsGroup.animeId,
                                     selectedCommentsGroup.animeTitle,
@@ -5681,8 +5828,11 @@ private fun DesktopCommunityScreen(
                                     draftStars,
                                     draftNote
                                 )
+                                commSuccessMsg = if (draftNote.trim().isNotEmpty()) "Comment posted successfully" else "Rating saved"
+                                draftNote = ""
+                                commPosting = false
                             },
-                            enabled = draftNote.trim().isNotEmpty() || draftStars > 0f,
+                            enabled = !commPosting && (draftNote.trim().isNotEmpty() || draftStars > 0f),
                             shape = CircleShape,
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = ChampagneGold,
@@ -5691,11 +5841,14 @@ private fun DesktopCommunityScreen(
                             modifier = Modifier.fillMaxWidth().height(46.dp)
                         ) {
                             Text(
-                                if (myExisting != null) "UPDATE NOTE IN COMMUNITY" else "POST NOTE TO COMMUNITY",
+                                if (commPosting) "POSTING..." else if (myExisting != null) "UPDATE NOTE IN COMMUNITY" else "POST NOTE TO COMMUNITY",
                                 fontWeight = FontWeight.Bold,
                                 letterSpacing = 1.2.sp,
                                 fontSize = 12.5.sp
                             )
+                        }
+                        commSuccessMsg?.let { msg ->
+                            DesktopFeedbackBanner(message = msg, isError = false)
                         }
                     }
                 }
@@ -6316,6 +6469,12 @@ private fun DesktopProfileScreen(
 @Composable
 private fun DesktopDetailScreen(
     item: DesktopAnimeItem,
+    session: DesktopPersistedState,
+    isAuthenticated: Boolean,
+    notificationJumpTarget: DesktopNotificationJumpTarget?,
+    onNotificationJumpConsumed: () -> Unit,
+    onSessionUpdated: (DesktopPersistedState) -> Unit,
+    onShowToast: (String, Boolean) -> Unit,
     onBack: () -> Unit,
     onSelectSeason: (Int) -> Unit,
     onSave: (DesktopAnimeItem) -> Unit,
@@ -6329,6 +6488,8 @@ private fun DesktopDetailScreen(
     var stars by remember(item.id, item.userStars) { mutableStateOf(item.userStars) }
     var notes by remember(item.id, item.notes) { mutableStateOf(item.notes) }
     var seasons by remember(item.id) { mutableStateOf<List<DesktopSeasonEntry>>(emptyList()) }
+    var isSavingDetail by remember(item.id) { mutableStateOf(false) }
+    var detailSavedFeedback by remember(item.id) { mutableStateOf<String?>(null) }
 
     LaunchedEffect(item.id) {
         seasons = DesktopSeasonResolver.resolveSeasons(item.id)
@@ -6573,7 +6734,11 @@ private fun DesktopDetailScreen(
 
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Button(
+                            enabled = !isSavingDetail,
                             onClick = {
+                                if (isSavingDetail) return@Button
+                                isSavingDetail = true
+                                val hadRating = item.userStars > 0f
                                 val effectiveStatus = if (
                                     watchStatus != "dropped" &&
                                     DesktopTrackingRules.shouldAutoComplete(item.status, item.totalEpisodes, watchedEps)
@@ -6593,11 +6758,19 @@ private fun DesktopDetailScreen(
                                         updatedAt = Instant.now().toString()
                                     )
                                 )
+                                detailSavedFeedback = when {
+                                    notes.trim().isNotEmpty() && stars > 0f -> "Rating (${String.format(Locale.US, "%.1f", stars)}★) & review note saved successfully"
+                                    stars > 0f && hadRating -> "Rating updated to ${String.format(Locale.US, "%.1f", stars)}★"
+                                    stars > 0f -> "Rating saved (${String.format(Locale.US, "%.1f", stars)}★)"
+                                    notes.trim().isNotEmpty() -> "Review note saved successfully"
+                                    else -> "Progress saved successfully"
+                                }
+                                isSavingDetail = false
                             },
                             shape = CircleShape,
                             colors = ButtonDefaults.buttonColors(containerColor = ChampagneGold, contentColor = ChampagneOnGold)
                         ) {
-                            Text("Save & Sync to Cloud", fontWeight = FontWeight.Bold)
+                            Text(if (isSavingDetail) "Saving..." else "Save & Sync to Cloud", fontWeight = FontWeight.Bold)
                         }
                         if (item.inWatchlist) {
                             OutlinedButton(
@@ -6610,12 +6783,28 @@ private fun DesktopDetailScreen(
                         }
                     }
 
+                    detailSavedFeedback?.let { msg ->
+                        DesktopFeedbackBanner(message = msg, isError = false)
+                    }
+
                     if (item.synopsis.isNotBlank()) {
                         Text(item.synopsis, color = WarmSilver, fontSize = 13.5.sp, lineHeight = 20.sp)
                     }
                 }
             }
         }
+
+        DesktopAnimeDiscussionSection(
+            anime = item,
+            session = session,
+            isAuthenticated = isAuthenticated,
+            jumpTarget = notificationJumpTarget,
+            onJumpTargetConsumed = onNotificationJumpConsumed,
+            onSessionUpdated = onSessionUpdated,
+            onShowToast = onShowToast
+        )
+
+        Spacer(modifier = Modifier.height(24.dp))
     }
 }
 
@@ -6665,18 +6854,18 @@ private fun CreateCollectionDialog(
 }
 
 private object SandroneAudioPlayer {
-    private const val IMAGE_FILE = "117029-removebg-preview_a7bd2144.png"
+    private const val IMAGE_FILE = "sandrone.png"
     private val VOICE_CLIPS = listOf(
-        "s_2a7b087c.mp3",
-        "s1_9f22134b.mp3",
-        "s2_1eb199af.mp3",
-        "s3_186666cd.mp3",
-        "s4_f2c388e7.mp3",
-        "s5_208121d9.mp3",
-        "s6_5675dac2.mp3",
-        "s7_9691e270.mp3",
-        "s8_653b32e5.mp3",
-        "s9_19fa5bf7.mp3"
+        "s.mp3",
+        "s1.mp3",
+        "s2.mp3",
+        "s3.mp3",
+        "s4.mp3",
+        "s5.mp3",
+        "s6.mp3",
+        "s7.mp3",
+        "s8.mp3",
+        "s9.mp3"
     )
 
     private val lock = Any()
@@ -6690,10 +6879,10 @@ private object SandroneAudioPlayer {
         val resourceStream = SandroneAudioPlayer::class.java.getResourceAsStream("/sandrone/$fileName")
         if (resourceStream != null) return BufferedInputStream(resourceStream)
         val fallbackPaths = listOf(
-            File("public/assets/aistudio/$fileName"),
-            File("../public/assets/aistudio/$fileName"),
-            File("assets/aistudio/$fileName"),
-            File("../assets/aistudio/$fileName")
+            File("public/assets/sandrone/$fileName"),
+            File("../public/assets/sandrone/$fileName"),
+            File("assets/sandrone/$fileName"),
+            File("../assets/sandrone/$fileName")
         )
         val existingFile = fallbackPaths.firstOrNull { it.isFile && it.canRead() }
         return existingFile?.let { BufferedInputStream(FileInputStream(it)) }

@@ -33,6 +33,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
@@ -1102,7 +1103,8 @@ data class NavDestinationItem(
     val route: String,
     val title: String,
     val selectedIcon: ImageVector,
-    val unselectedIcon: ImageVector
+    val unselectedIcon: ImageVector,
+    val badgeCount: Int = 0
 )
 
 /**
@@ -1186,12 +1188,29 @@ fun MidnightBottomNavigationBar(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
-                        Icon(
-                            imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
-                            contentDescription = tab.title,
-                            tint = iconTint,
-                            modifier = Modifier.size(20.dp)
-                        )
+                        Box(contentAlignment = Alignment.TopEnd) {
+                            Icon(
+                                imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
+                                contentDescription = tab.title,
+                                tint = iconTint,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            if (tab.badgeCount > 0) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = colors.error,
+                                    modifier = Modifier.offset(x = 8.dp, y = (-4).dp)
+                                ) {
+                                    Text(
+                                        text = if (tab.badgeCount > 99) "99+" else tab.badgeCount.toString(),
+                                        color = Color.White,
+                                        fontSize = 8.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                    )
+                                }
+                            }
+                        }
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
                             text = tab.title.uppercase(),
@@ -1280,12 +1299,29 @@ fun MidnightCompactRail(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.Center
                         ) {
-                            Icon(
-                                imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
-                                contentDescription = tab.title,
-                                tint = if (selected) colors.accentPrimary else colors.textSecondary,
-                                modifier = Modifier.size(20.dp)
-                            )
+                            Box(contentAlignment = Alignment.TopEnd) {
+                                Icon(
+                                    imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
+                                    contentDescription = tab.title,
+                                    tint = if (selected) colors.accentPrimary else colors.textSecondary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                if (tab.badgeCount > 0) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = colors.error,
+                                        modifier = Modifier.offset(x = 8.dp, y = (-4).dp)
+                                    ) {
+                                        Text(
+                                            text = if (tab.badgeCount > 99) "99+" else tab.badgeCount.toString(),
+                                            color = Color.White,
+                                            fontSize = 8.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                        )
+                                    }
+                                }
+                            }
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
                                 text = tab.title,
@@ -1409,8 +1445,23 @@ fun MidnightDesktopSidebar(
                                 text = tab.title,
                                 style = MaterialTheme.typography.labelLarge,
                                 color = if (selected) colors.highlight else colors.textSecondary,
-                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                                modifier = Modifier.weight(1f)
                             )
+                            if (tab.badgeCount > 0) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = colors.error
+                                ) {
+                                    Text(
+                                        text = if (tab.badgeCount > 99) "99+" else tab.badgeCount.toString(),
+                                        color = Color.White,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
