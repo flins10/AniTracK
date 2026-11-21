@@ -420,6 +420,8 @@ const state = {
   communitySentimentFilter: null,
   communitySort: 'RECENT',
   communityCommentsAnimeId: null,
+  communityCommentsTab: 'notes', // 'notes' | 'discussion'
+  pendingCommunityReplyUser: null, // { id, username, avatar_key }
   communityCommentDraftStars: 0,
   communityCommentDraftNote: '',
   communityNoteSaving: false,
@@ -2977,8 +2979,72 @@ function handleDiscussionInputMentionCheck(scope, inputEl) {
   }, 90);
 }
 
+function getActiveDiscussionAnime() {
+  if (state.detailAnime && state.detailAnime.animeId) return state.detailAnime;
+  if (state.communityCommentsAnimeId !== null) {
+    const allGroups = groupCommunityReviewsByAnime(state.communityReviews);
+    const grp = allGroups.find((g) => Number(g.anime_id) === Number(state.communityCommentsAnimeId));
+    if (grp) {
+      return {
+        animeId: Number(grp.anime_id),
+        title: grp.anime_title || 'Anime',
+        titleEnglish: grp.anime_title || 'Anime',
+        coverImage: grp.anime_cover_image || ''
+      };
+    }
+  }
+  return null;
+}
+
+function applyPendingCommunityReplyTarget() {
+  const pending = state.pendingCommunityReplyUser;
+  if (!pending) return;
+  const targetAid = Number(state.communityCommentsAnimeId || state.discussion.animeId || 0);
+  if (targetAid && Number(state.discussion.animeId) !== targetAid) return;
+  if (state.discussion.loading) return;
+
+  const existingComment = (state.discussion.comments || []).find(
+    (c) =>
+      (pending.id && c.user_id === pending.id) ||
+      (pending.username && String(c.username || '').toLowerCase() === String(pending.username).toLowerCase())
+  );
+  state.pendingCommunityReplyUser = null;
+
+  if (existingComment) {
+    const existingThread = (existingComment.threads || []).find((th) => th.target_user_id === existingComment.user_id);
+    if (existingThread) {
+      state.discussion.expandedThreads[existingThread.id] = true;
+    }
+    state.discussion.activeReplyTarget = {
+      commentId: existingComment.id,
+      targetUserId: existingComment.user_id,
+      targetUsername: existingComment.username || pending.username || 'Member'
+    };
+    state.discussion.replyDraft = '';
+    state.discussion.replyTags = [];
+    state.discussion.error = '';
+    renderApp();
+    setTimeout(() => document.getElementById('inp-discussion-reply')?.focus(), 40);
+  } else if (pending.id) {
+    const currentTags = state.discussion.commentTags || [];
+    const check = validateContentMentions(state.discussion.draft || '', currentTags.length);
+    if (
+      check.totalMentions < MAX_MENTIONS_PER_CONTENT &&
+      !currentTags.some((t) => t.id === pending.id)
+    ) {
+      state.discussion.commentTags = [
+        ...currentTags,
+        { id: pending.id, username: pending.username || 'Member', avatar_key: pending.avatar_key || 'avatar_1' }
+      ];
+    }
+    renderApp();
+    setTimeout(() => document.getElementById('inp-discussion-comment')?.focus(), 40);
+  }
+}
+
 async function postAnimeComment() {
-  if (!state.session || !state.detailAnime || state.discussion.submitting) return;
+  const activeAnime = getActiveDiscussionAnime();
+  if (!state.session || !activeAnime || state.discussion.submitting) return;
   const body = (document.getElementById('inp-discussion-comment')?.value ?? state.discussion.draft ?? '').trim();
   const taggedIds = (state.discussion.commentTags || []).map((t) => t.id).filter(Boolean);
   if (!body) {
@@ -2999,7 +3065,7 @@ async function postAnimeComment() {
   state.discussion.success = '';
   renderApp();
   try {
-    const a = state.detailAnime;
+    const a = activeAnime;
     const res = await supabaseRequest('/rest/v1/rpc/create_anime_comment', 'POST', {
       p_anime_id: Number(a.animeId),
       p_content: body,
@@ -5946,14 +6012,26 @@ function renderModals() {
     if (grp) {
       const avgStarsNum = grp.average_rating10 ? rating10ToStars(grp.average_rating10) || 0 : 0;
       const draftStars = Number(state.communityCommentDraftStars || 0);
-      return `
+      const modalTab = state.communityCommentsTab === 'discussion' ? 'discussion' : 'notes';
+      const hasUnseen = Boolean(state.unseenDiscussionByAnimeId && state.unseenDiscussionByAnimeId[Number(grp.anime_id)]);
+      const loadedForThisAnime = Number(state.discussion.animeId) === Number(grp.anime_id);
+      const discCountLabel = loadedForThisAnime && state.discussion.totalComments > 0
+        ? `Discussion (${state.discussion.totalComments})`
+        : 'Discussion & Replies';
+      const modalAnime = {
+        animeId: Number(grp.anime_id),
+        title: grp.anime_title || 'Anime',
+        titleEnglish: grp.anime_title || 'Anime',
+        coverImage: grp.anime_cover_image || ''
+      };
+      overlays += `
         <div class="modal-backdrop" id="modal-backdrop">
           <div class="modal-sheet community-comments-modal" onclick="event.stopPropagation()">
             <div style="display:flex;align-items:center;gap:14px;justify-content:space-between;">
               <div style="display:flex;align-items:center;gap:12px;min-width:0;">
                 <img src="${escapeHtml(grp.anime_cover_image)}" alt="" style="width:48px;height:68px;border-radius:12px;object-fit:cover;flex-shrink:0;" />
                 <div style="min-width:0;">
-                  <div class="micro-label" style="color:var(--accent-primary);">COMMUNITY NOTES &amp; RATINGS</div>
+                  <div class="micro-label" style="color:var(--accent-primary);">COMMUNITY ANIME HUB</div>
                   <h3 class="serif-heading" style="font-size:21px;line-height:25px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(grp.anime_title)}</h3>
                   <div style="display:flex;align-items:center;gap:8px;margin-top:2px;">
                     ${
@@ -5969,95 +6047,142 @@ function renderModals() {
               <button type="button" class="btn-secondary" id="btn-close-modal" style="height:36px;padding:0 14px;font-size:12px;">Close</button>
             </div>
 
-            <div class="community-comments-list">
-              ${grp.reviews
-                .map((rev) => {
-                  const rStars = rev.rating ? rating10ToStars(rev.rating) || 0 : 0;
-                  const rSent = rev.rating ? sentimentFromRating10(rev.rating) : null;
-                  const hasNote = String(rev.review_notes || '').trim().length > 0;
-                  return `
-                    <div class="community-comment-item">
-                      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
-                        <div style="display:flex;align-items:center;gap:10px;min-width:0;">
-                          ${renderAvatarCircle(rev.avatar_key || 'avatar_1', rev.username, 34)}
-                          <div style="min-width:0;">
-                            <div style="font-size:14px;font-weight:600;color:var(--text-primary);">${escapeHtml(rev.username || 'Member')}</div>
-                            <div style="font-size:11.5px;color:var(--text-muted);">${escapeHtml(formatReviewDate(rev.updated_at))}</div>
-                          </div>
-                        </div>
-                        ${
-                          rStars > 0
-                            ? `<div style="display:flex;flex-direction:column;align-items:flex-end;gap:3px;">
-                                <div style="display:inline-flex;align-items:center;gap:4px;">
-                                  <span style="display:inline-flex;gap:1px;">${renderFiveStarsHtml(rStars)}</span>
-                                  <span class="tabular-num" style="font-size:13.5px;font-weight:700;color:var(--highlight);">${rStars.toFixed(1)}</span>
-                                </div>
-                                ${rSent ? `<span class="sentiment-pill soft ${rSent.key}" style="font-size:9px;padding:2px 7px;">${rSent.shortLabel.toUpperCase()}</span>` : ''}
-                              </div>`
-                            : `<span class="sentiment-pill soft cinema" style="font-size:9px;padding:2px 8px;">NOTE</span>`
-                        }
-                      </div>
-
-                      ${
-                        hasNote
-                          ? `<div class="review-quote-box" style="padding:11px 14px;">
-                              <div class="review-quote-bar"></div>
-                              <div class="review-quote-text" style="font-size:13.5px;">“${escapeHtml(rev.review_notes)}”</div>
-                            </div>`
-                          : ''
-                      }
-                    </div>
-                  `;
-                })
-                .join('')}
+            <div class="community-modal-tabs">
+              <button
+                type="button"
+                class="community-modal-tab-btn ${modalTab === 'notes' ? 'active' : ''}"
+                data-comm-modal-tab="notes"
+              >
+                Notes &amp; Ratings (${grp.reviews.length})
+              </button>
+              <button
+                type="button"
+                class="community-modal-tab-btn ${modalTab === 'discussion' ? 'active' : ''}"
+                data-comm-modal-tab="discussion"
+              >
+                ${hasUnseen && modalTab !== 'discussion' ? `<span class="community-red-dot" style="position:static;display:inline-block;margin-right:6px;"></span>` : ''}
+                ${discCountLabel}
+              </button>
             </div>
 
             ${
-              state.session
-                ? `<div class="community-comment-composer">
-                    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-                      <span class="micro-label" style="color:var(--accent-primary);">ADD OR UPDATE YOUR NOTE &amp; RATING</span>
-                      <div style="display:inline-flex;align-items:center;gap:4px;">
-                        ${[1, 2, 3, 4, 5]
-                          .map(
-                            (st) =>
-                              `<button type="button" data-comm-modal-star="${st}" style="background:none;border:none;cursor:pointer;font-size:20px;color:${
-                                draftStars >= st - 0.5 ? 'var(--accent-primary)' : '#383D4E'
-                              };">★</button>`
-                          )
-                          .join('')}
-                        ${
-                          draftStars > 0
-                            ? `<span class="tabular-num" style="font-size:12.5px;font-weight:700;color:var(--highlight);margin-left:4px;">${draftStars.toFixed(1)}</span>`
-                            : ''
-                        }
-                      </div>
-                    </div>
-                    <div style="display:flex;gap:8px;align-items:center;">
-                      <input
-                        id="inp-comm-modal-note"
-                        class="auth-input"
-                        style="height:44px;flex:1;"
-                        placeholder="Write your note for this anime..."
-                        value="${escapeHtml(state.communityCommentDraftNote || '')}"
-                        ${state.communityNoteSaving ? 'disabled' : ''}
-                      />
-                      <button type="button" class="btn-primary" id="btn-comm-modal-submit" style="height:44px;padding:0 18px;" ${
-                        state.communityNoteSaving ? 'disabled' : ''
-                      }>${state.communityNoteSaving ? 'POSTING...' : 'POST'}</button>
-                    </div>
-                    ${
-                      state.communityNoteFeedback
-                        ? `<div class="feedback-banner success" style="margin-top:8px;">✓ ${escapeHtml(state.communityNoteFeedback)}</div>`
-                        : ''
-                    }
-                    ${
-                      state.communityNoteError
-                        ? `<div class="feedback-banner error" style="margin-top:8px;">! ${escapeHtml(state.communityNoteError)}</div>`
-                        : ''
-                    }
-                  </div>`
-                : ''
+              modalTab === 'discussion'
+                ? `
+                  <div class="community-modal-discussion-scroll">
+                    ${renderAnimeDiscussionSection(modalAnime)}
+                  </div>
+                `
+                : `
+                  <div class="community-comments-list">
+                    ${grp.reviews
+                      .map((rev) => {
+                        const rStars = rev.rating ? rating10ToStars(rev.rating) || 0 : 0;
+                        const rSent = rev.rating ? sentimentFromRating10(rev.rating) : null;
+                        const hasNote = String(rev.review_notes || '').trim().length > 0;
+                        return `
+                          <div
+                            class="community-comment-item"
+                            data-ctx-comm-note="1"
+                            data-ctx-uid="${escapeHtml(rev.user_id || '')}"
+                            data-ctx-name="${escapeHtml(rev.username || 'Member')}"
+                            data-ctx-av="${escapeHtml(rev.avatar_key || 'avatar_1')}"
+                          >
+                            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+                              <div style="display:flex;align-items:center;gap:10px;min-width:0;">
+                                ${renderAvatarCircle(rev.avatar_key || 'avatar_1', rev.username, 34)}
+                                <div style="min-width:0;">
+                                  <div style="font-size:14px;font-weight:600;color:var(--text-primary);">${escapeHtml(rev.username || 'Member')}</div>
+                                  <div style="font-size:11.5px;color:var(--text-muted);">${escapeHtml(formatReviewDate(rev.updated_at))}</div>
+                                </div>
+                              </div>
+                              <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+                                ${
+                                  state.session
+                                    ? `<button
+                                         type="button"
+                                         class="community-note-reply-btn"
+                                         data-comm-note-reply-uid="${escapeHtml(rev.user_id || '')}"
+                                         data-comm-note-reply-name="${escapeHtml(rev.username || 'Member')}"
+                                         data-comm-note-reply-av="${escapeHtml(rev.avatar_key || 'avatar_1')}"
+                                       >↩ Reply</button>`
+                                    : ''
+                                }
+                                ${
+                                  rStars > 0
+                                    ? `<div style="display:flex;flex-direction:column;align-items:flex-end;gap:3px;">
+                                        <div style="display:inline-flex;align-items:center;gap:4px;">
+                                          <span style="display:inline-flex;gap:1px;">${renderFiveStarsHtml(rStars)}</span>
+                                          <span class="tabular-num" style="font-size:13.5px;font-weight:700;color:var(--highlight);">${rStars.toFixed(1)}</span>
+                                        </div>
+                                        ${rSent ? `<span class="sentiment-pill soft ${rSent.key}" style="font-size:9px;padding:2px 7px;">${rSent.shortLabel.toUpperCase()}</span>` : ''}
+                                      </div>`
+                                    : `<span class="sentiment-pill soft cinema" style="font-size:9px;padding:2px 8px;">NOTE</span>`
+                                }
+                              </div>
+                            </div>
+
+                            ${
+                              hasNote
+                                ? `<div class="review-quote-box" style="padding:11px 14px;">
+                                    <div class="review-quote-bar"></div>
+                                    <div class="review-quote-text" style="font-size:13.5px;">“${escapeHtml(rev.review_notes)}”</div>
+                                  </div>`
+                                : ''
+                            }
+                          </div>
+                        `;
+                      })
+                      .join('')}
+                  </div>
+
+                  ${
+                    state.session
+                      ? `<div class="community-comment-composer">
+                          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                            <span class="micro-label" style="color:var(--accent-primary);">ADD OR UPDATE YOUR NOTE &amp; RATING</span>
+                            <div style="display:inline-flex;align-items:center;gap:4px;">
+                              ${[1, 2, 3, 4, 5]
+                                .map(
+                                  (st) =>
+                                    `<button type="button" data-comm-modal-star="${st}" style="background:none;border:none;cursor:pointer;font-size:20px;color:${
+                                      draftStars >= st - 0.5 ? 'var(--accent-primary)' : '#383D4E'
+                                    };">★</button>`
+                                )
+                                .join('')}
+                              ${
+                                draftStars > 0
+                                  ? `<span class="tabular-num" style="font-size:12.5px;font-weight:700;color:var(--highlight);margin-left:4px;">${draftStars.toFixed(1)}</span>`
+                                  : ''
+                              }
+                            </div>
+                          </div>
+                          <div style="display:flex;gap:8px;align-items:center;">
+                            <input
+                              id="inp-comm-modal-note"
+                              class="auth-input"
+                              style="height:44px;flex:1;"
+                              placeholder="Write your note for this anime..."
+                              value="${escapeHtml(state.communityCommentDraftNote || '')}"
+                              ${state.communityNoteSaving ? 'disabled' : ''}
+                            />
+                            <button type="button" class="btn-primary" id="btn-comm-modal-submit" style="height:44px;padding:0 18px;" ${
+                              state.communityNoteSaving ? 'disabled' : ''
+                            }>${state.communityNoteSaving ? 'POSTING...' : 'POST'}</button>
+                          </div>
+                          ${
+                            state.communityNoteFeedback
+                              ? `<div class="feedback-banner success" style="margin-top:8px;">✓ ${escapeHtml(state.communityNoteFeedback)}</div>`
+                              : ''
+                          }
+                          ${
+                            state.communityNoteError
+                              ? `<div class="feedback-banner error" style="margin-top:8px;">! ${escapeHtml(state.communityNoteError)}</div>`
+                              : ''
+                          }
+                        </div>`
+                      : ''
+                  }
+                `
             }
           </div>
         </div>
@@ -7173,13 +7298,70 @@ function bindAppEvents() {
       e.stopPropagation();
       const aid = Number(el.getAttribute('data-open-comments'));
       const existing = state.vault.find((v) => Number(v.animeId) === aid);
+      const hasUnseen = Boolean(state.unseenDiscussionByAnimeId && state.unseenDiscussionByAnimeId[aid]);
       state.communityCommentsAnimeId = aid;
+      state.communityCommentsTab = hasUnseen ? 'discussion' : 'notes';
+      state.pendingCommunityReplyUser = null;
       state.communityCommentDraftStars = existing && existing.rating10 ? rating10ToStars(existing.rating10) || 0 : 0;
       state.communityCommentDraftNote = existing ? existing.reviewNotes || '' : '';
       state.communityNoteSaving = false;
       state.communityNoteFeedback = '';
       state.communityNoteError = '';
       renderApp();
+      loadAnimeDiscussion(aid, true).then(() => applyPendingCommunityReplyTarget());
+      if (hasUnseen && state.session) {
+        markAnimeNotificationsRead(aid);
+      }
+    };
+  });
+
+  document.querySelectorAll('[data-comm-modal-tab]').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const tab = btn.getAttribute('data-comm-modal-tab') === 'discussion' ? 'discussion' : 'notes';
+      state.communityCommentsTab = tab;
+      renderApp();
+      const aid = Number(state.communityCommentsAnimeId || 0);
+      if (tab === 'discussion' && aid) {
+        if (Number(state.discussion.animeId) !== aid) {
+          loadAnimeDiscussion(aid, true).then(() => applyPendingCommunityReplyTarget());
+        } else {
+          applyPendingCommunityReplyTarget();
+        }
+        if (state.session) {
+          markAnimeNotificationsRead(aid);
+        }
+      }
+    };
+  });
+
+  const startReplyToCommunityMember = (uid, username, avatarKey) => {
+    const aid = Number(state.communityCommentsAnimeId || 0);
+    if (!aid || !state.session) return;
+    state.communityCommentsTab = 'discussion';
+    state.discussion.contextMenu = null;
+    state.pendingCommunityReplyUser = {
+      id: uid || '',
+      username: username || 'Member',
+      avatar_key: avatarKey || 'avatar_1'
+    };
+    renderApp();
+    markAnimeNotificationsRead(aid);
+    if (Number(state.discussion.animeId) === aid && !state.discussion.loading) {
+      applyPendingCommunityReplyTarget();
+    } else {
+      loadAnimeDiscussion(aid, true).then(() => applyPendingCommunityReplyTarget());
+    }
+  };
+
+  document.querySelectorAll('[data-comm-note-reply-uid]').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      startReplyToCommunityMember(
+        btn.getAttribute('data-comm-note-reply-uid'),
+        btn.getAttribute('data-comm-note-reply-name') || 'Member',
+        btn.getAttribute('data-comm-note-reply-av') || 'avatar_1'
+      );
     };
   });
   document.querySelectorAll('[data-comm-modal-star]').forEach((btn) => {
@@ -7477,12 +7659,13 @@ function bindAppEvents() {
   const btnPostDiscComment = document.getElementById('btn-post-discussion-comment');
   if (btnPostDiscComment) btnPostDiscComment.onclick = () => postAnimeComment();
   const btnRefreshDisc = document.getElementById('btn-discussion-refresh');
-  if (btnRefreshDisc && state.detailAnime) {
-    btnRefreshDisc.onclick = () => loadAnimeDiscussion(state.detailAnime.animeId, true);
+  const activeDiscAnime = getActiveDiscussionAnime();
+  if (btnRefreshDisc && activeDiscAnime) {
+    btnRefreshDisc.onclick = () => loadAnimeDiscussion(activeDiscAnime.animeId, true);
   }
   const btnLoadMoreDisc = document.getElementById('btn-discussion-load-more');
-  if (btnLoadMoreDisc && state.detailAnime) {
-    btnLoadMoreDisc.onclick = () => loadAnimeDiscussion(state.detailAnime.animeId, false);
+  if (btnLoadMoreDisc && activeDiscAnime) {
+    btnLoadMoreDisc.onclick = () => loadAnimeDiscussion(activeDiscAnime.animeId, false);
   }
   // Open unseen tagged anime card from Community (sets jump target; Red Dot clears only when detail discussion opens)
   document.querySelectorAll('[data-open-unseen-anime]').forEach((el) => {
@@ -7590,6 +7773,16 @@ function bindAppEvents() {
     }));
   });
 
+  document.querySelectorAll('[data-ctx-comm-note]').forEach((item) => {
+    bindContextTriggers(item, () => ({
+      type: 'comm_note',
+      userId: item.getAttribute('data-ctx-uid') || '',
+      username: item.getAttribute('data-ctx-name') || 'Member',
+      avatarKey: item.getAttribute('data-ctx-av') || 'avatar_1',
+      isOwner: false
+    }));
+  });
+
   const discCtxBackdrop = document.getElementById('discussion-ctx-backdrop');
   if (discCtxBackdrop) {
     discCtxBackdrop.onclick = () => {
@@ -7601,7 +7794,11 @@ function bindAppEvents() {
   if (ctxBtnReply && state.discussion.contextMenu) {
     ctxBtnReply.onclick = () => {
       const cm = state.discussion.contextMenu;
-      openReplyForTarget(cm.commentId, cm.userId, cm.username);
+      if (cm.type === 'comm_note') {
+        startReplyToCommunityMember(cm.userId, cm.username, cm.avatarKey);
+      } else {
+        openReplyForTarget(cm.commentId, cm.userId, cm.username);
+      }
     };
   }
   const ctxBtnEdit = document.getElementById('ctx-btn-edit');
@@ -7768,8 +7965,10 @@ function bindAppEvents() {
     state.showProfileEditModal = false;
     state.showCreateCollectionModal = false;
     state.communityCommentsAnimeId = null;
+    state.pendingCommunityReplyUser = null;
     state.confirmRemoveHomeAnime = null;
     state.contextMenu = null;
+    state.discussion.contextMenu = null;
     renderApp();
   };
   if (backdrop) backdrop.onclick = closeModals;

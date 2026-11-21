@@ -101,11 +101,16 @@ fun AnimeDiscussionSection(
     animeCover: String,
     viewModel: AnimeViewModel,
     highlightTarget: NotificationJumpTarget? = null,
+    initialReplyTargetUser: MentionableUser? = null,
+    onInitialReplyTargetConsumed: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = AppTheme.colors
     val haptics = LocalHapticFeedback.current
     val profile by viewModel.userProfile.collectAsState()
+    val authSession by viewModel.authSession.collectAsState()
+    val isSignedIn = profile != null || authSession != null
+    val currentUserId = profile?.id?.takeIf { it.isNotBlank() } ?: authSession?.userId
     val comments by viewModel.discussionComments.collectAsState()
     val totalComments by viewModel.discussionTotalCount.collectAsState()
     val hasMore by viewModel.discussionHasMore.collectAsState()
@@ -134,6 +139,36 @@ fun AnimeDiscussionSection(
         if (!targetThreadId.isNullOrBlank()) {
             expandedThreads[targetThreadId] = true
         }
+    }
+
+    // When triggered via "Reply" on a Community note, open that user's existing comment thread or pre-tag them in the composer
+    LaunchedEffect(initialReplyTargetUser, isLoading, comments) {
+        val targetUser = initialReplyTargetUser ?: return@LaunchedEffect
+        if (isLoading) return@LaunchedEffect
+        val existingComment = comments.firstOrNull { c ->
+            (targetUser.id.isNotBlank() && c.userId == targetUser.id) ||
+                c.username.equals(targetUser.username, ignoreCase = true)
+        }
+        if (existingComment != null) {
+            existingComment.threads.firstOrNull { it.targetUserId == existingComment.userId }?.let { th ->
+                expandedThreads[th.id] = true
+            }
+            activeReplyTarget = ReplyComposerTarget(
+                commentId = existingComment.id,
+                targetUserId = existingComment.userId,
+                targetUsername = existingComment.username
+            )
+            replyDraft = TextFieldValue("")
+            selectedReplyTags = emptyList()
+        } else if (targetUser.id.isNotBlank()) {
+            val currentTotal = DiscussionRules.validateContentMentions(commentDraft.text, selectedCommentTags.size).totalEntries
+            if (currentTotal < DiscussionRules.MAX_MENTIONS_PER_CONTENT &&
+                selectedCommentTags.none { it.id == targetUser.id }
+            ) {
+                selectedCommentTags = selectedCommentTags + targetUser
+            }
+        }
+        onInitialReplyTargetConsumed()
     }
 
     val commentValidation = remember(commentDraft.text, selectedCommentTags) {
@@ -187,6 +222,12 @@ fun AnimeDiscussionSection(
                     )
                 }
             }
+
+            Text(
+                text = "Tap Reply or long-press any comment to reply in a thread • Type @ + letter to tag",
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.textMuted
+            )
 
             // Clear Success / Error Feedback Banners
             AnimatedVisibility(visible = !feedbackSuccess.isNullOrBlank()) {
@@ -262,7 +303,7 @@ fun AnimeDiscussionSection(
             }
 
             // Comment Composer (authenticated users)
-            if (profile != null) {
+            if (isSignedIn) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
                         value = commentDraft,
@@ -441,7 +482,7 @@ fun AnimeDiscussionSection(
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     comments.forEach { comment ->
                         val isHighlightedComment = highlightTarget?.commentId == comment.id && highlightTarget.replyId == null
-                        val isOwner = profile?.id == comment.userId
+                        val isOwner = currentUserId != null && currentUserId == comment.userId
                         val isEditingThis = editingCommentId == comment.id
                         val existingAuthorThread = comment.threads.firstOrNull { it.targetUserId == comment.userId }
 
@@ -456,11 +497,11 @@ fun AnimeDiscussionSection(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(18.dp))
-                                    .pointerInput(comment.id, profile?.id) {
+                                    .pointerInput(comment.id, isSignedIn) {
                                         awaitPointerEventScope {
                                             while (true) {
                                                 val event = awaitPointerEvent()
-                                                if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed && profile != null) {
+                                                if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed && isSignedIn) {
                                                     openCommentMenuId = comment.id
                                                 }
                                             }
@@ -473,7 +514,7 @@ fun AnimeDiscussionSection(
                                             }
                                         },
                                         onLongClick = {
-                                            if (profile != null) {
+                                            if (isSignedIn) {
                                                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                                 openCommentMenuId = comment.id
                                             }
@@ -520,7 +561,7 @@ fun AnimeDiscussionSection(
                                         }
 
                                         Row(verticalAlignment = Alignment.CenterVertically) {
-                                            if (profile != null) {
+                                            if (isSignedIn) {
                                                 TextButton(
                                                     onClick = {
                                                         if (existingAuthorThread != null) {
@@ -617,8 +658,8 @@ fun AnimeDiscussionSection(
                                                 ReplyThreadContainer(
                                                     thread = thread,
                                                     isExpanded = isExpanded,
-                                                    currentUserId = profile?.id,
-                                                    isSignedIn = profile != null,
+                                                    currentUserId = currentUserId,
+                                                    isSignedIn = isSignedIn,
                                                     isSubmitting = isSubmitting,
                                                     highlightReplyId = highlightTarget?.replyId,
                                                     editingReplyId = editingReplyId,

@@ -108,8 +108,6 @@ import com.example.ui.widgets.MidnightDesktopSidebar
 import com.example.ui.widgets.NavDestinationItem
 import com.example.ui.widgets.ObsidianAmbientBackground
 import com.example.ui.widgets.QuickSearchBottomSheet
-import com.example.ui.widgets.SandroneMascotButton
-import com.example.ui.widgets.SandroneMascotVariant
 import com.example.ui.widgets.rememberReducedMotion
 import com.example.viewmodel.AnimeViewModel
 import com.example.viewmodel.OnboardingStage
@@ -561,16 +559,8 @@ private fun AnimeUniverseMainScaffold(
                     .widthIn(max = 560.dp)
             )
 
-            // Floating Capsule Bottom Navigation Bar + Steady Sandrone Mascot on Compact Mobile
+            // Floating Capsule Bottom Navigation Bar on Compact Mobile
             if (showBottomDock && isCompactScreen) {
-                SandroneMascotButton(
-                    variant = SandroneMascotVariant.FLOATING_PHONE,
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .navigationBarsPadding()
-                        .padding(end = 14.dp, bottom = 86.dp)
-                )
-
                 MidnightBottomNavigationBar(
                     destinations = bottomDestinations,
                     currentRoute = currentRoute,

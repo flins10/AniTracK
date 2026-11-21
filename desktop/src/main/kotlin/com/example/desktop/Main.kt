@@ -3268,6 +3268,8 @@ fun AnimeUniverseDesktopRoot() {
                             DesktopCommunityScreen(
                                 reviews = combinedReviews,
                                 unseenDiscussionAnime = unseenDiscussionAnime,
+                                session = sessionState,
+                                isAuthenticated = isAuthenticated,
                                 currentUserId = sessionState.userId,
                                 currentUsername = sessionState.username,
                                 avatarKey = sessionState.avatarKey,
@@ -3276,6 +3278,20 @@ fun AnimeUniverseDesktopRoot() {
                                 onRatingChange = { commRatingFilter = it },
                                 onSortChange = { commSortMode = it },
                                 onOpenProfile = { currentScreen = DesktopScreen.PROFILE },
+                                onSessionUpdated = { active ->
+                                    sessionState = sessionState.copy(
+                                        accessToken = active.accessToken,
+                                        refreshToken = active.refreshToken,
+                                        expiresAt = active.expiresAt
+                                    )
+                                    DesktopStorage.saveActive(sessionState)
+                                },
+                                onShowToast = { msg, isErr -> showToast(msg, isError = isErr) },
+                                onMarkedAnimeSeen = { seenAnimeId ->
+                                    val remaining = unseenDiscussionAnime.filterNot { it.animeId == seenAnimeId }
+                                    unseenDiscussionAnime = remaining
+                                    unreadNotificationCount = remaining.sumOf { it.unseenCount.coerceAtLeast(1) }
+                                },
                                 onOpenAnime = { animeId, fallbackTitle, fallbackCover ->
                                     val unseenEntry = unseenDiscussionAnime.firstOrNull { it.animeId == animeId }
                                     if (unseenEntry != null) {
@@ -5197,6 +5213,8 @@ private fun DesktopLibraryScreen(
 private fun DesktopCommunityScreen(
     reviews: List<DesktopCommunityReview>,
     unseenDiscussionAnime: List<DesktopUnseenDiscussionAnime>,
+    session: DesktopPersistedState,
+    isAuthenticated: Boolean,
     currentUserId: String,
     currentUsername: String,
     avatarKey: String,
@@ -5205,6 +5223,9 @@ private fun DesktopCommunityScreen(
     onRatingChange: (String) -> Unit,
     onSortChange: (String) -> Unit,
     onOpenProfile: () -> Unit,
+    onSessionUpdated: (DesktopPersistedState) -> Unit,
+    onShowToast: (String, Boolean) -> Unit,
+    onMarkedAnimeSeen: (Int) -> Unit,
     onOpenAnime: (animeId: Int, fallbackTitle: String, fallbackCover: String) -> Unit,
     onSubmitCommentNote: (animeId: Int, animeTitle: String, animeCover: String, stars: Float, note: String) -> Unit
 ) {
@@ -5661,8 +5682,26 @@ private fun DesktopCommunityScreen(
             (currentUserId.isNotBlank() && it.userId == currentUserId) ||
                 it.username.equals(currentUsername, ignoreCase = true)
         }
+        val unseenForGroup = unseenByAnimeId[selectedCommentsGroup.animeId]
         var draftStars by remember(selectedCommentsGroup.animeId) { mutableStateOf(myExisting?.stars ?: 0f) }
         var draftNote by remember(selectedCommentsGroup.animeId) { mutableStateOf(myExisting?.notes.orEmpty()) }
+        var modalTab by remember(selectedCommentsGroup.animeId) {
+            mutableStateOf(if (unseenForGroup != null) "discussion" else "notes")
+        }
+        var pendingReplyUser by remember(selectedCommentsGroup.animeId) { mutableStateOf<DesktopMentionUser?>(null) }
+        var openNoteMenuId by remember(selectedCommentsGroup.animeId) { mutableStateOf<String?>(null) }
+        var modalJumpTarget by remember(selectedCommentsGroup.animeId) {
+            mutableStateOf(
+                unseenForGroup?.let {
+                    DesktopNotificationJumpTarget(
+                        animeId = it.animeId,
+                        commentId = it.latestCommentId,
+                        threadId = it.latestThreadId,
+                        replyId = it.latestReplyId
+                    )
+                }
+            )
+        }
 
         Dialog(onDismissRequest = { selectedCommentsAnimeId = null }) {
             Surface(
@@ -5670,8 +5709,8 @@ private fun DesktopCommunityScreen(
                 color = ObsidianSidebar,
                 border = BorderStroke(1.dp, ChampagneGold.copy(alpha = 0.45f)),
                 modifier = Modifier
-                    .widthIn(max = 640.dp)
-                    .heightIn(max = 760.dp)
+                    .widthIn(max = 680.dp)
+                    .heightIn(max = 780.dp)
                     .fillMaxWidth()
             ) {
                 Column(
@@ -5729,203 +5768,344 @@ private fun DesktopCommunityScreen(
                         }
                     }
 
-                    HorizontalDivider(color = ObsidianBorder)
-
-                    // All Notes & Ratings List with Username and Avatar
-                    LazyColumn(
-                        modifier = Modifier.weight(1f, fill = false).fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    // Segmented Switcher: Notes & Ratings vs Discussion & Replies
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        items(selectedCommentsGroup.reviews, key = { it.id }) { rev ->
-                            val revTier = SentimentTier.fromStars(rev.stars)
-                            val revFilled = kotlin.math.round(rev.stars).toInt().coerceIn(0, 5)
-                            val avPreset = DesktopAvatar.fromKey(rev.avatarKey)
-
-                            Surface(
-                                shape = RoundedCornerShape(18.dp),
-                                color = ObsidianCard,
-                                border = BorderStroke(1.dp, ObsidianBorder),
-                                modifier = Modifier.fillMaxWidth()
+                        val notesActive = modalTab == "notes"
+                        val discActive = modalTab == "discussion"
+                        Surface(
+                            shape = CircleShape,
+                            color = if (notesActive) Color(0xFF2B271F) else ObsidianCard,
+                            border = BorderStroke(1.dp, if (notesActive) ChampagneGold.copy(alpha = 0.7f) else ObsidianBorder),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(38.dp)
+                                .clip(CircleShape)
+                                .clickable { modalTab = "notes" }
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    "Notes & Ratings (${selectedCommentsGroup.reviews.size})",
+                                    fontSize = 12.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (notesActive) ChampagneGoldSoft else WarmSilver
+                                )
+                            }
+                        }
+                        Surface(
+                            shape = CircleShape,
+                            color = if (discActive) Color(0xFF2B271F) else ObsidianCard,
+                            border = BorderStroke(1.dp, if (discActive) ChampagneGold.copy(alpha = 0.7f) else ObsidianBorder),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(38.dp)
+                                .clip(CircleShape)
+                                .clickable { modalTab = "discussion" }
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
                             ) {
-                                Column(
-                                    modifier = Modifier.padding(16.dp),
-                                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                                ) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                        ) {
-                                            DesktopAvatarImage(
-                                                avatarKey = avPreset.key,
-                                                username = rev.username,
-                                                modifier = Modifier.size(34.dp).clip(CircleShape)
-                                            )
-                                            Column {
-                                                Text(
-                                                    rev.username,
-                                                    fontSize = 14.5.sp,
-                                                    fontWeight = FontWeight.SemiBold,
-                                                    color = IvoryText
-                                                )
-                                                if (rev.formattedDate.isNotBlank()) {
-                                                    Text(rev.formattedDate, fontSize = 11.sp, color = WarmSilver)
-                                                }
-                                            }
-                                        }
-                                        if (revTier != null) {
-                                            Surface(shape = CircleShape, color = revTier.pillBg) {
-                                                Text(
-                                                    revTier.shortLabel,
-                                                    fontSize = 9.5.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    letterSpacing = 1.sp,
-                                                    color = revTier.textColor,
-                                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                                                )
-                                            }
-                                        }
-                                    }
-
-                                    if (rev.stars > 0f) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(3.dp)
-                                        ) {
-                                            (1..5).forEach { i ->
-                                                Text(
-                                                    "★",
-                                                    fontSize = 15.sp,
-                                                    color = if (i <= revFilled) ChampagneGold else Color(0xFF393E4F)
-                                                )
-                                            }
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text(
-                                                String.format(Locale.US, "%.1f", rev.stars),
-                                                fontSize = 13.5.sp,
-                                                fontWeight = FontWeight.SemiBold,
-                                                color = IvoryText
-                                            )
-                                        }
-                                    }
-
-                                    if (rev.notes.isNotBlank()) {
-                                        Surface(
-                                            shape = RoundedCornerShape(14.dp),
-                                            color = ObsidianQuoteBox,
-                                            modifier = Modifier.fillMaxWidth()
-                                        ) {
-                                            Row(
-                                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
-                                                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                                verticalAlignment = Alignment.Top
-                                            ) {
-                                                Box(
-                                                    modifier = Modifier
-                                                        .width(3.dp)
-                                                        .height(26.dp)
-                                                        .clip(CircleShape)
-                                                        .background(ChampagneGold)
-                                                )
-                                                Text(
-                                                    "“${rev.notes}”",
-                                                    fontStyle = FontStyle.Italic,
-                                                    fontSize = 14.sp,
-                                                    color = IvoryText
-                                                )
-                                            }
-                                        }
-                                    }
+                                if (unseenForGroup != null && !discActive) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(0xFFEF4444))
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
                                 }
+                                Text(
+                                    "Discussion & Replies",
+                                    fontSize = 12.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (discActive) ChampagneGoldSoft else WarmSilver
+                                )
                             }
                         }
                     }
 
                     HorizontalDivider(color = ObsidianBorder)
 
-                    // Inline Composer: Add/Update note & rating in this template
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                    if (modalTab == "discussion") {
+                        Column(
+                            modifier = Modifier
+                                .weight(1f, fill = false)
+                                .fillMaxWidth()
+                                .verticalScroll(rememberScrollState())
                         ) {
-                            Text(
-                                if (myExisting != null) "UPDATE YOUR NOTE & RATING" else "ADD YOUR NOTE & RATING",
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = 1.4.sp,
-                                color = ChampagneGold
+                            DesktopAnimeDiscussionSection(
+                                anime = DesktopAnimeItem(
+                                    id = selectedCommentsGroup.animeId,
+                                    title = selectedCommentsGroup.animeTitle,
+                                    coverImage = selectedCommentsGroup.animeCover
+                                ),
+                                session = session,
+                                isAuthenticated = isAuthenticated,
+                                jumpTarget = modalJumpTarget,
+                                onJumpTargetConsumed = { modalJumpTarget = null },
+                                onSessionUpdated = onSessionUpdated,
+                                onShowToast = onShowToast,
+                                onMarkedAnimeSeen = onMarkedAnimeSeen,
+                                initialReplyUser = pendingReplyUser,
+                                onInitialReplyUserConsumed = { pendingReplyUser = null }
                             )
-                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                (1..5).forEach { idx ->
-                                    val active = draftStars >= idx - 0.5f
-                                    Text(
-                                        "★",
-                                        fontSize = 20.sp,
-                                        color = if (active) ChampagneGold else Color(0xFF393E4F),
-                                        modifier = Modifier.clickable {
-                                            draftStars = if (draftStars == idx.toFloat()) idx - 0.5f else idx.toFloat()
-                                        }
+                        }
+                    } else {
+                        // All Notes & Ratings List with Reply Button + Right-Click Reply Menu
+                        LazyColumn(
+                            modifier = Modifier.weight(1f, fill = false).fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            items(selectedCommentsGroup.reviews, key = { it.id }) { rev ->
+                                val revTier = SentimentTier.fromStars(rev.stars)
+                                val revFilled = kotlin.math.round(rev.stars).toInt().coerceIn(0, 5)
+                                val avPreset = DesktopAvatar.fromKey(rev.avatarKey)
+                                val triggerReply = {
+                                    pendingReplyUser = DesktopMentionUser(
+                                        userId = rev.userId,
+                                        username = rev.username,
+                                        avatarKey = rev.avatarKey
                                     )
+                                    modalTab = "discussion"
+                                }
+
+                                Box(modifier = Modifier.fillMaxWidth()) {
+                                    Surface(
+                                        shape = RoundedCornerShape(18.dp),
+                                        color = ObsidianCard,
+                                        border = BorderStroke(1.dp, ObsidianBorder),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .pointerInput(rev.id) {
+                                                awaitPointerEventScope {
+                                                    while (true) {
+                                                        val event = awaitPointerEvent()
+                                                        if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) {
+                                                            openNoteMenuId = rev.id
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(16.dp),
+                                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                                ) {
+                                                    DesktopAvatarImage(
+                                                        avatarKey = avPreset.key,
+                                                        username = rev.username,
+                                                        modifier = Modifier.size(34.dp).clip(CircleShape)
+                                                    )
+                                                    Column {
+                                                        Text(
+                                                            rev.username,
+                                                            fontSize = 14.5.sp,
+                                                            fontWeight = FontWeight.SemiBold,
+                                                            color = IvoryText
+                                                        )
+                                                        if (rev.formattedDate.isNotBlank()) {
+                                                            Text(rev.formattedDate, fontSize = 11.sp, color = WarmSilver)
+                                                        }
+                                                    }
+                                                }
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                    Surface(
+                                                        shape = CircleShape,
+                                                        color = ChampagneGold.copy(alpha = 0.14f),
+                                                        border = BorderStroke(1.dp, ChampagneGold.copy(alpha = 0.45f)),
+                                                        modifier = Modifier
+                                                            .clip(CircleShape)
+                                                            .clickable { triggerReply() }
+                                                    ) {
+                                                        Text(
+                                                            "↩ Reply",
+                                                            fontSize = 11.sp,
+                                                            fontWeight = FontWeight.SemiBold,
+                                                            color = ChampagneGoldSoft,
+                                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                                        )
+                                                    }
+                                                    if (revTier != null) {
+                                                        Surface(shape = CircleShape, color = revTier.pillBg) {
+                                                            Text(
+                                                                revTier.shortLabel,
+                                                                fontSize = 9.5.sp,
+                                                                fontWeight = FontWeight.Bold,
+                                                                letterSpacing = 1.sp,
+                                                                color = revTier.textColor,
+                                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            if (rev.stars > 0f) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                                ) {
+                                                    (1..5).forEach { i ->
+                                                        Text(
+                                                            "★",
+                                                            fontSize = 15.sp,
+                                                            color = if (i <= revFilled) ChampagneGold else Color(0xFF393E4F)
+                                                        )
+                                                    }
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text(
+                                                        String.format(Locale.US, "%.1f", rev.stars),
+                                                        fontSize = 13.5.sp,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        color = IvoryText
+                                                    )
+                                                }
+                                            }
+
+                                            if (rev.notes.isNotBlank()) {
+                                                Surface(
+                                                    shape = RoundedCornerShape(14.dp),
+                                                    color = ObsidianQuoteBox,
+                                                    modifier = Modifier.fillMaxWidth()
+                                                ) {
+                                                    Row(
+                                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
+                                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                                        verticalAlignment = Alignment.Top
+                                                    ) {
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .width(3.dp)
+                                                                .height(26.dp)
+                                                                .clip(CircleShape)
+                                                                .background(ChampagneGold)
+                                                        )
+                                                        Text(
+                                                            "“${rev.notes}”",
+                                                            fontStyle = FontStyle.Italic,
+                                                            fontSize = 14.sp,
+                                                            color = IvoryText
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    DropdownMenu(
+                                        expanded = openNoteMenuId == rev.id,
+                                        onDismissRequest = { openNoteMenuId = null },
+                                        containerColor = ObsidianCard
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { Text("↩ Reply to @${rev.username}", color = IvoryText, fontSize = 13.sp) },
+                                            onClick = {
+                                                openNoteMenuId = null
+                                                triggerReply()
+                                            }
+                                        )
+                                    }
                                 }
                             }
                         }
 
-                        OutlinedTextField(
-                            value = draftNote,
-                            onValueChange = { draftNote = it },
-                            placeholder = { Text("Share your note for ${selectedCommentsGroup.animeTitle}...", color = WarmSilver, fontSize = 13.sp) },
-                            maxLines = 3,
-                            shape = RoundedCornerShape(16.dp),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = ChampagneGold,
-                                unfocusedBorderColor = ObsidianBorder,
-                                focusedTextColor = IvoryText,
-                                unfocusedTextColor = IvoryText
-                            ),
-                            modifier = Modifier.fillMaxWidth()
-                        )
+                        HorizontalDivider(color = ObsidianBorder)
 
-                        var commPosting by remember(selectedCommentsGroup.animeId) { mutableStateOf(false) }
-                        var commSuccessMsg by remember(selectedCommentsGroup.animeId) { mutableStateOf<String?>(null) }
-
-                        Button(
-                            onClick = {
-                                if (commPosting) return@Button
-                                commPosting = true
-                                onSubmitCommentNote(
-                                    selectedCommentsGroup.animeId,
-                                    selectedCommentsGroup.animeTitle,
-                                    selectedCommentsGroup.animeCover,
-                                    draftStars,
-                                    draftNote
+                        // Inline Composer: Add/Update note & rating in this template
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    if (myExisting != null) "UPDATE YOUR NOTE & RATING" else "ADD YOUR NOTE & RATING",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = 1.4.sp,
+                                    color = ChampagneGold
                                 )
-                                commSuccessMsg = if (draftNote.trim().isNotEmpty()) "Comment posted successfully" else "Rating saved"
-                                draftNote = ""
-                                commPosting = false
-                            },
-                            enabled = !commPosting && (draftNote.trim().isNotEmpty() || draftStars > 0f),
-                            shape = CircleShape,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = ChampagneGold,
-                                contentColor = ChampagneOnGold
-                            ),
-                            modifier = Modifier.fillMaxWidth().height(46.dp)
-                        ) {
-                            Text(
-                                if (commPosting) "POSTING..." else if (myExisting != null) "UPDATE NOTE IN COMMUNITY" else "POST NOTE TO COMMUNITY",
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = 1.2.sp,
-                                fontSize = 12.5.sp
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    (1..5).forEach { idx ->
+                                        val active = draftStars >= idx - 0.5f
+                                        Text(
+                                            "★",
+                                            fontSize = 20.sp,
+                                            color = if (active) ChampagneGold else Color(0xFF393E4F),
+                                            modifier = Modifier.clickable {
+                                                draftStars = if (draftStars == idx.toFloat()) idx - 0.5f else idx.toFloat()
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+
+                            OutlinedTextField(
+                                value = draftNote,
+                                onValueChange = { draftNote = it },
+                                placeholder = { Text("Share your note for ${selectedCommentsGroup.animeTitle}...", color = WarmSilver, fontSize = 13.sp) },
+                                maxLines = 3,
+                                shape = RoundedCornerShape(16.dp),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = ChampagneGold,
+                                    unfocusedBorderColor = ObsidianBorder,
+                                    focusedTextColor = IvoryText,
+                                    unfocusedTextColor = IvoryText
+                                ),
+                                modifier = Modifier.fillMaxWidth()
                             )
-                        }
-                        commSuccessMsg?.let { msg ->
-                            DesktopFeedbackBanner(message = msg, isError = false)
+
+                            var commPosting by remember(selectedCommentsGroup.animeId) { mutableStateOf(false) }
+                            var commSuccessMsg by remember(selectedCommentsGroup.animeId) { mutableStateOf<String?>(null) }
+
+                            Button(
+                                onClick = {
+                                    if (commPosting) return@Button
+                                    commPosting = true
+                                    onSubmitCommentNote(
+                                        selectedCommentsGroup.animeId,
+                                        selectedCommentsGroup.animeTitle,
+                                        selectedCommentsGroup.animeCover,
+                                        draftStars,
+                                        draftNote
+                                    )
+                                    commSuccessMsg = if (draftNote.trim().isNotEmpty()) "Comment posted successfully" else "Rating saved"
+                                    draftNote = ""
+                                    commPosting = false
+                                },
+                                enabled = !commPosting && (draftNote.trim().isNotEmpty() || draftStars > 0f),
+                                shape = CircleShape,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = ChampagneGold,
+                                    contentColor = ChampagneOnGold
+                                ),
+                                modifier = Modifier.fillMaxWidth().height(46.dp)
+                            ) {
+                                Text(
+                                    if (commPosting) "POSTING..." else if (myExisting != null) "UPDATE NOTE IN COMMUNITY" else "POST NOTE TO COMMUNITY",
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = 1.2.sp,
+                                    fontSize = 12.5.sp
+                                )
+                            }
+                            commSuccessMsg?.let { msg ->
+                                DesktopFeedbackBanner(message = msg, isError = false)
+                            }
                         }
                     }
                 }

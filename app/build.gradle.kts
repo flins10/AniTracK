@@ -64,39 +64,9 @@ android {
     buildConfig = true
   }
   testOptions { unitTests { isIncludeAndroidResources = true } }
-  androidResources {
-    noCompress += "mp3"
-  }
   dependenciesInfo {
     includeInApk = true
     includeInBundle = true
-  }
-}
-
-abstract class SyncSandroneAssetsTask : DefaultTask() {
-  @get:org.gradle.api.tasks.InputDirectory
-  @get:org.gradle.api.tasks.PathSensitive(org.gradle.api.tasks.PathSensitivity.RELATIVE)
-  abstract val sourceDir: DirectoryProperty
-
-  @get:org.gradle.api.tasks.OutputDirectory
-  abstract val outputDir: DirectoryProperty
-
-  @org.gradle.api.tasks.TaskAction
-  fun syncAssets() {
-    val src = sourceDir.get().asFile
-    val dst = File(outputDir.get().asFile, "sandrone")
-    dst.mkdirs()
-    val allowed = setOf(
-      "sandrone.png",
-      "s.mp3", "s1.mp3", "s2.mp3", "s3.mp3", "s4.mp3",
-      "s5.mp3", "s6.mp3", "s7.mp3", "s8.mp3", "s9.mp3"
-    )
-    allowed.forEach { name ->
-      val inFile = File(src, name)
-      if (inFile.isFile) {
-        inFile.copyTo(File(dst, name), overwrite = true)
-      }
-    }
   }
 }
 
@@ -284,13 +254,6 @@ androidComponents {
     variant.sources.kotlin?.addGeneratedSourceDirectory(
       vaultTask,
       GenerateObfuscatedVaultTask::outputDir
-    )
-    val sandroneTask = tasks.register<SyncSandroneAssetsTask>("sync${capName}SandroneAssets") {
-      sourceDir.set(rootProject.file("public/assets/sandrone"))
-    }
-    variant.sources.assets?.addGeneratedSourceDirectory(
-      sandroneTask,
-      SyncSandroneAssetsTask::outputDir
     )
   }
 }

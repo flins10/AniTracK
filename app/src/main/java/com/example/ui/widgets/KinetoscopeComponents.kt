@@ -1356,11 +1356,6 @@ fun MidnightCompactRail(
                 }
 
                 Spacer(modifier = Modifier.weight(1f))
-
-                SandroneMascotButton(
-                    variant = SandroneMascotVariant.RAIL,
-                    modifier = Modifier.padding(top = 8.dp)
-                )
             }
             Box(
                 modifier = Modifier
@@ -1503,13 +1498,6 @@ fun MidnightDesktopSidebar(
                 }
 
                 Spacer(modifier = Modifier.weight(1f))
-
-                SandroneMascotButton(
-                    variant = SandroneMascotVariant.SIDEBAR,
-                    modifier = Modifier
-                        .align(Alignment.CenterHorizontally)
-                        .padding(top = 12.dp)
-                )
             }
             Box(
                 modifier = Modifier

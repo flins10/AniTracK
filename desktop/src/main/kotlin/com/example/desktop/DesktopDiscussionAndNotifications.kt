@@ -704,7 +704,9 @@ internal fun DesktopAnimeDiscussionSection(
     onJumpTargetConsumed: () -> Unit,
     onSessionUpdated: (DesktopPersistedState) -> Unit,
     onShowToast: (String, Boolean) -> Unit,
-    onMarkedAnimeSeen: (Int) -> Unit = {}
+    onMarkedAnimeSeen: (Int) -> Unit = {},
+    initialReplyUser: DesktopMentionUser? = null,
+    onInitialReplyUserConsumed: () -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
     var comments by remember(anime.id) { mutableStateOf<List<DesktopAnimeComment>>(emptyList()) }
@@ -808,6 +810,26 @@ internal fun DesktopAnimeDiscussionSection(
             highlightedTarget = jumpTarget
             onJumpTargetConsumed()
         }
+    }
+
+    LaunchedEffect(initialReplyUser, loading, comments) {
+        val target = initialReplyUser ?: return@LaunchedEffect
+        if (loading) return@LaunchedEffect
+        val existingComment = comments.firstOrNull { c ->
+            (target.userId.isNotBlank() && c.userId == target.userId) ||
+                c.username.equals(target.username, ignoreCase = true)
+        }
+        if (existingComment != null) {
+            openReplyFor(existingComment, existingComment.userId, existingComment.username)
+        } else if (target.userId.isNotBlank()) {
+            val check = DesktopDiscussionRules.validateMentions(draft.text, selectedCommentTags.size)
+            if (check.totalMentions < DesktopDiscussionRules.MAX_MENTIONS_PER_CONTENT &&
+                selectedCommentTags.none { it.userId == target.userId }
+            ) {
+                selectedCommentTags = selectedCommentTags + target
+            }
+        }
+        onInitialReplyUserConsumed()
     }
 
     LaunchedEffect(activeMentionQuery, mentionScope, isAuthenticated) {

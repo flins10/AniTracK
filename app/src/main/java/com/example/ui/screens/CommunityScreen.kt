@@ -1,9 +1,11 @@
 package com.example.ui.screens
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -29,6 +31,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
@@ -37,6 +40,8 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.RateReview
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -50,6 +55,7 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -61,8 +67,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.pointerHoverIcon
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -75,11 +86,13 @@ import androidx.compose.ui.window.DialogProperties
 import com.example.model.CommunityAnimeGroup
 import com.example.model.CommunityReview
 import com.example.model.MemberStatus
+import com.example.model.MentionableUser
 import com.example.model.NotificationJumpTarget
 import com.example.model.SentimentCategory
 import com.example.model.StarRatingUtils
 import com.example.model.UnseenDiscussionAnime
 import com.example.model.groupCommunityReviewsByAnime
+import com.example.ui.components.AnimeDiscussionSection
 import com.example.ui.theme.AppSpacing
 import com.example.ui.theme.AppTheme
 import com.example.ui.theme.CormorantSerifFamily
@@ -610,8 +623,19 @@ fun CommunityScreen(
         if (selectedCommentsGroup != null) {
             val currentUserId = profile?.id.orEmpty()
             val myExistingReview = selectedCommentsGroup.reviews.firstOrNull { it.userId == currentUserId }
+            val unseenForGroup = unseenByAnimeId[selectedCommentsGroup.animeId]
             CommunityCommentsDialog(
                 group = selectedCommentsGroup,
+                viewModel = viewModel,
+                hasUnseenDiscussion = unseenForGroup != null,
+                highlightTarget = unseenForGroup?.let {
+                    NotificationJumpTarget(
+                        animeId = it.animeId,
+                        commentId = it.latestCommentId,
+                        threadId = it.latestThreadId,
+                        replyId = it.latestReplyId
+                    )
+                },
                 initialMyRatingStars = StarRatingUtils.rating10ToStars(myExistingReview?.rating),
                 initialMyNote = myExistingReview?.reviewNotes.orEmpty(),
                 isSubmitting = isSubmittingNote,
@@ -1038,9 +1062,13 @@ private fun UnseenTaggedAnimeCard(
  * joined community members for a single anime, with each contributor's Avatar, Username,
  * Star Rating, Sentiment Badge, Written Note, Like Toggle, and an inline Composer.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun CommunityCommentsDialog(
     group: CommunityAnimeGroup,
+    viewModel: AnimeViewModel,
+    hasUnseenDiscussion: Boolean = false,
+    highlightTarget: NotificationJumpTarget? = null,
     initialMyRatingStars: Float,
     initialMyNote: String,
     isSubmitting: Boolean = false,
@@ -1052,9 +1080,24 @@ internal fun CommunityCommentsDialog(
     onSubmitComment: (ratingStars: Float, noteText: String, onDone: () -> Unit) -> Unit
 ) {
     val colors = AppTheme.colors
+    val haptics = LocalHapticFeedback.current
     val avgStars = StarRatingUtils.rating10ToStars(group.averageRating10)
+    val discussionCount by viewModel.discussionTotalCount.collectAsState()
     var selectedStars by remember(group.animeId) { mutableFloatStateOf(initialMyRatingStars) }
     var noteDraft by remember(group.animeId) { mutableStateOf(initialMyNote) }
+    var activeTab by remember(group.animeId) { mutableStateOf(if (hasUnseenDiscussion) "discussion" else "notes") }
+    var pendingReplyUser by remember(group.animeId) { mutableStateOf<MentionableUser?>(null) }
+    var openNoteMenuId by remember(group.animeId) { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(group.animeId) {
+        viewModel.loadAnimeDiscussion(group.animeId, reset = true)
+    }
+
+    LaunchedEffect(group.animeId, activeTab) {
+        if (activeTab == "discussion") {
+            viewModel.markAnimeDiscussionSeen(group.animeId)
+        }
+    }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -1067,8 +1110,8 @@ internal fun CommunityCommentsDialog(
             modifier = Modifier
                 .fillMaxWidth()
                 .widthIn(max = 640.dp)
-                .heightIn(max = 760.dp)
-                .padding(horizontal = 16.dp, vertical = 20.dp)
+                .heightIn(max = 780.dp)
+                .padding(horizontal = 14.dp, vertical = 18.dp)
                 .testTag("community_comments_dialog")
         ) {
             Column(
@@ -1133,253 +1176,430 @@ internal fun CommunityCommentsDialog(
                     }
                 }
 
-                HorizontalDivider(color = colors.borderSubtle.copy(alpha = 0.65f))
-
-                // All Contributors' Notes & Ratings List
-                LazyColumn(
-                    modifier = Modifier
-                        .heightIn(max = 360.dp)
-                        .fillMaxWidth()
-                        .testTag("community_comments_list"),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                // Segmented Mode Switcher: Notes & Ratings vs Threaded Discussion & Replies
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(group.reviews, key = { it.id }) { rev ->
-                        val revStars = StarRatingUtils.rating10ToStars(rev.rating)
-                        val revSentiment = SentimentCategory.fromRating10(rev.rating)
-                        val revDate = formatCommunityTimestamp(rev.updatedAt)
-
-                        Surface(
-                            shape = RoundedCornerShape(18.dp),
-                            color = colors.cardBackground,
-                            border = BorderStroke(1.dp, colors.borderSubtle.copy(alpha = 0.65f)),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("community_comment_row_${rev.id}")
+                    val notesActive = activeTab == "notes"
+                    val discussionActive = activeTab == "discussion"
+                    Surface(
+                        shape = CircleShape,
+                        color = if (notesActive) colors.accentPrimary.copy(alpha = 0.2f) else colors.cardBackground,
+                        border = BorderStroke(
+                            1.dp,
+                            if (notesActive) colors.accentPrimary.copy(alpha = 0.7f) else colors.borderSubtle.copy(alpha = 0.7f)
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 40.dp)
+                            .clip(CircleShape)
+                            .clickable { activeTab = "notes" }
+                            .testTag("community_modal_tab_notes")
+                    ) {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp)
                         ) {
-                            Column(
-                                modifier = Modifier.padding(14.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        MemberAvatar(
-                                            avatarKey = rev.avatarKey,
-                                            avatarUrl = rev.avatarUrl,
-                                            username = rev.username,
-                                            size = 34.dp
-                                        )
-                                        Column {
-                                            Text(
-                                                text = rev.username,
-                                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                                                color = colors.textPrimary,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            if (revDate.isNotBlank()) {
-                                                Text(
-                                                    text = revDate,
-                                                    style = TabularNumSmall.copy(fontSize = 10.sp),
-                                                    color = colors.textMuted
-                                                )
-                                            }
-                                        }
-                                    }
-
-                                    Surface(
-                                        shape = CircleShape,
-                                        color = if (rev.likedByMe) colors.accentPrimary.copy(alpha = 0.2f) else colors.elevatedSurface.copy(alpha = 0.65f),
-                                        border = if (rev.likedByMe) BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.6f)) else null,
-                                        modifier = Modifier
-                                            .clip(CircleShape)
-                                            .clickable { onToggleLike(rev) }
-                                            .testTag("comment_like_${rev.id}")
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = if (rev.likedByMe) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
-                                                contentDescription = if (rev.likedByMe) "Unlike" else "Like",
-                                                tint = if (rev.likedByMe) colors.accentPrimary else colors.textSecondary,
-                                                modifier = Modifier.size(13.dp)
-                                            )
-                                            Text(
-                                                text = "${rev.likesCount}",
-                                                style = TabularNumSmall.copy(fontSize = 11.sp, fontWeight = FontWeight.SemiBold),
-                                                color = if (rev.likedByMe) colors.highlight else colors.textSecondary
-                                            )
-                                        }
-                                    }
-                                }
-
-                                if (revStars > 0f || revSentiment != null) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        if (revStars > 0f) {
-                                            StarRatingRow(stars = revStars, starSize = 14.dp, showNumeric = true)
-                                        }
-                                        if (revSentiment != null) {
-                                            SentimentPill(sentiment = revSentiment, solid = false, fullText = false)
-                                        }
-                                    }
-                                }
-
-                                if (rev.reviewNotes.isNotBlank()) {
-                                    Surface(
-                                        shape = RoundedCornerShape(14.dp),
-                                        color = colors.elevatedSurface.copy(alpha = if (colors.isDark) 0.55f else 0.72f),
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp),
-                                            horizontalArrangement = Arrangement.spacedBy(9.dp),
-                                            verticalAlignment = Alignment.Top
-                                        ) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .width(3.dp)
-                                                    .height(26.dp)
-                                                    .clip(CircleShape)
-                                                    .background(colors.accentPrimary.copy(alpha = 0.7f))
-                                            )
-                                            Text(
-                                                text = "“${rev.reviewNotes}”",
-                                                style = MaterialTheme.typography.bodyMedium.copy(
-                                                    fontStyle = FontStyle.Italic,
-                                                    lineHeight = 19.sp
-                                                ),
-                                                color = colors.textPrimary,
-                                                modifier = Modifier.weight(1f)
-                                            )
-                                        }
-                                    }
-                                } else if (revStars > 0f) {
-                                    Text(
-                                        text = "Rated ${StarRatingUtils.formatStars(revStars)}★ (no written note yet)",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = colors.textMuted
-                                    )
-                                }
+                            Text(
+                                text = "Notes & Ratings (${group.reviews.size})",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                color = if (notesActive) colors.highlight else colors.textSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                    Surface(
+                        shape = CircleShape,
+                        color = if (discussionActive) colors.accentPrimary.copy(alpha = 0.2f) else colors.cardBackground,
+                        border = BorderStroke(
+                            1.dp,
+                            if (discussionActive) colors.accentPrimary.copy(alpha = 0.7f) else colors.borderSubtle.copy(alpha = 0.7f)
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 40.dp)
+                            .clip(CircleShape)
+                            .clickable { activeTab = "discussion" }
+                            .testTag("community_modal_tab_discussion")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp)
+                        ) {
+                            if (hasUnseenDiscussion && !discussionActive) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFFEF4444))
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
                             }
+                            Text(
+                                text = if (discussionCount > 0) "Discussion ($discussionCount)" else "Discussion & Replies",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                color = if (discussionActive) colors.highlight else colors.textSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
                     }
                 }
 
                 HorizontalDivider(color = colors.borderSubtle.copy(alpha = 0.65f))
 
-                // Inline Composer: Add or update your note & rating in the same anime template
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                if (activeTab == "discussion") {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f, fill = false)
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState())
+                            .testTag("community_modal_discussion_container")
                     ) {
-                        Text(
-                            text = if (initialMyNote.isNotBlank() || initialMyRatingStars > 0f) "UPDATE YOUR NOTE & RATING" else "ADD YOUR NOTE & RATING",
-                            style = MicroUpperLabel.copy(fontSize = 9.sp, letterSpacing = 1.sp),
-                            color = colors.accentPrimary
+                        AnimeDiscussionSection(
+                            animeId = group.animeId,
+                            animeTitle = group.animeTitle,
+                            animeCover = group.animeCoverImage,
+                            viewModel = viewModel,
+                            highlightTarget = highlightTarget,
+                            initialReplyTargetUser = pendingReplyUser,
+                            onInitialReplyTargetConsumed = { pendingReplyUser = null }
                         )
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            (1..5).forEach { idx ->
-                                val active = selectedStars >= idx - 0.5f
-                                Icon(
-                                    imageVector = Icons.Filled.Star,
-                                    contentDescription = "Rate $idx stars",
-                                    tint = if (active) colors.accentPrimary else colors.textMuted.copy(alpha = 0.45f),
+                    }
+                } else {
+                    // All Contributors' Notes & Ratings List (with Reply button + Long-press / Right-click Reply menu)
+                    LazyColumn(
+                        modifier = Modifier
+                            .heightIn(max = 330.dp)
+                            .fillMaxWidth()
+                            .testTag("community_comments_list"),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        items(group.reviews, key = { it.id }) { rev ->
+                            val revStars = StarRatingUtils.rating10ToStars(rev.rating)
+                            val revSentiment = SentimentCategory.fromRating10(rev.rating)
+                            val revDate = formatCommunityTimestamp(rev.updatedAt)
+                            val triggerReplyToReviewer = {
+                                pendingReplyUser = MentionableUser(
+                                    id = rev.userId,
+                                    username = rev.username,
+                                    avatarKey = rev.avatarKey,
+                                    avatarUrl = rev.avatarUrl
+                                )
+                                activeTab = "discussion"
+                            }
+
+                            Box(modifier = Modifier.fillMaxWidth()) {
+                                Surface(
+                                    shape = RoundedCornerShape(18.dp),
+                                    color = colors.cardBackground,
+                                    border = BorderStroke(1.dp, colors.borderSubtle.copy(alpha = 0.65f)),
                                     modifier = Modifier
-                                        .size(22.dp)
-                                        .clip(CircleShape)
-                                        .clickable {
-                                            selectedStars = if (selectedStars == idx.toFloat()) idx - 0.5f else idx.toFloat()
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(18.dp))
+                                        .pointerInput(rev.id) {
+                                            awaitPointerEventScope {
+                                                while (true) {
+                                                    val event = awaitPointerEvent()
+                                                    if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) {
+                                                        openNoteMenuId = rev.id
+                                                    }
+                                                }
+                                            }
                                         }
+                                        .combinedClickable(
+                                            onClick = {},
+                                            onLongClick = {
+                                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                openNoteMenuId = rev.id
+                                            }
+                                        )
+                                        .testTag("community_comment_row_${rev.id}")
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(14.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                MemberAvatar(
+                                                    avatarKey = rev.avatarKey,
+                                                    avatarUrl = rev.avatarUrl,
+                                                    username = rev.username,
+                                                    size = 34.dp
+                                                )
+                                                Column {
+                                                    Text(
+                                                        text = rev.username,
+                                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                                                        color = colors.textPrimary,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                    if (revDate.isNotBlank()) {
+                                                        Text(
+                                                            text = revDate,
+                                                            style = TabularNumSmall.copy(fontSize = 10.sp),
+                                                            color = colors.textMuted
+                                                        )
+                                                    }
+                                                }
+                                            }
+
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                Surface(
+                                                    shape = CircleShape,
+                                                    color = colors.accentPrimary.copy(alpha = 0.14f),
+                                                    border = BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.45f)),
+                                                    modifier = Modifier
+                                                        .clip(CircleShape)
+                                                        .clickable { triggerReplyToReviewer() }
+                                                        .testTag("community_note_reply_${rev.id}")
+                                                ) {
+                                                    Row(
+                                                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = Icons.AutoMirrored.Filled.Reply,
+                                                            contentDescription = "Reply to ${rev.username}",
+                                                            tint = colors.accentPrimary,
+                                                            modifier = Modifier.size(13.dp)
+                                                        )
+                                                        Text(
+                                                            text = "Reply",
+                                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                                            color = colors.highlight
+                                                        )
+                                                    }
+                                                }
+
+                                                Surface(
+                                                    shape = CircleShape,
+                                                    color = if (rev.likedByMe) colors.accentPrimary.copy(alpha = 0.2f) else colors.elevatedSurface.copy(alpha = 0.65f),
+                                                    border = if (rev.likedByMe) BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.6f)) else null,
+                                                    modifier = Modifier
+                                                        .clip(CircleShape)
+                                                        .clickable { onToggleLike(rev) }
+                                                        .testTag("comment_like_${rev.id}")
+                                                ) {
+                                                    Row(
+                                                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = if (rev.likedByMe) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                                                            contentDescription = if (rev.likedByMe) "Unlike" else "Like",
+                                                            tint = if (rev.likedByMe) colors.accentPrimary else colors.textSecondary,
+                                                            modifier = Modifier.size(13.dp)
+                                                        )
+                                                        Text(
+                                                            text = "${rev.likesCount}",
+                                                            style = TabularNumSmall.copy(fontSize = 11.sp, fontWeight = FontWeight.SemiBold),
+                                                            color = if (rev.likedByMe) colors.highlight else colors.textSecondary
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        if (revStars > 0f || revSentiment != null) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                if (revStars > 0f) {
+                                                    StarRatingRow(stars = revStars, starSize = 14.dp, showNumeric = true)
+                                                }
+                                                if (revSentiment != null) {
+                                                    SentimentPill(sentiment = revSentiment, solid = false, fullText = false)
+                                                }
+                                            }
+                                        }
+
+                                        if (rev.reviewNotes.isNotBlank()) {
+                                            Surface(
+                                                shape = RoundedCornerShape(14.dp),
+                                                color = colors.elevatedSurface.copy(alpha = if (colors.isDark) 0.55f else 0.72f),
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp),
+                                                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                                                    verticalAlignment = Alignment.Top
+                                                ) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .width(3.dp)
+                                                            .height(26.dp)
+                                                            .clip(CircleShape)
+                                                            .background(colors.accentPrimary.copy(alpha = 0.7f))
+                                                    )
+                                                    Text(
+                                                        text = "“${rev.reviewNotes}”",
+                                                        style = MaterialTheme.typography.bodyMedium.copy(
+                                                            fontStyle = FontStyle.Italic,
+                                                            lineHeight = 19.sp
+                                                        ),
+                                                        color = colors.textPrimary,
+                                                        modifier = Modifier.weight(1f)
+                                                    )
+                                                }
+                                            }
+                                        } else if (revStars > 0f) {
+                                            Text(
+                                                text = "Rated ${StarRatingUtils.formatStars(revStars)}★ (no written note yet)",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = colors.textMuted
+                                            )
+                                        }
+                                    }
+                                }
+
+                                DropdownMenu(
+                                    expanded = openNoteMenuId == rev.id,
+                                    onDismissRequest = { openNoteMenuId = null },
+                                    containerColor = colors.backgroundSecondary
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text("Reply to @${rev.username}", color = colors.textPrimary) },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = Icons.AutoMirrored.Filled.Reply,
+                                                contentDescription = null,
+                                                tint = colors.accentPrimary,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        },
+                                        onClick = {
+                                            openNoteMenuId = null
+                                            triggerReplyToReviewer()
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(color = colors.borderSubtle.copy(alpha = 0.65f))
+
+                    // Inline Composer: Add or update your note & rating in the same anime template
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = if (initialMyNote.isNotBlank() || initialMyRatingStars > 0f) "UPDATE YOUR NOTE & RATING" else "ADD YOUR NOTE & RATING",
+                                style = MicroUpperLabel.copy(fontSize = 9.sp, letterSpacing = 1.sp),
+                                color = colors.accentPrimary
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                (1..5).forEach { idx ->
+                                    val active = selectedStars >= idx - 0.5f
+                                    Icon(
+                                        imageVector = Icons.Filled.Star,
+                                        contentDescription = "Rate $idx stars",
+                                        tint = if (active) colors.accentPrimary else colors.textMuted.copy(alpha = 0.45f),
+                                        modifier = Modifier
+                                            .size(22.dp)
+                                            .clip(CircleShape)
+                                            .clickable {
+                                                selectedStars = if (selectedStars == idx.toFloat()) idx - 0.5f else idx.toFloat()
+                                            }
+                                    )
+                                }
+                            }
+                        }
+
+                        if (!successMessage.isNullOrBlank()) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = colors.success.copy(alpha = 0.15f),
+                                border = BorderStroke(1.dp, colors.success.copy(alpha = 0.45f)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("community_comment_success_banner")
+                            ) {
+                                Text(
+                                    text = "✓ $successMessage",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                    color = colors.success,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
                                 )
                             }
                         }
-                    }
 
-                    if (!successMessage.isNullOrBlank()) {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = colors.success.copy(alpha = 0.15f),
-                            border = BorderStroke(1.dp, colors.success.copy(alpha = 0.45f)),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("community_comment_success_banner")
-                        ) {
-                            Text(
-                                text = "✓ $successMessage",
-                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
-                                color = colors.success,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                            )
-                        }
-                    }
-
-                    if (!errorMessage.isNullOrBlank()) {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = colors.error.copy(alpha = 0.14f),
-                            border = BorderStroke(1.dp, colors.error.copy(alpha = 0.45f)),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("community_comment_error_banner")
-                        ) {
-                            Text(
-                                text = errorMessage,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = colors.error,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                            )
-                        }
-                    }
-
-                    OutlinedTextField(
-                        value = noteDraft,
-                        onValueChange = { noteDraft = it },
-                        enabled = !isSubmitting,
-                        placeholder = { Text("Share your thoughts on ${group.animeTitle}...", fontSize = 13.sp) },
-                        maxLines = 3,
-                        shape = RoundedCornerShape(16.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = colors.accentPrimary,
-                            unfocusedBorderColor = colors.borderSubtle,
-                            focusedTextColor = colors.textPrimary,
-                            unfocusedTextColor = colors.textPrimary
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("community_comment_input")
-                    )
-
-                    AppPrimaryButton(
-                        text = when {
-                            isSubmitting -> "Posting..."
-                            initialMyNote.isNotBlank() || initialMyRatingStars > 0f -> "Update Note in Community"
-                            else -> "Post Note to Community"
-                        },
-                        enabled = !isSubmitting && (noteDraft.trim().isNotEmpty() || selectedStars > 0f),
-                        onClick = {
-                            onSubmitComment(selectedStars, noteDraft) {
-                                noteDraft = ""
+                        if (!errorMessage.isNullOrBlank()) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = colors.error.copy(alpha = 0.14f),
+                                border = BorderStroke(1.dp, colors.error.copy(alpha = 0.45f)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("community_comment_error_banner")
+                            ) {
+                                Text(
+                                    text = errorMessage,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colors.error,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                                )
                             }
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("community_comment_submit_button")
-                    )
+                        }
+
+                        OutlinedTextField(
+                            value = noteDraft,
+                            onValueChange = { noteDraft = it },
+                            enabled = !isSubmitting,
+                            placeholder = { Text("Share your thoughts on ${group.animeTitle}...", fontSize = 13.sp) },
+                            maxLines = 3,
+                            shape = RoundedCornerShape(16.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = colors.accentPrimary,
+                                unfocusedBorderColor = colors.borderSubtle,
+                                focusedTextColor = colors.textPrimary,
+                                unfocusedTextColor = colors.textPrimary
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("community_comment_input")
+                        )
+
+                        AppPrimaryButton(
+                            text = when {
+                                isSubmitting -> "Posting..."
+                                initialMyNote.isNotBlank() || initialMyRatingStars > 0f -> "Update Note in Community"
+                                else -> "Post Note to Community"
+                            },
+                            enabled = !isSubmitting && (noteDraft.trim().isNotEmpty() || selectedStars > 0f),
+                            onClick = {
+                                onSubmitComment(selectedStars, noteDraft) {
+                                    noteDraft = ""
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("community_comment_submit_button")
+                        )
+                    }
                 }
             }
         }
