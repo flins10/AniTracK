@@ -470,8 +470,8 @@ BEGIN
         'mention_comment',
         p_anime_id,
         v_comment_id,
-        NULL,
-        NULL,
+        NULL::UUID,
+        NULL::UUID,
         v_preview
     FROM public._sync_content_mentions(v_comment_id, 'comment', p_anime_id, v_uid, v_clean, p_tagged_user_ids) m
     WHERE m.mentioned_user_id <> v_uid
