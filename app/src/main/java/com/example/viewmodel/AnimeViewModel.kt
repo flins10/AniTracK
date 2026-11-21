@@ -138,6 +138,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // Discussion Comments, Mentions & Threaded Replies State
+    private var activeDiscussionAnimeId: Int? = null
     private val _discussionComments = MutableStateFlow<List<AnimeCommentItem>>(emptyList())
     val discussionComments = _discussionComments.asStateFlow()
 
@@ -2574,12 +2575,23 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun loadAnimeDiscussion(animeId: Int, reset: Boolean = true) {
         val session = _authSession.value ?: return
+        val switchingAnime = activeDiscussionAnimeId != animeId
+        if (reset) {
+            activeDiscussionAnimeId = animeId
+            if (switchingAnime) {
+                _discussionComments.value = emptyList()
+                _discussionTotalCount.value = 0
+                _discussionHasMore.value = false
+                _discussionErrorMessage.value = null
+                _discussionSuccessMessage.value = null
+            }
+        }
         viewModelScope.launch {
             _isDiscussionLoading.value = true
             val offset = if (reset) 0 else _discussionComments.value.size
             supabaseDiscussion.fetchAnimeDiscussionPage(session, animeId, limit = 15, offset = offset)
                 .onSuccess { page ->
-                    if (_selectedAnimeId.value == animeId) {
+                    if (activeDiscussionAnimeId == animeId) {
                         _discussionTotalCount.value = page.totalComments
                         _discussionHasMore.value = page.hasMore
                         _discussionComments.value = if (reset) {
@@ -2594,7 +2606,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 .onFailure { err ->
-                    if (reset && _selectedAnimeId.value == animeId) {
+                    if (reset && activeDiscussionAnimeId == animeId) {
                         _discussionErrorMessage.value = err.message
                     }
                 }

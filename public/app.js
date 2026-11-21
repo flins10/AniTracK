@@ -2744,13 +2744,29 @@ function applyPendingDiscussionHighlight(animeId) {
 async function loadAnimeDiscussion(animeId, reset = true) {
   const aid = Number(animeId);
   if (!aid) return;
-  const offset = reset ? 0 : state.discussion.comments.length;
+  const switchingAnime = Number(state.discussion.animeId) !== aid;
   if (reset) {
+    state.discussion.animeId = aid;
+    if (switchingAnime) {
+      state.discussion.comments = [];
+      state.discussion.totalComments = 0;
+      state.discussion.hasMore = false;
+      state.discussion.draft = '';
+      state.discussion.commentTags = [];
+      state.discussion.activeReplyTarget = null;
+      state.discussion.replyDraft = '';
+      state.discussion.replyTags = [];
+      state.discussion.editingCommentId = null;
+      state.discussion.editingReplyId = null;
+      state.discussion.contextMenu = null;
+      state.discussion.success = '';
+    }
     state.discussion.loading = true;
     state.discussion.error = '';
   } else {
     state.discussion.loadingMore = true;
   }
+  const offset = reset ? 0 : state.discussion.comments.length;
   renderApp();
   try {
     const data = await supabaseRequest('/rest/v1/rpc/get_anime_discussion_page', 'POST', {
@@ -5884,7 +5900,7 @@ function renderToastOverlay() {
 }
 
 function renderModals() {
-  const overlays = `${renderContextMenuOverlay()}${renderToastOverlay()}`;
+  let overlays = `${renderContextMenuOverlay()}${renderToastOverlay()}`;
 
   if (state.confirmRemoveHomeAnime) {
     const target = state.confirmRemoveHomeAnime;
@@ -6013,7 +6029,7 @@ function renderModals() {
       const avgStarsNum = grp.average_rating10 ? rating10ToStars(grp.average_rating10) || 0 : 0;
       const draftStars = Number(state.communityCommentDraftStars || 0);
       const modalTab = state.communityCommentsTab === 'discussion' ? 'discussion' : 'notes';
-      const hasUnseen = Boolean(state.unseenDiscussionByAnimeId && state.unseenDiscussionByAnimeId[Number(grp.anime_id)]);
+      const hasUnseen = (state.notifications.unseenAnime || []).some((u) => Number(u.anime_id) === Number(grp.anime_id));
       const loadedForThisAnime = Number(state.discussion.animeId) === Number(grp.anime_id);
       const discCountLabel = loadedForThisAnime && state.discussion.totalComments > 0
         ? `Discussion (${state.discussion.totalComments})`
@@ -6918,6 +6934,7 @@ function bindAppEvents() {
 
   document.querySelectorAll('[data-open-detail]').forEach((el) => {
     el.onclick = (e) => {
+      if (e.target.closest('[data-open-comments]')) return;
       e.stopPropagation();
       if (state._suppressNextCardClick) {
         state._suppressNextCardClick = false;
@@ -7298,7 +7315,7 @@ function bindAppEvents() {
       e.stopPropagation();
       const aid = Number(el.getAttribute('data-open-comments'));
       const existing = state.vault.find((v) => Number(v.animeId) === aid);
-      const hasUnseen = Boolean(state.unseenDiscussionByAnimeId && state.unseenDiscussionByAnimeId[aid]);
+      const hasUnseen = (state.notifications.unseenAnime || []).some((u) => Number(u.anime_id) === aid);
       state.communityCommentsAnimeId = aid;
       state.communityCommentsTab = hasUnseen ? 'discussion' : 'notes';
       state.pendingCommunityReplyUser = null;
@@ -7310,7 +7327,7 @@ function bindAppEvents() {
       renderApp();
       loadAnimeDiscussion(aid, true).then(() => applyPendingCommunityReplyTarget());
       if (hasUnseen && state.session) {
-        markAnimeNotificationsRead(aid);
+        markAnimeDiscussionSeen(aid);
       }
     };
   });
@@ -7329,7 +7346,7 @@ function bindAppEvents() {
           applyPendingCommunityReplyTarget();
         }
         if (state.session) {
-          markAnimeNotificationsRead(aid);
+          markAnimeDiscussionSeen(aid);
         }
       }
     };
@@ -7346,7 +7363,7 @@ function bindAppEvents() {
       avatar_key: avatarKey || 'avatar_1'
     };
     renderApp();
-    markAnimeNotificationsRead(aid);
+    markAnimeDiscussionSeen(aid);
     if (Number(state.discussion.animeId) === aid && !state.discussion.loading) {
       applyPendingCommunityReplyTarget();
     } else {
