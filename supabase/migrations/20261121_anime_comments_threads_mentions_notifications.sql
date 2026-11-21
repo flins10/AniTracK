@@ -60,9 +60,12 @@ CREATE TABLE IF NOT EXISTS public.content_mentions (
     anime_id INTEGER NOT NULL REFERENCES public.anime(anilist_id) ON DELETE CASCADE,
     mentioned_user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
     mentioned_username TEXT NOT NULL,
-    occurrence_position INTEGER NOT NULL CHECK (occurrence_position >= 0),
+    occurrence_position INTEGER NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE public.content_mentions
+    DROP CONSTRAINT IF EXISTS content_mentions_occurrence_position_check;
 
 CREATE INDEX IF NOT EXISTS idx_content_mentions_lookup
     ON public.content_mentions (content_type, content_id, occurrence_position ASC);
@@ -173,12 +176,16 @@ CREATE POLICY user_notifications_delete_policy ON public.user_notifications
 -- 7. INTERNAL HELPER: EXTRACT, VALIDATE & STORE @MENTIONS (MAX 5 ENTRIES,
 --    ALLOWING DUPLICATES, PRESERVING OCCURRENCE POSITION)
 -- ============================================================================
+DROP FUNCTION IF EXISTS public._sync_content_mentions(UUID, TEXT, INTEGER, UUID, TEXT);
+DROP FUNCTION IF EXISTS public._sync_content_mentions(UUID, TEXT, INTEGER, UUID, TEXT, UUID[]);
+
 CREATE OR REPLACE FUNCTION public._sync_content_mentions(
     p_content_id UUID,
     p_content_type TEXT,
     p_anime_id INTEGER,
     p_author_id UUID,
-    p_content TEXT
+    p_content TEXT,
+    p_tagged_user_ids UUID[] DEFAULT NULL
 )
 RETURNS TABLE (
     mentioned_user_id UUID,
@@ -199,20 +206,65 @@ DECLARE
     v_profile_id UUID;
     v_profile_username TEXT;
     v_total_tag_entries INTEGER := 0;
+    v_tag_uid UUID;
+    v_explicit_idx INTEGER := 0;
 BEGIN
     DELETE FROM public.content_mentions cm
     WHERE cm.content_id = p_content_id
       AND cm.content_type = p_content_type;
 
+    -- 1. Process explicit user tags selected via @ autocomplete (not written into text)
+    IF p_tagged_user_ids IS NOT NULL AND array_length(p_tagged_user_ids, 1) IS NOT NULL THEN
+        FOREACH v_tag_uid IN ARRAY p_tagged_user_ids LOOP
+            IF v_tag_uid IS NULL THEN
+                CONTINUE;
+            END IF;
+            v_total_tag_entries := v_total_tag_entries + 1;
+            IF v_total_tag_entries > 5 THEN
+                RAISE EXCEPTION 'Maximum 5 user tags allowed per comment or reply.';
+            END IF;
+
+            SELECT p.id, p.username
+            INTO v_profile_id, v_profile_username
+            FROM public.profiles p
+            WHERE p.id = v_tag_uid
+            LIMIT 1;
+
+            IF v_profile_id IS NOT NULL AND v_profile_id <> p_author_id THEN
+                v_explicit_idx := v_explicit_idx + 1;
+                INSERT INTO public.content_mentions (
+                    content_id,
+                    content_type,
+                    anime_id,
+                    mentioned_user_id,
+                    mentioned_username,
+                    occurrence_position
+                ) VALUES (
+                    p_content_id,
+                    p_content_type,
+                    p_anime_id,
+                    v_profile_id,
+                    v_profile_username,
+                    -v_explicit_idx
+                );
+
+                mentioned_user_id := v_profile_id;
+                mentioned_username := v_profile_username;
+                occurrence_position := -v_explicit_idx;
+                RETURN NEXT;
+            END IF;
+        END LOOP;
+    END IF;
+
     IF v_len = 0 THEN
         RETURN;
     END IF;
 
+    -- 2. Also support any inline @username handles if manually typed
     WHILE v_pos <= v_len LOOP
         v_ch := substr(p_content, v_pos, 1);
         IF v_ch = '@' THEN
             v_prev := CASE WHEN v_pos > 1 THEN substr(p_content, v_pos - 1, 1) ELSE '' END;
-            -- Only treat '@' as mention trigger when at start or preceded by non-word character
             IF v_pos = 1 OR v_prev !~ '[A-Za-z0-9_]' THEN
                 v_end := v_pos + 1;
                 WHILE v_end <= v_len AND substr(p_content, v_end, 1) ~ '[A-Za-z0-9_.-]' LOOP
@@ -223,7 +275,7 @@ BEGIN
                 IF char_length(v_handle) BETWEEN 2 AND 32 THEN
                     v_total_tag_entries := v_total_tag_entries + 1;
                     IF v_total_tag_entries > 5 THEN
-                        RAISE EXCEPTION 'Maximum 5 @mentions allowed per comment or reply.';
+                        RAISE EXCEPTION 'Maximum 5 user tags allowed per comment or reply.';
                     END IF;
 
                     SELECT p.id, p.username
@@ -232,7 +284,6 @@ BEGIN
                     WHERE LOWER(p.username) = LOWER(v_handle)
                     LIMIT 1;
 
-                    -- Store valid registered mentions; skip self-mentions
                     IF v_profile_id IS NOT NULL AND v_profile_id <> p_author_id THEN
                         INSERT INTO public.content_mentions (
                             content_id,
@@ -265,7 +316,7 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public._sync_content_mentions(UUID, TEXT, INTEGER, UUID, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public._sync_content_mentions(UUID, TEXT, INTEGER, UUID, TEXT, UUID[]) FROM PUBLIC;
 
 -- ============================================================================
 -- 8. RPC: USERNAME AUTOCOMPLETE FOR @MENTIONS (EXCLUDES SELF)
@@ -329,11 +380,15 @@ GRANT EXECUTE ON FUNCTION public.search_mentionable_users(TEXT, INTEGER) TO auth
 -- 9. RPC: CREATE ANIME COMMENT (ATOMIC: ENSURES ANIME STUB + COMMENT + MENTIONS
 --    + DEDUPLICATED MENTION NOTIFICATIONS)
 -- ============================================================================
+DROP FUNCTION IF EXISTS public.create_anime_comment(INTEGER, TEXT, TEXT, TEXT);
+DROP FUNCTION IF EXISTS public.create_anime_comment(INTEGER, TEXT, TEXT, TEXT, UUID[]);
+
 CREATE OR REPLACE FUNCTION public.create_anime_comment(
     p_anime_id INTEGER,
     p_content TEXT,
     p_anime_title TEXT DEFAULT NULL,
-    p_anime_cover TEXT DEFAULT NULL
+    p_anime_cover TEXT DEFAULT NULL,
+    p_tagged_user_ids UUID[] DEFAULT NULL
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -418,7 +473,7 @@ BEGIN
         NULL,
         NULL,
         v_preview
-    FROM public._sync_content_mentions(v_comment_id, 'comment', p_anime_id, v_uid, v_clean) m
+    FROM public._sync_content_mentions(v_comment_id, 'comment', p_anime_id, v_uid, v_clean, p_tagged_user_ids) m
     WHERE m.mentioned_user_id <> v_uid
     ON CONFLICT DO NOTHING;
 
@@ -462,14 +517,18 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.create_anime_comment(INTEGER, TEXT, TEXT, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.create_anime_comment(INTEGER, TEXT, TEXT, TEXT, UUID[]) TO authenticated;
 
 -- ============================================================================
 -- 10. RPC: UPDATE & DELETE ANIME COMMENT (STRICT OWNER CHECK)
 -- ============================================================================
+DROP FUNCTION IF EXISTS public.update_anime_comment(UUID, TEXT);
+DROP FUNCTION IF EXISTS public.update_anime_comment(UUID, TEXT, UUID[]);
+
 CREATE OR REPLACE FUNCTION public.update_anime_comment(
     p_comment_id UUID,
-    p_content TEXT
+    p_content TEXT,
+    p_tagged_user_ids UUID[] DEFAULT NULL
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -518,7 +577,7 @@ BEGIN
         v_anime_id,
         p_comment_id,
         left(v_clean, 160)
-    FROM public._sync_content_mentions(p_comment_id, 'comment', v_anime_id, v_uid, v_clean) m
+    FROM public._sync_content_mentions(p_comment_id, 'comment', v_anime_id, v_uid, v_clean, p_tagged_user_ids) m
     WHERE m.mentioned_user_id <> v_uid
     ON CONFLICT DO NOTHING;
 
@@ -547,7 +606,7 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.update_anime_comment(UUID, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.update_anime_comment(UUID, TEXT, UUID[]) TO authenticated;
 
 CREATE OR REPLACE FUNCTION public.delete_anime_comment(
     p_comment_id UUID
@@ -611,10 +670,14 @@ GRANT EXECUTE ON FUNCTION public.delete_anime_comment(UUID) TO authenticated;
 -- 11. RPC: CREATE THREAD REPLY (CONCURRENCY-SAFE TARGET-USER THREAD CREATION/
 --     CONTINUATION + MAX 5 MENTIONS + AUTOMATIC THREAD & MENTION NOTIFICATIONS)
 -- ============================================================================
+DROP FUNCTION IF EXISTS public.create_thread_reply(UUID, UUID, TEXT);
+DROP FUNCTION IF EXISTS public.create_thread_reply(UUID, UUID, TEXT, UUID[]);
+
 CREATE OR REPLACE FUNCTION public.create_thread_reply(
     p_comment_id UUID,
     p_target_user_id UUID,
-    p_content TEXT
+    p_content TEXT,
+    p_tagged_user_ids UUID[] DEFAULT NULL
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -737,7 +800,7 @@ BEGIN
         v_thread_id,
         v_reply_id,
         v_preview
-    FROM public._sync_content_mentions(v_reply_id, 'reply', v_anime_id, v_uid, v_clean) m
+    FROM public._sync_content_mentions(v_reply_id, 'reply', v_anime_id, v_uid, v_clean, p_tagged_user_ids) m
     WHERE m.mentioned_user_id <> v_uid
     ON CONFLICT DO NOTHING;
 
@@ -783,14 +846,18 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.create_thread_reply(UUID, UUID, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.create_thread_reply(UUID, UUID, TEXT, UUID[]) TO authenticated;
 
 -- ============================================================================
 -- 12. RPC: UPDATE & DELETE THREAD REPLY (STRICT OWNER CHECK)
 -- ============================================================================
+DROP FUNCTION IF EXISTS public.update_thread_reply(UUID, TEXT);
+DROP FUNCTION IF EXISTS public.update_thread_reply(UUID, TEXT, UUID[]);
+
 CREATE OR REPLACE FUNCTION public.update_thread_reply(
     p_reply_id UUID,
-    p_content TEXT
+    p_content TEXT,
+    p_tagged_user_ids UUID[] DEFAULT NULL
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -851,7 +918,7 @@ BEGIN
         v_thread_id,
         p_reply_id,
         left(v_clean, 160)
-    FROM public._sync_content_mentions(p_reply_id, 'reply', v_anime_id, v_uid, v_clean) m
+    FROM public._sync_content_mentions(p_reply_id, 'reply', v_anime_id, v_uid, v_clean, p_tagged_user_ids) m
     WHERE m.mentioned_user_id <> v_uid
     ON CONFLICT DO NOTHING;
 
@@ -880,7 +947,7 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.update_thread_reply(UUID, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.update_thread_reply(UUID, TEXT, UUID[]) TO authenticated;
 
 CREATE OR REPLACE FUNCTION public.delete_thread_reply(
     p_reply_id UUID
@@ -1226,6 +1293,123 @@ END;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.mark_all_notifications_read() TO authenticated;
+
+-- ============================================================================
+-- 14B. RPCs: COMMUNITY RED DOT UNSEEN ANIME SUMMARY & MARK ANIME READ
+--      Red dot stays visible on Community & on each tagged anime card until
+--      the user opens that specific anime's discussion messages.
+-- ============================================================================
+CREATE OR REPLACE FUNCTION public.get_unseen_discussion_anime()
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_uid UUID := auth.uid();
+    v_total INTEGER := 0;
+    v_anime JSONB := '[]'::jsonb;
+BEGIN
+    IF v_uid IS NULL THEN
+        RETURN jsonb_build_object('total_unseen', 0, 'anime', '[]'::jsonb);
+    END IF;
+
+    SELECT COUNT(*)::INTEGER
+    INTO v_total
+    FROM public.user_notifications
+    WHERE recipient_user_id = v_uid
+      AND is_read = FALSE;
+
+    SELECT COALESCE(
+        jsonb_agg(entry_obj ORDER BY latest_created_at DESC),
+        '[]'::jsonb
+    )
+    INTO v_anime
+    FROM (
+        SELECT
+            grouped.latest_created_at,
+            jsonb_build_object(
+                'anime_id', grouped.anime_id,
+                'anime_title', COALESCE(NULLIF(a.title_english, ''), NULLIF(a.title_romaji, ''), 'Anime #' || grouped.anime_id::TEXT),
+                'anime_cover_image', COALESCE(a.cover_image, ''),
+                'unseen_count', grouped.unseen_count,
+                'latest_comment_id', latest.comment_id,
+                'latest_thread_id', latest.thread_id,
+                'latest_reply_id', latest.reply_id,
+                'latest_sender_username', COALESCE(sp.username, 'Member'),
+                'latest_notification_type', latest.notification_type,
+                'latest_preview', latest.preview_text,
+                'latest_created_at', grouped.latest_created_at
+            ) AS entry_obj
+        FROM (
+            SELECT
+                anime_id,
+                COUNT(*)::INTEGER AS unseen_count,
+                MAX(created_at) AS latest_created_at
+            FROM public.user_notifications
+            WHERE recipient_user_id = v_uid
+              AND is_read = FALSE
+            GROUP BY anime_id
+        ) grouped
+        LEFT JOIN LATERAL (
+            SELECT n.*
+            FROM public.user_notifications n
+            WHERE n.recipient_user_id = v_uid
+              AND n.anime_id = grouped.anime_id
+              AND n.is_read = FALSE
+            ORDER BY n.created_at DESC
+            LIMIT 1
+        ) latest ON TRUE
+        LEFT JOIN public.profiles sp ON sp.id = latest.sender_user_id
+        LEFT JOIN public.anime a ON a.anilist_id = grouped.anime_id
+    ) sub;
+
+    RETURN jsonb_build_object(
+        'total_unseen', COALESCE(v_total, 0),
+        'anime', v_anime
+    );
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_unseen_discussion_anime() TO authenticated;
+
+CREATE OR REPLACE FUNCTION public.mark_anime_notifications_read(
+    p_anime_id INTEGER
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_uid UUID := auth.uid();
+    v_remaining INTEGER := 0;
+BEGIN
+    IF v_uid IS NULL THEN
+        RAISE EXCEPTION 'Authentication required.';
+    END IF;
+
+    UPDATE public.user_notifications
+    SET is_read = TRUE
+    WHERE recipient_user_id = v_uid
+      AND anime_id = p_anime_id
+      AND is_read = FALSE;
+
+    SELECT COUNT(*)::INTEGER
+    INTO v_remaining
+    FROM public.user_notifications
+    WHERE recipient_user_id = v_uid
+      AND is_read = FALSE;
+
+    RETURN jsonb_build_object(
+        'updated', TRUE,
+        'anime_id', p_anime_id,
+        'unread_count', COALESCE(v_remaining, 0)
+    );
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.mark_anime_notifications_read(INTEGER) TO authenticated;
 
 -- ============================================================================
 -- 15. EXTEND delete_my_account() SAFELY TO CLEAN NEW DISCUSSION TABLES

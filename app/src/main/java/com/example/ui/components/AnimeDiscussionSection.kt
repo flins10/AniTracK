@@ -2,11 +2,15 @@ package com.example.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -20,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.AlternateEmail
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
@@ -27,7 +32,10 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -50,8 +58,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.pointerHoverIcon
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -66,6 +79,7 @@ import androidx.compose.ui.unit.sp
 import com.example.model.AnimeCommentItem
 import com.example.model.CommentReplyItem
 import com.example.model.CommentReplyThread
+import com.example.model.ContentMention
 import com.example.model.MentionableUser
 import com.example.model.NotificationJumpTarget
 import com.example.ui.screens.formatCommunityTimestamp
@@ -79,6 +93,7 @@ import com.example.ui.widgets.MemberAvatar
 import com.example.util.DiscussionRules
 import com.example.viewmodel.AnimeViewModel
 
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 fun AnimeDiscussionSection(
     animeId: Int,
@@ -89,6 +104,7 @@ fun AnimeDiscussionSection(
     modifier: Modifier = Modifier
 ) {
     val colors = AppTheme.colors
+    val haptics = LocalHapticFeedback.current
     val profile by viewModel.userProfile.collectAsState()
     val comments by viewModel.discussionComments.collectAsState()
     val totalComments by viewModel.discussionTotalCount.collectAsState()
@@ -100,16 +116,19 @@ fun AnimeDiscussionSection(
     val mentionSuggestions by viewModel.mentionSuggestions.collectAsState()
 
     var commentDraft by remember(animeId) { mutableStateOf(TextFieldValue("")) }
+    var selectedCommentTags by remember(animeId) { mutableStateOf<List<MentionableUser>>(emptyList()) }
     var activeReplyTarget by remember(animeId) { mutableStateOf<ReplyComposerTarget?>(null) }
     var replyDraft by remember(animeId) { mutableStateOf(TextFieldValue("")) }
+    var selectedReplyTags by remember(animeId) { mutableStateOf<List<MentionableUser>>(emptyList()) }
     var editingCommentId by remember(animeId) { mutableStateOf<String?>(null) }
     var editingCommentDraft by remember(animeId) { mutableStateOf("") }
     var editingReplyId by remember(animeId) { mutableStateOf<String?>(null) }
     var editingReplyDraft by remember(animeId) { mutableStateOf("") }
     var activeAutocompleteTarget by remember(animeId) { mutableStateOf<String?>(null) } // "comment" or "reply"
+    var openCommentMenuId by remember(animeId) { mutableStateOf<String?>(null) }
     val expandedThreads = remember(animeId) { mutableStateMapOf<String, Boolean>() }
 
-    // Auto-expand the target thread when jumping from a notification
+    // Auto-expand the target thread when jumping from an unseen red-dot discussion
     LaunchedEffect(highlightTarget, comments) {
         val targetThreadId = highlightTarget?.threadId
         if (!targetThreadId.isNullOrBlank()) {
@@ -117,8 +136,8 @@ fun AnimeDiscussionSection(
         }
     }
 
-    val commentValidation = remember(commentDraft.text) {
-        DiscussionRules.validateContentMentions(commentDraft.text)
+    val commentValidation = remember(commentDraft.text, selectedCommentTags) {
+        DiscussionRules.validateContentMentions(commentDraft.text, explicitTagCount = selectedCommentTags.size)
     }
 
     AppCard(
@@ -261,7 +280,7 @@ fun AnimeDiscussionSection(
                         enabled = !isSubmitting,
                         placeholder = {
                             Text(
-                                text = "Join the discussion... Type @username to tag (max 5)",
+                                text = "Write a comment... Type @ + first letter to tag users (max 5)",
                                 fontSize = 13.sp,
                                 color = colors.textMuted
                             )
@@ -279,19 +298,30 @@ fun AnimeDiscussionSection(
                             .testTag("discussion_comment_input")
                     )
 
+                    if (selectedCommentTags.isNotEmpty()) {
+                        SelectedTagChipsRow(
+                            tags = selectedCommentTags,
+                            onRemoveAt = { idx ->
+                                selectedCommentTags = selectedCommentTags.filterIndexed { i, _ -> i != idx }
+                            }
+                        )
+                    }
+
                     if (activeAutocompleteTarget == "comment" && mentionSuggestions.isNotEmpty()) {
                         MentionAutocompletePanel(
                             suggestions = mentionSuggestions,
                             onSelectUser = { user ->
                                 val active = DiscussionRules.detectActiveMentionQuery(commentDraft.text, commentDraft.selection.end)
                                 if (active != null) {
-                                    val (updated, cursor) = DiscussionRules.insertMentionAutocomplete(
+                                    val (stripped, cursor) = DiscussionRules.stripMentionTrigger(
                                         text = commentDraft.text,
                                         atSignIndex = active.first,
-                                        cursorPosition = commentDraft.selection.end,
-                                        selectedUsername = user.username
+                                        cursorPosition = commentDraft.selection.end
                                     )
-                                    commentDraft = TextFieldValue(updated, TextRange(cursor))
+                                    commentDraft = TextFieldValue(stripped, TextRange(cursor))
+                                }
+                                if (commentValidation.totalEntries < DiscussionRules.MAX_MENTIONS_PER_CONTENT) {
+                                    selectedCommentTags = selectedCommentTags + user
                                 }
                                 activeAutocompleteTarget = null
                                 viewModel.clearMentionSuggestions()
@@ -306,7 +336,7 @@ fun AnimeDiscussionSection(
                     ) {
                         val overLimit = commentValidation.totalEntries > DiscussionRules.MAX_MENTIONS_PER_CONTENT
                         Text(
-                            text = "${commentValidation.totalEntries}/${DiscussionRules.MAX_MENTIONS_PER_CONTENT} @mentions",
+                            text = "${commentValidation.totalEntries}/${DiscussionRules.MAX_MENTIONS_PER_CONTENT} tagged",
                             style = TabularNumSmall.copy(fontSize = 11.sp),
                             color = if (overLimit) colors.error else colors.textMuted
                         )
@@ -323,9 +353,11 @@ fun AnimeDiscussionSection(
                                         animeId = animeId,
                                         animeTitle = animeTitle,
                                         animeCover = animeCover,
-                                        content = commentDraft.text
+                                        content = commentDraft.text,
+                                        taggedUserIds = selectedCommentTags.map { it.id }
                                     ) {
                                         commentDraft = TextFieldValue("")
+                                        selectedCommentTags = emptyList()
                                         activeAutocompleteTarget = null
                                         viewModel.clearMentionSuggestions()
                                     }
@@ -411,305 +443,429 @@ fun AnimeDiscussionSection(
                         val isHighlightedComment = highlightTarget?.commentId == comment.id && highlightTarget.replyId == null
                         val isOwner = profile?.id == comment.userId
                         val isEditingThis = editingCommentId == comment.id
+                        val existingAuthorThread = comment.threads.firstOrNull { it.targetUserId == comment.userId }
 
-                        Surface(
-                            shape = RoundedCornerShape(18.dp),
-                            color = if (isHighlightedComment) colors.accentPrimary.copy(alpha = 0.12f) else colors.elevatedSurface.copy(alpha = 0.42f),
-                            border = BorderStroke(
-                                1.dp,
-                                if (isHighlightedComment) colors.accentPrimary else colors.borderSubtle.copy(alpha = 0.6f)
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("discussion_comment_card_${comment.id}")
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(14.dp),
-                                verticalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                // Author header
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        MemberAvatar(
-                                            avatarKey = comment.avatarKey,
-                                            avatarUrl = comment.avatarUrl,
-                                            username = comment.username,
-                                            size = 34.dp
-                                        )
-                                        Column {
-                                            Text(
-                                                text = "@${comment.username}",
-                                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                                                color = colors.textPrimary,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            val editedLabel = if (comment.updatedAt.isNotBlank() && comment.updatedAt != comment.createdAt) " • edited" else ""
-                                            Text(
-                                                text = "${formatCommunityTimestamp(comment.createdAt)}$editedLabel",
-                                                style = TabularNumSmall.copy(fontSize = 10.sp),
-                                                color = colors.textMuted
-                                            )
-                                        }
-                                    }
-
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        if (profile != null) {
-                                            TextButton(
-                                                onClick = {
-                                                    activeReplyTarget = ReplyComposerTarget(
-                                                        commentId = comment.id,
-                                                        targetUserId = comment.userId,
-                                                        targetUsername = comment.username
-                                                    )
-                                                    replyDraft = TextFieldValue("")
-                                                },
-                                                modifier = Modifier.testTag("reply_to_comment_${comment.id}")
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.AutoMirrored.Filled.Reply,
-                                                    contentDescription = "Reply to ${comment.username}",
-                                                    tint = colors.accentPrimary,
-                                                    modifier = Modifier.size(15.dp)
-                                                )
-                                                Spacer(modifier = Modifier.width(3.dp))
-                                                Text("Reply", style = MaterialTheme.typography.labelSmall, color = colors.accentPrimary)
-                                            }
-                                        }
-                                        if (isOwner && !isEditingThis) {
-                                            IconButton(
-                                                onClick = {
-                                                    editingCommentId = comment.id
-                                                    editingCommentDraft = comment.content
-                                                },
-                                                modifier = Modifier.size(34.dp)
-                                            ) {
-                                                Icon(Icons.Filled.Edit, contentDescription = "Edit comment", tint = colors.textSecondary, modifier = Modifier.size(15.dp))
-                                            }
-                                            IconButton(
-                                                onClick = { viewModel.deleteAnimeComment(comment.id) },
-                                                modifier = Modifier.size(34.dp)
-                                            ) {
-                                                Icon(Icons.Filled.DeleteOutline, contentDescription = "Delete comment", tint = colors.error, modifier = Modifier.size(16.dp))
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // Comment body or inline edit field
-                                if (isEditingThis) {
-                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        OutlinedTextField(
-                                            value = editingCommentDraft,
-                                            onValueChange = { editingCommentDraft = it },
-                                            maxLines = 4,
-                                            shape = RoundedCornerShape(14.dp),
-                                            modifier = Modifier.fillMaxWidth()
-                                        )
-                                        val editCheck = DiscussionRules.validateContentMentions(editingCommentDraft)
-                                        if (!editCheck.isValid && editingCommentDraft.isNotBlank()) {
-                                            Text(editCheck.errorMessage.orEmpty(), style = MaterialTheme.typography.bodySmall, color = colors.error)
-                                        }
-                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                            AppPrimaryButton(
-                                                text = if (isSubmitting) "Saving..." else "Save",
-                                                enabled = !isSubmitting && editCheck.isValid,
-                                                onClick = {
-                                                    viewModel.editAnimeComment(comment.id, editingCommentDraft) {
-                                                        editingCommentId = null
-                                                    }
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            Surface(
+                                shape = RoundedCornerShape(18.dp),
+                                color = if (isHighlightedComment) colors.accentPrimary.copy(alpha = 0.12f) else colors.elevatedSurface.copy(alpha = 0.42f),
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (isHighlightedComment) colors.accentPrimary else colors.borderSubtle.copy(alpha = 0.6f)
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(18.dp))
+                                    .pointerInput(comment.id, profile?.id) {
+                                        awaitPointerEventScope {
+                                            while (true) {
+                                                val event = awaitPointerEvent()
+                                                if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed && profile != null) {
+                                                    openCommentMenuId = comment.id
                                                 }
-                                            )
-                                            TextButton(onClick = { editingCommentId = null }) {
-                                                Text("Cancel", color = colors.textSecondary)
                                             }
                                         }
                                     }
-                                } else {
-                                    Text(
-                                        text = highlightMentionsText(comment.content, colors.accentPrimary, colors.textPrimary),
-                                        style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 20.sp)
+                                    .combinedClickable(
+                                        onClick = {
+                                            if (existingAuthorThread != null) {
+                                                expandedThreads[existingAuthorThread.id] = !(expandedThreads[existingAuthorThread.id] ?: false)
+                                            }
+                                        },
+                                        onLongClick = {
+                                            if (profile != null) {
+                                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                openCommentMenuId = comment.id
+                                            }
+                                        }
                                     )
-                                }
-
-                                // Target-User Grouped Reply Threads
-                                if (comment.threads.isNotEmpty()) {
-                                    Column(
-                                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                                        modifier = Modifier.padding(top = 4.dp)
+                                    .testTag("discussion_comment_card_${comment.id}")
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    // Author header
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        comment.threads.forEach { thread ->
-                                            val isExpanded = expandedThreads[thread.id]
-                                                ?: (highlightTarget?.threadId == thread.id || comment.threads.size == 1 && thread.replies.size <= 2)
-                                            ReplyThreadContainer(
-                                                thread = thread,
-                                                isExpanded = isExpanded,
-                                                currentUserId = profile?.id,
-                                                isSignedIn = profile != null,
-                                                isSubmitting = isSubmitting,
-                                                highlightReplyId = highlightTarget?.replyId,
-                                                editingReplyId = editingReplyId,
-                                                editingReplyDraft = editingReplyDraft,
-                                                onToggleExpand = { expandedThreads[thread.id] = !isExpanded },
-                                                onContinueThread = {
-                                                    expandedThreads[thread.id] = true
-                                                    activeReplyTarget = ReplyComposerTarget(
-                                                        commentId = comment.id,
-                                                        targetUserId = thread.targetUserId,
-                                                        targetUsername = thread.targetUsername
-                                                    )
-                                                    replyDraft = TextFieldValue("")
-                                                },
-                                                onReplyToAuthor = { replyItem ->
-                                                    activeReplyTarget = ReplyComposerTarget(
-                                                        commentId = comment.id,
-                                                        targetUserId = replyItem.userId,
-                                                        targetUsername = replyItem.username
-                                                    )
-                                                    replyDraft = TextFieldValue("")
-                                                },
-                                                onStartEditReply = { replyItem ->
-                                                    editingReplyId = replyItem.id
-                                                    editingReplyDraft = replyItem.content
-                                                },
-                                                onChangeEditReplyDraft = { editingReplyDraft = it },
-                                                onCancelEditReply = { editingReplyId = null },
-                                                onSaveEditReply = { replyId ->
-                                                    viewModel.editThreadReply(comment.id, thread.id, replyId, editingReplyDraft) {
-                                                        editingReplyId = null
-                                                    }
-                                                },
-                                                onDeleteReply = { replyId ->
-                                                    viewModel.deleteThreadReply(comment.id, thread.id, replyId)
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-
-                                // Inline Reply Composer when replying under this comment
-                                val currentTarget = activeReplyTarget
-                                if (currentTarget != null && currentTarget.commentId == comment.id && profile != null) {
-                                    val replyValidation = DiscussionRules.validateContentMentions(replyDraft.text)
-                                    Surface(
-                                        shape = RoundedCornerShape(14.dp),
-                                        color = colors.cardBackground,
-                                        border = BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.45f)),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .testTag("discussion_reply_composer_${comment.id}")
-                                    ) {
-                                        Column(
-                                            modifier = Modifier.padding(12.dp),
-                                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                            modifier = Modifier.weight(1f)
                                         ) {
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
+                                            MemberAvatar(
+                                                avatarKey = comment.avatarKey,
+                                                avatarUrl = comment.avatarUrl,
+                                                username = comment.username,
+                                                size = 34.dp
+                                            )
+                                            Column {
                                                 Text(
-                                                    text = "Replying in thread to @${currentTarget.targetUsername}",
-                                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                                                    color = colors.accentPrimary
+                                                    text = "@${comment.username}",
+                                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                                                    color = colors.textPrimary,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
                                                 )
+                                                val editedLabel = if (comment.updatedAt.isNotBlank() && comment.updatedAt != comment.createdAt) " • edited" else ""
+                                                Text(
+                                                    text = "${formatCommunityTimestamp(comment.createdAt)}$editedLabel",
+                                                    style = TabularNumSmall.copy(fontSize = 10.sp),
+                                                    color = colors.textMuted
+                                                )
+                                            }
+                                        }
+
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            if (profile != null) {
+                                                TextButton(
+                                                    onClick = {
+                                                        if (existingAuthorThread != null) {
+                                                            expandedThreads[existingAuthorThread.id] = true
+                                                        }
+                                                        activeReplyTarget = ReplyComposerTarget(
+                                                            commentId = comment.id,
+                                                            targetUserId = comment.userId,
+                                                            targetUsername = comment.username
+                                                        )
+                                                        replyDraft = TextFieldValue("")
+                                                        selectedReplyTags = emptyList()
+                                                    },
+                                                    modifier = Modifier.testTag("reply_to_comment_${comment.id}")
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.AutoMirrored.Filled.Reply,
+                                                        contentDescription = "Reply to ${comment.username}",
+                                                        tint = colors.accentPrimary,
+                                                        modifier = Modifier.size(15.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(3.dp))
+                                                    Text("Reply", style = MaterialTheme.typography.labelSmall, color = colors.accentPrimary)
+                                                }
+                                            }
+                                            if (isOwner && !isEditingThis) {
                                                 IconButton(
                                                     onClick = {
-                                                        activeReplyTarget = null
-                                                        activeAutocompleteTarget = null
-                                                        viewModel.clearMentionSuggestions()
+                                                        editingCommentId = comment.id
+                                                        editingCommentDraft = comment.content
                                                     },
-                                                    modifier = Modifier.size(24.dp)
+                                                    modifier = Modifier.size(34.dp)
                                                 ) {
-                                                    Icon(Icons.Filled.Close, contentDescription = "Close reply box", tint = colors.textMuted, modifier = Modifier.size(14.dp))
+                                                    Icon(Icons.Filled.Edit, contentDescription = "Edit comment", tint = colors.textSecondary, modifier = Modifier.size(15.dp))
+                                                }
+                                                IconButton(
+                                                    onClick = { viewModel.deleteAnimeComment(comment.id) },
+                                                    modifier = Modifier.size(34.dp)
+                                                ) {
+                                                    Icon(Icons.Filled.DeleteOutline, contentDescription = "Delete comment", tint = colors.error, modifier = Modifier.size(16.dp))
                                                 }
                                             }
-                                            OutlinedTextField(
-                                                value = replyDraft,
-                                                onValueChange = { next ->
-                                                    replyDraft = next
-                                                    val active = DiscussionRules.detectActiveMentionQuery(next.text, next.selection.end)
-                                                    if (active != null) {
-                                                        activeAutocompleteTarget = "reply"
-                                                        viewModel.searchMentionUsers(active.second)
-                                                    } else if (activeAutocompleteTarget == "reply") {
-                                                        activeAutocompleteTarget = null
-                                                        viewModel.clearMentionSuggestions()
-                                                    }
-                                                },
-                                                enabled = !isSubmitting,
-                                                placeholder = {
-                                                    Text("Write your reply... (@username optional, max 5)", fontSize = 12.5.sp, color = colors.textMuted)
-                                                },
-                                                maxLines = 3,
-                                                shape = RoundedCornerShape(12.dp),
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .testTag("discussion_reply_input")
-                                            )
+                                        }
+                                    }
 
-                                            if (activeAutocompleteTarget == "reply" && mentionSuggestions.isNotEmpty()) {
-                                                MentionAutocompletePanel(
-                                                    suggestions = mentionSuggestions,
-                                                    onSelectUser = { user ->
-                                                        val active = DiscussionRules.detectActiveMentionQuery(replyDraft.text, replyDraft.selection.end)
-                                                        if (active != null) {
-                                                            val (updated, cursor) = DiscussionRules.insertMentionAutocomplete(
-                                                                text = replyDraft.text,
-                                                                atSignIndex = active.first,
-                                                                cursorPosition = replyDraft.selection.end,
-                                                                selectedUsername = user.username
-                                                            )
-                                                            replyDraft = TextFieldValue(updated, TextRange(cursor))
+                                    // Comment body or inline edit field
+                                    if (isEditingThis) {
+                                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            OutlinedTextField(
+                                                value = editingCommentDraft,
+                                                onValueChange = { editingCommentDraft = it },
+                                                maxLines = 4,
+                                                shape = RoundedCornerShape(14.dp),
+                                                modifier = Modifier.fillMaxWidth()
+                                            )
+                                            val editCheck = DiscussionRules.validateContentMentions(editingCommentDraft)
+                                            if (!editCheck.isValid && editingCommentDraft.isNotBlank()) {
+                                                Text(editCheck.errorMessage.orEmpty(), style = MaterialTheme.typography.bodySmall, color = colors.error)
+                                            }
+                                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                AppPrimaryButton(
+                                                    text = if (isSubmitting) "Saving..." else "Save",
+                                                    enabled = !isSubmitting && editCheck.isValid,
+                                                    onClick = {
+                                                        viewModel.editAnimeComment(comment.id, editingCommentDraft) {
+                                                            editingCommentId = null
                                                         }
-                                                        activeAutocompleteTarget = null
-                                                        viewModel.clearMentionSuggestions()
+                                                    }
+                                                )
+                                                TextButton(onClick = { editingCommentId = null }) {
+                                                    Text("Cancel", color = colors.textSecondary)
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        Text(
+                                            text = highlightMentionsText(comment.content, colors.accentPrimary, colors.textPrimary),
+                                            style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 20.sp)
+                                        )
+                                        if (comment.mentions.isNotEmpty()) {
+                                            TaggedMentionsDisplayRow(mentions = comment.mentions)
+                                        }
+                                    }
+
+                                    // Target-User Grouped Reply Threads
+                                    if (comment.threads.isNotEmpty()) {
+                                        Column(
+                                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                                            modifier = Modifier.padding(top = 4.dp)
+                                        ) {
+                                            comment.threads.forEach { thread ->
+                                                val isExpanded = expandedThreads[thread.id]
+                                                    ?: (highlightTarget?.threadId == thread.id || comment.threads.size == 1 && thread.replies.size <= 2)
+                                                ReplyThreadContainer(
+                                                    thread = thread,
+                                                    isExpanded = isExpanded,
+                                                    currentUserId = profile?.id,
+                                                    isSignedIn = profile != null,
+                                                    isSubmitting = isSubmitting,
+                                                    highlightReplyId = highlightTarget?.replyId,
+                                                    editingReplyId = editingReplyId,
+                                                    editingReplyDraft = editingReplyDraft,
+                                                    onToggleExpand = { expandedThreads[thread.id] = !isExpanded },
+                                                    onContinueThread = {
+                                                        expandedThreads[thread.id] = true
+                                                        activeReplyTarget = ReplyComposerTarget(
+                                                            commentId = comment.id,
+                                                            targetUserId = thread.targetUserId,
+                                                            targetUsername = thread.targetUsername
+                                                        )
+                                                        replyDraft = TextFieldValue("")
+                                                        selectedReplyTags = emptyList()
+                                                    },
+                                                    onReplyToAuthor = { replyItem ->
+                                                        comment.threads.firstOrNull { it.targetUserId == replyItem.userId }?.let { t ->
+                                                            expandedThreads[t.id] = true
+                                                        }
+                                                        activeReplyTarget = ReplyComposerTarget(
+                                                            commentId = comment.id,
+                                                            targetUserId = replyItem.userId,
+                                                            targetUsername = replyItem.username
+                                                        )
+                                                        replyDraft = TextFieldValue("")
+                                                        selectedReplyTags = emptyList()
+                                                    },
+                                                    onStartEditReply = { replyItem ->
+                                                        editingReplyId = replyItem.id
+                                                        editingReplyDraft = replyItem.content
+                                                    },
+                                                    onChangeEditReplyDraft = { editingReplyDraft = it },
+                                                    onCancelEditReply = { editingReplyId = null },
+                                                    onSaveEditReply = { replyId ->
+                                                        viewModel.editThreadReply(comment.id, thread.id, replyId, editingReplyDraft) {
+                                                            editingReplyId = null
+                                                        }
+                                                    },
+                                                    onDeleteReply = { replyId ->
+                                                        viewModel.deleteThreadReply(comment.id, thread.id, replyId)
                                                     }
                                                 )
                                             }
+                                        }
+                                    }
 
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
+                                    // Inline Reply Composer when replying under this comment
+                                    val currentTarget = activeReplyTarget
+                                    if (currentTarget != null && currentTarget.commentId == comment.id && profile != null) {
+                                        val replyValidation = DiscussionRules.validateContentMentions(
+                                            replyDraft.text,
+                                            explicitTagCount = selectedReplyTags.size
+                                        )
+                                        Surface(
+                                            shape = RoundedCornerShape(14.dp),
+                                            color = colors.cardBackground,
+                                            border = BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.45f)),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .testTag("discussion_reply_composer_${comment.id}")
+                                        ) {
+                                            Column(
+                                                modifier = Modifier.padding(12.dp),
+                                                verticalArrangement = Arrangement.spacedBy(8.dp)
                                             ) {
-                                                Text(
-                                                    text = "${replyValidation.totalEntries}/${DiscussionRules.MAX_MENTIONS_PER_CONTENT} @mentions",
-                                                    style = TabularNumSmall.copy(fontSize = 10.5.sp),
-                                                    color = if (replyValidation.totalEntries > DiscussionRules.MAX_MENTIONS_PER_CONTENT) colors.error else colors.textMuted
-                                                )
-                                                AppPrimaryButton(
-                                                    text = if (isSubmitting) "Replying..." else "Post Reply",
-                                                    enabled = !isSubmitting && replyValidation.isValid,
-                                                    onClick = {
-                                                        viewModel.postThreadReply(
-                                                            commentId = currentTarget.commentId,
-                                                            targetUserId = currentTarget.targetUserId,
-                                                            content = replyDraft.text
-                                                        ) { createdThreadId ->
-                                                            expandedThreads[createdThreadId] = true
-                                                            replyDraft = TextFieldValue("")
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Text(
+                                                        text = "Replying in thread to @${currentTarget.targetUsername}",
+                                                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                                        color = colors.accentPrimary
+                                                    )
+                                                    IconButton(
+                                                        onClick = {
                                                             activeReplyTarget = null
+                                                            selectedReplyTags = emptyList()
+                                                            activeAutocompleteTarget = null
+                                                            viewModel.clearMentionSuggestions()
+                                                        },
+                                                        modifier = Modifier.size(24.dp)
+                                                    ) {
+                                                        Icon(Icons.Filled.Close, contentDescription = "Close reply box", tint = colors.textMuted, modifier = Modifier.size(14.dp))
+                                                    }
+                                                }
+                                                OutlinedTextField(
+                                                    value = replyDraft,
+                                                    onValueChange = { next ->
+                                                        replyDraft = next
+                                                        val active = DiscussionRules.detectActiveMentionQuery(next.text, next.selection.end)
+                                                        if (active != null) {
+                                                            activeAutocompleteTarget = "reply"
+                                                            viewModel.searchMentionUsers(active.second)
+                                                        } else if (activeAutocompleteTarget == "reply") {
                                                             activeAutocompleteTarget = null
                                                             viewModel.clearMentionSuggestions()
                                                         }
                                                     },
-                                                    modifier = Modifier.testTag("discussion_post_reply_button")
+                                                    enabled = !isSubmitting,
+                                                    placeholder = {
+                                                        Text("Write your reply... Type @ + letter to tag (max 5)", fontSize = 12.5.sp, color = colors.textMuted)
+                                                    },
+                                                    maxLines = 3,
+                                                    shape = RoundedCornerShape(12.dp),
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .testTag("discussion_reply_input")
                                                 )
-                                            }
-                                            if (replyValidation.totalEntries > DiscussionRules.MAX_MENTIONS_PER_CONTENT) {
-                                                Text(replyValidation.errorMessage.orEmpty(), style = MaterialTheme.typography.bodySmall, color = colors.error)
+
+                                                if (selectedReplyTags.isNotEmpty()) {
+                                                    SelectedTagChipsRow(
+                                                        tags = selectedReplyTags,
+                                                        onRemoveAt = { idx ->
+                                                            selectedReplyTags = selectedReplyTags.filterIndexed { i, _ -> i != idx }
+                                                        }
+                                                    )
+                                                }
+
+                                                if (activeAutocompleteTarget == "reply" && mentionSuggestions.isNotEmpty()) {
+                                                    MentionAutocompletePanel(
+                                                        suggestions = mentionSuggestions,
+                                                        onSelectUser = { user ->
+                                                            val active = DiscussionRules.detectActiveMentionQuery(replyDraft.text, replyDraft.selection.end)
+                                                            if (active != null) {
+                                                                val (stripped, cursor) = DiscussionRules.stripMentionTrigger(
+                                                                    text = replyDraft.text,
+                                                                    atSignIndex = active.first,
+                                                                    cursorPosition = replyDraft.selection.end
+                                                                )
+                                                                replyDraft = TextFieldValue(stripped, TextRange(cursor))
+                                                            }
+                                                            if (replyValidation.totalEntries < DiscussionRules.MAX_MENTIONS_PER_CONTENT) {
+                                                                selectedReplyTags = selectedReplyTags + user
+                                                            }
+                                                            activeAutocompleteTarget = null
+                                                            viewModel.clearMentionSuggestions()
+                                                        }
+                                                    )
+                                                }
+
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Text(
+                                                        text = "${replyValidation.totalEntries}/${DiscussionRules.MAX_MENTIONS_PER_CONTENT} tagged",
+                                                        style = TabularNumSmall.copy(fontSize = 10.5.sp),
+                                                        color = if (replyValidation.totalEntries > DiscussionRules.MAX_MENTIONS_PER_CONTENT) colors.error else colors.textMuted
+                                                    )
+                                                    AppPrimaryButton(
+                                                        text = if (isSubmitting) "Replying..." else "Post Reply",
+                                                        enabled = !isSubmitting && replyValidation.isValid,
+                                                        onClick = {
+                                                            viewModel.postThreadReply(
+                                                                commentId = currentTarget.commentId,
+                                                                targetUserId = currentTarget.targetUserId,
+                                                                content = replyDraft.text,
+                                                                taggedUserIds = selectedReplyTags.map { it.id }
+                                                            ) { createdThreadId ->
+                                                                expandedThreads[createdThreadId] = true
+                                                                replyDraft = TextFieldValue("")
+                                                                selectedReplyTags = emptyList()
+                                                                activeReplyTarget = null
+                                                                activeAutocompleteTarget = null
+                                                                viewModel.clearMentionSuggestions()
+                                                            }
+                                                        },
+                                                        modifier = Modifier.testTag("discussion_post_reply_button")
+                                                    )
+                                                }
+                                                if (replyValidation.totalEntries > DiscussionRules.MAX_MENTIONS_PER_CONTENT) {
+                                                    Text(replyValidation.errorMessage.orEmpty(), style = MaterialTheme.typography.bodySmall, color = colors.error)
+                                                }
                                             }
                                         }
                                     }
+                                }
+                            }
+
+                            // Long-press (Phone) / Right-click (Desktop) Action Menu for Comment
+                            DropdownMenu(
+                                expanded = openCommentMenuId == comment.id,
+                                onDismissRequest = { openCommentMenuId = null },
+                                containerColor = colors.backgroundSecondary
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Reply to @${comment.username}", color = colors.textPrimary) },
+                                    leadingIcon = {
+                                        Icon(Icons.AutoMirrored.Filled.Reply, contentDescription = null, tint = colors.accentPrimary, modifier = Modifier.size(18.dp))
+                                    },
+                                    onClick = {
+                                        openCommentMenuId = null
+                                        if (existingAuthorThread != null) {
+                                            expandedThreads[existingAuthorThread.id] = true
+                                        }
+                                        activeReplyTarget = ReplyComposerTarget(
+                                            commentId = comment.id,
+                                            targetUserId = comment.userId,
+                                            targetUsername = comment.username
+                                        )
+                                        replyDraft = TextFieldValue("")
+                                        selectedReplyTags = emptyList()
+                                    }
+                                )
+                                if (existingAuthorThread != null) {
+                                    val opened = expandedThreads[existingAuthorThread.id] ?: false
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                if (opened) "Collapse @${comment.username}'s Thread" else "Open @${comment.username}'s Thread",
+                                                color = colors.textPrimary
+                                            )
+                                        },
+                                        leadingIcon = {
+                                            Icon(Icons.Filled.Forum, contentDescription = null, tint = colors.accentPrimary, modifier = Modifier.size(18.dp))
+                                        },
+                                        onClick = {
+                                            openCommentMenuId = null
+                                            expandedThreads[existingAuthorThread.id] = !opened
+                                        }
+                                    )
+                                }
+                                if (isOwner) {
+                                    DropdownMenuItem(
+                                        text = { Text("Edit Comment", color = colors.textPrimary) },
+                                        leadingIcon = {
+                                            Icon(Icons.Filled.Edit, contentDescription = null, tint = colors.textSecondary, modifier = Modifier.size(18.dp))
+                                        },
+                                        onClick = {
+                                            openCommentMenuId = null
+                                            editingCommentId = comment.id
+                                            editingCommentDraft = comment.content
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Delete Comment", color = colors.error) },
+                                        leadingIcon = {
+                                            Icon(Icons.Filled.DeleteOutline, contentDescription = null, tint = colors.error, modifier = Modifier.size(18.dp))
+                                        },
+                                        onClick = {
+                                            openCommentMenuId = null
+                                            viewModel.deleteAnimeComment(comment.id)
+                                        }
+                                    )
                                 }
                             }
                         }
@@ -779,6 +935,88 @@ private fun MentionAutocompletePanel(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SelectedTagChipsRow(
+    tags: List<MentionableUser>,
+    onRemoveAt: (Int) -> Unit
+) {
+    val colors = AppTheme.colors
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        tags.forEachIndexed { idx, user ->
+            Surface(
+                shape = CircleShape,
+                color = colors.accentPrimary.copy(alpha = 0.16f),
+                border = BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.55f))
+            ) {
+                Row(
+                    modifier = Modifier.padding(start = 8.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.AlternateEmail,
+                        contentDescription = null,
+                        tint = colors.accentPrimary,
+                        modifier = Modifier.size(12.dp)
+                    )
+                    Text(
+                        text = user.username,
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = colors.highlight
+                    )
+                    Icon(
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = "Remove tag ${user.username}",
+                        tint = colors.textSecondary,
+                        modifier = Modifier
+                            .size(14.dp)
+                            .clip(CircleShape)
+                            .clickable { onRemoveAt(idx) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun TaggedMentionsDisplayRow(
+    mentions: List<ContentMention>
+) {
+    val colors = AppTheme.colors
+    val grouped = remember(mentions) {
+        mentions.groupBy { it.mentionedUsername }
+            .map { (username, list) -> username to list.size }
+    }
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        grouped.forEach { (username, count) ->
+            Surface(
+                shape = CircleShape,
+                color = colors.accentPrimary.copy(alpha = 0.10f),
+                border = BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.30f))
+            ) {
+                Text(
+                    text = if (count > 1) "Tagged: $username ×$count" else "Tagged: $username",
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.Medium),
+                    color = colors.accentPrimary,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ReplyThreadContainer(
     thread: CommentReplyThread,
@@ -799,7 +1037,9 @@ private fun ReplyThreadContainer(
     onDeleteReply: (String) -> Unit
 ) {
     val colors = AppTheme.colors
+    val haptics = LocalHapticFeedback.current
     val replyCount = thread.replies.size
+    var openReplyMenuId by remember(thread.id) { mutableStateOf<String?>(null) }
 
     Surface(
         shape = RoundedCornerShape(14.dp),
@@ -862,104 +1102,178 @@ private fun ReplyThreadContainer(
                         val isReplyOwner = currentUserId == reply.userId
                         val isEditingReply = editingReplyId == reply.id
 
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = if (isHighlighted) colors.accentPrimary.copy(alpha = 0.14f) else colors.cardBackground.copy(alpha = 0.85f),
-                            border = BorderStroke(
-                                1.dp,
-                                if (isHighlighted) colors.accentPrimary else colors.borderSubtle.copy(alpha = 0.4f)
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("reply_item_${reply.id}")
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(10.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        MemberAvatar(
-                                            avatarKey = reply.avatarKey,
-                                            avatarUrl = reply.avatarUrl,
-                                            username = reply.username,
-                                            size = 26.dp
-                                        )
-                                        Column {
-                                            Text(
-                                                text = "@${reply.username}",
-                                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                                                color = colors.textPrimary,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            val edited = if (reply.updatedAt.isNotBlank() && reply.updatedAt != reply.createdAt) " • edited" else ""
-                                            Text(
-                                                text = "${formatCommunityTimestamp(reply.createdAt)}$edited",
-                                                style = TabularNumSmall.copy(fontSize = 9.5.sp),
-                                                color = colors.textMuted
-                                            )
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = if (isHighlighted) colors.accentPrimary.copy(alpha = 0.14f) else colors.cardBackground.copy(alpha = 0.85f),
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (isHighlighted) colors.accentPrimary else colors.borderSubtle.copy(alpha = 0.4f)
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .pointerInput(reply.id, isSignedIn) {
+                                        awaitPointerEventScope {
+                                            while (true) {
+                                                val event = awaitPointerEvent()
+                                                if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed && isSignedIn) {
+                                                    openReplyMenuId = reply.id
+                                                }
+                                            }
                                         }
                                     }
-
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        if (isSignedIn) {
-                                            TextButton(
-                                                onClick = { onReplyToAuthor(reply) },
-                                                modifier = Modifier.heightIn(min = 32.dp)
-                                            ) {
+                                    .combinedClickable(
+                                        onClick = {},
+                                        onLongClick = {
+                                            if (isSignedIn) {
+                                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                openReplyMenuId = reply.id
+                                            }
+                                        }
+                                    )
+                                    .testTag("reply_item_${reply.id}")
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            MemberAvatar(
+                                                avatarKey = reply.avatarKey,
+                                                avatarUrl = reply.avatarUrl,
+                                                username = reply.username,
+                                                size = 26.dp
+                                            )
+                                            Column {
                                                 Text(
-                                                    text = "Reply",
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = colors.accentPrimary
+                                                    text = "@${reply.username}",
+                                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                                    color = colors.textPrimary,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                val edited = if (reply.updatedAt.isNotBlank() && reply.updatedAt != reply.createdAt) " • edited" else ""
+                                                Text(
+                                                    text = "${formatCommunityTimestamp(reply.createdAt)}$edited",
+                                                    style = TabularNumSmall.copy(fontSize = 9.5.sp),
+                                                    color = colors.textMuted
                                                 )
                                             }
                                         }
-                                        if (isReplyOwner && !isEditingReply) {
-                                            IconButton(onClick = { onStartEditReply(reply) }, modifier = Modifier.size(30.dp)) {
-                                                Icon(Icons.Filled.Edit, contentDescription = "Edit reply", tint = colors.textSecondary, modifier = Modifier.size(14.dp))
+
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            if (isSignedIn) {
+                                                TextButton(
+                                                    onClick = { onReplyToAuthor(reply) },
+                                                    modifier = Modifier.heightIn(min = 32.dp)
+                                                ) {
+                                                    Text(
+                                                        text = "Reply",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = colors.accentPrimary
+                                                    )
+                                                }
                                             }
-                                            IconButton(onClick = { onDeleteReply(reply.id) }, modifier = Modifier.size(30.dp)) {
-                                                Icon(Icons.Filled.DeleteOutline, contentDescription = "Delete reply", tint = colors.error, modifier = Modifier.size(15.dp))
+                                            if (isReplyOwner && !isEditingReply) {
+                                                IconButton(onClick = { onStartEditReply(reply) }, modifier = Modifier.size(30.dp)) {
+                                                    Icon(Icons.Filled.Edit, contentDescription = "Edit reply", tint = colors.textSecondary, modifier = Modifier.size(14.dp))
+                                                }
+                                                IconButton(onClick = { onDeleteReply(reply.id) }, modifier = Modifier.size(30.dp)) {
+                                                    Icon(Icons.Filled.DeleteOutline, contentDescription = "Delete reply", tint = colors.error, modifier = Modifier.size(15.dp))
+                                                }
                                             }
+                                        }
+                                    }
+
+                                    if (isEditingReply) {
+                                        val check = DiscussionRules.validateContentMentions(editingReplyDraft)
+                                        OutlinedTextField(
+                                            value = editingReplyDraft,
+                                            onValueChange = onChangeEditReplyDraft,
+                                            maxLines = 3,
+                                            shape = RoundedCornerShape(10.dp),
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+                                        if (!check.isValid && editingReplyDraft.isNotBlank()) {
+                                            Text(check.errorMessage.orEmpty(), style = MaterialTheme.typography.bodySmall, color = colors.error)
+                                        }
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            AppPrimaryButton(
+                                                text = if (isSubmitting) "Saving..." else "Save",
+                                                enabled = !isSubmitting && check.isValid,
+                                                onClick = { onSaveEditReply(reply.id) }
+                                            )
+                                            TextButton(onClick = onCancelEditReply) {
+                                                Text("Cancel", color = colors.textSecondary)
+                                            }
+                                        }
+                                    } else {
+                                        Text(
+                                            text = highlightMentionsText(reply.content, colors.accentPrimary, colors.textPrimary),
+                                            style = MaterialTheme.typography.bodySmall.copy(lineHeight = 19.sp)
+                                        )
+                                        if (reply.mentions.isNotEmpty()) {
+                                            TaggedMentionsDisplayRow(mentions = reply.mentions)
                                         }
                                     }
                                 }
+                            }
 
-                                if (isEditingReply) {
-                                    val check = DiscussionRules.validateContentMentions(editingReplyDraft)
-                                    OutlinedTextField(
-                                        value = editingReplyDraft,
-                                        onValueChange = onChangeEditReplyDraft,
-                                        maxLines = 3,
-                                        shape = RoundedCornerShape(10.dp),
-                                        modifier = Modifier.fillMaxWidth()
-                                    )
-                                    if (!check.isValid && editingReplyDraft.isNotBlank()) {
-                                        Text(check.errorMessage.orEmpty(), style = MaterialTheme.typography.bodySmall, color = colors.error)
+                            DropdownMenu(
+                                expanded = openReplyMenuId == reply.id,
+                                onDismissRequest = { openReplyMenuId = null },
+                                containerColor = colors.backgroundSecondary
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Reply to @${reply.username}", color = colors.textPrimary) },
+                                    leadingIcon = {
+                                        Icon(Icons.AutoMirrored.Filled.Reply, contentDescription = null, tint = colors.accentPrimary, modifier = Modifier.size(18.dp))
+                                    },
+                                    onClick = {
+                                        openReplyMenuId = null
+                                        onReplyToAuthor(reply)
                                     }
-                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        AppPrimaryButton(
-                                            text = if (isSubmitting) "Saving..." else "Save",
-                                            enabled = !isSubmitting && check.isValid,
-                                            onClick = { onSaveEditReply(reply.id) }
-                                        )
-                                        TextButton(onClick = onCancelEditReply) {
-                                            Text("Cancel", color = colors.textSecondary)
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Continue @${thread.targetUsername}'s Thread", color = colors.textPrimary) },
+                                    leadingIcon = {
+                                        Icon(Icons.Filled.Forum, contentDescription = null, tint = colors.accentPrimary, modifier = Modifier.size(18.dp))
+                                    },
+                                    onClick = {
+                                        openReplyMenuId = null
+                                        onContinueThread()
+                                    }
+                                )
+                                if (isReplyOwner) {
+                                    DropdownMenuItem(
+                                        text = { Text("Edit Reply", color = colors.textPrimary) },
+                                        leadingIcon = {
+                                            Icon(Icons.Filled.Edit, contentDescription = null, tint = colors.textSecondary, modifier = Modifier.size(18.dp))
+                                        },
+                                        onClick = {
+                                            openReplyMenuId = null
+                                            onStartEditReply(reply)
                                         }
-                                    }
-                                } else {
-                                    Text(
-                                        text = highlightMentionsText(reply.content, colors.accentPrimary, colors.textPrimary),
-                                        style = MaterialTheme.typography.bodySmall.copy(lineHeight = 19.sp)
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Delete Reply", color = colors.error) },
+                                        leadingIcon = {
+                                            Icon(Icons.Filled.DeleteOutline, contentDescription = null, tint = colors.error, modifier = Modifier.size(18.dp))
+                                        },
+                                        onClick = {
+                                            openReplyMenuId = null
+                                            onDeleteReply(reply.id)
+                                        }
                                     )
                                 }
                             }

@@ -10,6 +10,8 @@ import com.example.model.ContentMention
 import com.example.model.MentionableUser
 import com.example.model.NotificationsPage
 import com.example.model.ThreadReplyCreationResult
+import com.example.model.UnseenDiscussionAnime
+import com.example.model.UnseenDiscussionSummary
 import com.example.model.UserNotificationItem
 import com.example.util.ErrorSanitizer
 import kotlinx.coroutines.Dispatchers
@@ -120,7 +122,8 @@ class SupabaseDiscussionService {
         animeId: Int,
         content: String,
         animeTitle: String,
-        animeCover: String
+        animeCover: String,
+        taggedUserIds: List<String> = emptyList()
     ): Result<Pair<AnimeCommentItem, Int>> = withContext(Dispatchers.IO) {
         if (!AppConfig.isSupabaseConfigured) {
             return@withContext Result.failure(Exception("Cloud discussion service is not configured."))
@@ -131,6 +134,7 @@ class SupabaseDiscussionService {
                 .put("p_content", content.trim())
                 .put("p_anime_title", animeTitle.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
                 .put("p_anime_cover", animeCover.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
+                .put("p_tagged_user_ids", JSONArray(taggedUserIds))
             client.newCall(rpcRequest("create_anime_comment", session.accessToken, payload)).execute().use { resp ->
                 val body = resp.body?.string().orEmpty().trim()
                 if (!resp.isSuccessful) {
@@ -149,7 +153,8 @@ class SupabaseDiscussionService {
     suspend fun updateAnimeComment(
         session: AuthSession,
         commentId: String,
-        content: String
+        content: String,
+        taggedUserIds: List<String> = emptyList()
     ): Result<Triple<String, String, List<ContentMention>>> = withContext(Dispatchers.IO) {
         if (!AppConfig.isSupabaseConfigured) {
             return@withContext Result.failure(Exception("Cloud discussion service is not configured."))
@@ -158,6 +163,7 @@ class SupabaseDiscussionService {
             val payload = JSONObject()
                 .put("p_comment_id", commentId)
                 .put("p_content", content.trim())
+                .put("p_tagged_user_ids", JSONArray(taggedUserIds))
             client.newCall(rpcRequest("update_anime_comment", session.accessToken, payload)).execute().use { resp ->
                 val body = resp.body?.string().orEmpty().trim()
                 if (!resp.isSuccessful) {
@@ -203,7 +209,8 @@ class SupabaseDiscussionService {
         session: AuthSession,
         commentId: String,
         targetUserId: String,
-        content: String
+        content: String,
+        taggedUserIds: List<String> = emptyList()
     ): Result<ThreadReplyCreationResult> = withContext(Dispatchers.IO) {
         if (!AppConfig.isSupabaseConfigured) {
             return@withContext Result.failure(Exception("Cloud discussion service is not configured."))
@@ -213,6 +220,7 @@ class SupabaseDiscussionService {
                 .put("p_comment_id", commentId)
                 .put("p_target_user_id", targetUserId)
                 .put("p_content", content.trim())
+                .put("p_tagged_user_ids", JSONArray(taggedUserIds))
             client.newCall(rpcRequest("create_thread_reply", session.accessToken, payload)).execute().use { resp ->
                 val body = resp.body?.string().orEmpty().trim()
                 if (!resp.isSuccessful) {
@@ -242,7 +250,8 @@ class SupabaseDiscussionService {
     suspend fun updateThreadReply(
         session: AuthSession,
         replyId: String,
-        content: String
+        content: String,
+        taggedUserIds: List<String> = emptyList()
     ): Result<Triple<String, String, List<ContentMention>>> = withContext(Dispatchers.IO) {
         if (!AppConfig.isSupabaseConfigured) {
             return@withContext Result.failure(Exception("Cloud discussion service is not configured."))
@@ -251,6 +260,7 @@ class SupabaseDiscussionService {
             val payload = JSONObject()
                 .put("p_reply_id", replyId)
                 .put("p_content", content.trim())
+                .put("p_tagged_user_ids", JSONArray(taggedUserIds))
             client.newCall(rpcRequest("update_thread_reply", session.accessToken, payload)).execute().use { resp ->
                 val body = resp.body?.string().orEmpty().trim()
                 if (!resp.isSuccessful) {
@@ -392,6 +402,65 @@ class SupabaseDiscussionService {
             }
         } catch (e: Exception) {
             Result.failure(Exception(ErrorSanitizer.sanitize(e, "Unable to mark notifications as read.")))
+        }
+    }
+
+    suspend fun fetchUnseenDiscussionAnime(session: AuthSession): Result<UnseenDiscussionSummary> = withContext(Dispatchers.IO) {
+        if (!AppConfig.isSupabaseConfigured) return@withContext Result.success(UnseenDiscussionSummary())
+        try {
+            client.newCall(rpcRequest("get_unseen_discussion_anime", session.accessToken, JSONObject())).execute().use { resp ->
+                val body = resp.body?.string().orEmpty().trim()
+                if (!resp.isSuccessful || !body.startsWith("{")) {
+                    return@withContext Result.success(UnseenDiscussionSummary())
+                }
+                val obj = JSONObject(body)
+                val arr = obj.optJSONArray("anime") ?: JSONArray()
+                val items = buildList {
+                    for (i in 0 until arr.length()) {
+                        val item = arr.getJSONObject(i)
+                        add(
+                            UnseenDiscussionAnime(
+                                animeId = item.optInt("anime_id", 0),
+                                animeTitle = item.optString("anime_title", "Anime"),
+                                animeCoverImage = item.optString("anime_cover_image", ""),
+                                unseenCount = item.optInt("unseen_count", 1),
+                                latestCommentId = item.optString("latest_comment_id", ""),
+                                latestThreadId = item.optString("latest_thread_id").takeIf { it.isNotBlank() && it != "null" },
+                                latestReplyId = item.optString("latest_reply_id").takeIf { it.isNotBlank() && it != "null" },
+                                latestSenderUsername = item.optString("latest_sender_username", "Member"),
+                                latestNotificationType = item.optString("latest_notification_type", "mention_comment"),
+                                latestPreview = item.optString("latest_preview", ""),
+                                latestCreatedAt = item.optString("latest_created_at", "")
+                            )
+                        )
+                    }
+                }
+                Result.success(
+                    UnseenDiscussionSummary(
+                        totalUnseen = obj.optInt("total_unseen", items.sumOf { it.unseenCount }),
+                        anime = items
+                    )
+                )
+            }
+        } catch (_: Exception) {
+            Result.success(UnseenDiscussionSummary())
+        }
+    }
+
+    suspend fun markAnimeNotificationsRead(session: AuthSession, animeId: Int): Result<Int> = withContext(Dispatchers.IO) {
+        if (!AppConfig.isSupabaseConfigured) return@withContext Result.success(0)
+        try {
+            val payload = JSONObject().put("p_anime_id", animeId)
+            client.newCall(rpcRequest("mark_anime_notifications_read", session.accessToken, payload)).execute().use { resp ->
+                val body = resp.body?.string().orEmpty().trim()
+                if (!resp.isSuccessful) {
+                    return@withContext Result.failure(Exception(parseError(body, "Unable to update read status.")))
+                }
+                val obj = JSONObject(body)
+                Result.success(obj.optInt("unread_count", 0))
+            }
+        } catch (e: Exception) {
+            Result.failure(Exception(ErrorSanitizer.sanitize(e, "Unable to update read status.")))
         }
     }
 

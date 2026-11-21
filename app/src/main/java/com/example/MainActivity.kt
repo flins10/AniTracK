@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
@@ -36,13 +37,11 @@ import androidx.compose.material.icons.filled.Bookmarks
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.outlined.Bookmarks
 import androidx.compose.material.icons.outlined.Explore
 import androidx.compose.material.icons.outlined.Group
 import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -92,7 +91,6 @@ import com.example.ui.screens.CommunityScreen
 import com.example.ui.screens.DiscoverScreen
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.MyListScreen
-import com.example.ui.screens.NotificationsScreen
 import com.example.ui.screens.ProfileScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.theme.AnimeUniverseTheme
@@ -110,6 +108,8 @@ import com.example.ui.widgets.MidnightDesktopSidebar
 import com.example.ui.widgets.NavDestinationItem
 import com.example.ui.widgets.ObsidianAmbientBackground
 import com.example.ui.widgets.QuickSearchBottomSheet
+import com.example.ui.widgets.SandroneMascotButton
+import com.example.ui.widgets.SandroneMascotVariant
 import com.example.ui.widgets.rememberReducedMotion
 import com.example.viewmodel.AnimeViewModel
 import com.example.viewmodel.OnboardingStage
@@ -128,7 +128,6 @@ enum class MainNavTab(
     Discover("discover", "Explore", Icons.Filled.Explore, Icons.Outlined.Explore),
     MyList("mylist", "Library", Icons.Filled.Bookmarks, Icons.Outlined.Bookmarks),
     Community("community", "Community", Icons.Filled.Group, Icons.Outlined.Group),
-    Notifications("notifications", "Alerts", Icons.Filled.Notifications, Icons.Outlined.Notifications),
     Profile("profile", "Profile", Icons.Filled.Person, Icons.Outlined.Person)
 }
 
@@ -397,17 +396,19 @@ private fun AnimeUniverseMainScaffold(
     val preferences by viewModel.preferences.collectAsState()
     val feedback by viewModel.dynamicIslandFeedback.collectAsState()
     val unreadNotificationCount by viewModel.unreadNotificationCount.collectAsState()
+    val unseenDiscussionAnime by viewModel.unseenDiscussionAnime.collectAsState()
+    val hasCommunityRedDot = unreadNotificationCount > 0 || unseenDiscussionAnime.isNotEmpty()
 
     var showQuickSearch by remember { mutableStateOf(false) }
 
-    val allDestinations = remember(unreadNotificationCount) {
+    val allDestinations = remember(hasCommunityRedDot) {
         MainNavTab.entries.map {
             NavDestinationItem(
                 route = it.route,
                 title = it.title,
                 selectedIcon = it.selectedIcon,
                 unselectedIcon = it.unselectedIcon,
-                badgeCount = if (it == MainNavTab.Notifications) unreadNotificationCount else 0
+                showRedDot = (it == MainNavTab.Community && hasCommunityRedDot)
             )
         }
     }
@@ -519,16 +520,6 @@ private fun AnimeUniverseMainScaffold(
                     )
                 }
 
-                composable(MainNavTab.Notifications.route) {
-                    NotificationsScreen(
-                        viewModel = viewModel,
-                        onOpenNotificationTarget = { target ->
-                            navController.navigate("detail/${target.animeId}")
-                        },
-                        onNavigateToProfile = { navigateToTab(MainNavTab.Profile) }
-                    )
-                }
-
                 composable(MainNavTab.Profile.route) {
                     ProfileScreen(
                         viewModel = viewModel,
@@ -570,8 +561,16 @@ private fun AnimeUniverseMainScaffold(
                     .widthIn(max = 560.dp)
             )
 
-            // Floating Capsule 4-Tab Bottom Navigation Bar on Compact Mobile
+            // Floating Capsule Bottom Navigation Bar + Steady Sandrone Mascot on Compact Mobile
             if (showBottomDock && isCompactScreen) {
+                SandroneMascotButton(
+                    variant = SandroneMascotVariant.FLOATING_PHONE,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .navigationBarsPadding()
+                        .padding(end = 14.dp, bottom = 86.dp)
+                )
+
                 MidnightBottomNavigationBar(
                     destinations = bottomDestinations,
                     currentRoute = currentRoute,

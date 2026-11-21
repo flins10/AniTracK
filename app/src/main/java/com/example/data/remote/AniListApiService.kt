@@ -233,7 +233,11 @@ interface AniListApiService {
                 .build()
 
             val logging = HttpLoggingInterceptor().apply {
-                level = HttpLoggingInterceptor.Level.BASIC
+                level = if (com.example.BuildConfig.DEBUG) {
+                    HttpLoggingInterceptor.Level.BASIC
+                } else {
+                    HttpLoggingInterceptor.Level.NONE
+                }
             }
 
             val client = OkHttpClient.Builder()

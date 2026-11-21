@@ -106,3 +106,22 @@ data class NotificationJumpTarget(
     val threadId: String? = null,
     val replyId: String? = null
 )
+
+data class UnseenDiscussionAnime(
+    val animeId: Int,
+    val animeTitle: String,
+    val animeCoverImage: String = "",
+    val unseenCount: Int = 1,
+    val latestCommentId: String = "",
+    val latestThreadId: String? = null,
+    val latestReplyId: String? = null,
+    val latestSenderUsername: String = "Member",
+    val latestNotificationType: String = "mention_comment",
+    val latestPreview: String = "",
+    val latestCreatedAt: String = ""
+)
+
+data class UnseenDiscussionSummary(
+    val totalUnseen: Int = 0,
+    val anime: List<UnseenDiscussionAnime> = emptyList()
+)

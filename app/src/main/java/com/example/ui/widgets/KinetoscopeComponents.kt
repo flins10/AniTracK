@@ -1104,7 +1104,8 @@ data class NavDestinationItem(
     val title: String,
     val selectedIcon: ImageVector,
     val unselectedIcon: ImageVector,
-    val badgeCount: Int = 0
+    val badgeCount: Int = 0,
+    val showRedDot: Boolean = false
 )
 
 /**
@@ -1195,7 +1196,17 @@ fun MidnightBottomNavigationBar(
                                 tint = iconTint,
                                 modifier = Modifier.size(20.dp)
                             )
-                            if (tab.badgeCount > 0) {
+                            if (tab.showRedDot) {
+                                Box(
+                                    modifier = Modifier
+                                        .offset(x = 4.dp, y = (-2).dp)
+                                        .size(9.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFFEF4444))
+                                        .border(1.5.dp, colors.backgroundSecondary, CircleShape)
+                                        .testTag("nav_red_dot_${tab.route}")
+                                )
+                            } else if (tab.badgeCount > 0) {
                                 Surface(
                                     shape = CircleShape,
                                     color = colors.error,
@@ -1306,7 +1317,17 @@ fun MidnightCompactRail(
                                     tint = if (selected) colors.accentPrimary else colors.textSecondary,
                                     modifier = Modifier.size(20.dp)
                                 )
-                                if (tab.badgeCount > 0) {
+                                if (tab.showRedDot) {
+                                    Box(
+                                        modifier = Modifier
+                                            .offset(x = 4.dp, y = (-2).dp)
+                                            .size(9.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(0xFFEF4444))
+                                            .border(1.5.dp, colors.backgroundSecondary, CircleShape)
+                                            .testTag("rail_red_dot_${tab.route}")
+                                    )
+                                } else if (tab.badgeCount > 0) {
                                     Surface(
                                         shape = CircleShape,
                                         color = colors.error,
@@ -1333,6 +1354,13 @@ fun MidnightCompactRail(
                         }
                     }
                 }
+
+                Spacer(modifier = Modifier.weight(1f))
+
+                SandroneMascotButton(
+                    variant = SandroneMascotVariant.RAIL,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
             }
             Box(
                 modifier = Modifier
@@ -1448,7 +1476,15 @@ fun MidnightDesktopSidebar(
                                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
                                 modifier = Modifier.weight(1f)
                             )
-                            if (tab.badgeCount > 0) {
+                            if (tab.showRedDot) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(10.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFFEF4444))
+                                        .testTag("sidebar_red_dot_${tab.route}")
+                                )
+                            } else if (tab.badgeCount > 0) {
                                 Surface(
                                     shape = CircleShape,
                                     color = colors.error
@@ -1465,6 +1501,15 @@ fun MidnightDesktopSidebar(
                         }
                     }
                 }
+
+                Spacer(modifier = Modifier.weight(1f))
+
+                SandroneMascotButton(
+                    variant = SandroneMascotVariant.SIDEBAR,
+                    modifier = Modifier
+                        .align(Alignment.CenterHorizontally)
+                        .padding(top = 12.dp)
+                )
             }
             Box(
                 modifier = Modifier

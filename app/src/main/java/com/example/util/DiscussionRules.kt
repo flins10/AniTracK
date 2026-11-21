@@ -67,36 +67,38 @@ object DiscussionRules {
      */
     fun validateContentMentions(
         text: String,
-        maxMentions: Int = MAX_MENTIONS_PER_CONTENT
+        maxMentions: Int = MAX_MENTIONS_PER_CONTENT,
+        explicitTagCount: Int = 0
     ): MentionValidationResult {
         val trimmed = text.trim()
         val tokens = extractMentionTokens(text)
+        val totalEntries = tokens.size + explicitTagCount.coerceAtLeast(0)
         val uniqueLower = tokens.map { it.username.lowercase() }.toSet()
         return when {
             trimmed.isEmpty() -> MentionValidationResult(
                 isValid = false,
-                totalEntries = tokens.size,
+                totalEntries = totalEntries,
                 uniqueUsernamesLower = uniqueLower,
                 tokens = tokens,
                 errorMessage = "Please enter a message before posting."
             )
             trimmed.length > MAX_CONTENT_LENGTH -> MentionValidationResult(
                 isValid = false,
-                totalEntries = tokens.size,
+                totalEntries = totalEntries,
                 uniqueUsernamesLower = uniqueLower,
                 tokens = tokens,
                 errorMessage = "Message cannot exceed $MAX_CONTENT_LENGTH characters."
             )
-            tokens.size > maxMentions -> MentionValidationResult(
+            totalEntries > maxMentions -> MentionValidationResult(
                 isValid = false,
-                totalEntries = tokens.size,
+                totalEntries = totalEntries,
                 uniqueUsernamesLower = uniqueLower,
                 tokens = tokens,
-                errorMessage = "Maximum $maxMentions @mentions allowed per comment or reply (${tokens.size}/$maxMentions)."
+                errorMessage = "Maximum $maxMentions tagged users allowed per comment or reply ($totalEntries/$maxMentions)."
             )
             else -> MentionValidationResult(
                 isValid = true,
-                totalEntries = tokens.size,
+                totalEntries = totalEntries,
                 uniqueUsernamesLower = uniqueLower,
                 tokens = tokens,
                 errorMessage = null
@@ -144,6 +146,27 @@ object DiscussionRules {
         val insertion = "@$selectedUsername "
         val updated = prefix + insertion + suffix.trimStart(' ')
         return updated to (prefix.length + insertion.length)
+    }
+
+    /**
+     * Removes the typed @query trigger from the message text when the user selects
+     * a tag from autocomplete so the tagged user is stored cleanly without cluttering the text.
+     */
+    fun stripMentionTrigger(
+        text: String,
+        atSignIndex: Int,
+        cursorPosition: Int
+    ): Pair<String, Int> {
+        val safeStart = atSignIndex.coerceIn(0, text.length)
+        val safeEnd = cursorPosition.coerceIn(safeStart, text.length)
+        val prefix = text.substring(0, safeStart)
+        val suffix = text.substring(safeEnd)
+        val updated = if (prefix.endsWith(' ') && suffix.startsWith(' ')) {
+            prefix + suffix.drop(1)
+        } else {
+            prefix + suffix
+        }
+        return updated to prefix.length.coerceAtMost(updated.length)
     }
 
     /**

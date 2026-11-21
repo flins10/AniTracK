@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.ViewList
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -54,11 +55,11 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -192,6 +193,8 @@ fun DiscoverScreen(
     val results by viewModel.searchResults.collectAsState()
     val isSearching by viewModel.isSearching.collectAsState()
     val isNextPageLoading by viewModel.isNextPageLoading.collectAsState()
+    val hasNextPage by viewModel.hasNextDiscoverPageState.collectAsState()
+    val lastPageStartIndex by viewModel.discoverLastPageStartIndex.collectAsState()
     val searchError by viewModel.searchError.collectAsState()
     val preferences by viewModel.preferences.collectAsState()
     val watchlist by viewModel.watchlist.collectAsState()
@@ -208,24 +211,38 @@ fun DiscoverScreen(
 
     val isGrid = preferences.watchlistLayout == WatchlistLayoutMode.GRID
     val gridState = rememberLazyGridState()
-    val shouldLoadMore by remember(gridState, isGrid) {
-        derivedStateOf {
-            val layoutInfo = gridState.layoutInfo
-            val totalItems = layoutInfo.totalItemsCount
-            if (totalItems == 0) return@derivedStateOf false
-            val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            val prefetchThreshold = if (isGrid) 6 else 3
-            lastVisible >= (totalItems - 1 - prefetchThreshold).coerceAtLeast(0)
-        }
-    }
 
     LaunchedEffect(Unit) {
         viewModel.ensureDiscoverLoaded()
     }
 
-    LaunchedEffect(shouldLoadMore, results.size, isSearching, isNextPageLoading) {
-        if (shouldLoadMore && results.isNotEmpty() && !isSearching && !isNextPageLoading) {
-            viewModel.loadNextDiscoverPage()
+    LaunchedEffect(filterState, searchQuery, preferences.safeModeEnabled) {
+        gridState.scrollToItem(0)
+    }
+
+    // Automatically load next page once the 3rd row of the active batch is crossed
+    LaunchedEffect(gridState, isGrid, results.size, lastPageStartIndex, hasNextPage, isSearching, isNextPageLoading) {
+        snapshotFlow {
+            val layoutInfo = gridState.layoutInfo
+            val visible = layoutInfo.visibleItemsInfo
+            val lastVisibleItemIndex = visible.lastOrNull()?.index ?: -1
+            val cols = if (isGrid) {
+                visible.filter { it.index > 0 }.map { it.column }.distinct().size.coerceAtLeast(2)
+            } else {
+                1
+            }
+            // Account for the header item at index 0
+            val lastVisibleResultIdx = lastVisibleItemIndex - 1
+            Pair(lastVisibleResultIdx, cols)
+        }.collect { (lastVisibleResultIdx, cols) ->
+            val count = results.size
+            if (count > 0 && lastVisibleResultIdx >= 0 && hasNextPage && !isSearching && !isNextPageLoading) {
+                val rowThreshold = if (isGrid) cols * 3 else 4
+                val triggerIdx = minOf(count - 1, maxOf(0, lastPageStartIndex + rowThreshold - 1))
+                if (lastVisibleResultIdx >= triggerIdx) {
+                    viewModel.loadNextDiscoverPage()
+                }
+            }
         }
     }
 
@@ -487,6 +504,55 @@ fun DiscoverScreen(
                                         },
                                         modifier = Modifier.animateItem()
                                     )
+                                }
+                            }
+
+                            if (isNextPageLoading || hasNextPage) {
+                                item(
+                                    key = "discover_pagination_footer",
+                                    span = { GridItemSpan(maxLineSpan) }
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 12.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        if (isNextPageLoading) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                            ) {
+                                                CircularProgressIndicator(
+                                                    color = colors.accentPrimary,
+                                                    strokeWidth = 2.dp,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                                Text(
+                                                    text = "Loading more anime...",
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    color = colors.textSecondary
+                                                )
+                                            }
+                                        } else {
+                                            Surface(
+                                                shape = CircleShape,
+                                                color = colors.elevatedSurface.copy(alpha = 0.72f),
+                                                border = BorderStroke(1.dp, colors.borderStrong.copy(alpha = 0.6f)),
+                                                modifier = Modifier
+                                                    .clip(CircleShape)
+                                                    .clickable { viewModel.loadNextDiscoverPage() }
+                                                    .testTag("discover_load_more_button")
+                                            ) {
+                                                Text(
+                                                    text = "LOAD MORE ANIME",
+                                                    style = MicroUpperLabel.copy(fontSize = 10.sp, letterSpacing = 1.2.sp),
+                                                    color = colors.accentPrimary,
+                                                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp)
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }

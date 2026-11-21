@@ -1,3 +1,5 @@
+import java.security.MessageDigest
+
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.kotlin.compose)
@@ -40,8 +42,8 @@ android {
   buildTypes {
     release {
       isCrunchPngs = false
-      isMinifyEnabled = false
-      isShrinkResources = false
+      isMinifyEnabled = true
+      isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in
       // AI Studio.
@@ -62,9 +64,39 @@ android {
     buildConfig = true
   }
   testOptions { unitTests { isIncludeAndroidResources = true } }
+  androidResources {
+    noCompress += "mp3"
+  }
   dependenciesInfo {
     includeInApk = true
     includeInBundle = true
+  }
+}
+
+abstract class SyncSandroneAssetsTask : DefaultTask() {
+  @get:org.gradle.api.tasks.InputDirectory
+  @get:org.gradle.api.tasks.PathSensitive(org.gradle.api.tasks.PathSensitivity.RELATIVE)
+  abstract val sourceDir: DirectoryProperty
+
+  @get:org.gradle.api.tasks.OutputDirectory
+  abstract val outputDir: DirectoryProperty
+
+  @org.gradle.api.tasks.TaskAction
+  fun syncAssets() {
+    val src = sourceDir.get().asFile
+    val dst = File(outputDir.get().asFile, "sandrone")
+    dst.mkdirs()
+    val allowed = setOf(
+      "sandrone.png",
+      "s.mp3", "s1.mp3", "s2.mp3", "s3.mp3", "s4.mp3",
+      "s5.mp3", "s6.mp3", "s7.mp3", "s8.mp3", "s9.mp3"
+    )
+    allowed.forEach { name ->
+      val inFile = File(src, name)
+      if (inFile.isFile) {
+        inFile.copyTo(File(dst, name), overwrite = true)
+      }
+    }
   }
 }
 
@@ -109,38 +141,73 @@ abstract class GenerateObfuscatedVaultTask : DefaultTask() {
     val rawUrl = resolveSecret(envMap["SUPABASE_URL"], envSupabaseUrl.get(), "your-project.supabase.co").trimEnd('/')
     val rawKey = resolveSecret(envMap["SUPABASE_ANON_KEY"], envSupabaseKey.get(), "your-supabase")
 
-    fun encodeShards(input: String, seedByte: Int): Triple<List<Int>, List<Int>, List<Int>> {
-      val bytes = input.toByteArray(Charsets.UTF_8)
-      val s0 = mutableListOf<Int>()
-      val s1 = mutableListOf<Int>()
-      val s2 = mutableListOf<Int>()
-      for (i in bytes.indices) {
-        val salt = ((i * 73 + seedByte * 31 + 19) xor 0x5A) and 0xFF
-        val masked = (bytes[i].toInt() and 0xFF) xor salt
-        when (i % 3) {
-          0 -> s0.add(masked)
-          1 -> s1.add(masked)
-          else -> s2.add(masked)
+    fun decodeLegacy(s0: List<Int>, s1: List<Int>, s2: List<Int>, len: Int, seedByte: Int): ByteArray {
+      val out = ByteArray(len)
+      var i0 = 0
+      var i1 = 0
+      var i2 = 0
+      for (i in 0 until len) {
+        val masked = when (i % 3) {
+          0 -> s0[i0++]
+          1 -> s1[i1++]
+          else -> s2[i2++]
         }
+        val salt = ((i * 73 + seedByte * 31 + 19) xor 0x5A) and 0xFF
+        out[i] = (masked xor salt).toByte()
       }
-      return Triple(s0, s1, s2)
+      return out
     }
 
     val defaultU0 = listOf(142, 189, 7, 111, 21, 58, 232, 139, 161, 70, 101, 29, 63, 238)
     val defaultU1 = listOf(43, 201, 206, 190, 74, 112, 5, 42, 241, 204, 185, 85, 61)
     val defaultU2 = listOf(96, 73, 56, 236, 149, 160, 65, 121, 4, 40, 231, 158, 171)
-    val defaultULen = 40
-
     val defaultK0 = listOf(33, 201, 136, 171, 66, 89, 93, 40, 211, 176, 163, 127, 113, 73, 97, 192)
     val defaultK1 = listOf(105, 3, 52, 217, 130, 142, 98, 95, 28, 103, 247, 138, 144, 105, 66)
     val defaultK2 = listOf(159, 77, 121, 19, 3, 255, 136, 136, 105, 67, 65, 20, 182, 173, 170)
-    val defaultKLen = 46
 
-    val (u0, u1, u2) = if (rawUrl.isNotBlank()) encodeShards(rawUrl, 0x37) else Triple(defaultU0, defaultU1, defaultU2)
-    val uLen = if (rawUrl.isNotBlank()) rawUrl.toByteArray(Charsets.UTF_8).size else defaultULen
+    val urlBytes = if (rawUrl.isNotBlank()) rawUrl.toByteArray(Charsets.UTF_8) else decodeLegacy(defaultU0, defaultU1, defaultU2, 40, 0x37)
+    val keyBytes = if (rawKey.isNotBlank()) rawKey.toByteArray(Charsets.UTF_8) else decodeLegacy(defaultK0, defaultK1, defaultK2, 46, 0x6B)
 
-    val (k0, k1, k2) = if (rawKey.isNotBlank()) encodeShards(rawKey, 0x6B) else Triple(defaultK0, defaultK1, defaultK2)
-    val kLen = if (rawKey.isNotBlank()) rawKey.toByteArray(Charsets.UTF_8).size else defaultKLen
+    // Deterministic per-secret nonce derived via SHA-256 + multi-round bit-rotated 4-shard diffusion
+    val md = MessageDigest.getInstance("SHA-256")
+    val seedMaterial = md.digest(("au-vault-v2|" + urlBytes.size + "|" + keyBytes.size + "|com.aistudio.anitrack.knyw").toByteArray(Charsets.UTF_8))
+    val nonceA = seedMaterial.copyOfRange(0, 16)
+    val nonceB = seedMaterial.copyOfRange(16, 32)
+
+    fun rotLeft8(v: Int, bits: Int): Int = ((v shl bits) or (v ushr (8 - bits))) and 0xFF
+
+    fun sealShards(plain: ByteArray, nonce: ByteArray, domainTag: String): List<List<Int>> {
+      val digest = MessageDigest.getInstance("SHA-256")
+      val stream = ByteArray(plain.size)
+      var produced = 0
+      var blockIdx = 0
+      while (produced < plain.size) {
+        digest.reset()
+        digest.update(nonce)
+        digest.update(domainTag.toByteArray(Charsets.UTF_8))
+        digest.update(byteArrayOf((blockIdx ushr 8).toByte(), (blockIdx and 0xFF).toByte()))
+        val blk = digest.digest()
+        val take = minOf(blk.size, plain.size - produced)
+        System.arraycopy(blk, 0, stream, produced, take)
+        produced += take
+        blockIdx++
+      }
+      val shards = List(4) { mutableListOf<Int>() }
+      for (i in plain.indices) {
+        val p = plain[i].toInt() and 0xFF
+        val k1 = stream[i].toInt() and 0xFF
+        val k2 = nonce[i % nonce.size].toInt() and 0xFF
+        val rot = (i % 5) + 1
+        val mixed = rotLeft8(p xor k1, rot) xor ((k2 + i * 17) and 0xFF)
+        shards[i % 4].add(mixed)
+      }
+      return shards
+    }
+
+    val uShards = sealShards(urlBytes, nonceA, "ep:v2")
+    val kShards = sealShards(keyBytes, nonceB, "cr:v2")
+    val nonceALiterals = nonceA.joinToString(", ") { b -> "(${b.toInt()}).toByte()" }
+    val nonceBLiterals = nonceB.joinToString(", ") { b -> "(${b.toInt()}).toByte()" }
 
     val outFile = outputDir.file("com/example/config/VaultMaterial.kt").get().asFile
     outFile.parentFile.mkdirs()
@@ -148,31 +215,52 @@ abstract class GenerateObfuscatedVaultTask : DefaultTask() {
       """
       package com.example.config
 
+      import java.security.MessageDigest
+
       internal object VaultMaterial {
-          private val u0 = intArrayOf(${u0.joinToString(", ")})
-          private val u1 = intArrayOf(${u1.joinToString(", ")})
-          private val u2 = intArrayOf(${u2.joinToString(", ")})
-          private val k0 = intArrayOf(${k0.joinToString(", ")})
-          private val k1 = intArrayOf(${k1.joinToString(", ")})
-          private val k2 = intArrayOf(${k2.joinToString(", ")})
+          private val nA = byteArrayOf($nonceALiterals)
+          private val nB = byteArrayOf($nonceBLiterals)
+          private val u0 = intArrayOf(${uShards[0].joinToString(", ")})
+          private val u1 = intArrayOf(${uShards[1].joinToString(", ")})
+          private val u2 = intArrayOf(${uShards[2].joinToString(", ")})
+          private val u3 = intArrayOf(${uShards[3].joinToString(", ")})
+          private val k0 = intArrayOf(${kShards[0].joinToString(", ")})
+          private val k1 = intArrayOf(${kShards[1].joinToString(", ")})
+          private val k2 = intArrayOf(${kShards[2].joinToString(", ")})
+          private val k3 = intArrayOf(${kShards[3].joinToString(", ")})
 
-          fun decodeEndpoint(): String = reconstruct(u0, u1, u2, $uLen, 0x37)
-          fun decodeCredential(): String = reconstruct(k0, k1, k2, $kLen, 0x6B)
+          fun decodeEndpoint(): String = unseal(arrayOf(u0, u1, u2, u3), ${urlBytes.size}, nA, "ep:v2")
+          fun decodeCredential(): String = unseal(arrayOf(k0, k1, k2, k3), ${keyBytes.size}, nB, "cr:v2")
 
-          private fun reconstruct(s0: IntArray, s1: IntArray, s2: IntArray, len: Int, seedByte: Int): String {
+          private fun rotRight8(v: Int, bits: Int): Int = ((v ushr bits) or (v shl (8 - bits))) and 0xFF
+
+          private fun unseal(shards: Array<IntArray>, len: Int, nonce: ByteArray, tag: String): String {
               if (len <= 0) return ""
+              val md = MessageDigest.getInstance("SHA-256")
+              val stream = ByteArray(len)
+              var produced = 0
+              var blkIdx = 0
+              while (produced < len) {
+                  md.reset()
+                  md.update(nonce)
+                  md.update(tag.toByteArray(Charsets.UTF_8))
+                  md.update(byteArrayOf((blkIdx ushr 8).toByte(), (blkIdx and 0xFF).toByte()))
+                  val blk = md.digest()
+                  val take = minOf(blk.size, len - produced)
+                  System.arraycopy(blk, 0, stream, produced, take)
+                  produced += take
+                  blkIdx++
+              }
               val out = ByteArray(len)
-              var i0 = 0
-              var i1 = 0
-              var i2 = 0
+              val idx = IntArray(4)
               for (i in 0 until len) {
-                  val masked = when (i % 3) {
-                      0 -> s0[i0++]
-                      1 -> s1[i1++]
-                      else -> s2[i2++]
-                  }
-                  val salt = ((i * 73 + seedByte * 31 + 19) xor 0x5A) and 0xFF
-                  out[i] = (masked xor salt).toByte()
+                  val lane = i % 4
+                  val c = shards[lane][idx[lane]++]
+                  val k2 = nonce[i % nonce.size].toInt() and 0xFF
+                  val unmasked = c xor ((k2 + i * 17) and 0xFF)
+                  val rot = (i % 5) + 1
+                  val k1 = stream[i].toInt() and 0xFF
+                  out[i] = (rotRight8(unmasked, rot) xor k1).toByte()
               }
               return String(out, Charsets.UTF_8)
           }
@@ -196,6 +284,13 @@ androidComponents {
     variant.sources.kotlin?.addGeneratedSourceDirectory(
       vaultTask,
       GenerateObfuscatedVaultTask::outputDir
+    )
+    val sandroneTask = tasks.register<SyncSandroneAssetsTask>("sync${capName}SandroneAssets") {
+      sourceDir.set(rootProject.file("public/assets/sandrone"))
+    }
+    variant.sources.assets?.addGeneratedSourceDirectory(
+      sandroneTask,
+      SyncSandroneAssetsTask::outputDir
     )
   }
 }

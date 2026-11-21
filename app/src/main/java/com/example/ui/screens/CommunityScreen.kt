@@ -75,8 +75,10 @@ import androidx.compose.ui.window.DialogProperties
 import com.example.model.CommunityAnimeGroup
 import com.example.model.CommunityReview
 import com.example.model.MemberStatus
+import com.example.model.NotificationJumpTarget
 import com.example.model.SentimentCategory
 import com.example.model.StarRatingUtils
+import com.example.model.UnseenDiscussionAnime
 import com.example.model.groupCommunityReviewsByAnime
 import com.example.ui.theme.AppSpacing
 import com.example.ui.theme.AppTheme
@@ -129,12 +131,17 @@ fun CommunityScreen(
     val isSubmittingNote by viewModel.isSubmittingCommunityNote.collectAsState()
     val noteSuccessFeedback by viewModel.communityNoteFeedback.collectAsState()
     val noteErrorFeedback by viewModel.communityNoteError.collectAsState()
+    val unseenDiscussionAnime by viewModel.unseenDiscussionAnime.collectAsState()
 
     var selectedSentimentKey by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedCommentsAnimeId by rememberSaveable { mutableStateOf<Int?>(null) }
 
     val selectedSentiment = remember(selectedSentimentKey) {
         SentimentCategory.entries.firstOrNull { it.key == selectedSentimentKey }
+    }
+
+    val unseenByAnimeId = remember(unseenDiscussionAnime) {
+        unseenDiscussionAnime.associateBy { it.animeId }
     }
 
     val animeGroups = remember(reviews) {
@@ -162,6 +169,11 @@ fun CommunityScreen(
                     .thenByDescending { it.latestUpdatedAt }
             )
         }
+    }
+
+    val unseenOnlyAnime = remember(unseenDiscussionAnime, filteredGroups) {
+        val shownIds = filteredGroups.map { it.animeId }.toSet()
+        unseenDiscussionAnime.filter { it.animeId !in shownIds }
     }
 
     val selectedCommentsGroup = remember(animeGroups, selectedCommentsAnimeId) {
@@ -469,7 +481,7 @@ fun CommunityScreen(
                         .fillMaxWidth()
                         .testTag("community_pull_to_refresh")
                 ) {
-                    if (filteredGroups.isEmpty()) {
+                    if (filteredGroups.isEmpty() && unseenOnlyAnime.isEmpty()) {
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
@@ -501,16 +513,53 @@ fun CommunityScreen(
                                 verticalArrangement = Arrangement.spacedBy(16.dp),
                                 modifier = Modifier.fillMaxSize()
                             ) {
+                                if (unseenOnlyAnime.isNotEmpty()) {
+                                    items(
+                                        items = unseenOnlyAnime,
+                                        key = { "unseen_${it.animeId}" }
+                                    ) { unseen ->
+                                        Box(modifier = Modifier.fillMaxWidth().animateItem()) {
+                                            UnseenTaggedAnimeCard(
+                                                unseen = unseen,
+                                                onClick = {
+                                                    viewModel.setPendingNotificationJump(
+                                                        NotificationJumpTarget(
+                                                            animeId = unseen.animeId,
+                                                            commentId = unseen.latestCommentId,
+                                                            threadId = unseen.latestThreadId,
+                                                            replyId = unseen.latestReplyId
+                                                        )
+                                                    )
+                                                    onSelectAnime(unseen.animeId)
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
                                 items(
                                     items = chunked,
                                     key = { row -> row.joinToString("_") { it.animeId.toString() } }
                                 ) { rowItems ->
                                     if (columns == 1) {
                                         val firstGroup = rowItems.first()
+                                        val unseenInfo = unseenByAnimeId[firstGroup.animeId]
                                         Box(modifier = Modifier.fillMaxWidth().animateItem()) {
                                             CommunityAnimeTemplateCard(
                                                 group = firstGroup,
-                                                onClick = { onSelectAnime(firstGroup.animeId) },
+                                                unseenInfo = unseenInfo,
+                                                onClick = {
+                                                    if (unseenInfo != null) {
+                                                        viewModel.setPendingNotificationJump(
+                                                            NotificationJumpTarget(
+                                                                animeId = unseenInfo.animeId,
+                                                                commentId = unseenInfo.latestCommentId,
+                                                                threadId = unseenInfo.latestThreadId,
+                                                                replyId = unseenInfo.latestReplyId
+                                                            )
+                                                        )
+                                                    }
+                                                    onSelectAnime(firstGroup.animeId)
+                                                },
                                                 onOpenComments = { selectedCommentsAnimeId = firstGroup.animeId },
                                                 onToggleLike = { viewModel.toggleReviewLike(firstGroup.leadReview) }
                                             )
@@ -522,10 +571,24 @@ fun CommunityScreen(
                                             verticalAlignment = Alignment.Top
                                         ) {
                                             rowItems.forEach { grp ->
+                                                val unseenInfo = unseenByAnimeId[grp.animeId]
                                                 Box(modifier = Modifier.weight(1f)) {
                                                     CommunityAnimeTemplateCard(
                                                         group = grp,
-                                                        onClick = { onSelectAnime(grp.animeId) },
+                                                        unseenInfo = unseenInfo,
+                                                        onClick = {
+                                                            if (unseenInfo != null) {
+                                                                viewModel.setPendingNotificationJump(
+                                                                    NotificationJumpTarget(
+                                                                        animeId = unseenInfo.animeId,
+                                                                        commentId = unseenInfo.latestCommentId,
+                                                                        threadId = unseenInfo.latestThreadId,
+                                                                        replyId = unseenInfo.latestReplyId
+                                                                    )
+                                                                )
+                                                            }
+                                                            onSelectAnime(grp.animeId)
+                                                        },
                                                         onOpenComments = { selectedCommentsAnimeId = grp.animeId },
                                                         onToggleLike = { viewModel.toggleReviewLike(grp.leadReview) }
                                                     )
@@ -590,7 +653,8 @@ internal fun CommunityAnimeTemplateCard(
     group: CommunityAnimeGroup,
     onClick: () -> Unit,
     onOpenComments: () -> Unit,
-    onToggleLike: (() -> Unit)? = null
+    onToggleLike: (() -> Unit)? = null,
+    unseenInfo: UnseenDiscussionAnime? = null
 ) {
     val colors = AppTheme.colors
     val lead = group.leadReview
@@ -609,30 +673,76 @@ internal fun CommunityAnimeTemplateCard(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Row(
-                verticalAlignment = Alignment.Top,
-                horizontalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                ResilientPosterImage(
-                    imageUrl = group.animeCoverImage,
-                    contentDescription = group.animeTitle,
-                    shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier.size(width = 66.dp, height = 96.dp)
-                )
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                Row(
+                    verticalAlignment = Alignment.Top,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    Text(
-                        text = group.animeTitle,
-                        fontFamily = CormorantSerifFamily,
-                        fontSize = 21.sp,
-                        lineHeight = 24.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = colors.textPrimary,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
+                    ResilientPosterImage(
+                        imageUrl = group.animeCoverImage,
+                        contentDescription = group.animeTitle,
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.size(width = 66.dp, height = 96.dp)
                     )
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = group.animeTitle,
+                                fontFamily = CormorantSerifFamily,
+                                fontSize = 21.sp,
+                                lineHeight = 24.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = colors.textPrimary,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (unseenInfo != null) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(11.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFFEF4444))
+                                        .border(1.5.dp, colors.cardBackground, CircleShape)
+                                        .testTag("community_unseen_red_dot_${group.animeId}")
+                                )
+                            }
+                        }
+                        if (unseenInfo != null) {
+                            Surface(
+                                shape = CircleShape,
+                                color = Color(0xFFEF4444).copy(alpha = 0.14f),
+                                border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.45f))
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(6.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(0xFFEF4444))
+                                    )
+                                    val actionWord = if (unseenInfo.latestNotificationType == "reply") "replied" else "tagged you"
+                                    val extra = if (unseenInfo.unseenCount > 1) " (+${unseenInfo.unseenCount - 1})" else ""
+                                    Text(
+                                        text = "${unseenInfo.latestSenderUsername} $actionWord$extra • Tap to open",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.SemiBold),
+                                        color = Color(0xFFFCA5A5),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
                     if (avgStars > 0f) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -842,6 +952,82 @@ internal fun CommunityAnimeTemplateCard(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UnseenTaggedAnimeCard(
+    unseen: UnseenDiscussionAnime,
+    onClick: () -> Unit
+) {
+    val colors = AppTheme.colors
+    AppCard(
+        shape = RoundedCornerShape(24.dp),
+        onClick = onClick,
+        modifier = Modifier.testTag("community_unseen_anime_card_${unseen.animeId}")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            ResilientPosterImage(
+                imageUrl = unseen.animeCoverImage,
+                contentDescription = unseen.animeTitle,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.size(width = 60.dp, height = 86.dp)
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFFEF4444))
+                            .testTag("community_unseen_red_dot_${unseen.animeId}")
+                    )
+                    Text(
+                        text = unseen.animeTitle.ifBlank { "Anime Discussion #${unseen.animeId}" },
+                        fontFamily = CormorantSerifFamily,
+                        fontSize = 20.sp,
+                        lineHeight = 23.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = colors.textPrimary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                val actionLabel = if (unseen.latestNotificationType == "reply") "replied to you" else "tagged you in discussion"
+                Text(
+                    text = "${unseen.latestSenderUsername} $actionLabel${if (unseen.unseenCount > 1) " • ${unseen.unseenCount} unseen" else ""}",
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = Color(0xFFFCA5A5)
+                )
+                if (unseen.latestPreview.isNotBlank()) {
+                    Text(
+                        text = "“${unseen.latestPreview}”",
+                        style = MaterialTheme.typography.bodySmall.copy(fontStyle = FontStyle.Italic),
+                        color = colors.textSecondary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Text(
+                    text = "Open anime discussion to read & clear indicator",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.accentPrimary
+                )
             }
         }
     }

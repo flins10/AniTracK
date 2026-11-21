@@ -32,6 +32,7 @@ import com.example.model.NotificationJumpTarget
 import com.example.model.PrivacySettings
 import com.example.model.StarRatingUtils
 import com.example.model.ThemeModePreference
+import com.example.model.UnseenDiscussionAnime
 import com.example.model.UserNotificationItem
 import com.example.model.UserProfile
 import com.example.model.VisibilityLevel
@@ -168,6 +169,9 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _unreadNotificationCount = MutableStateFlow(0)
     val unreadNotificationCount = _unreadNotificationCount.asStateFlow()
+
+    private val _unseenDiscussionAnime = MutableStateFlow<List<UnseenDiscussionAnime>>(emptyList())
+    val unseenDiscussionAnime = _unseenDiscussionAnime.asStateFlow()
 
     private val _hasMoreNotifications = MutableStateFlow(false)
     val hasMoreNotifications = _hasMoreNotifications.asStateFlow()
@@ -327,6 +331,12 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _isNextPageLoading = MutableStateFlow(false)
     val isNextPageLoading = _isNextPageLoading.asStateFlow()
+
+    private val _hasNextDiscoverPage = MutableStateFlow(true)
+    val hasNextDiscoverPageState = _hasNextDiscoverPage.asStateFlow()
+
+    private val _discoverLastPageStartIndex = MutableStateFlow(0)
+    val discoverLastPageStartIndex = _discoverLastPageStartIndex.asStateFlow()
 
     private val _searchError = MutableStateFlow<String?>(null)
     val searchError = _searchError.asStateFlow()
@@ -640,9 +650,10 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             }
-            supabaseDiscussion.fetchUnreadNotificationCount(activeSession).onSuccess { unread ->
+            supabaseDiscussion.fetchUnseenDiscussionAnime(activeSession).onSuccess { summary ->
                 if (_authSession.value?.userId == capturedUserId) {
-                    _unreadNotificationCount.value = unread
+                    _unseenDiscussionAnime.value = summary.anime
+                    _unreadNotificationCount.value = summary.totalUnseen
                 }
             }
         }
@@ -1597,6 +1608,8 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             if (resetPage) {
                 currentDiscoverPage = 1
                 hasNextDiscoverPage = true
+                _hasNextDiscoverPage.value = true
+                _discoverLastPageStartIndex.value = 0
                 _isSearching.value = true
             } else {
                 if (!hasNextDiscoverPage || _isNextPageLoading.value) return@launch
@@ -1635,10 +1648,17 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 repository.upsertCatalogItems(entities)
                 hasNextDiscoverPage = hasNext
+                _hasNextDiscoverPage.value = hasNext
                 if (resetPage) {
+                    _discoverLastPageStartIndex.value = 0
                     _searchResults.value = entities
                 } else {
-                    _searchResults.value = (_searchResults.value + entities).distinctBy { it.id }
+                    val prevCount = _searchResults.value.size
+                    val merged = (_searchResults.value + entities).distinctBy { it.id }
+                    if (merged.size > prevCount) {
+                        _discoverLastPageStartIndex.value = prevCount
+                    }
+                    _searchResults.value = merged
                 }
                 if (hasNext) currentDiscoverPage += 1
             }.onFailure { err ->
@@ -2331,6 +2351,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             }.onFailure { err ->
                 _communityError.value = ErrorSanitizer.sanitize(err, "Unable to load community members.")
             }
+            refreshUnseenDiscussionAnime()
             _isCommunityLoading.value = false
         }
     }
@@ -2568,6 +2589,9 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                             _discussionComments.value + page.comments.filterNot { it.id in existingIds }
                         }
                     }
+                    if (reset) {
+                        markAnimeDiscussionSeen(animeId)
+                    }
                 }
                 .onFailure { err ->
                     if (reset && _selectedAnimeId.value == animeId) {
@@ -2578,6 +2602,36 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun refreshUnseenDiscussionAnime() {
+        val session = _authSession.value ?: return
+        viewModelScope.launch {
+            supabaseDiscussion.fetchUnseenDiscussionAnime(session).onSuccess { summary ->
+                _unseenDiscussionAnime.value = summary.anime
+                _unreadNotificationCount.value = summary.totalUnseen
+            }
+        }
+    }
+
+    fun markAnimeDiscussionSeen(animeId: Int) {
+        val session = _authSession.value ?: return
+        val hadUnseen = _unseenDiscussionAnime.value.any { it.animeId == animeId }
+        if (hadUnseen) {
+            val remainingList = _unseenDiscussionAnime.value.filterNot { it.animeId == animeId }
+            _unseenDiscussionAnime.value = remainingList
+            _unreadNotificationCount.value = remainingList.sumOf { it.unseenCount }
+        }
+        viewModelScope.launch {
+            supabaseDiscussion.markAnimeNotificationsRead(session, animeId).onSuccess { remaining ->
+                _unreadNotificationCount.value = remaining
+                if (remaining == 0) {
+                    _unseenDiscussionAnime.value = emptyList()
+                } else {
+                    _unseenDiscussionAnime.value = _unseenDiscussionAnime.value.filterNot { it.animeId == animeId }
+                }
+            }
+        }
+    }
+
     fun loadMoreAnimeDiscussion(animeId: Int) {
         if (_isDiscussionLoading.value || !_discussionHasMore.value) return
         loadAnimeDiscussion(animeId, reset = false)
@@ -2585,11 +2639,50 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun searchMentionUsers(query: String) {
         val session = _authSession.value ?: return
+        val selfId = _userProfile.value?.id ?: session.userId
+        val clean = query.trim().lowercase()
+
+        // Instant local matches from community members & reviews on 1st character
+        val localCandidates = buildList {
+            _communityMembers.value.forEach { m ->
+                if (m.userId != selfId && m.username.isNotBlank() && !m.username.contains("@")) {
+                    add(MentionableUser(id = m.userId, username = m.username, avatarKey = m.avatarKey, avatarUrl = m.avatarUrl))
+                }
+            }
+            _communityReviews.value.forEach { r ->
+                if (r.userId != selfId && r.username.isNotBlank() && !r.username.contains("@")) {
+                    add(MentionableUser(id = r.userId, username = r.username, avatarKey = r.avatarKey, avatarUrl = r.avatarUrl))
+                }
+            }
+        }.distinctBy { it.id }
+            .filter { u ->
+                clean.isEmpty() || u.username.lowercase().startsWith(clean) || u.username.lowercase().contains(clean)
+            }
+            .sortedWith(
+                compareBy<MentionableUser> { !(clean.isNotEmpty() && it.username.lowercase().startsWith(clean)) }
+                    .thenBy { it.username.lowercase() }
+            )
+            .take(10)
+
+        if (localCandidates.isNotEmpty()) {
+            _mentionSuggestions.value = localCandidates
+        }
+
         mentionSearchJob?.cancel()
         mentionSearchJob = viewModelScope.launch {
-            delay(160)
-            supabaseDiscussion.searchMentionableUsers(session, query, limit = 8)
-                .onSuccess { _mentionSuggestions.value = it }
+            delay(110)
+            supabaseDiscussion.searchMentionableUsers(session, query, limit = 12)
+                .onSuccess { remote ->
+                    val merged = (remote + localCandidates)
+                        .distinctBy { it.id }
+                        .filter { it.id != selfId }
+                        .sortedWith(
+                            compareBy<MentionableUser> { !(clean.isNotEmpty() && it.username.lowercase().startsWith(clean)) }
+                                .thenBy { it.username.lowercase() }
+                        )
+                        .take(12)
+                    _mentionSuggestions.value = merged
+                }
         }
     }
 
@@ -2603,6 +2696,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
         animeTitle: String,
         animeCover: String,
         content: String,
+        taggedUserIds: List<String> = emptyList(),
         onSuccess: () -> Unit = {}
     ) {
         if (_isDiscussionSubmitting.value) return
@@ -2611,7 +2705,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             _discussionErrorMessage.value = "Sign in to post a comment."
             return
         }
-        val check = DiscussionRules.validateContentMentions(content)
+        val check = DiscussionRules.validateContentMentions(content, explicitTagCount = taggedUserIds.size)
         if (!check.isValid) {
             _discussionErrorMessage.value = check.errorMessage ?: "Invalid comment."
             return
@@ -2620,7 +2714,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             _isDiscussionSubmitting.value = true
             _discussionErrorMessage.value = null
             _discussionSuccessMessage.value = null
-            supabaseDiscussion.createAnimeComment(session, animeId, content, animeTitle, animeCover)
+            supabaseDiscussion.createAnimeComment(session, animeId, content, animeTitle, animeCover, taggedUserIds)
                 .onSuccess { (created, total) ->
                     _discussionComments.value = listOf(created) + _discussionComments.value.filterNot { it.id == created.id }
                     _discussionTotalCount.value = total
@@ -2642,11 +2736,12 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     fun editAnimeComment(
         commentId: String,
         newContent: String,
+        taggedUserIds: List<String> = emptyList(),
         onSuccess: () -> Unit = {}
     ) {
         if (_isDiscussionSubmitting.value) return
         val session = _authSession.value ?: return
-        val check = DiscussionRules.validateContentMentions(newContent)
+        val check = DiscussionRules.validateContentMentions(newContent, explicitTagCount = taggedUserIds.size)
         if (!check.isValid) {
             _discussionErrorMessage.value = check.errorMessage ?: "Invalid comment."
             return
@@ -2654,7 +2749,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _isDiscussionSubmitting.value = true
             _discussionErrorMessage.value = null
-            supabaseDiscussion.updateAnimeComment(session, commentId, newContent)
+            supabaseDiscussion.updateAnimeComment(session, commentId, newContent, taggedUserIds)
                 .onSuccess { (updatedText, updatedAt, mentions) ->
                     _discussionComments.value = _discussionComments.value.map { c ->
                         if (c.id == commentId) c.copy(content = updatedText, updatedAt = updatedAt, mentions = mentions) else c
@@ -2692,6 +2787,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
         commentId: String,
         targetUserId: String,
         content: String,
+        taggedUserIds: List<String> = emptyList(),
         onSuccess: (threadId: String) -> Unit = {}
     ) {
         if (_isDiscussionSubmitting.value) return
@@ -2700,7 +2796,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             _discussionErrorMessage.value = "Sign in to post a reply."
             return
         }
-        val check = DiscussionRules.validateContentMentions(content)
+        val check = DiscussionRules.validateContentMentions(content, explicitTagCount = taggedUserIds.size)
         if (!check.isValid) {
             _discussionErrorMessage.value = check.errorMessage ?: "Invalid reply."
             return
@@ -2709,7 +2805,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             _isDiscussionSubmitting.value = true
             _discussionErrorMessage.value = null
             _discussionSuccessMessage.value = null
-            supabaseDiscussion.createThreadReply(session, commentId, targetUserId, content)
+            supabaseDiscussion.createThreadReply(session, commentId, targetUserId, content, taggedUserIds)
                 .onSuccess { created ->
                     _discussionComments.value = _discussionComments.value.map { comment ->
                         if (comment.id == commentId) {
@@ -2733,11 +2829,12 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
         threadId: String,
         replyId: String,
         newContent: String,
+        taggedUserIds: List<String> = emptyList(),
         onSuccess: () -> Unit = {}
     ) {
         if (_isDiscussionSubmitting.value) return
         val session = _authSession.value ?: return
-        val check = DiscussionRules.validateContentMentions(newContent)
+        val check = DiscussionRules.validateContentMentions(newContent, explicitTagCount = taggedUserIds.size)
         if (!check.isValid) {
             _discussionErrorMessage.value = check.errorMessage ?: "Invalid reply."
             return
@@ -2745,7 +2842,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _isDiscussionSubmitting.value = true
             _discussionErrorMessage.value = null
-            supabaseDiscussion.updateThreadReply(session, replyId, newContent)
+            supabaseDiscussion.updateThreadReply(session, replyId, newContent, taggedUserIds)
                 .onSuccess { (updatedText, updatedAt, mentions) ->
                     _discussionComments.value = _discussionComments.value.map { comment ->
                         if (comment.id != commentId) comment
