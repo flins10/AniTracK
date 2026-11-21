@@ -362,6 +362,14 @@ data class DesktopCollectionItem(
     val count: Int = 0
 )
 
+private fun isDesktopHentaiOrAdult(genres: Collection<String>, isAdultFlag: Boolean = false): Boolean {
+    if (isAdultFlag) return true
+    return genres.any { raw ->
+        val g = raw.trim().lowercase()
+        g == "hentai" || g == "adult" || g.contains("18+")
+    }
+}
+
 data class DesktopCommunityReview(
     val id: String,
     val userId: String = "",
@@ -373,7 +381,9 @@ data class DesktopCommunityReview(
     val username: String,
     val avatarKey: String,
     val updatedAt: String,
-    val formattedDate: String
+    val formattedDate: String,
+    val genres: List<String> = emptyList(),
+    val isAdult: Boolean = isDesktopHentaiOrAdult(genres)
 )
 
 data class DesktopCommunityAnimeGroup(
@@ -386,7 +396,9 @@ data class DesktopCommunityAnimeGroup(
     val latestUpdatedAt: String,
     val formattedLatestDate: String,
     val leadReview: DesktopCommunityReview,
-    val reviews: List<DesktopCommunityReview>
+    val reviews: List<DesktopCommunityReview>,
+    val genres: List<String> = emptyList(),
+    val isAdult: Boolean = isDesktopHentaiOrAdult(genres)
 ) {
     val notesAndRatingsCount: Int get() = reviews.size
     val distinctContributors: List<DesktopCommunityReview>
@@ -410,6 +422,8 @@ private fun groupDesktopCommunityReviews(
             val bestTitle = sorted.firstOrNull { it.animeTitle.isNotBlank() }?.animeTitle ?: "Anime #${lead.animeId}"
             val bestCover = sorted.firstOrNull { it.animeCover.isNotBlank() }?.animeCover.orEmpty()
             val latestIso = sorted.maxOfOrNull { it.updatedAt }.orEmpty()
+            val mergedGenres = sorted.flatMap { it.genres }.distinct()
+            val isAdult = sorted.any { it.isAdult } || isDesktopHentaiOrAdult(mergedGenres)
             DesktopCommunityAnimeGroup(
                 animeId = lead.animeId,
                 animeTitle = bestTitle,
@@ -420,7 +434,9 @@ private fun groupDesktopCommunityReviews(
                 latestUpdatedAt = latestIso,
                 formattedLatestDate = lead.formattedDate,
                 leadReview = lead,
-                reviews = sorted
+                reviews = sorted,
+                genres = mergedGenres,
+                isAdult = isAdult
             )
         }
 }
@@ -1171,7 +1187,7 @@ private suspend fun fetchFullCloudSnapshot(session: DesktopPersistedState): Clou
 
         val seenKeys = mutableSetOf<String>()
         // 4a. Independent community_notes table
-        val cnSelect = "id,user_id,anime_id,rating,note_text,updated_at,anime(anilist_id,title_english,title_romaji,cover_image,episodes)"
+        val cnSelect = "id,user_id,anime_id,rating,note_text,updated_at,anime(anilist_id,title_english,title_romaji,cover_image,episodes,genres)"
         val cnReq = Request.Builder()
             .url("$SUPABASE_URL/rest/v1/community_notes?select=$cnSelect&order=updated_at.desc&limit=200")
             .addHeader("apikey", SUPABASE_ANON_KEY)
@@ -1198,6 +1214,9 @@ private suspend fun fetchFullCloudSnapshot(session: DesktopPersistedState): Clou
                             ?: animeObj?.get("title_romaji").asStringOrNull()?.takeIf { it.isNotBlank() }
                             ?: "Anime #$animeId"
                         val cover = animeObj?.get("cover_image").asStringOrNull().orEmpty()
+                        val genres = animeObj?.get("genres")?.takeIf { it.isJsonArray }?.asJsonArray
+                            ?.mapNotNull { it.asStringOrNull()?.trim()?.takeIf { g -> g.isNotBlank() } }
+                            .orEmpty()
                         val (uname, avKey) = profMap[rowUserId] ?: (
                             if (rowUserId == uid) (resolvedUsername ?: active.username) to (resolvedAvatar ?: active.avatarKey)
                             else "Anime Lover" to DesktopAvatar.AVATAR_3.key
@@ -1215,7 +1234,8 @@ private suspend fun fetchFullCloudSnapshot(session: DesktopPersistedState): Clou
                                 username = uname,
                                 avatarKey = avKey,
                                 updatedAt = updatedIso,
-                                formattedDate = formatIsoDate(updatedIso)
+                                formattedDate = formatIsoDate(updatedIso),
+                                genres = genres
                             )
                         )
                     }
@@ -1224,7 +1244,7 @@ private suspend fun fetchFullCloudSnapshot(session: DesktopPersistedState): Clou
         }
 
         // 4b. Legacy user_anime reviews fallback (adds only entries not already in community_notes)
-        val selectCols = "id,user_id,anime_id,status,episode_progress,personal_rating,review_notes,updated_at,anime(anilist_id,title_english,title_romaji,cover_image,episodes)"
+        val selectCols = "id,user_id,anime_id,status,episode_progress,personal_rating,review_notes,updated_at,anime(anilist_id,title_english,title_romaji,cover_image,episodes,genres)"
         val revReq = Request.Builder()
             .url("$SUPABASE_URL/rest/v1/user_anime?select=$selectCols&order=updated_at.desc&limit=150")
             .addHeader("apikey", SUPABASE_ANON_KEY)
@@ -1250,6 +1270,9 @@ private suspend fun fetchFullCloudSnapshot(session: DesktopPersistedState): Clou
                         ?: animeObj?.get("title_romaji").asStringOrNull()?.takeIf { it.isNotBlank() }
                         ?: "Anime #$animeId"
                     val cover = animeObj?.get("cover_image").asStringOrNull().orEmpty()
+                    val genres = animeObj?.get("genres")?.takeIf { it.isJsonArray }?.asJsonArray
+                        ?.mapNotNull { it.asStringOrNull()?.trim()?.takeIf { g -> g.isNotBlank() } }
+                        .orEmpty()
                     val (uname, avKey) = profMap[rowUserId] ?: (
                         if (rowUserId == uid) (resolvedUsername ?: active.username) to (resolvedAvatar ?: active.avatarKey)
                         else "Anime Lover" to DesktopAvatar.AVATAR_3.key
@@ -1267,7 +1290,8 @@ private suspend fun fetchFullCloudSnapshot(session: DesktopPersistedState): Clou
                             username = uname,
                             avatarKey = avKey,
                             updatedAt = updatedIso,
-                            formattedDate = formatIsoDate(updatedIso)
+                            formattedDate = formatIsoDate(updatedIso),
+                            genres = genres
                         )
                     )
                 }
@@ -3250,7 +3274,8 @@ fun AnimeUniverseDesktopRoot() {
                                             username = sessionState.username,
                                             avatarKey = sessionState.avatarKey,
                                             updatedAt = item.updatedAt.ifBlank { Instant.now().toString() },
-                                            formattedDate = formatIsoDate(item.updatedAt)
+                                            formattedDate = formatIsoDate(item.updatedAt),
+                                            genres = item.genres
                                         )
                                     }
                                 if (communityReviews.isNotEmpty()) {
@@ -3326,6 +3351,10 @@ fun AnimeUniverseDesktopRoot() {
                                     // Independent Community post: NEVER adds anime to Home!
                                     val nowIso = Instant.now().toString()
                                     val cleanNote = note.trim()
+                                    val matchedGenres = watchlist.firstOrNull { it.id == animeId }?.genres
+                                        ?: discoverItems.firstOrNull { it.id == animeId }?.genres
+                                        ?: communityReviews.firstOrNull { it.animeId == animeId }?.genres
+                                        ?: emptyList()
                                     val newRev = DesktopCommunityReview(
                                         id = "${sessionState.userId.ifBlank { "local" }}-$animeId",
                                         userId = sessionState.userId,
@@ -3337,7 +3366,8 @@ fun AnimeUniverseDesktopRoot() {
                                         username = sessionState.username,
                                         avatarKey = sessionState.avatarKey,
                                         updatedAt = nowIso,
-                                        formattedDate = formatIsoDate(nowIso)
+                                        formattedDate = formatIsoDate(nowIso),
+                                        genres = matchedGenres
                                     )
                                     communityReviews = listOf(newRev) + communityReviews.filterNot {
                                         it.animeId == animeId && (
@@ -5464,8 +5494,24 @@ private fun DesktopCommunityScreen(
                                     fontSize = 23.sp,
                                     color = IvoryText,
                                     maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
                                 )
+                                if (grp.isAdult) {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = Color(0xFFEF4444).copy(alpha = 0.2f),
+                                        border = BorderStroke(1.dp, Color(0xFFEF4444))
+                                    ) {
+                                        Text(
+                                            "18+",
+                                            fontSize = 10.5.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = Color(0xFFFCA5A5),
+                                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
                             }
                             if (unseenEntry != null) {
                                 Surface(
@@ -5749,14 +5795,35 @@ private fun DesktopCommunityScreen(
                                 },
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            Text(
-                                selectedCommentsGroup.animeTitle,
-                                fontFamily = FontFamily.Serif,
-                                fontSize = 23.sp,
-                                color = IvoryText,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    selectedCommentsGroup.animeTitle,
+                                    fontFamily = FontFamily.Serif,
+                                    fontSize = 23.sp,
+                                    color = IvoryText,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
+                                if (selectedCommentsGroup.isAdult) {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = Color(0xFFEF4444).copy(alpha = 0.2f),
+                                        border = BorderStroke(1.dp, Color(0xFFEF4444))
+                                    ) {
+                                        Text(
+                                            "18+",
+                                            fontSize = 10.5.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = Color(0xFFFCA5A5),
+                                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                            }
                             Text(
                                 "${selectedCommentsGroup.ratedCount} ratings • ${selectedCommentsGroup.notedCount} notes",
                                 fontSize = 12.sp,

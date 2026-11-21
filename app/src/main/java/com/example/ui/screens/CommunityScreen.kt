@@ -727,6 +727,25 @@ internal fun CommunityAnimeTemplateCard(
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f)
                             )
+                            if (group.isAdult) {
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = Color(0xFFEF4444).copy(alpha = 0.2f),
+                                    border = BorderStroke(1.dp, Color(0xFFEF4444)),
+                                    modifier = Modifier.testTag("community_adult_badge_${group.animeId}")
+                                ) {
+                                    Text(
+                                        text = "18+",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            letterSpacing = 0.4.sp
+                                        ),
+                                        color = Color(0xFFFCA5A5),
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
                             if (unseenInfo != null) {
                                 Box(
                                     modifier = Modifier
@@ -1140,16 +1159,40 @@ internal fun CommunityCommentsDialog(
                             .clickable { onOpenAnimeDetail() },
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Text(
-                            text = group.animeTitle,
-                            fontFamily = CormorantSerifFamily,
-                            fontSize = 22.sp,
-                            lineHeight = 25.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = colors.textPrimary,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = group.animeTitle,
+                                fontFamily = CormorantSerifFamily,
+                                fontSize = 22.sp,
+                                lineHeight = 25.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = colors.textPrimary,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                            if (group.isAdult) {
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = Color(0xFFEF4444).copy(alpha = 0.2f),
+                                    border = BorderStroke(1.dp, Color(0xFFEF4444))
+                                ) {
+                                    Text(
+                                        text = "18+",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            letterSpacing = 0.4.sp
+                                        ),
+                                        color = Color(0xFFFCA5A5),
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                        }
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)

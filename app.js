@@ -432,6 +432,8 @@ const state = {
   detailRatingSaving: false,
   detailRatingFeedback: '',
   detailRatingError: '',
+  detailNoteDraft: '',
+  lastRenderedTab: null,
 
   // Anime Discussion (Comments, @Tagging & Target-User Reply Threads)
   discussion: {
@@ -1148,14 +1150,68 @@ async function loadCloudData(silent = false) {
     }
 
     await Promise.all([loadCommunityReviews(), refreshUnreadNotificationCount()]);
-    const isTyping =
+    const hasUnsavedDetailDraft = Boolean(
+      state.tab === 'detail' &&
+        state.detailAnime &&
+        String(state.detailNoteDraft || '').trim() !== String(state.detailAnime.reviewNotes || '').trim()
+    );
+    const hasActiveUserWork =
       Boolean(state.inlineEpEdit) ||
       Boolean(state.contextMenu) ||
+      Boolean(state.communityCommentsAnimeId !== null) ||
+      Boolean(state.quickEditAnime) ||
+      Boolean(state.showAvatarModal) ||
+      Boolean(state.confirmRemoveHomeAnime) ||
+      Boolean(state.tab === 'detail') ||
+      hasUnsavedDetailDraft ||
+      Boolean(String(state.communityCommentDraftNote || '').trim()) ||
+      Boolean(String(state.discussion.draft || '').trim()) ||
+      Boolean(String(state.discussion.replyDraft || '').trim()) ||
+      Boolean(state.discussion.activeReplyTarget) ||
+      Boolean(state.discussion.editingCommentId) ||
+      Boolean(state.discussion.editingReplyId) ||
+      Boolean(state.discussion.contextMenu) ||
+      window.scrollY > 80 ||
       (document.activeElement && ['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName));
-    if (!silent || !isTyping) {
+    if (!silent || !hasActiveUserWork) {
       renderApp();
+    } else {
+      updateCommunityRedDotsInPlace();
     }
   } catch (_) {}
+}
+
+function isHentaiOrAdultAnime(genres, isAdult = false) {
+  if (isAdult === true) return true;
+  if (!Array.isArray(genres)) return false;
+  return genres.some((g) => {
+    const s = String(g || '').trim().toLowerCase();
+    return s === 'hentai' || s === 'adult' || s.includes('18+');
+  });
+}
+
+function normalizeAnimeGenresWithAdult(genres, isAdult = false) {
+  const list = Array.isArray(genres) ? genres.filter(Boolean) : [];
+  if (isAdult === true && !list.some((g) => String(g).trim().toLowerCase() === 'hentai')) {
+    return [...list, 'Hentai'];
+  }
+  return list;
+}
+
+function updateCommunityRedDotsInPlace() {
+  const hasUnseen = state.notifications.unreadCount > 0 || (state.notifications.unseenAnime || []).length > 0;
+  document.querySelectorAll('[data-nav="community"]').forEach((btn) => {
+    const existingDot = btn.querySelector('.nav-red-dot');
+    if (hasUnseen && !existingDot) {
+      const iconWrap = btn.querySelector('.nav-icon-badge-wrap');
+      const dot = document.createElement('span');
+      dot.className = iconWrap ? 'nav-red-dot' : 'nav-red-dot inline';
+      dot.setAttribute('aria-label', 'Unseen discussion messages');
+      (iconWrap || btn).appendChild(dot);
+    } else if (!hasUnseen && existingDot) {
+      existingDot.remove();
+    }
+  });
 }
 
 // Fetch Community Reviews — Independent of Home membership; merges community_notes + user_anime
@@ -1163,10 +1219,10 @@ async function loadCommunityReviews() {
   try {
     const feedSelect =
       'id,user_id,anime_id,status,episode_progress,personal_rating,review_notes,updated_at,' +
-      'anime(anilist_id,title_english,title_romaji,cover_image,episodes)';
+      'anime(anilist_id,title_english,title_romaji,cover_image,episodes,genres)';
     const notesSelect =
       'id,user_id,anime_id,rating,note_text,updated_at,' +
-      'anime(anilist_id,title_english,title_romaji,cover_image,episodes)';
+      'anime(anilist_id,title_english,title_romaji,cover_image,episodes,genres)';
     const [noteRows, normRows, memberRows] = await Promise.all([
       supabaseRequest(`/rest/v1/community_notes?select=${notesSelect}&order=updated_at.desc&limit=150`).catch(() => []),
       supabaseRequest(`/rest/v1/user_anime?select=${feedSelect}&order=updated_at.desc&limit=150`).catch(() => []),
@@ -1290,6 +1346,7 @@ async function loadCommunityReviews() {
         username: r.user_id === state.session?.userId ? state.profile.username : 'Member',
         avatar_key: r.user_id === state.session?.userId ? state.profile.avatarKey : 'avatar_1'
       };
+      const animeGenres = Array.isArray(anime.genres) ? anime.genres : [];
       return {
         id: r.id,
         source: r.source,
@@ -1302,6 +1359,8 @@ async function loadCommunityReviews() {
           anime.title_romaji ||
           'Anime',
         anime_cover_image: anime.cover_image || '',
+        genres: animeGenres,
+        is_adult: isHentaiOrAdultAnime(animeGenres, Boolean(anime.is_adult)),
         rating: r.rating,
         review_notes: r.review_notes,
         updated_at: r.updated_at || new Date().toISOString(),
@@ -1320,6 +1379,7 @@ async function loadCommunityReviews() {
           (m) => m.user_id === state.session.userId && Number(m.anime_id) === Number(v.animeId)
         );
         if (alreadyIdx === -1) {
+          const vGenres = Array.isArray(v.genres) ? v.genres : [];
           mapped.unshift({
             id: `local_${state.session.userId}_${v.animeId}`,
             source: 'user_anime',
@@ -1329,6 +1389,8 @@ async function loadCommunityReviews() {
             anime_id: Number(v.animeId),
             anime_title: v.titleEnglish || v.title || 'Anime',
             anime_cover_image: v.coverImage || '',
+            genres: vGenres,
+            is_adult: isHentaiOrAdultAnime(vGenres, Boolean(v.isAdult)),
             rating: hasRating ? Number(v.rating10) : null,
             review_notes: String(v.reviewNotes || '').trim(),
             updated_at: new Date().toISOString(),
@@ -1385,10 +1447,25 @@ function groupCommunityReviewsByAnime(reviews) {
     const leadReview = noted.length > 0 ? noted[0] : uniqueUserReviews[0];
     const totalLikesCount = uniqueUserReviews.reduce((acc, r) => acc + Number(r.likes_count || 0), 0);
 
+    const mergedGenres = Array.from(
+      new Set(uniqueUserReviews.flatMap((r) => (Array.isArray(r.genres) ? r.genres : [])))
+    );
+    const localMatch =
+      state.vault.find((v) => Number(v.animeId) === animeId) ||
+      state.discover.find((d) => Number(d.animeId) === animeId);
+    const allGenres = Array.from(
+      new Set([...mergedGenres, ...(Array.isArray(localMatch?.genres) ? localMatch.genres : [])])
+    );
+    const isAdultFlag =
+      uniqueUserReviews.some((r) => Boolean(r.is_adult)) ||
+      isHentaiOrAdultAnime(allGenres, Boolean(localMatch?.isAdult));
+
     groups.push({
       anime_id: animeId,
       anime_title: first.anime_title || 'Anime',
       anime_cover_image: first.anime_cover_image || '',
+      genres: allGenres,
+      is_adult: isAdultFlag,
       average_rating10: avgRating10,
       rated_count: rated.length,
       noted_count: noted.length,
@@ -1409,6 +1486,7 @@ let discoverScrollRaf = null;
 function mapDiscoverMediaItem(m) {
   const airingAt = m.nextAiringEpisode?.airingAt || null;
   const dow = airingAt ? (((new Date(airingAt * 1000).getDay() + 6) % 7) + 1) : ((m.id % 7) + 1);
+  const genres = normalizeAnimeGenresWithAdult(m.genres || [], Boolean(m.isAdult));
   return {
     animeId: m.id,
     title: m.title?.english || m.title?.romaji || 'Anime',
@@ -1423,7 +1501,8 @@ function mapDiscoverMediaItem(m) {
     countryOfOrigin: m.countryOfOrigin || 'JP',
     totalEpisodes: m.episodes || null,
     averageScore: m.averageScore || null,
-    genres: m.genres || [],
+    genres,
+    isAdult: isHentaiOrAdultAnime(genres, Boolean(m.isAdult)),
     synopsis: (m.description || '').replace(/<[^>]+>/g, ''),
     airingDayOfWeek: dow,
     airingTimeUnix: airingAt,
@@ -1698,6 +1777,7 @@ async function fetchDiscoverCatalog(loadMore = false) {
           averageScore
           countryOfOrigin
           genres
+          isAdult
           description(asHtml: false)
           nextAiringEpisode { airingAt episode }
         }
@@ -2111,6 +2191,7 @@ async function openAnimeDetail(animeId) {
   state.detailRatingSaving = false;
   state.detailRatingFeedback = '';
   state.detailRatingError = '';
+  state.detailNoteDraft = state.detailAnime.reviewNotes || '';
   state.discussion = {
     ...state.discussion,
     animeId,
@@ -2158,6 +2239,7 @@ async function openAnimeDetail(animeId) {
         startDate { year month day }
         countryOfOrigin
         genres
+        isAdult
         description(asHtml: false)
         nextAiringEpisode { airingAt episode }
         studios(isMain: true) { nodes { name } }
@@ -2210,7 +2292,8 @@ async function openAnimeDetail(animeId) {
         countryOfOrigin: m.countryOfOrigin || 'JP',
         totalEpisodes: m.episodes || existing?.totalEpisodes || null,
         averageScore: m.averageScore || null,
-        genres: m.genres || [],
+        genres: normalizeAnimeGenresWithAdult(m.genres || [], Boolean(m.isAdult)),
+        isAdult: isHentaiOrAdultAnime(m.genres || [], Boolean(m.isAdult)),
         synopsis: (m.description || '').replace(/<[^>]+>/g, ''),
         airingTimeUnix: m.nextAiringEpisode?.airingAt || null,
         nextEpisodeNumber: m.nextAiringEpisode?.episode || null,
@@ -2223,6 +2306,9 @@ async function openAnimeDetail(animeId) {
         isFavorite: Boolean(existing?.isFavorite),
         inWatchlist: Boolean(existing)
       };
+      if (!state.detailNoteDraft && existing?.reviewNotes) {
+        state.detailNoteDraft = existing.reviewNotes;
+      }
 
       // Render detail page immediately, then resolve the complete multi-season franchise chain via batched BFS
       state.detailLoading = false;
@@ -2263,7 +2349,7 @@ async function ensureCatalogAnimeSynced(item) {
       average_score: item.averageScore || null,
       status: item.mediaStatus || 'RELEASING',
       format: item.format || 'TV',
-      genres: Array.isArray(item.genres) ? item.genres.slice(0, 5) : [],
+      genres: normalizeAnimeGenresWithAdult(item.genres || [], Boolean(item.isAdult)).slice(0, 6),
       next_airing_at: item.airingTimeUnix || null,
       next_episode_number: item.nextEpisodeNumber || null
     },
@@ -2500,6 +2586,7 @@ async function submitCommunityCommentNote(animeId, rating10Val, noteText, animeM
 
   // Update local community preview immediately
   if (state.session) {
+    const metaGenres = normalizeAnimeGenresWithAdult(meta.genres || [], Boolean(meta.isAdult || meta.is_adult));
     const newEntry = {
       id: `local_note_${state.session.userId}_${aid}`,
       source: 'community_notes',
@@ -2509,6 +2596,8 @@ async function submitCommunityCommentNote(animeId, rating10Val, noteText, animeM
       anime_id: aid,
       anime_title: meta.titleEnglish || meta.title || meta.anime_title || 'Anime',
       anime_cover_image: meta.coverImage || meta.anime_cover_image || '',
+      genres: metaGenres,
+      is_adult: isHentaiOrAdultAnime(metaGenres, Boolean(meta.isAdult || meta.is_adult)),
       rating: cleanRating,
       review_notes: cleanNote,
       updated_at: new Date().toISOString(),
@@ -2527,7 +2616,9 @@ async function submitCommunityCommentNote(animeId, rating10Val, noteText, animeM
         title: meta.title || meta.anime_title || 'Anime',
         titleEnglish: meta.titleEnglish || meta.title || meta.anime_title || 'Anime',
         titleRomaji: meta.titleRomaji || meta.title || meta.anime_title || 'Anime',
-        coverImage: meta.coverImage || meta.anime_cover_image || ''
+        coverImage: meta.coverImage || meta.anime_cover_image || '',
+        genres: metaGenres,
+        isAdult: isHentaiOrAdultAnime(metaGenres, Boolean(meta.isAdult || meta.is_adult))
       });
       await syncCommunityNoteCloud(aid, cleanRating, cleanNote);
       await loadCommunityReviews();
@@ -4227,7 +4318,10 @@ function renderCommunityScreen() {
                       <img src="${escapeHtml(grp.anime_cover_image)}" alt="" style="width:68px;height:96px;object-fit:cover;border-radius:14px;flex-shrink:0;" />
                       <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;">
                         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-                          <div class="serif-heading" style="font-size:23px;line-height:27px;color:var(--text-primary);">${escapeHtml(grp.anime_title)}</div>
+                          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0;">
+                            <div class="serif-heading" style="font-size:23px;line-height:27px;color:var(--text-primary);">${escapeHtml(grp.anime_title)}</div>
+                            ${grp.is_adult ? `<span class="adult-18-badge">18+</span>` : ''}
+                          </div>
                           ${unseen ? `<span class="community-card-red-dot" title="Unseen tag or reply"></span>` : ''}
                         </div>
                         ${
@@ -4633,7 +4727,7 @@ function renderAnimeDetailScreen() {
 
         <div class="micro-label" style="color:var(--accent-primary);margin-top:4px;">WRITTEN REVIEW NOTE</div>
         <textarea id="inp-detail-notes" class="auth-input" style="height:96px;padding:12px;resize:vertical;" placeholder="Write your thoughts on this anime...">${escapeHtml(
-          a.reviewNotes || ''
+          state.detailNoteDraft !== undefined && state.detailNoteDraft !== null ? state.detailNoteDraft : (a.reviewNotes || '')
         )}</textarea>
         <button class="btn-primary" id="btn-detail-save-note" ${state.detailRatingSaving ? 'disabled' : ''}>
           ${state.detailRatingSaving ? 'SAVING...' : 'SAVE RATING & NOTE'}
@@ -4680,9 +4774,7 @@ function renderAnimeDiscussionSection(anime) {
           <h2 class="serif-heading" style="font-size:24px;line-height:28px;">
             Comments <span class="tabular-num" style="color:var(--accent-primary);font-size:18px;">(${d.totalComments})</span>
           </h2>
-          <div style="font-size:11.5px;color:var(--text-muted);margin-top:2px;">Right-click (Desktop) or long-press (Phone) any comment or reply to open its reply thread</div>
         </div>
-        <button type="button" class="discussion-action-btn" id="btn-discussion-refresh">Refresh</button>
       </div>
 
       ${
@@ -4692,8 +4784,8 @@ function renderAnimeDiscussionSection(anime) {
               <textarea
                 id="inp-discussion-comment"
                 class="auth-input"
-                style="height:88px;padding:12px;resize:vertical;"
-                placeholder="Share your thoughts on ${escapeHtml(resolveTitle(anime))}... Type @ + first letter to tag members (up to 5)"
+                style="height:84px;padding:12px;resize:vertical;"
+                placeholder="Write a comment..."
                 ${d.submitting ? 'disabled' : ''}
               >${escapeHtml(d.draft || '')}</textarea>
               ${renderSelectedTagChipsHtml('comment', d.commentTags)}
@@ -4831,7 +4923,7 @@ function renderAnimeDiscussionSection(anime) {
                                       ${
                                         isExpanded
                                           ? `
-                                            <div class="reply-thread-body">
+                                            <div class="reply-thread-body chat-thread-body">
                                               ${replies
                                                 .map((r) => {
                                                   const isOwnReply = currentUserId && r.user_id === currentUserId;
@@ -4839,7 +4931,7 @@ function renderAnimeDiscussionSection(anime) {
                                                   const isReplyHighlighted = hl.replyId === r.id;
                                                   return `
                                                     <div
-                                                      class="reply-item ${isReplyHighlighted ? 'highlight-pulse' : ''}"
+                                                      class="reply-item reply-chat-row ${isOwnReply ? 'is-own' : ''} ${isReplyHighlighted ? 'highlight-pulse' : ''}"
                                                       id="discussion-reply-${escapeHtml(r.id)}"
                                                       data-ctx-reply="${escapeHtml(r.id)}"
                                                       data-ctx-reply-cid="${escapeHtml(c.id)}"
@@ -4848,67 +4940,65 @@ function renderAnimeDiscussionSection(anime) {
                                                       data-ctx-name="${escapeHtml(r.username || 'Member')}"
                                                       data-ctx-owner="${isOwnReply ? '1' : '0'}"
                                                     >
-                                                      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-                                                        <div style="display:flex;align-items:center;gap:8px;min-width:0;">
-                                                          ${renderAvatarCircle(r.avatar_key || 'avatar_1', r.username, 28)}
-                                                          <div style="min-width:0;">
-                                                            <span style="font-size:13px;font-weight:700;color:var(--text-primary);">${escapeHtml(r.username || 'Member')}</span>
-                                                            <span style="font-size:11px;color:var(--text-muted);margin-left:6px;">
-                                                              ${escapeHtml(formatDiscussionTimestamp(r.created_at))}${
-                                                                r.updated_at && r.updated_at !== r.created_at ? ' • edited' : ''
-                                                              }
-                                                            </span>
-                                                          </div>
+                                                      <div class="reply-chat-avatar">${renderAvatarCircle(r.avatar_key || 'avatar_1', r.username, 26)}</div>
+                                                      <div class="reply-chat-bubble ${isOwnReply ? 'is-own' : ''}">
+                                                        <div class="reply-chat-meta">
+                                                          <span class="reply-chat-sender">${escapeHtml(r.username || 'Member')}</span>
+                                                          <span class="reply-chat-time">
+                                                            ${escapeHtml(formatDiscussionTimestamp(r.created_at))}${
+                                                              r.updated_at && r.updated_at !== r.created_at ? ' • edited' : ''
+                                                            }
+                                                          </span>
                                                         </div>
-                                                      </div>
 
-                                                      ${
-                                                        isEditingReply
-                                                          ? `
-                                                            <div class="discussion-composer-wrap">
-                                                              <textarea id="inp-discussion-edit-reply" class="auth-input" style="height:68px;padding:10px;resize:vertical;">${escapeHtml(
-                                                                d.editingReplyDraft
-                                                              )}</textarea>
-                                                              <div id="mention-dropdown-edit_reply" class="mention-autocomplete-dropdown" style="display:none;"></div>
-                                                              <div class="discussion-mention-bar">
-                                                                <span id="mention-counter-edit_reply" class="mention-counter-pill ${
-                                                                  validateContentMentions(d.editingReplyDraft).ok ? '' : 'over-limit'
-                                                                }">${validateContentMentions(d.editingReplyDraft).totalMentions}/${MAX_MENTIONS_PER_CONTENT} tagged</span>
-                                                                <div style="display:flex;gap:6px;">
-                                                                  <button type="button" class="discussion-action-btn" data-cancel-edit-reply>Cancel</button>
-                                                                  <button type="button" class="btn-primary" data-save-edit-reply="${escapeHtml(r.id)}" data-edit-reply-cid="${escapeHtml(c.id)}" data-edit-reply-tid="${escapeHtml(th.id)}" style="height:32px;padding:0 12px;font-size:11.5px;" ${
-                                                                    d.submitting ? 'disabled' : ''
-                                                                  }>Save</button>
+                                                        ${
+                                                          isEditingReply
+                                                            ? `
+                                                              <div class="discussion-composer-wrap" style="margin-top:4px;">
+                                                                <textarea id="inp-discussion-edit-reply" class="auth-input" style="height:60px;padding:8px 10px;resize:vertical;">${escapeHtml(
+                                                                  d.editingReplyDraft
+                                                                )}</textarea>
+                                                                <div id="mention-dropdown-edit_reply" class="mention-autocomplete-dropdown" style="display:none;"></div>
+                                                                <div class="discussion-mention-bar">
+                                                                  <span id="mention-counter-edit_reply" class="mention-counter-pill ${
+                                                                    validateContentMentions(d.editingReplyDraft).ok ? '' : 'over-limit'
+                                                                  }">${validateContentMentions(d.editingReplyDraft).totalMentions}/${MAX_MENTIONS_PER_CONTENT} tagged</span>
+                                                                  <div style="display:flex;gap:6px;">
+                                                                    <button type="button" class="discussion-action-btn" data-cancel-edit-reply>Cancel</button>
+                                                                    <button type="button" class="btn-primary" data-save-edit-reply="${escapeHtml(r.id)}" data-edit-reply-cid="${escapeHtml(c.id)}" data-edit-reply-tid="${escapeHtml(th.id)}" style="height:30px;padding:0 12px;font-size:11.5px;" ${
+                                                                      d.submitting ? 'disabled' : ''
+                                                                    }>Save</button>
+                                                                  </div>
                                                                 </div>
                                                               </div>
-                                                            </div>
-                                                          `
-                                                          : `
-                                                            <div class="discussion-comment-body" style="font-size:13.5px;">${renderMentionHighlightedHtml(r.content ?? r.body ?? '')}</div>
-                                                            ${renderMentionsDisplayHtml(r.mentions)}
-                                                          `
-                                                      }
-
-                                                      <div class="discussion-action-row">
-                                                        ${
-                                                          state.session
-                                                            ? `<button
-                                                                 type="button"
-                                                                 class="discussion-action-btn"
-                                                                 data-start-reply-comment="${escapeHtml(c.id)}"
-                                                                 data-reply-target-uid="${escapeHtml(r.user_id)}"
-                                                                 data-reply-target-name="${escapeHtml(r.username || 'Member')}"
-                                                               >Reply to @${escapeHtml(r.username || 'Member')}</button>`
-                                                            : ''
-                                                        }
-                                                        ${
-                                                          isOwnReply && !isEditingReply
-                                                            ? `
-                                                              <button type="button" class="discussion-action-btn" data-edit-reply="${escapeHtml(r.id)}" data-edit-reply-cid="${escapeHtml(c.id)}" data-edit-reply-tid="${escapeHtml(th.id)}">Edit</button>
-                                                              <button type="button" class="discussion-action-btn danger" data-delete-reply="${escapeHtml(r.id)}" data-delete-reply-cid="${escapeHtml(c.id)}" data-delete-reply-tid="${escapeHtml(th.id)}">Delete</button>
                                                             `
-                                                            : ''
+                                                            : `
+                                                              <div class="reply-chat-text">${renderMentionHighlightedHtml(r.content ?? r.body ?? '')}</div>
+                                                              ${renderMentionsDisplayHtml(r.mentions)}
+                                                            `
                                                         }
+
+                                                        <div class="reply-chat-actions">
+                                                          ${
+                                                            state.session
+                                                              ? `<button
+                                                                   type="button"
+                                                                   class="reply-chat-link"
+                                                                   data-start-reply-comment="${escapeHtml(c.id)}"
+                                                                   data-reply-target-uid="${escapeHtml(r.user_id)}"
+                                                                   data-reply-target-name="${escapeHtml(r.username || 'Member')}"
+                                                                 >Reply</button>`
+                                                              : ''
+                                                          }
+                                                          ${
+                                                            isOwnReply && !isEditingReply
+                                                              ? `
+                                                                <button type="button" class="reply-chat-link" data-edit-reply="${escapeHtml(r.id)}" data-edit-reply-cid="${escapeHtml(c.id)}" data-edit-reply-tid="${escapeHtml(th.id)}">Edit</button>
+                                                                <button type="button" class="reply-chat-link danger" data-delete-reply="${escapeHtml(r.id)}" data-delete-reply-cid="${escapeHtml(c.id)}" data-delete-reply-tid="${escapeHtml(th.id)}">Delete</button>
+                                                              `
+                                                              : ''
+                                                          }
+                                                        </div>
                                                       </div>
                                                     </div>
                                                   `;
@@ -4916,15 +5006,14 @@ function renderAnimeDiscussionSection(anime) {
                                                 .join('')}
 
                                               ${
-                                                state.session
+                                                state.session && !(isReplyingOnThisComment && d.activeReplyTarget?.targetUserId === th.target_user_id)
                                                   ? `<button
                                                        type="button"
-                                                       class="discussion-action-btn"
-                                                       style="align-self:flex-start;"
+                                                       class="reply-chat-join-btn"
                                                        data-start-reply-comment="${escapeHtml(c.id)}"
                                                        data-reply-target-uid="${escapeHtml(th.target_user_id)}"
                                                        data-reply-target-name="${escapeHtml(th.target_username || 'Member')}"
-                                                     >+ Join @${escapeHtml(th.target_username || 'Member')}'s thread</button>`
+                                                     >Reply in thread...</button>`
                                                   : ''
                                               }
                                             </div>
@@ -4943,30 +5032,28 @@ function renderAnimeDiscussionSection(anime) {
                       ${
                         isReplyingOnThisComment
                           ? `
-                            <div class="discussion-inline-reply-box">
-                              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                            <div class="discussion-inline-reply-box discussion-chat-composer">
+                              <div class="reply-chat-composer-header">
                                 <span style="font-size:12px;font-weight:700;color:var(--accent-primary);">
-                                  Replying in @${escapeHtml(d.activeReplyTarget.targetUsername)}'s thread
+                                  Replying to @${escapeHtml(d.activeReplyTarget.targetUsername)}
                                 </span>
-                                <button type="button" class="discussion-action-btn" id="btn-cancel-reply-composer">Cancel</button>
+                                <button type="button" class="reply-chat-link" id="btn-cancel-reply-composer">Cancel</button>
                               </div>
-                              <textarea
-                                id="inp-discussion-reply"
-                                class="auth-input"
-                                style="height:72px;padding:10px;resize:vertical;"
-                                placeholder="Write a reply... Type @ + first letter to tag users (max 5)"
-                                ${d.submitting ? 'disabled' : ''}
-                              >${escapeHtml(d.replyDraft || '')}</textarea>
                               ${renderSelectedTagChipsHtml('reply', d.replyTags)}
                               <div id="mention-dropdown-reply" class="mention-autocomplete-dropdown" style="display:none;"></div>
-                              <div class="discussion-mention-bar">
-                                <span id="mention-counter-reply" class="mention-counter-pill ${replyCheck.ok ? '' : 'over-limit'}">
-                                  ${replyCheck.totalMentions}/${MAX_MENTIONS_PER_CONTENT} tagged
-                                </span>
-                                <button type="button" class="btn-primary" id="btn-post-thread-reply" style="height:36px;padding:0 16px;font-size:12px;" ${
+                              <div class="reply-chat-input-row">
+                                <textarea
+                                  id="inp-discussion-reply"
+                                  class="auth-input reply-chat-textarea"
+                                  rows="1"
+                                  placeholder="Message @${escapeHtml(d.activeReplyTarget.targetUsername)}..."
+                                  ${d.submitting ? 'disabled' : ''}
+                                >${escapeHtml(d.replyDraft || '')}</textarea>
+                                <button type="button" class="btn-primary reply-chat-send-btn" id="btn-post-thread-reply" ${
                                   d.submitting ? 'disabled' : ''
-                                }>${d.submitting ? 'POSTING...' : 'POST REPLY'}</button>
+                                }>${d.submitting ? '...' : 'Send'}</button>
                               </div>
+                              <span id="mention-counter-reply" style="display:none;">${replyCheck.totalMentions}/${MAX_MENTIONS_PER_CONTENT}</span>
                             </div>
                           `
                           : ''
@@ -6048,7 +6135,10 @@ function renderModals() {
                 <img src="${escapeHtml(grp.anime_cover_image)}" alt="" style="width:48px;height:68px;border-radius:12px;object-fit:cover;flex-shrink:0;" />
                 <div style="min-width:0;">
                   <div class="micro-label" style="color:var(--accent-primary);">COMMUNITY ANIME HUB</div>
-                  <h3 class="serif-heading" style="font-size:21px;line-height:25px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(grp.anime_title)}</h3>
+                  <div style="display:flex;align-items:center;gap:8px;min-width:0;">
+                    <h3 class="serif-heading" style="font-size:21px;line-height:25px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(grp.anime_title)}</h3>
+                    ${grp.is_adult ? `<span class="adult-18-badge" style="flex-shrink:0;">18+</span>` : ''}
+                  </div>
                   <div style="display:flex;align-items:center;gap:8px;margin-top:2px;">
                     ${
                       avgStarsNum > 0
@@ -6243,6 +6333,15 @@ function renderApp() {
   const root = document.getElementById('app');
   if (!root) return;
 
+  const liveDetailNotesEl = document.getElementById('inp-detail-notes');
+  if (liveDetailNotesEl && state.tab === 'detail') {
+    state.detailNoteDraft = liveDetailNotesEl.value;
+  }
+  const prevScrollY = window.scrollY;
+  const prevCommListScroll = document.querySelector('.community-comments-list')?.scrollTop ?? null;
+  const prevModalDiscScroll = document.querySelector('.community-modal-discussion-scroll')?.scrollTop ?? null;
+  const sameTab = state.lastRenderedTab === state.tab;
+
   const needsOnboarding = Boolean(
     state.session &&
       (state.authMode === 'onboard_username' ||
@@ -6370,6 +6469,19 @@ function renderApp() {
   `;
 
   bindAppEvents();
+  state.lastRenderedTab = state.tab;
+
+  if (prevCommListScroll !== null) {
+    const commListEl = document.querySelector('.community-comments-list');
+    if (commListEl) commListEl.scrollTop = prevCommListScroll;
+  }
+  if (prevModalDiscScroll !== null) {
+    const modalDiscEl = document.querySelector('.community-modal-discussion-scroll');
+    if (modalDiscEl) modalDiscEl.scrollTop = prevModalDiscScroll;
+  }
+  if (sameTab && prevScrollY > 0) {
+    window.scrollTo(0, prevScrollY);
+  }
 }
 
 function bindAuthEvents() {
@@ -7646,10 +7758,17 @@ function bindAppEvents() {
       await saveDetailRatingOrNote(nextRating10, undefined, 'rating');
     };
   }
+  const inpDetailNotes = document.getElementById('inp-detail-notes');
+  if (inpDetailNotes) {
+    inpDetailNotes.oninput = (e) => {
+      state.detailNoteDraft = e.target.value;
+    };
+  }
   const btnSaveNote = document.getElementById('btn-detail-save-note');
   if (btnSaveNote && state.detailAnime) {
     btnSaveNote.onclick = async () => {
-      const notes = (document.getElementById('inp-detail-notes')?.value || '').trim();
+      const notes = (document.getElementById('inp-detail-notes')?.value ?? state.detailNoteDraft ?? '').trim();
+      state.detailNoteDraft = notes;
       await saveDetailRatingOrNote(state.detailAnime.rating10, notes, 'note');
     };
   }
@@ -7664,6 +7783,12 @@ function bindAppEvents() {
   if (inpDiscReply) {
     inpDiscReply.oninput = () => handleDiscussionInputMentionCheck('reply', inpDiscReply);
     inpDiscReply.onclick = () => handleDiscussionInputMentionCheck('reply', inpDiscReply);
+    inpDiscReply.onkeydown = (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        postThreadReply();
+      }
+    };
   }
   const inpDiscEditComment = document.getElementById('inp-discussion-edit-comment');
   if (inpDiscEditComment) {
@@ -7675,11 +7800,7 @@ function bindAppEvents() {
   }
   const btnPostDiscComment = document.getElementById('btn-post-discussion-comment');
   if (btnPostDiscComment) btnPostDiscComment.onclick = () => postAnimeComment();
-  const btnRefreshDisc = document.getElementById('btn-discussion-refresh');
   const activeDiscAnime = getActiveDiscussionAnime();
-  if (btnRefreshDisc && activeDiscAnime) {
-    btnRefreshDisc.onclick = () => loadAnimeDiscussion(activeDiscAnime.animeId, true);
-  }
   const btnLoadMoreDisc = document.getElementById('btn-discussion-load-more');
   if (btnLoadMoreDisc && activeDiscAnime) {
     btnLoadMoreDisc.onclick = () => loadAnimeDiscussion(activeDiscAnime.animeId, false);
@@ -8157,11 +8278,9 @@ if (state.session) {
   loadCloudData(false);
 }
 
-// Automatic background sync every 15 seconds + silent OTP email verification check
+// Silent OTP email verification check every 4 seconds (only during OTP verification)
 setInterval(async () => {
-  if (state.session && !document.hidden) {
-    loadCloudData(true);
-  } else if (
+  if (
     !state.session &&
     state.authMode === 'verify_otp' &&
     state.pendingVerifyEmail &&
@@ -8194,10 +8313,26 @@ setInterval(async () => {
   }
 }, 4000);
 
+// Gentle background sync every 30 seconds (never interrupts scrolling, open modals, or unsaved drafts)
+let lastSilentSyncAt = 0;
+function triggerThrottledSilentSync() {
+  const now = Date.now();
+  if (!state.session || document.hidden || now - lastSilentSyncAt < 15000) return;
+  lastSilentSyncAt = now;
+  loadCloudData(true);
+}
+
+setInterval(() => {
+  if (state.session && !document.hidden) {
+    lastSilentSyncAt = Date.now();
+    loadCloudData(true);
+  }
+}, 30000);
+
 window.addEventListener('focus', () => {
-  if (state.session) loadCloudData(true);
+  triggerThrottledSilentSync();
 });
 
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && state.session) loadCloudData(true);
+  if (!document.hidden) triggerThrottledSilentSync();
 });

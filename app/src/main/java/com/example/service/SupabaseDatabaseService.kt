@@ -1189,14 +1189,16 @@ class SupabaseDatabaseService {
         animeTitle: String,
         coverImage: String,
         rating10: Double?,
-        reviewNotes: String
+        reviewNotes: String,
+        genres: String = ""
     ): Result<Unit> = withContext(Dispatchers.IO) {
         if (!AppConfig.isSupabaseConfigured) return@withContext Result.failure(Exception("Supabase not configured"))
         val catalogSeed = AnimeEntity(
             id = animeId,
             titleRomaji = animeTitle.ifBlank { "Anime #$animeId" },
             titleEnglish = animeTitle.ifBlank { null },
-            coverImage = coverImage
+            coverImage = coverImage,
+            genres = genres
         )
         runCatching { upsertAnimeCatalog(session, catalogSeed) }
         try {
@@ -1634,7 +1636,7 @@ class SupabaseDatabaseService {
             val memberById = members.associateBy { it.userId }.toMutableMap()
             val animeFilterQuery = if (animeIdFilter != null) "&anime_id=eq.$animeIdFilter" else ""
             val compactFeedSelect = "id,user_id,anime_id,status,episode_progress,personal_rating,review_notes,updated_at," +
-                "anime(anilist_id,title_english,title_romaji,cover_image,episodes)"
+                "anime(anilist_id,title_english,title_romaji,cover_image,episodes,genres)"
             val req = requestBuilder(
                 "/rest/v1/user_anime?select=$compactFeedSelect$animeFilterQuery&order=updated_at.desc&limit=${limit.coerceIn(10, 200)}&offset=${offset.coerceAtLeast(0)}",
                 session.accessToken
@@ -1648,7 +1650,7 @@ class SupabaseDatabaseService {
 
             // Also fetch independent community_notes (when deployed) so Community works independently of Home/Library
             val communityNotesArr = runCatching {
-                val notesSelect = "id,user_id,anime_id,rating,note_text,updated_at,anime(anilist_id,title_english,title_romaji,cover_image,episodes)"
+                val notesSelect = "id,user_id,anime_id,rating,note_text,updated_at,anime(anilist_id,title_english,title_romaji,cover_image,episodes,genres)"
                 val notesReq = requestBuilder(
                     "/rest/v1/community_notes?select=$notesSelect$animeFilterQuery&order=updated_at.desc&limit=${limit.coerceIn(10, 200)}&offset=${offset.coerceAtLeast(0)}",
                     session.accessToken
@@ -1794,6 +1796,15 @@ class SupabaseDatabaseService {
                 val rating = if (row.isNull("rating")) null else row.optDouble("rating")
                 val notes = row.optString("note_text", "").trim()
                 val totalEps = if (anime == null || anime.isNull("episodes")) null else anime.optInt("episodes")
+                val genresArr = anime?.optJSONArray("genres")
+                val genresList = buildList {
+                    if (genresArr != null) {
+                        for (gIdx in 0 until genresArr.length()) {
+                            val g = genresArr.optString(gIdx).trim()
+                            if (g.isNotBlank()) add(g)
+                        }
+                    }
+                }
                 val updatedAt = row.optString("updated_at", "")
                 val hasNoteOrRating = notes.isNotBlank() || (rating != null && rating > 0.0)
                 if (hasNoteOrRating) {
@@ -1813,7 +1824,8 @@ class SupabaseDatabaseService {
                         totalEpisodes = totalEps,
                         updatedAt = updatedAt,
                         likesCount = reviewLikesCount[rowId] ?: 0,
-                        likedByMe = likedByCurrentUser.contains(rowId)
+                        likedByMe = likedByCurrentUser.contains(rowId),
+                        genres = genresList
                     )
                 }
             }
@@ -1837,15 +1849,27 @@ class SupabaseDatabaseService {
                 val status = WatchStatus.fromDbValue(row.optString("status"))
                 val progress = row.optInt("episode_progress", 0)
                 val totalEps = if (anime == null || anime.isNull("episodes")) null else anime.optInt("episodes")
+                val genresArr = anime?.optJSONArray("genres")
+                val genresList = buildList {
+                    if (genresArr != null) {
+                        for (gIdx in 0 until genresArr.length()) {
+                            val g = genresArr.optString(gIdx).trim()
+                            if (g.isNotBlank()) add(g)
+                        }
+                    }
+                }
                 val updatedAt = row.optString("updated_at", "")
 
                 val key = "$uid-$animeId"
                 val existingNote = reviewsByKey[key]
                 if (existingNote != null) {
+                    val combinedGenres = (existingNote.genres + genresList).distinct()
                     reviewsByKey[key] = existingNote.copy(
                         status = status,
                         episodeProgress = progress,
-                        totalEpisodes = totalEps ?: existingNote.totalEpisodes
+                        totalEpisodes = totalEps ?: existingNote.totalEpisodes,
+                        genres = combinedGenres,
+                        isAdult = existingNote.isAdult || com.example.model.isHentaiOrAdultGenres(combinedGenres)
                     )
                 } else {
                     val canShowReview = member.status == MemberStatus.ACTIVE
@@ -1867,7 +1891,8 @@ class SupabaseDatabaseService {
                             totalEpisodes = totalEps,
                             updatedAt = updatedAt,
                             likesCount = reviewLikesCount[rowId] ?: 0,
-                            likedByMe = likedByCurrentUser.contains(rowId)
+                            likedByMe = likedByCurrentUser.contains(rowId),
+                            genres = genresList
                         )
                     }
                 }

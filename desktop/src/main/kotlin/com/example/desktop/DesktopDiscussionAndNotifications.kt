@@ -881,15 +881,6 @@ internal fun DesktopAnimeDiscussionSection(
                         color = IvoryText
                     )
                 }
-                OutlinedButton(
-                    onClick = { loadPage(reset = true) },
-                    shape = CircleShape,
-                    border = BorderStroke(1.dp, ObsidianBorder)
-                ) {
-                    Icon(Icons.Outlined.Refresh, contentDescription = "Refresh", tint = WarmSilver, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Refresh", color = IvoryText, fontSize = 12.sp)
-                }
             }
 
             if (isAuthenticated && !session.isGuest) {
@@ -904,7 +895,7 @@ internal fun DesktopAnimeDiscussionSection(
                     enabled = !submitting,
                     placeholder = {
                         Text(
-                            "Share your thoughts on ${anime.title}... Type @ + letter to tag members (max 5, right-click any comment to reply)",
+                            "Write a comment...",
                             color = WarmSilver,
                             fontSize = 13.sp
                         )
@@ -1323,216 +1314,250 @@ internal fun DesktopAnimeDiscussionSection(
                                                                     var replyMenuExpanded by remember(reply.id) { mutableStateOf(false) }
 
                                                                     Box(modifier = Modifier.fillMaxWidth()) {
-                                                                        Surface(
-                                                                            shape = RoundedCornerShape(12.dp),
-                                                                            color = ObsidianPillBg,
-                                                                            border = BorderStroke(
-                                                                                width = if (isReplyHighlighted) 1.5.dp else 1.dp,
-                                                                                color = if (isReplyHighlighted) ChampagneGold else ObsidianBorder.copy(alpha = 0.7f)
-                                                                            ),
-                                                                            modifier = Modifier
-                                                                                .fillMaxWidth()
-                                                                                .pointerInput(reply.id, isAuthenticated, session.isGuest) {
-                                                                                    awaitPointerEventScope {
-                                                                                        while (true) {
-                                                                                            val event = awaitPointerEvent()
-                                                                                            if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) {
-                                                                                                if (isAuthenticated && !session.isGuest) {
-                                                                                                    replyMenuExpanded = true
+                                                                        val bubbleShape = if (isOwnReply) {
+                                                                            RoundedCornerShape(topStart = 16.dp, topEnd = 4.dp, bottomEnd = 16.dp, bottomStart = 16.dp)
+                                                                        } else {
+                                                                            RoundedCornerShape(topStart = 4.dp, topEnd = 16.dp, bottomEnd = 16.dp, bottomStart = 16.dp)
+                                                                        }
+                                                                        Row(
+                                                                            modifier = Modifier.fillMaxWidth(),
+                                                                            horizontalArrangement = if (isOwnReply) Arrangement.End else Arrangement.Start,
+                                                                            verticalAlignment = Alignment.Top
+                                                                        ) {
+                                                                            if (!isOwnReply) {
+                                                                                DesktopAvatarImage(
+                                                                                    avatarKey = reply.avatarKey,
+                                                                                    username = reply.username,
+                                                                                    modifier = Modifier.padding(top = 2.dp, end = 8.dp).size(26.dp).clip(CircleShape)
+                                                                                )
+                                                                            }
+                                                                            Surface(
+                                                                                shape = bubbleShape,
+                                                                                color = when {
+                                                                                    isReplyHighlighted -> ChampagneGold.copy(alpha = 0.18f)
+                                                                                    isOwnReply -> ChampagneGold.copy(alpha = 0.12f)
+                                                                                    else -> ObsidianPillBg
+                                                                                },
+                                                                                border = BorderStroke(
+                                                                                    width = if (isReplyHighlighted) 1.5.dp else 1.dp,
+                                                                                    color = when {
+                                                                                        isReplyHighlighted -> ChampagneGold
+                                                                                        isOwnReply -> ChampagneGold.copy(alpha = 0.36f)
+                                                                                        else -> ObsidianBorder.copy(alpha = 0.7f)
+                                                                                    }
+                                                                                ),
+                                                                                modifier = Modifier
+                                                                                    .widthIn(max = 520.dp)
+                                                                                    .pointerInput(reply.id, isAuthenticated, session.isGuest) {
+                                                                                        awaitPointerEventScope {
+                                                                                            while (true) {
+                                                                                                val event = awaitPointerEvent()
+                                                                                                if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) {
+                                                                                                    if (isAuthenticated && !session.isGuest) {
+                                                                                                        replyMenuExpanded = true
+                                                                                                    }
                                                                                                 }
                                                                                             }
                                                                                         }
                                                                                     }
-                                                                                }
-                                                                        ) {
-                                                                            Column(
-                                                                                modifier = Modifier.padding(10.dp),
-                                                                                verticalArrangement = Arrangement.spacedBy(6.dp)
                                                                             ) {
-                                                                                Row(
-                                                                                    verticalAlignment = Alignment.CenterVertically,
-                                                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                                                Column(
+                                                                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                                                                    verticalArrangement = Arrangement.spacedBy(4.dp)
                                                                                 ) {
-                                                                                    DesktopAvatarImage(
-                                                                                        avatarKey = reply.avatarKey,
-                                                                                        username = reply.username,
-                                                                                        modifier = Modifier.size(26.dp).clip(CircleShape)
-                                                                                    )
-                                                                                    Text(reply.username, color = IvoryText, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                                                                                    val editedTag = if (reply.updatedAt.isNotBlank() && reply.updatedAt != reply.createdAt) " • edited" else ""
-                                                                                    Text(
-                                                                                        DesktopDiscussionRules.formatRelativeTime(reply.createdAt) + editedTag,
-                                                                                        color = AshMuted,
-                                                                                        fontSize = 11.sp
-                                                                                    )
-                                                                                }
-
-                                                                                if (isEditingReply) {
-                                                                                    val rCheck = DesktopDiscussionRules.validateMentions(editingReplyDraft.text)
-                                                                                    OutlinedTextField(
-                                                                                        value = editingReplyDraft,
-                                                                                        onValueChange = { editingReplyDraft = it },
-                                                                                        minLines = 2,
-                                                                                        modifier = Modifier.fillMaxWidth()
-                                                                                    )
                                                                                     Row(
-                                                                                        modifier = Modifier.fillMaxWidth(),
-                                                                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                                                                        verticalAlignment = Alignment.CenterVertically
+                                                                                        verticalAlignment = Alignment.CenterVertically,
+                                                                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                                                                                     ) {
-                                                                                        DesktopMentionCounterChip(validation = rCheck)
-                                                                                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                                                                            TextButton(onClick = { editingReplyId = null }) {
-                                                                                                Text("Cancel", color = WarmSilver)
+                                                                                        Text(reply.username, color = ChampagneGold, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                                                                        val editedTag = if (reply.updatedAt.isNotBlank() && reply.updatedAt != reply.createdAt) " • edited" else ""
+                                                                                        Text(
+                                                                                            DesktopDiscussionRules.formatRelativeTime(reply.createdAt) + editedTag,
+                                                                                            color = AshMuted,
+                                                                                            fontSize = 10.5.sp
+                                                                                        )
+                                                                                    }
+
+                                                                                    if (isEditingReply) {
+                                                                                        val rCheck = DesktopDiscussionRules.validateMentions(editingReplyDraft.text)
+                                                                                        OutlinedTextField(
+                                                                                            value = editingReplyDraft,
+                                                                                            onValueChange = { editingReplyDraft = it },
+                                                                                            minLines = 2,
+                                                                                            modifier = Modifier.fillMaxWidth()
+                                                                                        )
+                                                                                        Row(
+                                                                                            modifier = Modifier.fillMaxWidth(),
+                                                                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                                                                            verticalAlignment = Alignment.CenterVertically
+                                                                                        ) {
+                                                                                            DesktopMentionCounterChip(validation = rCheck)
+                                                                                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                                                                TextButton(onClick = { editingReplyId = null }) {
+                                                                                                    Text("Cancel", color = WarmSilver)
+                                                                                                }
+                                                                                                Button(
+                                                                                                    enabled = !submitting && rCheck.isValid && editingReplyDraft.text.trim().isNotEmpty(),
+                                                                                                    onClick = {
+                                                                                                        submitting = true
+                                                                                                        scope.launch {
+                                                                                                            DesktopDiscussionService.updateThreadReply(session, reply.id, editingReplyDraft.text.trim())
+                                                                                                                .onSuccess { (updated, active) ->
+                                                                                                                    onSessionUpdated(active)
+                                                                                                                    comments = comments.map { c ->
+                                                                                                                        if (c.id != comment.id) c else c.copy(
+                                                                                                                            threads = c.threads.map { th ->
+                                                                                                                                if (th.id != thread.id) th else th.copy(
+                                                                                                                                    replies = th.replies.map { rr ->
+                                                                                                                                        if (rr.id == reply.id) rr.copy(body = updated.body.ifBlank { editingReplyDraft.text.trim() }, updatedAt = updated.updatedAt)
+                                                                                                                                        else rr
+                                                                                                                                    }
+                                                                                                                                )
+                                                                                                                            }
+                                                                                                                        )
+                                                                                                                    }
+                                                                                                                    editingReplyId = null
+                                                                                                                    successMsg = "Reply updated"
+                                                                                                                }
+                                                                                                                .onFailure { errorMsg = it.message ?: "Failed to update reply." }
+                                                                                                            submitting = false
+                                                                                                        }
+                                                                                                    },
+                                                                                                    colors = ButtonDefaults.buttonColors(containerColor = ChampagneGold, contentColor = ChampagneOnGold)
+                                                                                                ) {
+                                                                                                    Text("Save", fontWeight = FontWeight.Bold)
+                                                                                                }
                                                                                             }
-                                                                                            Button(
-                                                                                                enabled = !submitting && rCheck.isValid && editingReplyDraft.text.trim().isNotEmpty(),
-                                                                                                onClick = {
+                                                                                        }
+                                                                                    } else {
+                                                                                        Text(
+                                                                                            text = DesktopDiscussionRules.buildHighlightedText(reply.body, ChampagneGold),
+                                                                                            color = IvoryText,
+                                                                                            fontSize = 13.5.sp,
+                                                                                            lineHeight = 19.sp
+                                                                                        )
+                                                                                        if (reply.mentions.isNotEmpty()) {
+                                                                                            DesktopTaggedUsersRow(mentions = reply.mentions)
+                                                                                        }
+                                                                                    }
+
+                                                                                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                                                                        if (isAuthenticated && !session.isGuest) {
+                                                                                            Text(
+                                                                                                "Reply",
+                                                                                                color = WarmSilver,
+                                                                                                fontSize = 11.sp,
+                                                                                                fontWeight = FontWeight.SemiBold,
+                                                                                                modifier = Modifier.clickable { openReplyFor(comment, reply.userId, reply.username) }
+                                                                                            )
+                                                                                        }
+                                                                                        if (isOwnReply && !isEditingReply) {
+                                                                                            Text(
+                                                                                                "Edit",
+                                                                                                color = WarmSilver,
+                                                                                                fontSize = 11.sp,
+                                                                                                fontWeight = FontWeight.SemiBold,
+                                                                                                modifier = Modifier.clickable {
+                                                                                                    editingReplyId = reply.id
+                                                                                                    editingReplyCommentId = comment.id
+                                                                                                    editingReplyThreadId = thread.id
+                                                                                                    editingReplyDraft = TextFieldValue(reply.body, TextRange(reply.body.length))
+                                                                                                }
+                                                                                            )
+                                                                                            Text(
+                                                                                                "Delete",
+                                                                                                color = CrimsonWaste,
+                                                                                                fontSize = 11.sp,
+                                                                                                fontWeight = FontWeight.SemiBold,
+                                                                                                modifier = Modifier.clickable {
+                                                                                                    if (submitting) return@clickable
                                                                                                     submitting = true
                                                                                                     scope.launch {
-                                                                                                        DesktopDiscussionService.updateThreadReply(session, reply.id, editingReplyDraft.text.trim())
-                                                                                                            .onSuccess { (updated, active) ->
+                                                                                                        DesktopDiscussionService.deleteThreadReply(session, reply.id)
+                                                                                                            .onSuccess { active ->
                                                                                                                 onSessionUpdated(active)
                                                                                                                 comments = comments.map { c ->
                                                                                                                     if (c.id != comment.id) c else c.copy(
-                                                                                                                        threads = c.threads.map { th ->
-                                                                                                                            if (th.id != thread.id) th else th.copy(
-                                                                                                                                replies = th.replies.map { rr ->
-                                                                                                                                    if (rr.id == reply.id) rr.copy(body = updated.body.ifBlank { editingReplyDraft.text.trim() }, updatedAt = updated.updatedAt)
-                                                                                                                                    else rr
-                                                                                                                                }
-                                                                                                                            )
+                                                                                                                        threads = c.threads.mapNotNull { th ->
+                                                                                                                            if (th.id != thread.id) th else {
+                                                                                                                                val kept = th.replies.filterNot { it.id == reply.id }
+                                                                                                                                if (kept.isEmpty()) null else th.copy(replies = kept, replyCount = kept.size)
+                                                                                                                            }
                                                                                                                         }
                                                                                                                     )
                                                                                                                 }
-                                                                                                                editingReplyId = null
-                                                                                                                successMsg = "Reply updated"
+                                                                                                                successMsg = "Reply deleted"
                                                                                                             }
-                                                                                                            .onFailure { errorMsg = it.message ?: "Failed to update reply." }
+                                                                                                            .onFailure { errorMsg = it.message ?: "Failed to delete reply." }
                                                                                                         submitting = false
                                                                                                     }
-                                                                                                },
-                                                                                                colors = ButtonDefaults.buttonColors(containerColor = ChampagneGold, contentColor = ChampagneOnGold)
-                                                                                            ) {
-                                                                                                Text("Save", fontWeight = FontWeight.Bold)
-                                                                                            }
-                                                                                        }
-                                                                                    }
-                                                                                } else {
-                                                                                    Text(
-                                                                                        text = DesktopDiscussionRules.buildHighlightedText(reply.body, ChampagneGold),
-                                                                                        color = IvoryText,
-                                                                                        fontSize = 13.5.sp,
-                                                                                        lineHeight = 19.sp
-                                                                                    )
-                                                                                    if (reply.mentions.isNotEmpty()) {
-                                                                                        DesktopTaggedUsersRow(mentions = reply.mentions)
-                                                                                    }
-                                                                                }
-
-                                                                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                                                                    if (isAuthenticated && !session.isGuest) {
-                                                                                        TextButton(
-                                                                                            onClick = { openReplyFor(comment, reply.userId, reply.username) }
-                                                                                        ) {
-                                                                                            Text("Reply to @${reply.username}", color = ChampagneGoldSoft, fontSize = 11.5.sp)
-                                                                                        }
-                                                                                    }
-                                                                                    if (isOwnReply && !isEditingReply) {
-                                                                                        TextButton(
-                                                                                            onClick = {
-                                                                                                editingReplyId = reply.id
-                                                                                                editingReplyCommentId = comment.id
-                                                                                                editingReplyThreadId = thread.id
-                                                                                                editingReplyDraft = TextFieldValue(reply.body, TextRange(reply.body.length))
-                                                                                            }
-                                                                                        ) {
-                                                                                            Text("Edit", color = WarmSilver, fontSize = 11.5.sp)
-                                                                                        }
-                                                                                        TextButton(
-                                                                                            onClick = {
-                                                                                                if (submitting) return@TextButton
-                                                                                                submitting = true
-                                                                                                scope.launch {
-                                                                                                    DesktopDiscussionService.deleteThreadReply(session, reply.id)
-                                                                                                        .onSuccess { active ->
-                                                                                                            onSessionUpdated(active)
-                                                                                                            comments = comments.map { c ->
-                                                                                                                if (c.id != comment.id) c else c.copy(
-                                                                                                                    threads = c.threads.mapNotNull { th ->
-                                                                                                                        if (th.id != thread.id) th else {
-                                                                                                                            val kept = th.replies.filterNot { it.id == reply.id }
-                                                                                                                            if (kept.isEmpty()) null else th.copy(replies = kept, replyCount = kept.size)
-                                                                                                                        }
-                                                                                                                    }
-                                                                                                                )
-                                                                                                            }
-                                                                                                            successMsg = "Reply deleted"
-                                                                                                        }
-                                                                                                        .onFailure { errorMsg = it.message ?: "Failed to delete reply." }
-                                                                                                    submitting = false
                                                                                                 }
-                                                                                            }
-                                                                                        ) {
-                                                                                            Text("Delete", color = CrimsonWaste, fontSize = 11.5.sp)
+                                                                                            )
                                                                                         }
                                                                                     }
-                                                                                }
 
-                                                                                DropdownMenu(
-                                                                                    expanded = replyMenuExpanded,
-                                                                                    onDismissRequest = { replyMenuExpanded = false }
-                                                                                ) {
-                                                                                    DropdownMenuItem(
-                                                                                        text = { Text("Reply to @${reply.username}") },
-                                                                                        leadingIcon = { Icon(Icons.AutoMirrored.Outlined.Reply, contentDescription = null, tint = ChampagneGold) },
-                                                                                        onClick = {
-                                                                                            replyMenuExpanded = false
-                                                                                            openReplyFor(comment, reply.userId, reply.username)
-                                                                                        }
-                                                                                    )
-                                                                                    if (isOwnReply && !isEditingReply) {
+                                                                                    DropdownMenu(
+                                                                                        expanded = replyMenuExpanded,
+                                                                                        onDismissRequest = { replyMenuExpanded = false }
+                                                                                    ) {
                                                                                         DropdownMenuItem(
-                                                                                            text = { Text("Edit reply") },
-                                                                                            leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
+                                                                                            text = { Text("Reply to @${reply.username}") },
+                                                                                            leadingIcon = { Icon(Icons.AutoMirrored.Outlined.Reply, contentDescription = null, tint = ChampagneGold) },
                                                                                             onClick = {
                                                                                                 replyMenuExpanded = false
-                                                                                                editingReplyId = reply.id
-                                                                                                editingReplyCommentId = comment.id
-                                                                                                editingReplyThreadId = thread.id
-                                                                                                editingReplyDraft = TextFieldValue(reply.body, TextRange(reply.body.length))
+                                                                                                openReplyFor(comment, reply.userId, reply.username)
                                                                                             }
                                                                                         )
-                                                                                        DropdownMenuItem(
-                                                                                            text = { Text("Delete reply", color = CrimsonWaste) },
-                                                                                            leadingIcon = { Icon(Icons.Outlined.Delete, contentDescription = null, tint = CrimsonWaste) },
-                                                                                            onClick = {
-                                                                                                replyMenuExpanded = false
-                                                                                                if (submitting) return@DropdownMenuItem
-                                                                                                submitting = true
-                                                                                                scope.launch {
-                                                                                                    DesktopDiscussionService.deleteThreadReply(session, reply.id)
-                                                                                                        .onSuccess { active ->
-                                                                                                            onSessionUpdated(active)
-                                                                                                            comments = comments.map { c ->
-                                                                                                                if (c.id != comment.id) c else c.copy(
-                                                                                                                    threads = c.threads.mapNotNull { th ->
-                                                                                                                        if (th.id != thread.id) th else {
-                                                                                                                            val kept = th.replies.filterNot { it.id == reply.id }
-                                                                                                                            if (kept.isEmpty()) null else th.copy(replies = kept, replyCount = kept.size)
-                                                                                                                        }
-                                                                                                                    }
-                                                                                                                )
-                                                                                                            }
-                                                                                                            successMsg = "Reply deleted"
-                                                                                                        }
-                                                                                                        .onFailure { errorMsg = it.message ?: "Failed to delete reply." }
-                                                                                                    submitting = false
+                                                                                        if (isOwnReply && !isEditingReply) {
+                                                                                            DropdownMenuItem(
+                                                                                                text = { Text("Edit reply") },
+                                                                                                leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
+                                                                                                onClick = {
+                                                                                                    replyMenuExpanded = false
+                                                                                                    editingReplyId = reply.id
+                                                                                                    editingReplyCommentId = comment.id
+                                                                                                    editingReplyThreadId = thread.id
+                                                                                                    editingReplyDraft = TextFieldValue(reply.body, TextRange(reply.body.length))
                                                                                                 }
-                                                                                            }
-                                                                                        )
+                                                                                            )
+                                                                                            DropdownMenuItem(
+                                                                                                text = { Text("Delete reply", color = CrimsonWaste) },
+                                                                                                leadingIcon = { Icon(Icons.Outlined.Delete, contentDescription = null, tint = CrimsonWaste) },
+                                                                                                onClick = {
+                                                                                                    replyMenuExpanded = false
+                                                                                                    if (submitting) return@DropdownMenuItem
+                                                                                                    submitting = true
+                                                                                                    scope.launch {
+                                                                                                        DesktopDiscussionService.deleteThreadReply(session, reply.id)
+                                                                                                            .onSuccess { active ->
+                                                                                                                onSessionUpdated(active)
+                                                                                                                comments = comments.map { c ->
+                                                                                                                    if (c.id != comment.id) c else c.copy(
+                                                                                                                        threads = c.threads.mapNotNull { th ->
+                                                                                                                            if (th.id != thread.id) th else {
+                                                                                                                                val kept = th.replies.filterNot { it.id == reply.id }
+                                                                                                                                if (kept.isEmpty()) null else th.copy(replies = kept, replyCount = kept.size)
+                                                                                                                            }
+                                                                                                                        }
+                                                                                                                    )
+                                                                                                                }
+                                                                                                                successMsg = "Reply deleted"
+                                                                                                            }
+                                                                                                            .onFailure { errorMsg = it.message ?: "Failed to delete reply." }
+                                                                                                        submitting = false
+                                                                                                    }
+                                                                                                }
+                                                                                            )
+                                                                                        }
                                                                                     }
                                                                                 }
+                                                                            }
+                                                                            if (isOwnReply) {
+                                                                                DesktopAvatarImage(
+                                                                                    avatarKey = reply.avatarKey,
+                                                                                    username = reply.username,
+                                                                                    modifier = Modifier.padding(top = 2.dp, start = 8.dp).size(26.dp).clip(CircleShape)
+                                                                                )
                                                                             }
                                                                         }
                                                                     }
@@ -1542,7 +1567,7 @@ internal fun DesktopAnimeDiscussionSection(
                                                                     TextButton(
                                                                         onClick = { openReplyFor(comment, thread.targetUserId, thread.targetUsername) }
                                                                     ) {
-                                                                        Text("+ Join @${thread.targetUsername}'s thread", color = ChampagneGold, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                                                        Text("Reply in thread...", color = ChampagneGold, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                                                                     }
                                                                 }
                                                             }
@@ -1553,18 +1578,18 @@ internal fun DesktopAnimeDiscussionSection(
                                         }
                                     }
 
-                                    // Inline reply composer for this comment
+                                    // Inline chat-style reply composer for this comment
                                     val replyTarget = activeReplyTarget
                                     if (replyTarget != null && replyTarget.commentId == comment.id) {
                                         Surface(
-                                            shape = RoundedCornerShape(14.dp),
+                                            shape = RoundedCornerShape(16.dp),
                                             color = ChampagneGold.copy(alpha = 0.08f),
                                             border = BorderStroke(1.dp, ChampagneGold.copy(alpha = 0.45f)),
                                             modifier = Modifier.fillMaxWidth()
                                         ) {
                                             Column(
-                                                modifier = Modifier.padding(12.dp),
-                                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                                modifier = Modifier.padding(10.dp),
+                                                verticalArrangement = Arrangement.spacedBy(6.dp)
                                             ) {
                                                 Row(
                                                     modifier = Modifier.fillMaxWidth(),
@@ -1572,37 +1597,22 @@ internal fun DesktopAnimeDiscussionSection(
                                                     verticalAlignment = Alignment.CenterVertically
                                                 ) {
                                                     Text(
-                                                        "Replying in @${replyTarget.targetUsername}'s thread",
+                                                        "Replying to @${replyTarget.targetUsername}",
                                                         color = ChampagneGold,
-                                                        fontSize = 12.5.sp,
+                                                        fontSize = 12.sp,
                                                         fontWeight = FontWeight.Bold
                                                     )
-                                                    TextButton(onClick = {
-                                                        activeReplyTarget = null
-                                                        selectedReplyTags = emptyList()
-                                                    }) {
-                                                        Text("Cancel", color = WarmSilver, fontSize = 12.sp)
-                                                    }
+                                                    Text(
+                                                        "Cancel",
+                                                        color = WarmSilver,
+                                                        fontSize = 11.5.sp,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        modifier = Modifier.clickable {
+                                                            activeReplyTarget = null
+                                                            selectedReplyTags = emptyList()
+                                                        }
+                                                    )
                                                 }
-                                                OutlinedTextField(
-                                                    value = replyDraft,
-                                                    onValueChange = { next ->
-                                                        replyDraft = next
-                                                        val q = DesktopDiscussionRules.detectActiveMentionQuery(next.text, next.selection.end)
-                                                        activeMentionQuery = q
-                                                        mentionScope = if (q != null) "reply" else null
-                                                    },
-                                                    enabled = !submitting,
-                                                    placeholder = {
-                                                        Text(
-                                                            "Write a reply... Type @ + letter to tag members (kept separate from text)",
-                                                            color = WarmSilver,
-                                                            fontSize = 12.5.sp
-                                                        )
-                                                    },
-                                                    minLines = 2,
-                                                    modifier = Modifier.fillMaxWidth()
-                                                )
                                                 if (selectedReplyTags.isNotEmpty()) {
                                                     DesktopSelectedTagChipsRow(
                                                         tags = selectedReplyTags,
@@ -1631,19 +1641,36 @@ internal fun DesktopAnimeDiscussionSection(
                                                 }
                                                 Row(
                                                     modifier = Modifier.fillMaxWidth(),
-                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                                                     verticalAlignment = Alignment.CenterVertically
                                                 ) {
-                                                    DesktopMentionCounterChip(validation = replyValidation)
+                                                    OutlinedTextField(
+                                                        value = replyDraft,
+                                                        onValueChange = { next ->
+                                                            replyDraft = next
+                                                            val q = DesktopDiscussionRules.detectActiveMentionQuery(next.text, next.selection.end)
+                                                            activeMentionQuery = q
+                                                            mentionScope = if (q != null) "reply" else null
+                                                        },
+                                                        enabled = !submitting,
+                                                        placeholder = {
+                                                            Text(
+                                                                "Message @${replyTarget.targetUsername}...",
+                                                                color = WarmSilver,
+                                                                fontSize = 12.5.sp
+                                                            )
+                                                        },
+                                                        minLines = 1,
+                                                        maxLines = 3,
+                                                        shape = RoundedCornerShape(20.dp),
+                                                        modifier = Modifier.weight(1f)
+                                                    )
                                                     Button(
-                                                        enabled = !submitting && replyValidation.isValid,
+                                                        enabled = !submitting && replyDraft.text.isNotBlank() && replyValidation.isValid,
                                                         onClick = {
                                                             if (submitting) return@Button
                                                             val clean = replyDraft.text.trim()
-                                                            if (clean.isEmpty()) {
-                                                                errorMsg = "Please write a reply before posting."
-                                                                return@Button
-                                                            }
+                                                            if (clean.isEmpty()) return@Button
                                                             submitting = true
                                                             errorMsg = null
                                                             successMsg = null
@@ -1667,8 +1694,8 @@ internal fun DesktopAnimeDiscussionSection(
                                                                     replyDraft = TextFieldValue("")
                                                                     selectedReplyTags = emptyList()
                                                                     activeReplyTarget = null
-                                                                    successMsg = "Reply posted in @${replyTarget.targetUsername}'s thread"
-                                                                    onShowToast("Reply posted successfully", false)
+                                                                    successMsg = "Reply sent"
+                                                                    onShowToast("Reply sent", false)
                                                                 }.onFailure { err ->
                                                                     errorMsg = err.message ?: "Failed to post reply."
                                                                     onShowToast(errorMsg!!, true)
@@ -1679,7 +1706,7 @@ internal fun DesktopAnimeDiscussionSection(
                                                         shape = CircleShape,
                                                         colors = ButtonDefaults.buttonColors(containerColor = ChampagneGold, contentColor = ChampagneOnGold)
                                                     ) {
-                                                        Text(if (submitting) "Posting..." else "Post Reply", fontWeight = FontWeight.Bold)
+                                                        Text(if (submitting) "..." else "Send", fontWeight = FontWeight.Bold)
                                                     }
                                                 }
                                             }

@@ -152,6 +152,14 @@ data class CommunityMember(
     val privacy: PrivacySettings = PrivacySettings(userId = userId)
 )
 
+fun isHentaiOrAdultGenres(genres: Collection<String>, isAdultFlag: Boolean = false): Boolean {
+    if (isAdultFlag) return true
+    return genres.any { raw ->
+        val g = raw.trim().lowercase()
+        g == "hentai" || g == "adult" || g.contains("18+")
+    }
+}
+
 data class CommunityReview(
     val id: String,
     val userId: String,
@@ -168,7 +176,9 @@ data class CommunityReview(
     val totalEpisodes: Int?,
     val updatedAt: String,
     val likesCount: Int = 0,
-    val likedByMe: Boolean = false
+    val likedByMe: Boolean = false,
+    val genres: List<String> = emptyList(),
+    val isAdult: Boolean = isHentaiOrAdultGenres(genres)
 )
 
 /**
@@ -186,7 +196,9 @@ data class CommunityAnimeGroup(
     val latestUpdatedAt: String,
     val totalLikesCount: Int,
     val leadReview: CommunityReview,
-    val reviews: List<CommunityReview>
+    val reviews: List<CommunityReview>,
+    val genres: List<String> = emptyList(),
+    val isAdult: Boolean = isHentaiOrAdultGenres(genres)
 ) {
     val notesAndRatingsCount: Int get() = reviews.size
     val distinctContributors: List<CommunityReview>
@@ -210,6 +222,8 @@ fun groupCommunityReviewsByAnime(
             val noted = sortedEntries.count { it.reviewNotes.isNotBlank() }
             val bestTitle = sortedEntries.firstOrNull { it.animeTitle.isNotBlank() }?.animeTitle ?: "Anime #${lead.animeId}"
             val bestCover = sortedEntries.firstOrNull { it.animeCoverImage.isNotBlank() }?.animeCoverImage.orEmpty()
+            val mergedGenres = sortedEntries.flatMap { it.genres }.distinct()
+            val isAdult = sortedEntries.any { it.isAdult } || isHentaiOrAdultGenres(mergedGenres)
 
             CommunityAnimeGroup(
                 animeId = lead.animeId,
@@ -221,7 +235,9 @@ fun groupCommunityReviewsByAnime(
                 latestUpdatedAt = sortedEntries.maxOfOrNull { it.updatedAt }.orEmpty(),
                 totalLikesCount = sortedEntries.sumOf { it.likesCount },
                 leadReview = lead,
-                reviews = sortedEntries
+                reviews = sortedEntries,
+                genres = mergedGenres,
+                isAdult = isAdult
             )
         }
 }

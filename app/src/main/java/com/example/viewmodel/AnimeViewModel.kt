@@ -2074,6 +2074,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                     val existing = _communityReviews.value.firstOrNull {
                         it.animeId == entity.id && it.userId == session.userId
                     }
+                    val entityGenres = entity.genres.split(",").map { it.trim() }.filter { it.isNotBlank() }
                     val optimisticReview = CommunityReview(
                         id = existing?.id ?: "${session.userId}-${entity.id}",
                         userId = session.userId,
@@ -2090,7 +2091,9 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                         totalEpisodes = entity.totalEpisodes,
                         updatedAt = Instant.now().toString(),
                         likesCount = existing?.likesCount ?: 0,
-                        likedByMe = existing?.likedByMe ?: false
+                        likedByMe = existing?.likedByMe ?: false,
+                        genres = entityGenres,
+                        isAdult = entity.isAdult || com.example.model.isHentaiOrAdultGenres(entityGenres)
                     )
                     val updatedCommunity = listOf(optimisticReview) + _communityReviews.value.filterNot {
                         it.animeId == entity.id && it.userId == session.userId
@@ -2163,16 +2166,20 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                     val existingReview = _communityReviews.value.firstOrNull {
                         it.animeId == animeId && it.userId == session.userId
                     }
+                    val existingGenresStr = existing?.genres.orEmpty()
+                    val existingGenresList = existingGenresStr.split(",").map { it.trim() }.filter { it.isNotBlank() }
                     val res = supabaseDb.upsertCommunityNote(
                         session = session,
                         animeId = animeId,
                         animeTitle = animeTitle.ifBlank { existing?.displayTitle ?: "Anime #$animeId" },
                         coverImage = coverImage.ifBlank { existing?.coverImage.orEmpty() },
                         rating10 = rating10,
-                        reviewNotes = finalNote
+                        reviewNotes = finalNote,
+                        genres = existingGenresStr
                     )
                     res.onSuccess {
                         if (profile != null) {
+                            val mergedGenres = (existingGenresList + existingReview?.genres.orEmpty()).distinct()
                             val optimisticReview = CommunityReview(
                                 id = existingReview?.id ?: "note-${session.userId}-$animeId",
                                 userId = session.userId,
@@ -2189,7 +2196,11 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                                 totalEpisodes = existing?.totalEpisodes,
                                 updatedAt = Instant.now().toString(),
                                 likesCount = existingReview?.likesCount ?: 0,
-                                likedByMe = existingReview?.likedByMe ?: false
+                                likedByMe = existingReview?.likedByMe ?: false,
+                                genres = mergedGenres,
+                                isAdult = (existing?.isAdult == true) ||
+                                    (existingReview?.isAdult == true) ||
+                                    com.example.model.isHentaiOrAdultGenres(mergedGenres)
                             )
                             _communityReviews.value = sortReviews(
                                 listOf(optimisticReview) + _communityReviews.value.filterNot {
