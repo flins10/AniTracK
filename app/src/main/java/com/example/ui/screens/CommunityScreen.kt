@@ -83,15 +83,20 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.material.icons.filled.AlternateEmail
+import androidx.compose.material.icons.filled.DoneAll
 import com.example.model.CommunityAnimeGroup
 import com.example.model.CommunityReview
 import com.example.model.MemberStatus
+import com.example.model.WatchStatus
 import com.example.model.MentionableUser
 import com.example.model.NotificationJumpTarget
 import com.example.model.SentimentCategory
 import com.example.model.StarRatingUtils
 import com.example.model.UnseenDiscussionAnime
+import com.example.model.UserNotificationItem
 import com.example.model.groupCommunityReviewsByAnime
+import com.example.service.CommunityEmojiCacheService
 import com.example.ui.components.AnimeDiscussionSection
 import com.example.ui.theme.AppSpacing
 import com.example.ui.theme.AppTheme
@@ -145,9 +150,25 @@ fun CommunityScreen(
     val noteSuccessFeedback by viewModel.communityNoteFeedback.collectAsState()
     val noteErrorFeedback by viewModel.communityNoteError.collectAsState()
     val unseenDiscussionAnime by viewModel.unseenDiscussionAnime.collectAsState()
+    val notifications by viewModel.notifications.collectAsState()
+    val unreadNotificationCount by viewModel.unreadNotificationCount.collectAsState()
+    val isNotificationsLoading by viewModel.isNotificationsLoading.collectAsState()
+    val hasMoreNotifications by viewModel.hasMoreNotifications.collectAsState()
 
+    var activeSection by rememberSaveable { mutableStateOf("feed") } // "feed" | "tagged"
     var selectedSentimentKey by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedCommentsAnimeId by rememberSaveable { mutableStateOf<Int?>(null) }
+    var selectedFallbackGroup by remember { mutableStateOf<CommunityAnimeGroup?>(null) }
+    var activeModalJumpTarget by remember { mutableStateOf<NotificationJumpTarget?>(null) }
+    var forceLiveChatTab by remember { mutableStateOf(false) }
+
+    // Non-blocking preload of top frequently used custom emojis & latest Tagged You list when Community opens
+    LaunchedEffect(profile?.id) {
+        if (profile != null) {
+            viewModel.loadCommunityEmojis()
+            viewModel.refreshNotifications(reset = true)
+        }
+    }
 
     val selectedSentiment = remember(selectedSentimentKey) {
         SentimentCategory.entries.firstOrNull { it.key == selectedSentimentKey }
@@ -189,8 +210,59 @@ fun CommunityScreen(
         unseenDiscussionAnime.filter { it.animeId !in shownIds }
     }
 
-    val selectedCommentsGroup = remember(animeGroups, selectedCommentsAnimeId) {
-        selectedCommentsAnimeId?.let { id -> animeGroups.firstOrNull { it.animeId == id } }
+    val selectedCommentsGroup = remember(animeGroups, selectedCommentsAnimeId, selectedFallbackGroup) {
+        val id = selectedCommentsAnimeId ?: return@remember null
+        animeGroups.firstOrNull { it.animeId == id }
+            ?: selectedFallbackGroup?.takeIf { it.animeId == id }
+    }
+
+    fun openTaggedAnimeTemplate(
+        animeId: Int,
+        animeTitle: String,
+        animeCoverImage: String,
+        jumpTarget: NotificationJumpTarget,
+        notificationId: String? = null
+    ) {
+        if (!notificationId.isNullOrBlank()) {
+            viewModel.markNotificationRead(notificationId)
+        }
+        viewModel.markAnimeDiscussionSeen(animeId)
+        val existing = animeGroups.firstOrNull { it.animeId == animeId }
+        if (existing == null) {
+            val placeholderLead = CommunityReview(
+                id = "tagged_fallback_$animeId",
+                userId = "",
+                username = "Community",
+                avatarKey = "avatar_1",
+                avatarUrl = null,
+                animeId = animeId,
+                animeTitle = animeTitle.ifBlank { "Anime #$animeId" },
+                animeCoverImage = animeCoverImage,
+                rating = null,
+                reviewNotes = "",
+                status = WatchStatus.PLAN_TO_WATCH,
+                episodeProgress = 0,
+                totalEpisodes = null,
+                updatedAt = ""
+            )
+            selectedFallbackGroup = CommunityAnimeGroup(
+                animeId = animeId,
+                animeTitle = animeTitle.ifBlank { "Anime #$animeId" },
+                animeCoverImage = animeCoverImage,
+                averageRating10 = null,
+                ratedCount = 0,
+                notedCount = 0,
+                latestUpdatedAt = "",
+                totalLikesCount = 0,
+                leadReview = placeholderLead,
+                reviews = emptyList()
+            )
+        } else {
+            selectedFallbackGroup = null
+        }
+        activeModalJumpTarget = jumpTarget
+        forceLiveChatTab = true
+        selectedCommentsAnimeId = animeId
     }
 
     if (profile == null) {
@@ -399,216 +471,361 @@ fun CommunityScreen(
                     }
                 }
 
-                // Sentiment Filter Pills
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = AppSpacing.md, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    item(key = "rev_all") {
-                        val active = selectedSentiment == null
-                        Surface(
-                            shape = CircleShape,
-                            color = if (active) colors.accentPrimary.copy(alpha = 0.18f) else colors.elevatedSurface.copy(alpha = 0.65f),
-                            border = if (active) BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.65f)) else null,
-                            modifier = Modifier
-                                .height(34.dp)
-                                .pointerHoverIcon(PointerIcon.Hand)
-                                .clip(CircleShape)
-                                .clickable { selectedSentimentKey = null }
-                        ) {
-                            Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 14.dp)) {
-                                Text(
-                                    text = "ALL (${animeGroups.size})",
-                                    style = MicroUpperLabel.copy(fontSize = 8.5.sp, letterSpacing = 0.8.sp),
-                                    color = if (active) colors.highlight else colors.textSecondary
-                                )
-                            }
-                        }
-                    }
-                    items(SentimentCategory.entries, key = { it.key }) { cat ->
-                        val active = selectedSentiment == cat
-                        val catColor = cat.badgeColor()
-                        Surface(
-                            shape = CircleShape,
-                            color = if (active) catColor.copy(alpha = 0.22f) else colors.elevatedSurface.copy(alpha = 0.65f),
-                            border = if (active) BorderStroke(1.dp, catColor.copy(alpha = 0.72f)) else null,
-                            modifier = Modifier
-                                .height(34.dp)
-                                .pointerHoverIcon(PointerIcon.Hand)
-                                .clip(CircleShape)
-                                .clickable { selectedSentimentKey = if (active) null else cat.key }
-                        ) {
-                            Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 13.dp)) {
-                                Text(
-                                    text = cat.shortLabel.uppercase(),
-                                    style = MicroUpperLabel.copy(fontSize = 8.5.sp, letterSpacing = 0.8.sp),
-                                    color = if (active) catColor else colors.textSecondary
-                                )
-                            }
-                        }
-                    }
-                }
-
-                // Sort Capsules
+                // Dedicated Community Feed vs "Tagged You" Switcher
+                val totalUnreadTags = maxOf(
+                    unreadNotificationCount,
+                    unseenDiscussionAnime.sumOf { it.unseenCount }
+                )
                 Row(
-                    modifier = Modifier.padding(horizontal = AppSpacing.md, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = AppSpacing.md, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    ReviewSortOption.entries.forEach { opt ->
-                        val active = reviewSort == opt
-                        Surface(
-                            shape = CircleShape,
-                            color = if (active) colors.accentPrimary.copy(alpha = 0.18f) else colors.elevatedSurface.copy(alpha = 0.58f),
-                            border = if (active) BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.6f)) else null,
-                            modifier = Modifier
-                                .pointerHoverIcon(PointerIcon.Hand)
-                                .clip(CircleShape)
-                                .clickable { viewModel.setReviewSortOption(opt) }
-                        ) {
+                    val feedActive = activeSection == "feed"
+                    val taggedActive = activeSection == "tagged"
+                    Surface(
+                        shape = CircleShape,
+                        color = if (feedActive) colors.accentPrimary.copy(alpha = 0.2f) else colors.elevatedSurface.copy(alpha = 0.65f),
+                        border = BorderStroke(
+                            1.dp,
+                            if (feedActive) colors.accentPrimary.copy(alpha = 0.7f) else colors.borderSubtle.copy(alpha = 0.5f)
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 40.dp)
+                            .clip(CircleShape)
+                            .clickable { activeSection = "feed" }
+                            .testTag("community_tab_feed")
+                    ) {
+                        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                             Text(
-                                text = opt.label,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = if (active) colors.highlight else colors.textSecondary,
-                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
+                                text = "Community Feed",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                color = if (feedActive) colors.highlight else colors.textSecondary
                             )
+                        }
+                    }
+
+                    Surface(
+                        shape = CircleShape,
+                        color = if (taggedActive) colors.accentPrimary.copy(alpha = 0.2f) else colors.elevatedSurface.copy(alpha = 0.65f),
+                        border = BorderStroke(
+                            1.dp,
+                            if (taggedActive) colors.accentPrimary.copy(alpha = 0.7f)
+                            else if (totalUnreadTags > 0) Color(0xFFEF4444).copy(alpha = 0.55f)
+                            else colors.borderSubtle.copy(alpha = 0.5f)
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 40.dp)
+                            .clip(CircleShape)
+                            .clickable {
+                                activeSection = "tagged"
+                                viewModel.refreshNotifications(reset = true)
+                            }
+                            .testTag("community_tab_tagged_you")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.AlternateEmail,
+                                contentDescription = null,
+                                tint = if (taggedActive) colors.highlight else colors.accentPrimary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text(
+                                text = "Tagged You",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                color = if (taggedActive) colors.highlight else colors.textSecondary
+                            )
+                            if (totalUnreadTags > 0) {
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Surface(
+                                    shape = CircleShape,
+                                    color = Color(0xFFEF4444),
+                                    modifier = Modifier.testTag("tagged_you_unread_badge")
+                                ) {
+                                    Text(
+                                        text = if (totalUnreadTags > 99) "99+" else "$totalUnreadTags",
+                                        style = TabularNumSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
+                                        color = Color.White,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
 
-                val pullRefreshState = rememberPullToRefreshState()
-                PullToRefreshBox(
-                    isRefreshing = isLoading,
-                    onRefresh = { viewModel.refreshCommunityData() },
-                    state = pullRefreshState,
-                    indicator = {
-                        PullToRefreshDefaults.Indicator(
-                            state = pullRefreshState,
-                            isRefreshing = isLoading,
-                            containerColor = colors.elevatedSurface,
-                            color = colors.accentPrimary,
-                            modifier = Modifier.align(Alignment.TopCenter)
-                        )
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .testTag("community_pull_to_refresh")
-                ) {
-                    if (filteredGroups.isEmpty() && unseenOnlyAnime.isEmpty()) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .verticalScroll(rememberScrollState())
-                                .padding(AppSpacing.xl),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            AppEmptyState(
-                                icon = Icons.Filled.RateReview,
-                                title = if (animeGroups.isEmpty()) "No community notes or ratings yet" else "No matching showcases",
-                                description = if (animeGroups.isEmpty()) {
-                                    "Rate an anime or add a note in your list — as a joined member, it automatically appears in Community."
-                                } else {
-                                    "Try clearing your sentiment filter to view all community anime templates."
-                                }
-                            )
-                        }
-                    } else {
-                        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-                            val columns = if (maxWidth >= 720.dp) 2 else 1
-                            val chunked = remember(filteredGroups, columns) { filteredGroups.chunked(columns) }
-                            LazyColumn(
-                                contentPadding = PaddingValues(
-                                    start = AppSpacing.md,
-                                    end = AppSpacing.md,
-                                    top = 8.dp,
-                                    bottom = 112.dp
+                if (activeSection == "tagged") {
+                    TaggedYouCommunitySection(
+                        notifications = notifications,
+                        unreadCount = totalUnreadTags,
+                        isLoading = isNotificationsLoading,
+                        hasMore = hasMoreNotifications,
+                        onRefresh = { viewModel.refreshNotifications(reset = true) },
+                        onMarkAllRead = { viewModel.markAllNotificationsRead() },
+                        onLoadMore = { viewModel.loadMoreNotifications() },
+                        onOpenNotification = { n ->
+                            openTaggedAnimeTemplate(
+                                animeId = n.animeId,
+                                animeTitle = n.animeTitle,
+                                animeCoverImage = n.animeCoverImage,
+                                jumpTarget = NotificationJumpTarget(
+                                    animeId = n.animeId,
+                                    commentId = n.commentId,
+                                    threadId = n.threadId,
+                                    replyId = n.replyId
                                 ),
-                                verticalArrangement = Arrangement.spacedBy(16.dp),
-                                modifier = Modifier.fillMaxSize()
+                                notificationId = n.id
+                            )
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                    )
+                } else {
+                    // Sentiment Filter Pills
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = AppSpacing.md, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        item(key = "rev_all") {
+                            val active = selectedSentiment == null
+                            Surface(
+                                shape = CircleShape,
+                                color = if (active) colors.accentPrimary.copy(alpha = 0.18f) else colors.elevatedSurface.copy(alpha = 0.65f),
+                                border = if (active) BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.65f)) else null,
+                                modifier = Modifier
+                                    .height(34.dp)
+                                    .pointerHoverIcon(PointerIcon.Hand)
+                                    .clip(CircleShape)
+                                    .clickable { selectedSentimentKey = null }
                             ) {
-                                if (unseenOnlyAnime.isNotEmpty()) {
-                                    items(
-                                        items = unseenOnlyAnime,
-                                        key = { "unseen_${it.animeId}" }
-                                    ) { unseen ->
-                                        Box(modifier = Modifier.fillMaxWidth().animateItem()) {
-                                            UnseenTaggedAnimeCard(
-                                                unseen = unseen,
-                                                onClick = {
-                                                    viewModel.setPendingNotificationJump(
-                                                        NotificationJumpTarget(
-                                                            animeId = unseen.animeId,
-                                                            commentId = unseen.latestCommentId,
-                                                            threadId = unseen.latestThreadId,
-                                                            replyId = unseen.latestReplyId
-                                                        )
-                                                    )
-                                                    onSelectAnime(unseen.animeId)
-                                                }
-                                            )
-                                        }
-                                    }
+                                Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 14.dp)) {
+                                    Text(
+                                        text = "ALL (${animeGroups.size})",
+                                        style = MicroUpperLabel.copy(fontSize = 8.5.sp, letterSpacing = 0.8.sp),
+                                        color = if (active) colors.highlight else colors.textSecondary
+                                    )
                                 }
-                                items(
-                                    items = chunked,
-                                    key = { row -> row.joinToString("_") { it.animeId.toString() } }
-                                ) { rowItems ->
-                                    if (columns == 1) {
-                                        val firstGroup = rowItems.first()
-                                        val unseenInfo = unseenByAnimeId[firstGroup.animeId]
-                                        Box(modifier = Modifier.fillMaxWidth().animateItem()) {
-                                            CommunityAnimeTemplateCard(
-                                                group = firstGroup,
-                                                unseenInfo = unseenInfo,
-                                                onClick = {
-                                                    if (unseenInfo != null) {
-                                                        viewModel.setPendingNotificationJump(
-                                                            NotificationJumpTarget(
-                                                                animeId = unseenInfo.animeId,
-                                                                commentId = unseenInfo.latestCommentId,
-                                                                threadId = unseenInfo.latestThreadId,
-                                                                replyId = unseenInfo.latestReplyId
+                            }
+                        }
+                        items(SentimentCategory.entries, key = { it.key }) { cat ->
+                            val active = selectedSentiment == cat
+                            val catColor = cat.badgeColor()
+                            Surface(
+                                shape = CircleShape,
+                                color = if (active) catColor.copy(alpha = 0.22f) else colors.elevatedSurface.copy(alpha = 0.65f),
+                                border = if (active) BorderStroke(1.dp, catColor.copy(alpha = 0.72f)) else null,
+                                modifier = Modifier
+                                    .height(34.dp)
+                                    .pointerHoverIcon(PointerIcon.Hand)
+                                    .clip(CircleShape)
+                                    .clickable { selectedSentimentKey = if (active) null else cat.key }
+                            ) {
+                                Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 13.dp)) {
+                                    Text(
+                                        text = cat.shortLabel.uppercase(),
+                                        style = MicroUpperLabel.copy(fontSize = 8.5.sp, letterSpacing = 0.8.sp),
+                                        color = if (active) catColor else colors.textSecondary
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Sort Capsules
+                    Row(
+                        modifier = Modifier.padding(horizontal = AppSpacing.md, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        ReviewSortOption.entries.forEach { opt ->
+                            val active = reviewSort == opt
+                            Surface(
+                                shape = CircleShape,
+                                color = if (active) colors.accentPrimary.copy(alpha = 0.18f) else colors.elevatedSurface.copy(alpha = 0.58f),
+                                border = if (active) BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.6f)) else null,
+                                modifier = Modifier
+                                    .pointerHoverIcon(PointerIcon.Hand)
+                                    .clip(CircleShape)
+                                    .clickable { viewModel.setReviewSortOption(opt) }
+                            ) {
+                                Text(
+                                    text = opt.label,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = if (active) colors.highlight else colors.textSecondary,
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    val pullRefreshState = rememberPullToRefreshState()
+                    PullToRefreshBox(
+                        isRefreshing = isLoading,
+                        onRefresh = { viewModel.refreshCommunityData() },
+                        state = pullRefreshState,
+                        indicator = {
+                            PullToRefreshDefaults.Indicator(
+                                state = pullRefreshState,
+                                isRefreshing = isLoading,
+                                containerColor = colors.elevatedSurface,
+                                color = colors.accentPrimary,
+                                modifier = Modifier.align(Alignment.TopCenter)
+                            )
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .testTag("community_pull_to_refresh")
+                    ) {
+                        if (filteredGroups.isEmpty() && unseenOnlyAnime.isEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .verticalScroll(rememberScrollState())
+                                    .padding(AppSpacing.xl),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                AppEmptyState(
+                                    icon = Icons.Filled.RateReview,
+                                    title = if (animeGroups.isEmpty()) "No community notes or ratings yet" else "No matching showcases",
+                                    description = if (animeGroups.isEmpty()) {
+                                        "Rate an anime or add a note in your list — as a joined member, it automatically appears in Community."
+                                    } else {
+                                        "Try clearing your sentiment filter to view all community anime templates."
+                                    }
+                                )
+                            }
+                        } else {
+                            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                                val columns = if (maxWidth >= 720.dp) 2 else 1
+                                val chunked = remember(filteredGroups, columns) { filteredGroups.chunked(columns) }
+                                LazyColumn(
+                                    contentPadding = PaddingValues(
+                                        start = AppSpacing.md,
+                                        end = AppSpacing.md,
+                                        top = 8.dp,
+                                        bottom = 112.dp
+                                    ),
+                                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                                    modifier = Modifier.fillMaxSize()
+                                ) {
+                                    if (unseenOnlyAnime.isNotEmpty()) {
+                                        items(
+                                            items = unseenOnlyAnime,
+                                            key = { "unseen_${it.animeId}" }
+                                        ) { unseen ->
+                                            Box(modifier = Modifier.fillMaxWidth().animateItem()) {
+                                                UnseenTaggedAnimeCard(
+                                                    unseen = unseen,
+                                                    onClick = {
+                                                        openTaggedAnimeTemplate(
+                                                            animeId = unseen.animeId,
+                                                            animeTitle = unseen.animeTitle,
+                                                            animeCoverImage = unseen.animeCoverImage,
+                                                            jumpTarget = NotificationJumpTarget(
+                                                                animeId = unseen.animeId,
+                                                                commentId = unseen.latestCommentId,
+                                                                threadId = unseen.latestThreadId,
+                                                                replyId = unseen.latestReplyId
                                                             )
                                                         )
                                                     }
-                                                    onSelectAnime(firstGroup.animeId)
-                                                },
-                                                onOpenComments = { selectedCommentsAnimeId = firstGroup.animeId },
-                                                onToggleLike = { viewModel.toggleReviewLike(firstGroup.leadReview) }
-                                            )
-                                        }
-                                    } else {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth().animateItem(),
-                                            horizontalArrangement = Arrangement.spacedBy(16.dp),
-                                            verticalAlignment = Alignment.Top
-                                        ) {
-                                            rowItems.forEach { grp ->
-                                                val unseenInfo = unseenByAnimeId[grp.animeId]
-                                                Box(modifier = Modifier.weight(1f)) {
-                                                    CommunityAnimeTemplateCard(
-                                                        group = grp,
-                                                        unseenInfo = unseenInfo,
-                                                        onClick = {
-                                                            if (unseenInfo != null) {
-                                                                viewModel.setPendingNotificationJump(
-                                                                    NotificationJumpTarget(
-                                                                        animeId = unseenInfo.animeId,
-                                                                        commentId = unseenInfo.latestCommentId,
-                                                                        threadId = unseenInfo.latestThreadId,
-                                                                        replyId = unseenInfo.latestReplyId
-                                                                    )
-                                                                )
-                                                            }
-                                                            onSelectAnime(grp.animeId)
-                                                        },
-                                                        onOpenComments = { selectedCommentsAnimeId = grp.animeId },
-                                                        onToggleLike = { viewModel.toggleReviewLike(grp.leadReview) }
-                                                    )
-                                                }
+                                                )
                                             }
-                                            repeat(columns - rowItems.size) {
-                                                Spacer(modifier = Modifier.weight(1f))
+                                        }
+                                    }
+                                    items(
+                                        items = chunked,
+                                        key = { row -> row.joinToString("_") { it.animeId.toString() } }
+                                    ) { rowItems ->
+                                        if (columns == 1) {
+                                            val firstGroup = rowItems.first()
+                                            val unseenInfo = unseenByAnimeId[firstGroup.animeId]
+                                            Box(modifier = Modifier.fillMaxWidth().animateItem()) {
+                                                CommunityAnimeTemplateCard(
+                                                    group = firstGroup,
+                                                    unseenInfo = unseenInfo,
+                                                    onClick = {
+                                                        if (unseenInfo != null) {
+                                                            openTaggedAnimeTemplate(
+                                                                animeId = unseenInfo.animeId,
+                                                                animeTitle = firstGroup.animeTitle,
+                                                                animeCoverImage = firstGroup.animeCoverImage,
+                                                                jumpTarget = NotificationJumpTarget(
+                                                                    animeId = unseenInfo.animeId,
+                                                                    commentId = unseenInfo.latestCommentId,
+                                                                    threadId = unseenInfo.latestThreadId,
+                                                                    replyId = unseenInfo.latestReplyId
+                                                                )
+                                                            )
+                                                        } else {
+                                                            onSelectAnime(firstGroup.animeId)
+                                                        }
+                                                    },
+                                                    onOpenComments = {
+                                                        selectedFallbackGroup = null
+                                                        activeModalJumpTarget = unseenInfo?.let {
+                                                            NotificationJumpTarget(it.animeId, it.latestCommentId, it.latestThreadId, it.latestReplyId)
+                                                        }
+                                                        forceLiveChatTab = true
+                                                        selectedCommentsAnimeId = firstGroup.animeId
+                                                    },
+                                                    onToggleLike = { viewModel.toggleReviewLike(firstGroup.leadReview) }
+                                                )
+                                            }
+                                        } else {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth().animateItem(),
+                                                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                                                verticalAlignment = Alignment.Top
+                                            ) {
+                                                rowItems.forEach { grp ->
+                                                    val unseenInfo = unseenByAnimeId[grp.animeId]
+                                                    Box(modifier = Modifier.weight(1f)) {
+                                                        CommunityAnimeTemplateCard(
+                                                            group = grp,
+                                                            unseenInfo = unseenInfo,
+                                                            onClick = {
+                                                                if (unseenInfo != null) {
+                                                                    openTaggedAnimeTemplate(
+                                                                        animeId = unseenInfo.animeId,
+                                                                        animeTitle = grp.animeTitle,
+                                                                        animeCoverImage = grp.animeCoverImage,
+                                                                        jumpTarget = NotificationJumpTarget(
+                                                                            animeId = unseenInfo.animeId,
+                                                                            commentId = unseenInfo.latestCommentId,
+                                                                            threadId = unseenInfo.latestThreadId,
+                                                                            replyId = unseenInfo.latestReplyId
+                                                                        )
+                                                                    )
+                                                                } else {
+                                                                    onSelectAnime(grp.animeId)
+                                                                }
+                                                            },
+                                                            onOpenComments = {
+                                                                selectedFallbackGroup = null
+                                                                activeModalJumpTarget = unseenInfo?.let {
+                                                                    NotificationJumpTarget(it.animeId, it.latestCommentId, it.latestThreadId, it.latestReplyId)
+                                                                }
+                                                                forceLiveChatTab = true
+                                                                selectedCommentsAnimeId = grp.animeId
+                                                            },
+                                                            onToggleLike = { viewModel.toggleReviewLike(grp.leadReview) }
+                                                        )
+                                                    }
+                                                }
+                                                repeat(columns - rowItems.size) {
+                                                    Spacer(modifier = Modifier.weight(1f))
+                                                }
                                             }
                                         }
                                     }
@@ -624,18 +841,20 @@ fun CommunityScreen(
             val currentUserId = profile?.id.orEmpty()
             val myExistingReview = selectedCommentsGroup.reviews.firstOrNull { it.userId == currentUserId }
             val unseenForGroup = unseenByAnimeId[selectedCommentsGroup.animeId]
+            val effectiveJumpTarget = activeModalJumpTarget ?: unseenForGroup?.let {
+                NotificationJumpTarget(
+                    animeId = it.animeId,
+                    commentId = it.latestCommentId,
+                    threadId = it.latestThreadId,
+                    replyId = it.latestReplyId
+                )
+            }
             CommunityCommentsDialog(
                 group = selectedCommentsGroup,
                 viewModel = viewModel,
                 hasUnseenDiscussion = unseenForGroup != null,
-                highlightTarget = unseenForGroup?.let {
-                    NotificationJumpTarget(
-                        animeId = it.animeId,
-                        commentId = it.latestCommentId,
-                        threadId = it.latestThreadId,
-                        replyId = it.latestReplyId
-                    )
-                },
+                openLiveChatInitially = forceLiveChatTab || unseenForGroup != null || effectiveJumpTarget != null,
+                highlightTarget = effectiveJumpTarget,
                 initialMyRatingStars = StarRatingUtils.rating10ToStars(myExistingReview?.rating),
                 initialMyNote = myExistingReview?.reviewNotes.orEmpty(),
                 isSubmitting = isSubmittingNote,
@@ -644,11 +863,17 @@ fun CommunityScreen(
                 onDismiss = {
                     viewModel.clearCommunityNoteFeedback()
                     selectedCommentsAnimeId = null
+                    selectedFallbackGroup = null
+                    activeModalJumpTarget = null
+                    forceLiveChatTab = false
                 },
                 onOpenAnimeDetail = {
                     val targetId = selectedCommentsGroup.animeId
                     viewModel.clearCommunityNoteFeedback()
                     selectedCommentsAnimeId = null
+                    selectedFallbackGroup = null
+                    activeModalJumpTarget = null
+                    forceLiveChatTab = false
                     onSelectAnime(targetId)
                 },
                 onToggleLike = { rev -> viewModel.toggleReviewLike(rev) },
@@ -1076,10 +1301,268 @@ private fun UnseenTaggedAnimeCard(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TaggedYouCommunitySection(
+    notifications: List<UserNotificationItem>,
+    unreadCount: Int,
+    isLoading: Boolean,
+    hasMore: Boolean,
+    onRefresh: () -> Unit,
+    onMarkAllRead: () -> Unit,
+    onLoadMore: () -> Unit,
+    onOpenNotification: (UserNotificationItem) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val colors = AppTheme.colors
+    val pullRefreshState = rememberPullToRefreshState()
+
+    Column(modifier = modifier.testTag("tagged_you_section")) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AppSpacing.md, vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text(
+                    text = "TAGGED YOU",
+                    style = MicroUpperLabel.copy(fontSize = 9.sp, letterSpacing = 1.8.sp),
+                    color = colors.accentPrimary
+                )
+                Text(
+                    text = if (unreadCount > 0) "$unreadCount unread mention${if (unreadCount == 1) "" else "s"} — tap to jump directly" else "All caught up on community tags",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.textMuted
+                )
+            }
+            if (unreadCount > 0) {
+                Surface(
+                    shape = CircleShape,
+                    color = colors.accentPrimary.copy(alpha = 0.14f),
+                    border = BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.45f)),
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .clickable(onClick = onMarkAllRead)
+                        .testTag("tagged_you_mark_all_read")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.DoneAll,
+                            contentDescription = "Mark all read",
+                            tint = colors.accentPrimary,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Text(
+                            text = "Mark all read",
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = colors.highlight
+                        )
+                    }
+                }
+            }
+        }
+
+        PullToRefreshBox(
+            isRefreshing = isLoading,
+            onRefresh = onRefresh,
+            state = pullRefreshState,
+            indicator = {
+                PullToRefreshDefaults.Indicator(
+                    state = pullRefreshState,
+                    isRefreshing = isLoading,
+                    containerColor = colors.elevatedSurface,
+                    color = colors.accentPrimary,
+                    modifier = Modifier.align(Alignment.TopCenter)
+                )
+            },
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+        ) {
+            if (notifications.isEmpty() && !isLoading) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(AppSpacing.xl),
+                    contentAlignment = Alignment.Center
+                ) {
+                    AppEmptyState(
+                        icon = Icons.Filled.AlternateEmail,
+                        title = "No tags yet",
+                        description = "When someone mentions you with @username or replies to you in any anime template (new or old), it appears here for one-tap jump."
+                    )
+                }
+            } else {
+                LazyColumn(
+                    contentPadding = PaddingValues(
+                        start = AppSpacing.md,
+                        end = AppSpacing.md,
+                        top = 6.dp,
+                        bottom = 112.dp
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    items(notifications, key = { it.id }) { item ->
+                        val isUnread = !item.isRead
+                        val cleanPreview = remember(item.previewText) {
+                            CommunityEmojiCacheService.formatPreviewSnippet(item.previewText)
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(20.dp),
+                            color = if (isUnread) Color(0xFF14141E) else colors.cardBackground,
+                            border = BorderStroke(
+                                1.dp,
+                                if (isUnread) Color(0xFFEF4444).copy(alpha = 0.55f) else colors.borderSubtle.copy(alpha = 0.55f)
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(20.dp))
+                                .clickable { onOpenNotification(item) }
+                                .testTag("tagged_you_card_${item.id}")
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(14.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                ResilientPosterImage(
+                                    imageUrl = item.animeCoverImage,
+                                    contentDescription = item.animeTitle,
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.size(width = 56.dp, height = 80.dp)
+                                )
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            if (isUnread) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(8.dp)
+                                                        .clip(CircleShape)
+                                                        .background(Color(0xFFEF4444))
+                                                        .testTag("tagged_you_unread_dot_${item.id}")
+                                                )
+                                            }
+                                            Surface(
+                                                shape = CircleShape,
+                                                color = colors.accentPrimary.copy(alpha = 0.14f)
+                                            ) {
+                                                Text(
+                                                    text = item.communityName.uppercase(),
+                                                    style = MicroUpperLabel.copy(fontSize = 8.sp, letterSpacing = 0.9.sp),
+                                                    color = colors.accentPrimary,
+                                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                        }
+                                        Text(
+                                            text = formatCommunityTimestamp(item.createdAt),
+                                            style = TabularNumSmall.copy(fontSize = 10.sp),
+                                            color = colors.textMuted
+                                        )
+                                    }
+
+                                    Text(
+                                        text = item.animeTitle,
+                                        fontFamily = CormorantSerifFamily,
+                                        fontSize = 19.sp,
+                                        lineHeight = 22.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = colors.textPrimary,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        MemberAvatar(
+                                            avatarKey = item.senderAvatarKey,
+                                            avatarUrl = item.senderAvatarUrl,
+                                            username = item.senderUsername,
+                                            size = 20.dp
+                                        )
+                                        val actionWord = if (item.notificationType == "thread_reply") "replied to you" else "tagged you"
+                                        Text(
+                                            text = "@${item.senderUsername} $actionWord",
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                            color = if (isUnread) Color(0xFFF5E4BE) else colors.textSecondary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+
+                                    if (cleanPreview.isNotBlank()) {
+                                        Text(
+                                            text = "“$cleanPreview”",
+                                            style = MaterialTheme.typography.bodySmall.copy(fontStyle = FontStyle.Italic),
+                                            color = colors.textSecondary,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (hasMore) {
+                        item(key = "load_more_tags") {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 6.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = colors.elevatedSurface,
+                                    border = BorderStroke(1.dp, colors.borderSubtle),
+                                    modifier = Modifier
+                                        .clip(CircleShape)
+                                        .clickable(enabled = !isLoading, onClick = onLoadMore)
+                                ) {
+                                    Text(
+                                        text = if (isLoading) "Loading..." else "Load older tags",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = colors.highlight,
+                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /**
- * Obsidian & Champagne Gold Comments Modal showing ALL notes and ratings contributed by
- * joined community members for a single anime, with each contributor's Avatar, Username,
- * Star Rating, Sentiment Badge, Written Note, Like Toggle, and an inline Composer.
+ * LivTrAk Community Hub Modal:
+ * Matches the LivTrAk Live Chat reference design with 60x86 poster, COMMUNITY HUB eyebrow,
+ * Cormorant Garamond title + red 18+ badge, Live Chat & Reviews tabs, and docked Live Chat stream.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -1087,6 +1570,7 @@ internal fun CommunityCommentsDialog(
     group: CommunityAnimeGroup,
     viewModel: AnimeViewModel,
     hasUnseenDiscussion: Boolean = false,
+    openLiveChatInitially: Boolean = true,
     highlightTarget: NotificationJumpTarget? = null,
     initialMyRatingStars: Float,
     initialMyNote: String,
@@ -1101,15 +1585,17 @@ internal fun CommunityCommentsDialog(
     val colors = AppTheme.colors
     val haptics = LocalHapticFeedback.current
     val avgStars = StarRatingUtils.rating10ToStars(group.averageRating10)
-    val discussionCount by viewModel.discussionTotalCount.collectAsState()
     var selectedStars by remember(group.animeId) { mutableFloatStateOf(initialMyRatingStars) }
     var noteDraft by remember(group.animeId) { mutableStateOf(initialMyNote) }
-    var activeTab by remember(group.animeId) { mutableStateOf(if (hasUnseenDiscussion) "discussion" else "notes") }
+    var activeTab by remember(group.animeId, openLiveChatInitially) {
+        mutableStateOf(if (openLiveChatInitially || hasUnseenDiscussion) "discussion" else "notes")
+    }
     var pendingReplyUser by remember(group.animeId) { mutableStateOf<MentionableUser?>(null) }
     var openNoteMenuId by remember(group.animeId) { mutableStateOf<String?>(null) }
 
     LaunchedEffect(group.animeId) {
         viewModel.loadAnimeDiscussion(group.animeId, reset = true)
+        viewModel.loadCommunityEmojis()
     }
 
     LaunchedEffect(group.animeId, activeTab) {
@@ -1124,41 +1610,44 @@ internal fun CommunityCommentsDialog(
     ) {
         Surface(
             shape = RoundedCornerShape(28.dp),
-            color = colors.backgroundSecondary,
-            border = BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.35f)),
+            color = Color(0xFF030304),
+            border = BorderStroke(1.dp, Color(0x33E8C88F)),
             modifier = Modifier
                 .fillMaxWidth()
                 .widthIn(max = 640.dp)
-                .heightIn(max = 780.dp)
-                .padding(horizontal = 14.dp, vertical = 18.dp)
+                .heightIn(min = 520.dp, max = 820.dp)
+                .padding(horizontal = 12.dp, vertical = 14.dp)
                 .testTag("community_comments_dialog")
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                // Header: Poster + Title + Community Avg + Close Button
+            Column(modifier = Modifier.fillMaxSize()) {
+                // LivTrAk Hub Header: 60x86 Poster + COMMUNITY HUB Eyebrow + Cormorant Title + 18+ Badge + Close Circle
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 18.dp, end = 16.dp, top = 18.dp, bottom = 14.dp),
+                    verticalAlignment = Alignment.Top,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     ResilientPosterImage(
                         imageUrl = group.animeCoverImage,
                         contentDescription = group.animeTitle,
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(10.dp),
                         modifier = Modifier
-                            .size(width = 48.dp, height = 68.dp)
+                            .size(width = 60.dp, height = 86.dp)
                             .clickable { onOpenAnimeDetail() }
                     )
                     Column(
                         modifier = Modifier
                             .weight(1f)
+                            .padding(top = 2.dp)
                             .clickable { onOpenAnimeDetail() },
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                        verticalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
+                        Text(
+                            text = "COMMUNITY HUB",
+                            style = MicroUpperLabel.copy(fontSize = 8.5.sp, letterSpacing = 2.sp),
+                            color = Color(0xFFE8C88F)
+                        )
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1166,10 +1655,10 @@ internal fun CommunityCommentsDialog(
                             Text(
                                 text = group.animeTitle,
                                 fontFamily = CormorantSerifFamily,
-                                fontSize = 22.sp,
-                                lineHeight = 25.sp,
+                                fontSize = 21.sp,
+                                lineHeight = 23.sp,
                                 fontWeight = FontWeight.SemiBold,
-                                color = colors.textPrimary,
+                                color = Color(0xFFF8F4EB),
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f, fill = false)
@@ -1193,113 +1682,108 @@ internal fun CommunityCommentsDialog(
                                 }
                             }
                         }
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            if (avgStars > 0f) {
-                                StarRatingRow(stars = avgStars, starSize = 14.dp, showNumeric = true)
-                            }
-                            Text(
-                                text = "${group.ratedCount} ratings • ${group.notedCount} notes",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = colors.textSecondary
+                        val avgLabel = if (avgStars > 0f) "★ ${StarRatingUtils.formatStars(avgStars)} avg • " else ""
+                        val memberCount = group.distinctContributors.size
+                        Text(
+                            text = "${avgLabel}${memberCount} ${if (memberCount == 1) "member" else "members"}",
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.5.sp),
+                            color = Color(0xFF9A9AA8)
+                        )
+                    }
+                    Surface(
+                        shape = CircleShape,
+                        color = Color(0x14FFFFFF),
+                        border = BorderStroke(1.dp, Color(0x1AFFFFFF)),
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .clickable(onClick = onDismiss)
+                            .testTag("close_community_comments_button")
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Filled.Close,
+                                contentDescription = "Close chat hub",
+                                tint = Color(0xFFF8F4EB),
+                                modifier = Modifier.size(16.dp)
                             )
                         }
                     }
-                    IconButton(
-                        onClick = onDismiss,
-                        modifier = Modifier.testTag("close_community_comments_button")
+                }
+
+                // LivTrAk Underlined Tabs: Live Chat | Reviews (N)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp),
+                    horizontalArrangement = Arrangement.spacedBy(24.dp)
+                ) {
+                    val discussionActive = activeTab == "discussion"
+                    val notesActive = activeTab == "notes"
+
+                    Column(
+                        modifier = Modifier
+                            .clickable { activeTab = "discussion" }
+                            .padding(vertical = 8.dp)
+                            .testTag("community_modal_tab_discussion"),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Icon(
-                            imageVector = Icons.Filled.Close,
-                            contentDescription = "Close comments",
-                            tint = colors.textSecondary
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = "Live Chat",
+                                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                                color = if (discussionActive) Color(0xFFE8C88F) else Color(0xFF9A9AA8)
+                            )
+                            if (hasUnseenDiscussion && !discussionActive) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(7.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFFEF4444))
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Box(
+                            modifier = Modifier
+                                .width(68.dp)
+                                .height(2.dp)
+                                .background(if (discussionActive) Color(0xFFE8C88F) else Color.Transparent)
+                        )
+                    }
+
+                    Column(
+                        modifier = Modifier
+                            .clickable { activeTab = "notes" }
+                            .padding(vertical = 8.dp)
+                            .testTag("community_modal_tab_notes"),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "Reviews (${group.reviews.size})",
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                            color = if (notesActive) Color(0xFFE8C88F) else Color(0xFF9A9AA8)
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Box(
+                            modifier = Modifier
+                                .width(78.dp)
+                                .height(2.dp)
+                                .background(if (notesActive) Color(0xFFE8C88F) else Color.Transparent)
                         )
                     }
                 }
 
-                // Segmented Mode Switcher: Notes & Ratings vs Threaded Discussion & Replies
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    val notesActive = activeTab == "notes"
-                    val discussionActive = activeTab == "discussion"
-                    Surface(
-                        shape = CircleShape,
-                        color = if (notesActive) colors.accentPrimary.copy(alpha = 0.2f) else colors.cardBackground,
-                        border = BorderStroke(
-                            1.dp,
-                            if (notesActive) colors.accentPrimary.copy(alpha = 0.7f) else colors.borderSubtle.copy(alpha = 0.7f)
-                        ),
-                        modifier = Modifier
-                            .weight(1f)
-                            .heightIn(min = 40.dp)
-                            .clip(CircleShape)
-                            .clickable { activeTab = "notes" }
-                            .testTag("community_modal_tab_notes")
-                    ) {
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp)
-                        ) {
-                            Text(
-                                text = "Notes & Ratings (${group.reviews.size})",
-                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                                color = if (notesActive) colors.highlight else colors.textSecondary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
-                    Surface(
-                        shape = CircleShape,
-                        color = if (discussionActive) colors.accentPrimary.copy(alpha = 0.2f) else colors.cardBackground,
-                        border = BorderStroke(
-                            1.dp,
-                            if (discussionActive) colors.accentPrimary.copy(alpha = 0.7f) else colors.borderSubtle.copy(alpha = 0.7f)
-                        ),
-                        modifier = Modifier
-                            .weight(1f)
-                            .heightIn(min = 40.dp)
-                            .clip(CircleShape)
-                            .clickable { activeTab = "discussion" }
-                            .testTag("community_modal_tab_discussion")
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp)
-                        ) {
-                            if (hasUnseenDiscussion && !discussionActive) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(8.dp)
-                                        .clip(CircleShape)
-                                        .background(Color(0xFFEF4444))
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                            }
-                            Text(
-                                text = if (discussionCount > 0) "Discussion ($discussionCount)" else "Discussion & Replies",
-                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                                color = if (discussionActive) colors.highlight else colors.textSecondary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
-                }
-
-                HorizontalDivider(color = colors.borderSubtle.copy(alpha = 0.65f))
+                HorizontalDivider(color = Color(0x14FFFFFF))
 
                 if (activeTab == "discussion") {
-                    Column(
+                    Box(
                         modifier = Modifier
-                            .weight(1f, fill = false)
+                            .weight(1f)
                             .fillMaxWidth()
-                            .verticalScroll(rememberScrollState())
                             .testTag("community_modal_discussion_container")
                     ) {
                         AnimeDiscussionSection(
@@ -1309,10 +1793,19 @@ internal fun CommunityCommentsDialog(
                             viewModel = viewModel,
                             highlightTarget = highlightTarget,
                             initialReplyTargetUser = pendingReplyUser,
-                            onInitialReplyTargetConsumed = { pendingReplyUser = null }
+                            onInitialReplyTargetConsumed = { pendingReplyUser = null },
+                            inModal = true,
+                            modifier = Modifier.fillMaxSize()
                         )
                     }
                 } else {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
                     // All Contributors' Notes & Ratings List (with Reply button + Long-press / Right-click Reply menu)
                     LazyColumn(
                         modifier = Modifier
@@ -1642,6 +2135,7 @@ internal fun CommunityCommentsDialog(
                                 .fillMaxWidth()
                                 .testTag("community_comment_submit_button")
                         )
+                    }
                     }
                 }
             }

@@ -22,6 +22,7 @@ import com.example.model.AuthSession
 import com.example.model.BuiltInAvatar
 import com.example.model.CommunityActivityItem
 import com.example.model.CommunityCapacity
+import com.example.model.CommunityEmoji
 import com.example.model.CommunityMember
 import com.example.model.CommunityReview
 import com.example.model.DatabaseStorageStats
@@ -40,6 +41,7 @@ import com.example.model.WatchStatus
 import com.example.model.WatchlistLayoutMode
 import com.example.service.AniListMetadataProvider
 import com.example.service.AppUpdateInfo
+import com.example.service.CommunityEmojiCacheService
 import com.example.service.SupabaseDatabaseService
 import com.example.service.SupabaseDiscussionService
 import com.example.util.DiscussionRules
@@ -163,6 +165,11 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     private val _mentionSuggestions = MutableStateFlow<List<MentionableUser>>(emptyList())
     val mentionSuggestions = _mentionSuggestions.asStateFlow()
     private var mentionSearchJob: Job? = null
+
+    // Custom Community Emojis (Supabase Storage multi-layer cache)
+    private val communityEmojiCache = CommunityEmojiCacheService(application)
+    private val _communityEmojis = MutableStateFlow<List<CommunityEmoji>>(emptyList())
+    val communityEmojis = _communityEmojis.asStateFlow()
 
     // Notifications State
     private val _notifications = MutableStateFlow<List<UserNotificationItem>>(emptyList())
@@ -2635,9 +2642,41 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun loadCommunityEmojis(forceRefresh: Boolean = false) {
+        viewModelScope.launch {
+            val cached = withContext(Dispatchers.IO) { communityEmojiCache.readCachedSync() }
+            if (cached.isNotEmpty() && _communityEmojis.value.isEmpty()) {
+                _communityEmojis.value = cached
+                communityEmojiCache.preloadTopEmojis(cached, count = 8)
+            }
+            val emojis = communityEmojiCache.getEmojis(_authSession.value, forceRefresh = forceRefresh)
+            if (emojis.isNotEmpty()) {
+                _communityEmojis.value = emojis
+                communityEmojiCache.preloadTopEmojis(emojis, count = 8)
+            }
+        }
+    }
+
+    fun recordCustomEmojiUsage(text: String) {
+        val ids = CommunityEmojiCacheService.extractEmojiIds(text)
+        if (ids.isEmpty()) return
+        viewModelScope.launch {
+            val updated = communityEmojiCache.recordUsage(_authSession.value, ids)
+            if (updated.isNotEmpty()) {
+                _communityEmojis.value = updated
+            }
+        }
+    }
+
     fun markAnimeDiscussionSeen(animeId: Int) {
         val session = _authSession.value ?: return
         val hadUnseen = _unseenDiscussionAnime.value.any { it.animeId == animeId }
+        val hadUnreadInList = _notifications.value.any { it.animeId == animeId && !it.isRead }
+        if (hadUnreadInList) {
+            _notifications.value = _notifications.value.map {
+                if (it.animeId == animeId) it.copy(isRead = true) else it
+            }
+        }
         if (hadUnseen) {
             val remainingList = _unseenDiscussionAnime.value.filterNot { it.animeId == animeId }
             _unseenDiscussionAnime.value = remainingList
@@ -2648,6 +2687,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                 _unreadNotificationCount.value = remaining
                 if (remaining == 0) {
                     _unseenDiscussionAnime.value = emptyList()
+                    _notifications.value = _notifications.value.map { it.copy(isRead = true) }
                 } else {
                     _unseenDiscussionAnime.value = _unseenDiscussionAnime.value.filterNot { it.animeId == animeId }
                 }
@@ -2741,16 +2781,12 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                 .onSuccess { (created, total) ->
                     _discussionComments.value = listOf(created) + _discussionComments.value.filterNot { it.id == created.id }
                     _discussionTotalCount.value = total
-                    _discussionSuccessMessage.value = "Comment posted successfully"
-                    _dynamicIslandFeedback.value = DynamicIslandFeedback(
-                        title = "Comment posted successfully",
-                        subtitle = animeTitle,
-                        animeId = animeId
-                    )
+                    _discussionSuccessMessage.value = "Message sent"
+                    recordCustomEmojiUsage(content)
                     onSuccess()
                 }
                 .onFailure { err ->
-                    _discussionErrorMessage.value = err.message ?: "Unable to post comment right now."
+                    _discussionErrorMessage.value = err.message ?: "Unable to post message right now."
                 }
             _isDiscussionSubmitting.value = false
         }
@@ -2837,7 +2873,8 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                             comment
                         }
                     }
-                    _discussionSuccessMessage.value = "Reply posted successfully"
+                    _discussionSuccessMessage.value = "Reply sent"
+                    recordCustomEmojiUsage(content)
                     onSuccess(created.thread.id)
                 }
                 .onFailure { err ->
@@ -2951,16 +2988,28 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun markNotificationRead(notificationId: String) {
         val session = _authSession.value ?: return
-        val wasUnread = _notifications.value.any { it.id == notificationId && !it.isRead }
+        val target = _notifications.value.firstOrNull { it.id == notificationId }
+        val wasUnread = target != null && !target.isRead
         if (wasUnread) {
-            _notifications.value = _notifications.value.map {
+            val nextNotifications = _notifications.value.map {
                 if (it.id == notificationId) it.copy(isRead = true) else it
             }
-            _unreadNotificationCount.value = (_unreadNotificationCount.value - 1).coerceAtLeast(0)
+            _notifications.value = nextNotifications
+            val nextUnread = (_unreadNotificationCount.value - 1).coerceAtLeast(0)
+            _unreadNotificationCount.value = nextUnread
+            if (target != null && nextNotifications.none { it.animeId == target.animeId && !it.isRead }) {
+                _unseenDiscussionAnime.value = _unseenDiscussionAnime.value.filterNot { it.animeId == target.animeId }
+            }
         }
         viewModelScope.launch {
             supabaseDiscussion.markNotificationRead(session, notificationId).onSuccess { unread ->
                 _unreadNotificationCount.value = unread
+                if (unread == 0) {
+                    _unseenDiscussionAnime.value = emptyList()
+                    _notifications.value = _notifications.value.map { it.copy(isRead = true) }
+                } else {
+                    refreshUnseenDiscussionAnime()
+                }
             }
         }
     }
@@ -2968,10 +3017,12 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     fun markAllNotificationsRead() {
         val session = _authSession.value ?: return
         _notifications.value = _notifications.value.map { it.copy(isRead = true) }
+        _unseenDiscussionAnime.value = emptyList()
         _unreadNotificationCount.value = 0
         viewModelScope.launch {
             supabaseDiscussion.markAllNotificationsRead(session).onSuccess {
                 _unreadNotificationCount.value = 0
+                _unseenDiscussionAnime.value = emptyList()
             }
         }
     }

@@ -5259,16 +5259,107 @@ private fun DesktopCommunityScreen(
     onOpenAnime: (animeId: Int, fallbackTitle: String, fallbackCover: String) -> Unit,
     onSubmitCommentNote: (animeId: Int, animeTitle: String, animeCover: String, stars: Float, note: String) -> Unit
 ) {
+    val scope = rememberCoroutineScope()
     val animeGroups = remember(reviews) { groupDesktopCommunityReviews(reviews) }
     val unseenByAnimeId = remember(unseenDiscussionAnime) { unseenDiscussionAnime.associateBy { it.animeId } }
     val totalNotesAndRatings = remember(animeGroups) { animeGroups.sumOf { it.notesAndRatingsCount } }
+    var activeCommunitySection by remember { mutableStateOf("feed") } // "feed" | "tagged"
     var selectedCommentsAnimeId by remember { mutableStateOf<Int?>(null) }
+    var selectedFallbackGroup by remember { mutableStateOf<DesktopCommunityAnimeGroup?>(null) }
+    var externalModalJumpTarget by remember { mutableStateOf<DesktopNotificationJumpTarget?>(null) }
 
-    val selectedCommentsGroup = remember(animeGroups, selectedCommentsAnimeId) {
-        selectedCommentsAnimeId?.let { id -> animeGroups.firstOrNull { it.animeId == id } }
+    var taggedNotifications by remember { mutableStateOf<List<DesktopUserNotification>>(emptyList()) }
+    var taggedUnreadCount by remember { mutableStateOf(0) }
+    var taggedHasMore by remember { mutableStateOf(false) }
+    var taggedLoading by remember { mutableStateOf(false) }
+
+    fun loadTaggedNotifications(reset: Boolean) {
+        if (!isAuthenticated || session.isGuest) return
+        val offset = if (reset) 0 else taggedNotifications.size
+        taggedLoading = true
+        scope.launch {
+            DesktopDiscussionService.fetchNotifications(session, limit = 30, offset = offset)
+                .onSuccess { (page, active) ->
+                    onSessionUpdated(active)
+                    taggedUnreadCount = page.unreadCount
+                    taggedHasMore = page.hasMore
+                    taggedNotifications = if (reset) {
+                        page.notifications
+                    } else {
+                        val existing = taggedNotifications.map { it.id }.toSet()
+                        taggedNotifications + page.notifications.filterNot { it.id in existing }
+                    }
+                }
+            taggedLoading = false
+        }
     }
 
-    // Top Bar matching Screenshot 5
+    LaunchedEffect(session.userId, isAuthenticated) {
+        if (isAuthenticated && !session.isGuest) {
+            launch {
+                val emojis = DesktopEmojiCacheService.getEmojis(session)
+                if (emojis.isNotEmpty()) DesktopEmojiCacheService.preloadTopEmojis(emojis, count = 8)
+            }
+            loadTaggedNotifications(reset = true)
+        }
+    }
+
+    val selectedCommentsGroup = remember(animeGroups, selectedCommentsAnimeId, selectedFallbackGroup) {
+        val id = selectedCommentsAnimeId ?: return@remember null
+        animeGroups.firstOrNull { it.animeId == id } ?: selectedFallbackGroup?.takeIf { it.animeId == id }
+    }
+
+    fun openTaggedAnimeInModal(
+        animeId: Int,
+        animeTitle: String,
+        animeCover: String,
+        jumpTarget: DesktopNotificationJumpTarget,
+        notificationId: String? = null
+    ) {
+        if (!notificationId.isNullOrBlank()) {
+            val wasUnread = taggedNotifications.any { it.id == notificationId && !it.isRead }
+            taggedNotifications = taggedNotifications.map { if (it.id == notificationId) it.copy(isRead = true) else it }
+            if (wasUnread) taggedUnreadCount = (taggedUnreadCount - 1).coerceAtLeast(0)
+            scope.launch {
+                DesktopDiscussionService.markNotificationRead(session, notificationId)
+            }
+        }
+        onMarkedAnimeSeen(animeId)
+        val existing = animeGroups.firstOrNull { it.animeId == animeId }
+        if (existing == null) {
+            val fallbackLead = DesktopCommunityReview(
+                id = "tagged_fallback_$animeId",
+                userId = "",
+                username = "Community",
+                avatarKey = "avatar_1",
+                animeId = animeId,
+                animeTitle = animeTitle.ifBlank { "Anime #$animeId" },
+                animeCover = animeCover,
+                stars = 0f,
+                notes = "",
+                updatedAt = "",
+                formattedDate = ""
+            )
+            selectedFallbackGroup = DesktopCommunityAnimeGroup(
+                animeId = animeId,
+                animeTitle = animeTitle.ifBlank { "Anime #$animeId" },
+                animeCover = animeCover,
+                averageStars = 0f,
+                ratedCount = 0,
+                notedCount = 0,
+                latestUpdatedAt = "",
+                formattedLatestDate = "",
+                leadReview = fallbackLead,
+                reviews = emptyList()
+            )
+        } else {
+            selectedFallbackGroup = null
+        }
+        externalModalJumpTarget = jumpTarget
+        selectedCommentsAnimeId = animeId
+    }
+
+    // Top Bar
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -5287,8 +5378,111 @@ private fun DesktopCommunityScreen(
         AvatarCircleButton(avatarKey = avatarKey, onClick = onOpenProfile)
     }
 
-    Spacer(modifier = Modifier.height(16.dp))
+    Spacer(modifier = Modifier.height(14.dp))
 
+    // Dedicated Community Feed vs "Tagged You" Switcher
+    val totalUnreadTags = maxOf(taggedUnreadCount, unseenDiscussionAnime.sumOf { it.unseenCount })
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        val feedActive = activeCommunitySection == "feed"
+        val taggedActive = activeCommunitySection == "tagged"
+        Surface(
+            shape = CircleShape,
+            color = if (feedActive) Color(0xFF2B271F) else ObsidianPillBg,
+            border = BorderStroke(1.dp, if (feedActive) ChampagneGold.copy(alpha = 0.7f) else ObsidianBorder),
+            modifier = Modifier
+                .height(40.dp)
+                .clip(CircleShape)
+                .clickable { activeCommunitySection = "feed" }
+        ) {
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 20.dp)) {
+                Text(
+                    "Community Feed",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (feedActive) ChampagneGoldSoft else WarmSilver
+                )
+            }
+        }
+        Surface(
+            shape = CircleShape,
+            color = if (taggedActive) Color(0xFF2B271F) else ObsidianPillBg,
+            border = BorderStroke(
+                1.dp,
+                when {
+                    taggedActive -> ChampagneGold.copy(alpha = 0.7f)
+                    totalUnreadTags > 0 -> Color(0xFFEF4444).copy(alpha = 0.6f)
+                    else -> ObsidianBorder
+                }
+            ),
+            modifier = Modifier
+                .height(40.dp)
+                .clip(CircleShape)
+                .clickable {
+                    activeCommunitySection = "tagged"
+                    loadTaggedNotifications(reset = true)
+                }
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.padding(horizontal = 18.dp)
+            ) {
+                Text(
+                    "@ Tagged You",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (taggedActive) ChampagneGoldSoft else WarmSilver
+                )
+                if (totalUnreadTags > 0) {
+                    Surface(shape = CircleShape, color = Color(0xFFEF4444)) {
+                        Text(
+                            if (totalUnreadTags > 99) "99+" else "$totalUnreadTags",
+                            color = Color.White,
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 1.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    Spacer(modifier = Modifier.height(14.dp))
+
+    if (activeCommunitySection == "tagged") {
+        DesktopTaggedYouSection(
+            notifications = taggedNotifications,
+            unreadCount = totalUnreadTags,
+            loading = taggedLoading,
+            hasMore = taggedHasMore,
+            onRefresh = { loadTaggedNotifications(reset = true) },
+            onMarkAllRead = {
+                taggedNotifications = taggedNotifications.map { it.copy(isRead = true) }
+                taggedUnreadCount = 0
+                unseenDiscussionAnime.forEach { onMarkedAnimeSeen(it.animeId) }
+                scope.launch { DesktopDiscussionService.markAllNotificationsRead(session) }
+            },
+            onLoadMore = { loadTaggedNotifications(reset = false) },
+            onOpenNotification = { n ->
+                openTaggedAnimeInModal(
+                    animeId = n.animeId,
+                    animeTitle = n.animeTitle,
+                    animeCover = n.animeCover,
+                    jumpTarget = DesktopNotificationJumpTarget(
+                        animeId = n.animeId,
+                        commentId = n.commentId,
+                        threadId = n.threadId,
+                        replyId = n.replyId
+                    ),
+                    notificationId = n.id
+                )
+            }
+        )
+    } else {
     // Sentiment Filter Row: ALL, CINEMA, WORTH, AVG, BORING, WASTE
     LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
@@ -5392,7 +5586,19 @@ private fun DesktopCommunityScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(24.dp))
-                    .clickable { onOpenAnime(u.animeId, u.animeTitle, u.animeCover) }
+                    .clickable {
+                        openTaggedAnimeInModal(
+                            animeId = u.animeId,
+                            animeTitle = u.animeTitle,
+                            animeCover = u.animeCover,
+                            jumpTarget = DesktopNotificationJumpTarget(
+                                animeId = u.animeId,
+                                commentId = u.latestCommentId,
+                                threadId = u.latestThreadId,
+                                replyId = u.latestReplyId
+                            )
+                        )
+                    }
             ) {
                 Row(
                     modifier = Modifier.padding(20.dp),
@@ -5722,6 +5928,7 @@ private fun DesktopCommunityScreen(
             }
         }
     }
+    } // end else (feed section)
 
     if (selectedCommentsGroup != null) {
         val myExisting = selectedCommentsGroup.reviews.firstOrNull {
@@ -5731,14 +5938,14 @@ private fun DesktopCommunityScreen(
         val unseenForGroup = unseenByAnimeId[selectedCommentsGroup.animeId]
         var draftStars by remember(selectedCommentsGroup.animeId) { mutableStateOf(myExisting?.stars ?: 0f) }
         var draftNote by remember(selectedCommentsGroup.animeId) { mutableStateOf(myExisting?.notes.orEmpty()) }
-        var modalTab by remember(selectedCommentsGroup.animeId) {
-            mutableStateOf(if (unseenForGroup != null) "discussion" else "notes")
+        var modalTab by remember(selectedCommentsGroup.animeId, externalModalJumpTarget) {
+            mutableStateOf("discussion")
         }
         var pendingReplyUser by remember(selectedCommentsGroup.animeId) { mutableStateOf<DesktopMentionUser?>(null) }
         var openNoteMenuId by remember(selectedCommentsGroup.animeId) { mutableStateOf<String?>(null) }
-        var modalJumpTarget by remember(selectedCommentsGroup.animeId) {
+        var modalJumpTarget by remember(selectedCommentsGroup.animeId, externalModalJumpTarget) {
             mutableStateOf(
-                unseenForGroup?.let {
+                externalModalJumpTarget ?: unseenForGroup?.let {
                     DesktopNotificationJumpTarget(
                         animeId = it.animeId,
                         commentId = it.latestCommentId,
@@ -5749,52 +5956,69 @@ private fun DesktopCommunityScreen(
             )
         }
 
-        Dialog(onDismissRequest = { selectedCommentsAnimeId = null }) {
+        Dialog(
+            onDismissRequest = {
+                selectedCommentsAnimeId = null
+                selectedFallbackGroup = null
+                externalModalJumpTarget = null
+            }
+        ) {
             Surface(
                 shape = RoundedCornerShape(28.dp),
-                color = ObsidianSidebar,
-                border = BorderStroke(1.dp, ChampagneGold.copy(alpha = 0.45f)),
+                color = Color(0xFF030304),
+                border = BorderStroke(1.dp, Color(0x33E8C88F)),
                 modifier = Modifier
                     .widthIn(max = 680.dp)
-                    .heightIn(max = 780.dp)
+                    .height(780.dp)
                     .fillMaxWidth()
             ) {
-                Column(
-                    modifier = Modifier.padding(22.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    // Header
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // LivTrAk Hub Header
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(14.dp)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 20.dp, end = 18.dp, top = 20.dp, bottom = 14.dp),
+                        verticalAlignment = Alignment.Top,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
                         NetworkPosterImage(
                             url = selectedCommentsGroup.animeCover,
                             contentDescription = selectedCommentsGroup.animeTitle,
                             modifier = Modifier
-                                .size(width = 50.dp, height = 70.dp)
-                                .clip(RoundedCornerShape(12.dp))
+                                .size(width = 60.dp, height = 86.dp)
+                                .clip(RoundedCornerShape(10.dp))
                                 .clickable {
                                     val id = selectedCommentsGroup.animeId
                                     val title = selectedCommentsGroup.animeTitle
                                     val cover = selectedCommentsGroup.animeCover
                                     selectedCommentsAnimeId = null
+                                    selectedFallbackGroup = null
+                                    externalModalJumpTarget = null
                                     onOpenAnime(id, title, cover)
                                 }
                         )
                         Column(
                             modifier = Modifier
                                 .weight(1f)
+                                .padding(top = 2.dp)
                                 .clickable {
                                     val id = selectedCommentsGroup.animeId
                                     val title = selectedCommentsGroup.animeTitle
                                     val cover = selectedCommentsGroup.animeCover
                                     selectedCommentsAnimeId = null
+                                    selectedFallbackGroup = null
+                                    externalModalJumpTarget = null
                                     onOpenAnime(id, title, cover)
                                 },
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                            verticalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
+                            Text(
+                                "COMMUNITY HUB",
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                letterSpacing = 2.sp,
+                                color = ChampagneGold
+                            )
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -5802,7 +6026,7 @@ private fun DesktopCommunityScreen(
                                 Text(
                                     selectedCommentsGroup.animeTitle,
                                     fontFamily = FontFamily.Serif,
-                                    fontSize = 23.sp,
+                                    fontSize = 22.sp,
                                     color = IvoryText,
                                     maxLines = 2,
                                     overflow = TextOverflow.Ellipsis,
@@ -5824,86 +6048,80 @@ private fun DesktopCommunityScreen(
                                     }
                                 }
                             }
+                            val avgStr = if (selectedCommentsGroup.averageStars > 0f) {
+                                "★ ${String.format(java.util.Locale.US, "%.1f", selectedCommentsGroup.averageStars)} avg • "
+                            } else ""
+                            val mCount = selectedCommentsGroup.distinctContributors.size
                             Text(
-                                "${selectedCommentsGroup.ratedCount} ratings • ${selectedCommentsGroup.notedCount} notes",
+                                "${avgStr}$mCount ${if (mCount == 1) "member" else "members"}",
                                 fontSize = 12.sp,
                                 color = WarmSilver
                             )
                         }
-                        IconButton(onClick = { selectedCommentsAnimeId = null }) {
-                            Icon(Icons.Default.Close, contentDescription = "Close", tint = WarmSilver)
-                        }
-                    }
-
-                    // Segmented Switcher: Notes & Ratings vs Discussion & Replies
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        val notesActive = modalTab == "notes"
-                        val discActive = modalTab == "discussion"
                         Surface(
                             shape = CircleShape,
-                            color = if (notesActive) Color(0xFF2B271F) else ObsidianCard,
-                            border = BorderStroke(1.dp, if (notesActive) ChampagneGold.copy(alpha = 0.7f) else ObsidianBorder),
+                            color = Color(0x14FFFFFF),
+                            border = BorderStroke(1.dp, Color(0x1AFFFFFF)),
                             modifier = Modifier
-                                .weight(1f)
-                                .height(38.dp)
+                                .size(36.dp)
                                 .clip(CircleShape)
-                                .clickable { modalTab = "notes" }
+                                .clickable {
+                                    selectedCommentsAnimeId = null
+                                    selectedFallbackGroup = null
+                                    externalModalJumpTarget = null
+                                }
                         ) {
                             Box(contentAlignment = Alignment.Center) {
-                                Text(
-                                    "Notes & Ratings (${selectedCommentsGroup.reviews.size})",
-                                    fontSize = 12.5.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (notesActive) ChampagneGoldSoft else WarmSilver
-                                )
-                            }
-                        }
-                        Surface(
-                            shape = CircleShape,
-                            color = if (discActive) Color(0xFF2B271F) else ObsidianCard,
-                            border = BorderStroke(1.dp, if (discActive) ChampagneGold.copy(alpha = 0.7f) else ObsidianBorder),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(38.dp)
-                                .clip(CircleShape)
-                                .clickable { modalTab = "discussion" }
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.Center
-                            ) {
-                                if (unseenForGroup != null && !discActive) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(8.dp)
-                                            .clip(CircleShape)
-                                            .background(Color(0xFFEF4444))
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                }
-                                Text(
-                                    "Discussion & Replies",
-                                    fontSize = 12.5.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (discActive) ChampagneGoldSoft else WarmSilver
-                                )
+                                Icon(Icons.Default.Close, contentDescription = "Close", tint = IvoryText, modifier = Modifier.size(16.dp))
                             }
                         }
                     }
 
-                    HorizontalDivider(color = ObsidianBorder)
+                    // LivTrAk Underlined Tabs: Live Chat | Reviews (N)
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                        horizontalArrangement = Arrangement.spacedBy(24.dp)
+                    ) {
+                        val discActive = modalTab == "discussion"
+                        val notesActive = modalTab == "notes"
+                        Column(
+                            modifier = Modifier.clickable { modalTab = "discussion" }.padding(vertical = 8.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(
+                                    "Live Chat",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (discActive) ChampagneGold else WarmSilver
+                                )
+                                if (unseenForGroup != null && !discActive) {
+                                    Box(modifier = Modifier.size(7.dp).clip(CircleShape).background(Color(0xFFEF4444)))
+                                }
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            Box(modifier = Modifier.width(68.dp).height(2.dp).background(if (discActive) ChampagneGold else Color.Transparent))
+                        }
+                        Column(
+                            modifier = Modifier.clickable { modalTab = "notes" }.padding(vertical = 8.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                "Reviews (${selectedCommentsGroup.reviews.size})",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (notesActive) ChampagneGold else WarmSilver
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            Box(modifier = Modifier.width(82.dp).height(2.dp).background(if (notesActive) ChampagneGold else Color.Transparent))
+                        }
+                    }
+
+                    HorizontalDivider(color = Color(0x14FFFFFF))
 
                     if (modalTab == "discussion") {
-                        Column(
-                            modifier = Modifier
-                                .weight(1f, fill = false)
-                                .fillMaxWidth()
-                                .verticalScroll(rememberScrollState())
-                        ) {
-                            DesktopAnimeDiscussionSection(
+                        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                            DesktopLivTrAkChatSection(
                                 anime = DesktopAnimeItem(
                                     id = selectedCommentsGroup.animeId,
                                     title = selectedCommentsGroup.animeTitle,
@@ -5912,15 +6130,23 @@ private fun DesktopCommunityScreen(
                                 session = session,
                                 isAuthenticated = isAuthenticated,
                                 jumpTarget = modalJumpTarget,
-                                onJumpTargetConsumed = { modalJumpTarget = null },
+                                onJumpTargetConsumed = {
+                                    modalJumpTarget = null
+                                    externalModalJumpTarget = null
+                                },
                                 onSessionUpdated = onSessionUpdated,
                                 onShowToast = onShowToast,
                                 onMarkedAnimeSeen = onMarkedAnimeSeen,
                                 initialReplyUser = pendingReplyUser,
-                                onInitialReplyUserConsumed = { pendingReplyUser = null }
+                                onInitialReplyUserConsumed = { pendingReplyUser = null },
+                                inModal = true
                             )
                         }
                     } else {
+                        Column(
+                            modifier = Modifier.weight(1f).fillMaxWidth().padding(18.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
                         // All Notes & Ratings List with Reply Button + Right-Click Reply Menu
                         LazyColumn(
                             modifier = Modifier.weight(1f, fill = false).fillMaxWidth(),
@@ -6173,6 +6399,7 @@ private fun DesktopCommunityScreen(
                             commSuccessMsg?.let { msg ->
                                 DesktopFeedbackBanner(message = msg, isError = false)
                             }
+                        }
                         }
                     }
                 }
@@ -7119,7 +7346,7 @@ private fun DesktopDetailScreen(
             }
         }
 
-        DesktopAnimeDiscussionSection(
+        DesktopLivTrAkChatSection(
             anime = item,
             session = session,
             isAuthenticated = isAuthenticated,
@@ -7127,7 +7354,8 @@ private fun DesktopDetailScreen(
             onJumpTargetConsumed = onNotificationJumpConsumed,
             onSessionUpdated = onSessionUpdated,
             onShowToast = onShowToast,
-            onMarkedAnimeSeen = onMarkedAnimeSeen
+            onMarkedAnimeSeen = onMarkedAnimeSeen,
+            inModal = false
         )
 
         Spacer(modifier = Modifier.height(24.dp))

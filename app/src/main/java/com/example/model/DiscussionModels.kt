@@ -67,6 +67,17 @@ data class ThreadReplyCreationResult(
     val reply: CommentReplyItem
 )
 
+data class CommunityEmoji(
+    val id: String,
+    val bucketName: String = "community_emojis",
+    val storagePath: String = "",
+    val fileName: String = "",
+    val mimeType: String = "image/gif",
+    val usageCount: Long = 0L,
+    val url: String = "",
+    val score: Long = usageCount
+)
+
 data class UserNotificationItem(
     val id: String,
     val recipientUserId: String,
@@ -75,6 +86,8 @@ data class UserNotificationItem(
     val senderAvatarKey: String = BuiltInAvatar.AVATAR_1.key,
     val senderAvatarUrl: String? = null,
     val notificationType: String, // "mention_comment" | "mention_reply" | "thread_reply"
+    val communityId: String = "livtrak_community",
+    val communityName: String = "LivTrAk Community",
     val animeId: Int,
     val animeTitle: String,
     val animeCoverImage: String = "",
@@ -88,8 +101,8 @@ data class UserNotificationItem(
     val actionSummary: String
         get() = when (notificationType) {
             "thread_reply" -> "replied to you on $animeTitle"
-            "mention_reply" -> "mentioned you in a reply on $animeTitle"
-            else -> "mentioned you in a comment on $animeTitle"
+            "mention_reply" -> "tagged you in a reply on $animeTitle"
+            else -> "tagged you on $animeTitle"
         }
 }
 
@@ -111,6 +124,8 @@ data class UnseenDiscussionAnime(
     val animeId: Int,
     val animeTitle: String,
     val animeCoverImage: String = "",
+    val communityId: String = "livtrak_community",
+    val communityName: String = "LivTrAk Community",
     val unseenCount: Int = 1,
     val latestCommentId: String = "",
     val latestThreadId: String? = null,

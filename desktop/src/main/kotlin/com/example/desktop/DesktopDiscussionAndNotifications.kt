@@ -1,17 +1,23 @@
 package com.example.desktop
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.outlined.Reply
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.SentimentSatisfiedAlt
 import androidx.compose.material.icons.outlined.AlternateEmail
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Close
@@ -27,12 +33,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -73,6 +81,8 @@ data class DesktopUnseenDiscussionAnime(
     val animeId: Int,
     val animeTitle: String = "",
     val animeCover: String = "",
+    val communityId: String = "livtrak_community",
+    val communityName: String = "LivTrAk Community",
     val unseenCount: Int = 1,
     val latestType: String = "mention_comment",
     val latestSenderUsername: String = "Member",
@@ -134,6 +144,8 @@ data class DesktopDiscussionPage(
 data class DesktopUserNotification(
     val id: String,
     val type: String,
+    val communityId: String = "livtrak_community",
+    val communityName: String = "LivTrAk Community",
     val animeId: Int,
     val animeTitle: String = "",
     val animeCover: String = "",
@@ -607,6 +619,8 @@ internal object DesktopDiscussionService {
                         animeId = aid,
                         animeTitle = u.str("anime_title"),
                         animeCover = u.str("anime_cover_image").ifBlank { u.str("anime_cover") },
+                        communityId = u.str("community_id", "livtrak_community").ifBlank { "livtrak_community" },
+                        communityName = u.str("community_name", "LivTrAk Community").ifBlank { "LivTrAk Community" },
                         unseenCount = u.intVal("unseen_count", 1).coerceAtLeast(1),
                         latestType = u.str("latest_notification_type").ifBlank { u.str("latest_type", "mention_comment") },
                         latestSenderUsername = u.str("latest_sender_username", "Member"),
@@ -655,6 +669,8 @@ internal object DesktopDiscussionService {
                     DesktopUserNotification(
                         id = n.str("id"),
                         type = n.str("notification_type").ifBlank { n.str("type", "mention_comment") },
+                        communityId = n.str("community_id", "livtrak_community").ifBlank { "livtrak_community" },
+                        communityName = n.str("community_name", "LivTrAk Community").ifBlank { "LivTrAk Community" },
                         animeId = n.intVal("anime_id"),
                         animeTitle = n.str("anime_title"),
                         animeCover = n.str("anime_cover_image").ifBlank { n.str("anime_cover") },
