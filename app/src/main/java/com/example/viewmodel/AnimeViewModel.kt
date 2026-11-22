@@ -2896,9 +2896,19 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                 quotedPreview = quotedPreview
             )
                 .onSuccess { created ->
+                    val mergedReply = created.reply.copy(
+                        parentCommentId = created.reply.parentCommentId
+                            ?: created.reply.quotedReplyId
+                            ?: quotedReplyId
+                            ?: commentId,
+                        quotedCommentId = created.reply.quotedCommentId ?: commentId,
+                        quotedReplyId = created.reply.quotedReplyId ?: quotedReplyId,
+                        quotedUsername = created.reply.quotedUsername?.takeIf { it.isNotBlank() } ?: quotedUsername,
+                        quotedPreview = created.reply.quotedPreview?.takeIf { it.isNotBlank() } ?: quotedPreview
+                    )
                     _discussionComments.value = _discussionComments.value.map { comment ->
                         if (comment.id == commentId) {
-                            DiscussionRules.mergeReplyIntoComment(comment, created.thread, created.reply)
+                            DiscussionRules.mergeReplyIntoComment(comment, created.thread, mergedReply)
                         } else {
                             comment
                         }

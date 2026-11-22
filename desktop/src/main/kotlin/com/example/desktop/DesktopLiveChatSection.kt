@@ -178,7 +178,7 @@ internal fun DesktopLivTrAkChatSection(
     var mentionSuggestions by remember(anime.id) { mutableStateOf<List<DesktopMentionUser>>(emptyList()) }
     var activeMentionQuery by remember(anime.id) { mutableStateOf<DesktopActiveMentionQuery?>(null) }
 
-    val emojiById = remember(communityEmojis) { communityEmojis.associateBy { it.id } }
+    val emojiById = remember(communityEmojis) { communityEmojis.associateBy { it.id.lowercase() } }
     val chronologicalComments = remember(comments) { comments.asReversed() }
     val draftEmojiIds = remember(draft.text) { DesktopEmojiCacheService.extractEmojiIds(draft.text) }
 
@@ -394,7 +394,17 @@ internal fun DesktopLivTrAkChatSection(
                         quotedPreview = replyTarget.quotedPreview
                     ).onSuccess { (thread, reply, active) ->
                         onSessionUpdated(active)
-                        comments = DesktopDiscussionRules.mergeReplyIntoComments(comments, replyTarget.commentId, thread, reply)
+                        val mergedReply = reply.copy(
+                            parentCommentId = reply.parentCommentId
+                                ?: reply.quotedReplyId
+                                ?: replyTarget.quotedReplyId
+                                ?: replyTarget.commentId,
+                            quotedCommentId = reply.quotedCommentId ?: replyTarget.commentId,
+                            quotedReplyId = reply.quotedReplyId ?: replyTarget.quotedReplyId,
+                            quotedUsername = reply.quotedUsername?.takeIf { it.isNotBlank() } ?: replyTarget.quotedUsername,
+                            quotedPreview = reply.quotedPreview?.takeIf { it.isNotBlank() } ?: replyTarget.quotedPreview
+                        )
+                        comments = DesktopDiscussionRules.mergeReplyIntoComments(comments, replyTarget.commentId, thread, mergedReply)
                         expandedThreads = expandedThreads + (thread.id to true)
                         draft = TextFieldValue("")
                         selectedTags = emptyList()
@@ -566,12 +576,13 @@ internal fun DesktopLivTrAkChatSection(
                                                     fontSize = 10.sp
                                                 )
                                             }
-                                            val soloCommentEmoji = remember(comment.body, comment.mentions, emojiById, isEditingThis) {
+                                            val soloCommentEmojiId = remember(comment.body, comment.mentions, isEditingThis) {
                                                 if (!isEditingThis && comment.mentions.isEmpty()) {
-                                                    DesktopEmojiCacheService.extractSoloEmojiId(comment.body)?.let { emojiById[it] }
+                                                    DesktopEmojiCacheService.extractSoloEmojiId(comment.body)
                                                 } else null
                                             }
-                                            if (soloCommentEmoji != null) {
+                                            val soloCommentEmoji = soloCommentEmojiId?.let { emojiById[it] }
+                                            if (soloCommentEmojiId != null) {
                                                 Box(
                                                     modifier = Modifier
                                                         .clip(RoundedCornerShape(14.dp))
@@ -594,7 +605,11 @@ internal fun DesktopLivTrAkChatSection(
                                                             }
                                                         }
                                                 ) {
-                                                    DesktopCachedEmojiImage(emoji = soloCommentEmoji, size = 84.dp)
+                                                    if (soloCommentEmoji != null) {
+                                                        DesktopCachedEmojiImage(emoji = soloCommentEmoji, size = 90.dp)
+                                                    } else {
+                                                        Box(modifier = Modifier.size(90.dp).clip(CircleShape).background(ChampagneGold.copy(alpha = 0.12f)))
+                                                    }
                                                 }
                                             } else {
                                                 Surface(
@@ -806,15 +821,35 @@ internal fun DesktopLivTrAkChatSection(
                                                             val isReplyMine = session.userId.isNotBlank() && session.userId == reply.userId
                                                             val isReplyHighlighted = highlightedTarget?.replyId == reply.id
                                                             val isEditingThisReply = editingReplyId == reply.id
-                                                            val soloReplyEmoji = remember(reply.body, reply.mentions, emojiById, isEditingThisReply) {
+                                                            val soloReplyEmojiId = remember(reply.body, reply.mentions, isEditingThisReply) {
                                                                 if (!isEditingThisReply && reply.mentions.isEmpty()) {
-                                                                    DesktopEmojiCacheService.extractSoloEmojiId(reply.body)?.let { emojiById[it] }
+                                                                    DesktopEmojiCacheService.extractSoloEmojiId(reply.body)
                                                                 } else null
                                                             }
-                                                            val qUser = reply.quotedUsername ?: comment.username
-                                                            val qPrev = reply.quotedPreview ?: comment.body
+                                                            val soloReplyEmoji = soloReplyEmojiId?.let { emojiById[it] }
+                                                            val refReplyId = reply.quotedReplyId?.takeIf { it.isNotBlank() }
+                                                                ?: reply.parentCommentId?.takeIf { it.isNotBlank() && it != comment.id }
+                                                            val matchedTargetReply = remember(refReplyId, comment.threads) {
+                                                                if (refReplyId != null) {
+                                                                    comment.threads.asSequence().flatMap { it.replies.asSequence() }.firstOrNull { it.id == refReplyId }
+                                                                } else null
+                                                            }
+                                                            val qUser = if (refReplyId != null) {
+                                                                matchedTargetReply?.username?.takeIf { it.isNotBlank() }
+                                                                    ?: reply.quotedUsername?.takeIf { it.isNotBlank() }
+                                                                    ?: "Member"
+                                                            } else {
+                                                                reply.quotedUsername?.takeIf { it.isNotBlank() } ?: comment.username
+                                                            }
+                                                            val qPrev = if (refReplyId != null) {
+                                                                reply.quotedPreview?.takeIf { it.isNotBlank() }
+                                                                    ?: matchedTargetReply?.body?.takeIf { it.isNotBlank() }
+                                                                    ?: "Original reply unavailable"
+                                                            } else {
+                                                                reply.quotedPreview?.takeIf { it.isNotBlank() } ?: comment.body
+                                                            }
                                                             val qCommentId = reply.quotedCommentId ?: comment.id
-                                                            val qReplyId = reply.quotedReplyId
+                                                            val qReplyId = refReplyId
                                                             val replyActionsContent: @Composable () -> Unit = {
                                                                 if (isAuthenticated && !session.isGuest && !isEditingThisReply) {
                                                                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -870,7 +905,7 @@ internal fun DesktopLivTrAkChatSection(
                                                                     }
                                                                 }
                                                             }
-                                                            if (soloReplyEmoji != null) {
+                                                            if (soloReplyEmojiId != null) {
                                                                 Column(
                                                                     modifier = Modifier
                                                                         .fillMaxWidth()
@@ -904,7 +939,11 @@ internal fun DesktopLivTrAkChatSection(
                                                                         quotedPreview = qPrev,
                                                                         onClick = { jumpToQuotedTarget(qCommentId, qReplyId) }
                                                                     )
-                                                                    DesktopCachedEmojiImage(emoji = soloReplyEmoji, size = 84.dp)
+                                                                    if (soloReplyEmoji != null) {
+                                                                        DesktopCachedEmojiImage(emoji = soloReplyEmoji, size = 90.dp)
+                                                                    } else {
+                                                                        Box(modifier = Modifier.size(90.dp).clip(CircleShape).background(ChampagneGold.copy(alpha = 0.12f)))
+                                                                    }
                                                                     replyActionsContent()
                                                                 }
                                                             } else {
@@ -1007,8 +1046,8 @@ internal fun DesktopLivTrAkChatSection(
                                                                     val lastReply = thread.replies.lastOrNull()
                                                                     openReplyFor(
                                                                         comment = comment,
-                                                                        targetUserId = thread.targetUserId,
-                                                                        targetUsername = thread.targetUsername,
+                                                                        targetUserId = lastReply?.userId ?: thread.targetUserId,
+                                                                        targetUsername = lastReply?.username ?: thread.targetUsername,
                                                                         quotedReplyId = lastReply?.id,
                                                                         quotedPreview = lastReply?.body ?: comment.body
                                                                     )

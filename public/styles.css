@@ -3115,8 +3115,10 @@ html, body {
 }
 
 .custom-emoji-slot.size-solo {
-  width: 84px;
-  height: 84px;
+  width: 96px;
+  height: 96px;
+  min-width: 96px;
+  min-height: 96px;
   margin: 0;
   background: transparent;
 }
@@ -3126,12 +3128,28 @@ html, body {
   align-items: center;
   justify-content: center;
   padding: 2px 0;
+  background: transparent;
+  border: none;
   border-radius: 50%;
   transition: transform 150ms ease, box-shadow 180ms ease;
 }
 
+.c-solo-unicode-emoji {
+  display: inline-block;
+  font-size: 46px;
+  line-height: 1.15;
+  padding: 2px 4px;
+  background: transparent;
+  border: none;
+  user-select: text;
+}
+
 .c-solo-emoji.highlight-pulse {
   box-shadow: 0 0 0 2px #E8C88F, 0 0 22px rgba(232, 200, 143, 0.35);
+}
+
+.c-solo-unicode-emoji.highlight-pulse {
+  text-shadow: 0 0 18px rgba(232, 200, 143, 0.6);
 }
 
 .c-quote-preview {

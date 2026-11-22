@@ -88,8 +88,8 @@ internal object DesktopEmojiCacheService {
     private const val META_TTL_MS = 15L * 60L * 1000L
     private val SUPPORTED_BUCKETS = listOf("community_emojis", "community-emojis")
     private val jsonMedia = "application/json".toMediaType()
-    val EMOJI_TOKEN_REGEX = Regex("""\[emoji:([a-zA-Z0-9_-]{1,64})]""")
-    val SOLO_EMOJI_REGEX = Regex("""^\s*\[emoji:([a-zA-Z0-9_-]{1,64})]\s*$""")
+    val EMOJI_TOKEN_REGEX = Regex("""\[emoji:([^\]]{1,64})]""", RegexOption.IGNORE_CASE)
+    val SOLO_EMOJI_REGEX = Regex("""^\[emoji:([^\]]{1,64})]$""", RegexOption.IGNORE_CASE)
 
     private val cacheRoot = File(System.getProperty("user.home"), ".anime_universe")
     private val metaFile = File(cacheRoot, "emoji_meta_v1.json")
@@ -110,12 +110,13 @@ internal object DesktopEmojiCacheService {
 
     fun extractEmojiIds(text: String): List<String> {
         if (text.isBlank()) return emptyList()
-        return EMOJI_TOKEN_REGEX.findAll(text).map { it.groupValues[1] }.toList()
+        return EMOJI_TOKEN_REGEX.findAll(text).map { it.groupValues[1].trim().lowercase() }.toList()
     }
 
     fun extractSoloEmojiId(text: String): String? {
-        if (text.isBlank()) return null
-        return SOLO_EMOJI_REGEX.matchEntire(text)?.groupValues?.getOrNull(1)
+        val cleaned = text.replace(Regex("""[\s\u200B-\u200D\uFEFF]+"""), "")
+        if (cleaned.isBlank()) return null
+        return SOLO_EMOJI_REGEX.matchEntire(cleaned)?.groupValues?.getOrNull(1)?.trim()?.lowercase()
     }
 
     fun formatPreviewSnippet(text: String): String {

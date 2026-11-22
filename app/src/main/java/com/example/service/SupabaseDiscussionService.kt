@@ -523,6 +523,7 @@ class SupabaseDiscussionService {
             avatarKey = obj.optString("avatar_key", "avatar_1").ifBlank { "avatar_1" },
             avatarUrl = obj.optString("avatar_url").takeIf { it.isNotBlank() && it != "null" },
             content = obj.optString("content", ""),
+            parentCommentId = obj.optString("parent_comment_id").takeIf { it.isNotBlank() && it != "null" },
             quotedCommentId = obj.optString("quoted_comment_id").takeIf { it.isNotBlank() && it != "null" },
             quotedReplyId = obj.optString("quoted_reply_id").takeIf { it.isNotBlank() && it != "null" },
             quotedUsername = obj.optString("quoted_username").takeIf { it.isNotBlank() && it != "null" },

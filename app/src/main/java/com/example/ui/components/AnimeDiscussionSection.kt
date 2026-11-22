@@ -132,11 +132,33 @@ private val LivTrAkAsh = Color(0xFF9A9AA8)
 private val LivTrAkAsh2 = Color(0xFF66667A)
 private val LivTrAkHairline = Color(0x14FFFFFF)
 
-private val SOLO_EMOJI_REGEX = Regex("""^\s*\[emoji:([a-zA-Z0-9_-]{1,64})]\s*$""")
-private val ANY_EMOJI_TOKEN_REGEX = Regex("""\[emoji:([a-zA-Z0-9_-]{1,64})]""")
+private val SOLO_EMOJI_REGEX = Regex("""^\[emoji:([^\]]{1,64})]$""", RegexOption.IGNORE_CASE)
+private val ANY_EMOJI_TOKEN_REGEX = Regex("""\[emoji:([^\]]{1,64})]""", RegexOption.IGNORE_CASE)
 
-private fun extractSoloEmojiId(content: String): String? =
-    SOLO_EMOJI_REGEX.matchEntire(content)?.groupValues?.getOrNull(1)?.lowercase()
+private fun extractSoloEmojiId(content: String): String? {
+    val cleaned = content.replace(Regex("""[\s\u200B-\u200D\uFEFF]+"""), "")
+    return SOLO_EMOJI_REGEX.matchEntire(cleaned)?.groupValues?.getOrNull(1)?.trim()?.lowercase()
+}
+
+private fun isSoloUnicodeEmoji(content: String): Boolean {
+    val cleaned = content.replace(Regex("""[\s\u200B-\u200D\uFEFF]+"""), "")
+    if (cleaned.isEmpty() || cleaned.length > 16) return false
+    var i = 0
+    var hasEmoji = false
+    while (i < cleaned.length) {
+        val cp = cleaned.codePointAt(i)
+        val isEmojiCp = (cp in 0x1F000..0x1FAFF) ||
+            (cp in 0x2600..0x27BF) ||
+            (cp in 0x2300..0x23FF) ||
+            cp == 0xFE0F ||
+            cp == 0x200D ||
+            (cp in 0x1F3FB..0x1F3FF)
+        if (!isEmojiCp) return false
+        if (cp != 0xFE0F && cp != 0x200D) hasEmoji = true
+        i += Character.charCount(cp)
+    }
+    return hasEmoji
+}
 
 private fun formatPlainPreviewWithEmojis(content: String): String =
     ANY_EMOJI_TOKEN_REGEX.replace(content) { ":${it.groupValues[1]}:" }.trim()
@@ -178,7 +200,7 @@ fun AnimeDiscussionSection(
     val mentionSuggestions by viewModel.mentionSuggestions.collectAsState()
     val communityEmojis by viewModel.communityEmojis.collectAsState()
 
-    val emojiById = remember(communityEmojis) { communityEmojis.associateBy { it.id } }
+    val emojiById = remember(communityEmojis) { communityEmojis.associateBy { it.id.lowercase() } }
     val chronologicalComments = remember(comments) { comments.asReversed() }
     val listState = rememberLazyListState()
 
@@ -544,14 +566,26 @@ fun AnimeDiscussionSection(
                                 onDeleteComment = { viewModel.deleteAnimeComment(comment.id) },
                                 onContinueThread = { thread ->
                                     expandedThreads[thread.id] = true
-                                    activeReplyTarget = ReplyComposerTarget(
-                                        commentId = comment.id,
-                                        targetUserId = thread.targetUserId,
-                                        targetUsername = thread.targetUsername,
-                                        quotedReplyId = null,
-                                        quotedUsername = comment.username,
-                                        quotedPreview = formatPlainPreviewWithEmojis(comment.content).take(180)
-                                    )
+                                    val lastReply = thread.replies.lastOrNull()
+                                    activeReplyTarget = if (lastReply != null) {
+                                        ReplyComposerTarget(
+                                            commentId = comment.id,
+                                            targetUserId = lastReply.userId,
+                                            targetUsername = lastReply.username,
+                                            quotedReplyId = lastReply.id,
+                                            quotedUsername = lastReply.username,
+                                            quotedPreview = formatPlainPreviewWithEmojis(lastReply.content).take(180)
+                                        )
+                                    } else {
+                                        ReplyComposerTarget(
+                                            commentId = comment.id,
+                                            targetUserId = thread.targetUserId,
+                                            targetUsername = thread.targetUsername,
+                                            quotedReplyId = null,
+                                            quotedUsername = comment.username,
+                                            quotedPreview = formatPlainPreviewWithEmojis(comment.content).take(180)
+                                        )
+                                    }
                                 },
                                 onReplyToReplyAuthor = { reply ->
                                     comment.threads.firstOrNull { it.targetUserId == reply.userId }?.let { t ->
@@ -1011,8 +1045,9 @@ private fun LivTrAkChatMessageItem(
                         )
                     }
 
-                    // Solo Emoji (NO comment cloud, 3x bigger = 84.dp) OR Message Bubble
-                    if (!isEditing && soloEmojiObj != null) {
+                    // Solo Emoji (NO comment cloud, 3x bigger = 90.dp custom / 48.sp unicode) OR Message Bubble
+                    val isSoloUnicode = remember(comment.content) { soloEmojiId == null && isSoloUnicodeEmoji(comment.content) }
+                    if (!isEditing && (soloEmojiId != null || isSoloUnicode)) {
                         Box(
                             modifier = Modifier
                                 .padding(vertical = 4.dp)
@@ -1039,7 +1074,11 @@ private fun LivTrAkChatMessageItem(
                                 )
                                 .testTag("discussion_comment_card_${comment.id}")
                         ) {
-                            CachedCustomEmojiImage(emoji = soloEmojiObj, size = 84.dp)
+                            when {
+                                soloEmojiObj != null -> CachedCustomEmojiImage(emoji = soloEmojiObj, size = 90.dp)
+                                soloEmojiId != null -> EmojiShimmerPlaceholder(size = 90.dp)
+                                else -> Text(text = comment.content.trim(), fontSize = 48.sp, lineHeight = 54.sp)
+                            }
                         }
                         if (comment.mentions.isNotEmpty()) {
                             ClickableMentionChipsRow(
@@ -1302,11 +1341,31 @@ private fun CompactChatReplyThread(
                         val isEditingReply = editingReplyId == reply.id
                         val replySoloEmojiId = remember(reply.content) { extractSoloEmojiId(reply.content) }
                         val replySoloEmojiObj = replySoloEmojiId?.let { emojiById[it] }
-                        val quotedAuthor = reply.quotedUsername?.takeIf { it.isNotBlank() } ?: parentComment.username
-                        val quotedSnippet = remember(reply.quotedPreview, parentComment.content) {
-                            formatPlainPreviewWithEmojis(
+                        val targetReplyId = remember(reply.quotedReplyId, reply.parentCommentId, parentComment.id) {
+                            reply.quotedReplyId?.takeIf { it.isNotBlank() }
+                                ?: reply.parentCommentId?.takeIf { it.isNotBlank() && it != parentComment.id }
+                        }
+                        val matchedTargetReply = remember(targetReplyId, parentComment.threads) {
+                            if (targetReplyId != null) {
+                                parentComment.threads.asSequence().flatMap { it.replies.asSequence() }.firstOrNull { it.id == targetReplyId }
+                            } else null
+                        }
+                        val quotedAuthor = if (targetReplyId != null) {
+                            matchedTargetReply?.username?.takeIf { it.isNotBlank() }
+                                ?: reply.quotedUsername?.takeIf { it.isNotBlank() }
+                                ?: "Member"
+                        } else {
+                            reply.quotedUsername?.takeIf { it.isNotBlank() } ?: parentComment.username
+                        }
+                        val quotedSnippet = remember(reply.quotedPreview, matchedTargetReply, targetReplyId, parentComment.content) {
+                            val raw = if (targetReplyId != null) {
+                                reply.quotedPreview?.takeIf { it.isNotBlank() }
+                                    ?: matchedTargetReply?.content?.takeIf { it.isNotBlank() }
+                                    ?: "Original reply unavailable"
+                            } else {
                                 reply.quotedPreview?.takeIf { it.isNotBlank() } ?: parentComment.content
-                            )
+                            }
+                            formatPlainPreviewWithEmojis(raw)
                         }
                         val quotedCid = reply.quotedCommentId?.takeIf { it.isNotBlank() } ?: parentComment.id
 
@@ -1315,8 +1374,9 @@ private fun CompactChatReplyThread(
                                 verticalArrangement = Arrangement.spacedBy(4.dp),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                if (!isEditingReply && replySoloEmojiObj != null) {
-                                    // Reply header + Quoted preview + Unboxed 84dp solo emoji (NO comment cloud!)
+                                val isReplySoloUnicode = remember(reply.content) { replySoloEmojiId == null && isSoloUnicodeEmoji(reply.content) }
+                                if (!isEditingReply && (replySoloEmojiId != null || isReplySoloUnicode)) {
+                                    // Reply header + Quoted preview + Unboxed 90dp solo emoji (NO comment cloud!)
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -1364,7 +1424,11 @@ private fun CompactChatReplyThread(
                                             )
                                             .testTag("reply_item_${reply.id}")
                                     ) {
-                                        CachedCustomEmojiImage(emoji = replySoloEmojiObj, size = 84.dp)
+                                        when {
+                                            replySoloEmojiObj != null -> CachedCustomEmojiImage(emoji = replySoloEmojiObj, size = 90.dp)
+                                            replySoloEmojiId != null -> EmojiShimmerPlaceholder(size = 90.dp)
+                                            else -> Text(text = reply.content.trim(), fontSize = 48.sp, lineHeight = 54.sp)
+                                        }
                                     }
                                     if (reply.mentions.isNotEmpty()) {
                                         ClickableMentionChipsRow(mentions = reply.mentions, onMentionClick = onMentionClick)

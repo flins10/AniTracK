@@ -3182,12 +3182,57 @@ function renderCustomEmojiSlotHtml(emojiId, { lazy = false, sizeClass = '' } = {
 }
 
 function extractSoloEmojiId(text) {
-  const m = /^\s*\[emoji:([a-zA-Z0-9_-]{1,64})\]\s*$/.exec(String(text || ''));
-  return m ? m[1].toLowerCase() : null;
+  const cleaned = String(text || '').replace(/[\s\u200B-\u200D\uFEFF]+/g, '');
+  const m = /^\[emoji:([^\]]{1,64})\]$/i.exec(cleaned);
+  return m ? m[1].trim().toLowerCase() : null;
+}
+
+function isSoloUnicodeEmoji(text) {
+  const cleaned = String(text || '').replace(/[\s\u200B-\u200D\uFEFF]+/g, '');
+  if (!cleaned || cleaned.length > 16) return false;
+  return /^(?:\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic})*){1,3}$/u.test(cleaned);
 }
 
 function formatPlainPreviewWithEmojis(text) {
   return String(text || '').replace(EMOJI_TOKEN_REGEX, (_, id) => `:${id}:`);
+}
+
+function resolveReplyQuotedContext(parentComment, reply) {
+  const refReplyId =
+    reply?.quoted_reply_id ||
+    (reply?.parent_comment_id && reply.parent_comment_id !== parentComment?.id
+      ? reply.parent_comment_id
+      : null);
+  if (refReplyId) {
+    let matchedReply = null;
+    for (const th of parentComment?.threads || []) {
+      const hit = (th.replies || []).find((item) => item.id === refReplyId);
+      if (hit) {
+        matchedReply = hit;
+        break;
+      }
+    }
+    const author = matchedReply?.username || reply?.quoted_username || 'Member';
+    const rawPreview =
+      reply?.quoted_preview ||
+      matchedReply?.content ||
+      matchedReply?.body ||
+      'Original reply unavailable';
+    return {
+      author,
+      preview: formatPlainPreviewWithEmojis(rawPreview),
+      jumpCommentId: reply?.quoted_comment_id || parentComment?.id || '',
+      jumpReplyId: refReplyId
+    };
+  }
+  return {
+    author: reply?.quoted_username || parentComment?.username || 'Member',
+    preview: formatPlainPreviewWithEmojis(
+      reply?.quoted_preview || parentComment?.content || parentComment?.body || ''
+    ),
+    jumpCommentId: reply?.quoted_comment_id || parentComment?.id || '',
+    jumpReplyId: ''
+  };
 }
 
 function renderMentionSegmentHtml(segmentText) {
@@ -3864,11 +3909,24 @@ async function postThreadReply() {
       p_quoted_preview: target.quotedPreview || null
     });
     if (res && res.thread && res.reply) {
+      const mergedReply = {
+        ...res.reply,
+        parent_comment_id:
+          res.reply.parent_comment_id ||
+          res.reply.quoted_reply_id ||
+          target.parentCommentId ||
+          target.quotedReplyId ||
+          target.commentId,
+        quoted_comment_id: res.reply.quoted_comment_id || target.commentId,
+        quoted_reply_id: res.reply.quoted_reply_id || target.quotedReplyId || null,
+        quoted_username: res.reply.quoted_username || target.quotedUsername || target.targetUsername || null,
+        quoted_preview: res.reply.quoted_preview || target.quotedPreview || null
+      };
       state.discussion.comments = mergeReplyIntoDiscussionComments(
         state.discussion.comments,
         target.commentId,
         res.thread,
-        res.reply
+        mergedReply
       );
       state.discussion.expandedThreads[res.thread.id] = true;
     }
@@ -5620,6 +5678,12 @@ function renderAnimeDiscussionSection(anime, options = {}) {
                                       ${renderMentionsDisplayHtml(c.mentions)}
                                     `;
                                   }
+                                  if (isSoloUnicodeEmoji(rawBody)) {
+                                    return `
+                                      <div class="c-solo-unicode-emoji ${isCommentHighlighted ? 'highlight-pulse' : ''}">${escapeHtml(rawBody.trim())}</div>
+                                      ${renderMentionsDisplayHtml(c.mentions)}
+                                    `;
+                                  }
                                   return `
                                     <div class="c-bubble ${isCommentHighlighted ? 'highlight-pulse' : ''}">${renderMentionHighlightedHtml(rawBody)}</div>
                                     ${renderMentionsDisplayHtml(c.mentions)}
@@ -5677,19 +5741,17 @@ function renderAnimeDiscussionSection(anime, options = {}) {
                                                 const isReplyHighlighted = hl.replyId === r.id;
                                                 const rBody = r.content ?? r.body ?? '';
                                                 const rSoloEid = extractSoloEmojiId(rBody);
-                                                const quotedAuthor = r.quoted_username || c.username || 'Member';
-                                                const quotedPreviewRaw = r.quoted_preview || c.content || c.body || '';
-                                                const quotedPreviewText = formatPlainPreviewWithEmojis(quotedPreviewRaw);
-                                                const quoteButtonHtml = quotedPreviewText
+                                                const quoteCtx = resolveReplyQuotedContext(c, r);
+                                                const quoteButtonHtml = quoteCtx.preview
                                                   ? `<button
                                                        type="button"
                                                        class="c-quote-preview"
-                                                       data-jump-comment="${escapeHtml(r.quoted_comment_id || c.id)}"
-                                                       data-jump-reply="${escapeHtml(r.quoted_reply_id || '')}"
+                                                       data-jump-comment="${escapeHtml(quoteCtx.jumpCommentId)}"
+                                                       data-jump-reply="${escapeHtml(quoteCtx.jumpReplyId)}"
                                                        title="Jump to original message"
                                                      >
-                                                       <span class="c-quote-author">@${escapeHtml(quotedAuthor)}</span>
-                                                       <span class="c-quote-text">${escapeHtml(quotedPreviewText)}</span>
+                                                       <span class="c-quote-author">@${escapeHtml(quoteCtx.author)}</span>
+                                                       <span class="c-quote-text">${escapeHtml(quoteCtx.preview)}</span>
                                                      </button>`
                                                   : '';
                                                 return `
@@ -5734,6 +5796,12 @@ function renderAnimeDiscussionSection(anime, options = {}) {
                                                           ? `
                                                             ${quoteButtonHtml}
                                                             <div class="c-solo-emoji ${isReplyHighlighted ? 'highlight-pulse' : ''}">${renderCustomEmojiSlotHtml(rSoloEid, { lazy: false, sizeClass: 'size-solo' })}</div>
+                                                            ${renderMentionsDisplayHtml(r.mentions)}
+                                                          `
+                                                          : isSoloUnicodeEmoji(rBody)
+                                                          ? `
+                                                            ${quoteButtonHtml}
+                                                            <div class="c-solo-unicode-emoji ${isReplyHighlighted ? 'highlight-pulse' : ''}">${escapeHtml(rBody.trim())}</div>
                                                             ${renderMentionsDisplayHtml(r.mentions)}
                                                           `
                                                           : `
@@ -8714,34 +8782,37 @@ function bindAppEvents() {
   });
 
   // Helper to open reply thread & inline reply box for a target user with quoted context
-  const openReplyForTarget = (commentId, targetUserId, targetUsername, quotedReplyId = null, quotedPreview = '') => {
+  const openReplyForTarget = (commentId, targetUserId, targetUsername, quotedReplyId = null, quotedPreview = '', quotedAuthor = '') => {
     const comment = state.discussion.comments.find((c) => c.id === commentId);
     const existingThread = comment?.threads?.find((th) => th.target_user_id === targetUserId);
     if (existingThread) {
       state.discussion.expandedThreads[existingThread.id] = true;
     }
+    let resolvedAuthor = String(quotedAuthor || targetUsername || 'Member').trim();
     let resolvedPreview = String(quotedPreview || '').trim();
     if (!resolvedPreview && comment) {
       if (quotedReplyId) {
         for (const th of comment.threads || []) {
           const hit = (th.replies || []).find((r) => r.id === quotedReplyId);
           if (hit) {
+            resolvedAuthor = hit.username || resolvedAuthor;
             resolvedPreview = formatPlainPreviewWithEmojis(hit.content ?? hit.body ?? '').slice(0, 180);
             break;
           }
         }
-      }
-      if (!resolvedPreview) {
+      } else {
+        resolvedAuthor = comment.username || resolvedAuthor;
         resolvedPreview = formatPlainPreviewWithEmojis(comment.content ?? comment.body ?? '').slice(0, 180);
       }
     }
     state.discussion.activeReplyTarget = {
       commentId,
+      parentCommentId: quotedReplyId || commentId,
       targetUserId,
       targetUsername: targetUsername || 'Member',
       quotedCommentId: commentId,
       quotedReplyId: quotedReplyId || null,
-      quotedUsername: targetUsername || 'Member',
+      quotedUsername: resolvedAuthor,
       quotedPreview: resolvedPreview
     };
     state.discussion.replyDraft = '';
@@ -8956,7 +9027,8 @@ function bindAppEvents() {
         btn.getAttribute('data-reply-target-uid'),
         btn.getAttribute('data-reply-target-name') || 'Member',
         btn.getAttribute('data-reply-quoted-id') || null,
-        btn.getAttribute('data-reply-quoted-preview') || ''
+        btn.getAttribute('data-reply-quoted-preview') || '',
+        btn.getAttribute('data-reply-quoted-author') || ''
       );
     };
   });
