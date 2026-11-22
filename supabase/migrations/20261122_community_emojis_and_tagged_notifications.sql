@@ -374,10 +374,10 @@ GRANT EXECUTE ON FUNCTION public.increment_emoji_usage(TEXT[]) TO authenticated;
 
 -- Add community_id and community_name columns non-destructively
 ALTER TABLE public.user_notifications
-    ADD COLUMN IF NOT EXISTS community_id TEXT NOT NULL DEFAULT 'livtrak_community';
+    ADD COLUMN IF NOT EXISTS community_id TEXT NOT NULL DEFAULT 'anime_community';
 
 ALTER TABLE public.user_notifications
-    ADD COLUMN IF NOT EXISTS community_name TEXT NOT NULL DEFAULT 'LivTrAk Community';
+    ADD COLUMN IF NOT EXISTS community_name TEXT NOT NULL DEFAULT 'Community';
 
 -- Performance indexes for fast per-user "Tagged You" feed & red-dot counts
 CREATE INDEX IF NOT EXISTS idx_user_notifications_recipient_created
@@ -456,8 +456,8 @@ BEGIN
                 'sender_username', COALESCE(sp.username, 'Member'),
                 'sender_avatar_key', COALESCE(NULLIF(sp.avatar_key, ''), 'avatar_1'),
                 'sender_avatar_url', sp.avatar_url,
-                'community_id', COALESCE(NULLIF(n.community_id, ''), 'livtrak_community'),
-                'community_name', COALESCE(NULLIF(n.community_name, ''), 'LivTrAk Community'),
+                'community_id', COALESCE(NULLIF(n.community_id, ''), 'anime_community'),
+                'community_name', COALESCE(NULLIF(NULLIF(n.community_name, ''), 'LivTrAk Community'), 'Community'),
                 'notification_type', n.notification_type,
                 'anime_id', n.anime_id,
                 'anime_title', COALESCE(NULLIF(a.title_english, ''), NULLIF(a.title_romaji, ''), 'Anime #' || n.anime_id::TEXT),
@@ -522,8 +522,8 @@ BEGIN
                 'anime_id', grouped.anime_id,
                 'anime_title', COALESCE(NULLIF(a.title_english, ''), NULLIF(a.title_romaji, ''), 'Anime #' || grouped.anime_id::TEXT),
                 'anime_cover_image', COALESCE(a.cover_image, ''),
-                'community_id', COALESCE(NULLIF(latest.community_id, ''), 'livtrak_community'),
-                'community_name', COALESCE(NULLIF(latest.community_name, ''), 'LivTrAk Community'),
+                'community_id', COALESCE(NULLIF(latest.community_id, ''), 'anime_community'),
+                'community_name', COALESCE(NULLIF(NULLIF(latest.community_name, ''), 'LivTrAk Community'), 'Community'),
                 'unseen_count', grouped.unseen_count,
                 'latest_notification_id', latest.id,
                 'latest_comment_id', latest.comment_id,

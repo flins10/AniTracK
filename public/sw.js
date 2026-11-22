@@ -1,4 +1,5 @@
-const CACHE_NAME = 'anime-universe-pwa-v2.11.0';
+const CACHE_NAME = 'anime-universe-pwa-v2.12.0';
+const EMOJI_CACHE_NAME = 'community-emoji-cache-v1';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -32,7 +33,7 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
       Promise.all(
-        keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
+        keys.filter((key) => key !== CACHE_NAME && key !== EMOJI_CACHE_NAME).map((key) => caches.delete(key))
       )
     )
   );
@@ -44,6 +45,21 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET') return;
 
   const url = new URL(request.url);
+  if (/\/storage\/v1\/object\/public\/community[_-]emojis\//i.test(url.pathname)) {
+    event.respondWith(
+      caches.open(EMOJI_CACHE_NAME).then(async (cache) => {
+        const cached = await cache.match(request);
+        if (cached) return cached;
+        const net = await fetch(request);
+        if (net && net.status === 200) {
+          cache.put(request, net.clone()).catch(() => {});
+        }
+        return net;
+      })
+    );
+    return;
+  }
+
   if (
     url.pathname.startsWith('/api/') ||
     url.pathname.startsWith('/downloads/') ||

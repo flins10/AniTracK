@@ -4830,7 +4830,7 @@ function renderCommunityScreen() {
                           ? 'tagged you in a reply'
                           : 'tagged you';
                       const snippet = formatPlainPreviewWithEmojis(n.preview_text || n.content_preview || '');
-                      const commName = n.community_name || 'LivTrAk Community';
+                      const commName = (n.community_name && !/livtrak/i.test(n.community_name)) ? n.community_name : 'Community';
                       return `
                         <button
                           type="button"

@@ -417,10 +417,12 @@ const state = {
 
   // Community State
   communityReviews: [],
+  communityViewTab: 'feed', // 'feed' | 'tagged'
   communitySentimentFilter: null,
   communitySort: 'RECENT',
   communityCommentsAnimeId: null,
-  communityCommentsTab: 'notes', // 'notes' | 'discussion'
+  communityCommentsAnimeFallback: null, // fallback template metadata when opening older anime from Tagged You
+  communityCommentsTab: 'discussion', // 'discussion' (Live Chat) | 'notes' (Reviews)
   pendingCommunityReplyUser: null, // { id, username, avatar_key }
   communityCommentDraftStars: 0,
   communityCommentDraftNote: '',
@@ -435,7 +437,7 @@ const state = {
   detailNoteDraft: '',
   lastRenderedTab: null,
 
-  // Anime Discussion (Comments, @Tagging & Target-User Reply Threads)
+  // Anime Discussion (LivTrAk Live Chat, Custom Emojis, @Tagging & Target-User Reply Threads)
   discussion: {
     animeId: null,
     comments: [],
@@ -463,7 +465,8 @@ const state = {
     mentionActiveStart: -1,
     mentionActiveEnd: -1,
     highlightTarget: null, // { commentId, threadId, replyId }
-    contextMenu: null // { x, y, type: 'comment'|'reply', commentId, threadId?, replyId?, userId, username, isOwner }
+    contextMenu: null, // { x, y, type: 'comment'|'reply', commentId, threadId?, replyId?, userId, username, isOwner }
+    emojiTrayOpen: false
   },
 
   // Unseen Discussion Red Dot State (shown on Community tab & specific anime cards)
@@ -2743,18 +2746,463 @@ function renderMentionsDisplayHtml(mentions) {
   `;
 }
 
-function renderMentionHighlightedHtml(text) {
+// ============================================================================
+// CUSTOM EMOJI MULTI-LAYER CACHE ENGINE (SUPABASE STORAGE + CACHE API + LAZY)
+// - Stores ONLY emoji IDs ([emoji:<id>]) in DB/messages; never duplicates images
+// - Reuses single canonical public Storage URL across all users & messages
+// - Layer 1: In-memory objectURL Map (0ms lookup)
+// - Layer 2: Browser Cache API ('livtrak-emoji-cache-v1') w/ immutable headers
+// - Layer 3: localStorage metadata cache (15m TTL + stale-while-revalidate)
+// - Supports both "community_emojis" and "community-emojis" public buckets
+// ============================================================================
+
+const EMOJI_META_STORAGE_KEY = 'livtrak_community_emojis_meta_v1';
+const EMOJI_USAGE_LOCAL_KEY = 'livtrak_emoji_local_usage_v1';
+const EMOJI_META_TTL_MS = 15 * 60 * 1000;
+const EMOJI_IMAGE_CACHE_NAME = 'livtrak-emoji-cache-v1';
+const EMOJI_TOKEN_REGEX = /\[emoji:([a-zA-Z0-9_-]{1,64})\]/g;
+const EMOJI_BUCKET_CANDIDATES = ['community_emojis', 'community-emojis'];
+
+const EmojiCacheManager = {
+  items: [],
+  byId: new Map(),
+  objectUrls: new Map(),
+  inflightImages: new Map(),
+  failedIds: new Set(),
+  localUsage: {},
+  fetchedAt: 0,
+  metaPromise: null,
+  observer: null,
+  loadedFromStorage: false,
+
+  slugFromPath(path) {
+    const file = String(path || '').replace(/^.*\//, '');
+    const base = file.replace(/\.[^.]+$/, '');
+    const slug = base.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    return slug ? slug.slice(0, 64) : `emoji_${Math.abs(file.length)}`;
+  },
+
+  buildCanonicalUrl(bucketName, storagePath) {
+    const base = getVaultBaseUrl();
+    const bucket = encodeURIComponent(bucketName || 'community_emojis');
+    const cleanPath = String(storagePath || '')
+      .replace(/^\/+/, '')
+      .split('/')
+      .map((seg) => encodeURIComponent(seg))
+      .join('/');
+    return `${base}/storage/v1/object/public/${bucket}/${cleanPath}`;
+  },
+
+  hydrateFromLocalStorage() {
+    if (this.loadedFromStorage) return;
+    this.loadedFromStorage = true;
+    try {
+      const usageRaw = localStorage.getItem(EMOJI_USAGE_LOCAL_KEY);
+      if (usageRaw) this.localUsage = JSON.parse(usageRaw) || {};
+    } catch (_) {
+      this.localUsage = {};
+    }
+    try {
+      const raw = localStorage.getItem(EMOJI_META_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (parsed && Array.isArray(parsed.items)) {
+        this.fetchedAt = Number(parsed.fetchedAt || 0);
+        this.applyItems(parsed.items, false);
+      }
+    } catch (_) {}
+  },
+
+  applyItems(rawList, persist = true) {
+    const normalized = [];
+    const map = new Map();
+    for (const raw of rawList || []) {
+      const id = String(raw.id || '').trim().toLowerCase();
+      const storagePath = String(raw.storage_path || raw.name || '').trim();
+      if (!id || !storagePath) continue;
+      const bucketName = String(raw.bucket_name || 'community_emojis').trim();
+      const serverUsage = Math.max(0, Number(raw.usage_count || 0));
+      const localBoost = Math.max(0, Number(this.localUsage[id] || 0));
+      const item = {
+        id,
+        bucket_name: bucketName,
+        storage_path: storagePath,
+        file_name: raw.file_name || storagePath.replace(/^.*\//, ''),
+        mime_type: raw.mime_type || 'image/gif',
+        usage_count: serverUsage,
+        score: serverUsage + localBoost,
+        url: this.buildCanonicalUrl(bucketName, storagePath)
+      };
+      if (!map.has(id)) {
+        map.set(id, item);
+        normalized.push(item);
+      }
+    }
+    normalized.sort((a, b) => (b.score - a.score) || a.id.localeCompare(b.id));
+    this.items = normalized;
+    this.byId = map;
+    if (persist) {
+      this.fetchedAt = Date.now();
+      try {
+        localStorage.setItem(
+          EMOJI_META_STORAGE_KEY,
+          JSON.stringify({
+            fetchedAt: this.fetchedAt,
+            items: normalized.map((e) => ({
+              id: e.id,
+              bucket_name: e.bucket_name,
+              storage_path: e.storage_path,
+              file_name: e.file_name,
+              mime_type: e.mime_type,
+              usage_count: e.usage_count
+            }))
+          })
+        );
+      } catch (_) {}
+    }
+  },
+
+  async fetchStorageFallback() {
+    const base = getVaultBaseUrl();
+    const key = getVaultPublicKey();
+    const token = state.session?.accessToken || key;
+    const allowedExt = /\.(gif|webp|png|jpe?g|apng)$/i;
+    for (const bucket of EMOJI_BUCKET_CANDIDATES) {
+      try {
+        const res = await fetch(`${base}/storage/v1/object/list/${encodeURIComponent(bucket)}`, {
+          method: 'POST',
+          headers: {
+            apikey: key,
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ prefix: '', limit: 250, offset: 0, sortBy: { column: 'name', order: 'asc' } })
+        });
+        if (!res.ok) continue;
+        const files = await res.json();
+        if (!Array.isArray(files) || files.length === 0) continue;
+        const mapped = files
+          .filter((f) => f && f.name && !f.name.startsWith('.') && allowedExt.test(f.name))
+          .map((f) => ({
+            id: this.slugFromPath(f.name),
+            bucket_name: bucket,
+            storage_path: f.name,
+            file_name: f.name,
+            mime_type: f.metadata?.mimetype || 'image/gif',
+            usage_count: 0
+          }));
+        if (mapped.length > 0) return mapped;
+      } catch (_) {}
+    }
+    return [];
+  },
+
+  async ensureMetadata(force = false) {
+    this.hydrateFromLocalStorage();
+    const isFresh = this.items.length > 0 && Date.now() - this.fetchedAt < EMOJI_META_TTL_MS;
+    if (!force && isFresh) {
+      this.preloadTopEmojis();
+      return this.items;
+    }
+    if (this.metaPromise) return this.metaPromise;
+    this.metaPromise = (async () => {
+      try {
+        let fetched = [];
+        try {
+          const data = await supabaseRequest('/rest/v1/rpc/get_community_emojis', 'POST', {});
+          if (data && Array.isArray(data.emojis)) {
+            fetched = data.emojis;
+          } else if (Array.isArray(data)) {
+            fetched = data;
+          }
+        } catch (_) {}
+        if (!fetched.length) {
+          fetched = await this.fetchStorageFallback();
+        }
+        if (fetched.length > 0) {
+          const prevCount = this.items.length;
+          this.applyItems(fetched, true);
+          this.preloadTopEmojis();
+          if (prevCount === 0 && (state.discussion.emojiTrayOpen || state.communityCommentsAnimeId !== null || state.tab === 'detail')) {
+            hydrateVisibleEmojiNodes();
+          }
+        }
+      } catch (_) {
+      } finally {
+        this.metaPromise = null;
+      }
+      return this.items;
+    })();
+    return this.metaPromise;
+  },
+
+  getTopEmojis(limit = 8) {
+    this.hydrateFromLocalStorage();
+    return [...this.items]
+      .sort((a, b) => (b.score - a.score) || a.id.localeCompare(b.id))
+      .slice(0, limit);
+  },
+
+  getAllEmojis() {
+    this.hydrateFromLocalStorage();
+    return this.items;
+  },
+
+  getById(id) {
+    this.hydrateFromLocalStorage();
+    return this.byId.get(String(id || '').trim().toLowerCase()) || null;
+  },
+
+  recordUsage(emojiIds) {
+    if (!Array.isArray(emojiIds) || emojiIds.length === 0) return;
+    const clean = emojiIds
+      .map((x) => String(x || '').trim().toLowerCase())
+      .filter((x) => x && this.byId.has(x));
+    if (!clean.length) return;
+    for (const id of clean) {
+      this.localUsage[id] = Number(this.localUsage[id] || 0) + 1;
+      const item = this.byId.get(id);
+      if (item) {
+        item.usage_count += 1;
+        item.score = item.usage_count + Number(this.localUsage[id] || 0);
+      }
+    }
+    this.items.sort((a, b) => (b.score - a.score) || a.id.localeCompare(b.id));
+    try {
+      localStorage.setItem(EMOJI_USAGE_LOCAL_KEY, JSON.stringify(this.localUsage));
+    } catch (_) {}
+    // Fire-and-forget batch usage sync (never blocks message send)
+    if (state.session) {
+      supabaseRequest('/rest/v1/rpc/increment_emoji_usage', 'POST', {
+        p_emoji_ids: clean.slice(0, 20)
+      }).catch(() => {});
+    }
+  },
+
+  async resolveImageSrc(emojiId) {
+    const id = String(emojiId || '').trim().toLowerCase();
+    if (!id) return null;
+    if (this.objectUrls.has(id)) return this.objectUrls.get(id);
+    if (this.failedIds.has(id)) return null;
+
+    let item = this.byId.get(id);
+    if (!item) {
+      await this.ensureMetadata(false);
+      item = this.byId.get(id);
+      if (!item) return null;
+    }
+
+    if (this.inflightImages.has(id)) {
+      return this.inflightImages.get(id);
+    }
+
+    const url = item.url;
+    const task = (async () => {
+      try {
+        if (typeof caches !== 'undefined') {
+          const cache = await caches.open(EMOJI_IMAGE_CACHE_NAME);
+          const cachedResp = await cache.match(url);
+          if (cachedResp && cachedResp.ok) {
+            const blob = await cachedResp.blob();
+            const objUrl = URL.createObjectURL(blob);
+            this.objectUrls.set(id, objUrl);
+            return objUrl;
+          }
+          const netResp = await fetch(url, { mode: 'cors', cache: 'force-cache' });
+          if (!netResp.ok) throw new Error(`HTTP ${netResp.status}`);
+          const buf = await netResp.arrayBuffer();
+          const contentType = netResp.headers.get('content-type') || item.mime_type || 'image/gif';
+          const cacheResp = new Response(buf, {
+            status: 200,
+            headers: {
+              'Content-Type': contentType,
+              'Cache-Control': 'public, max-age=31536000, immutable'
+            }
+          });
+          cache.put(url, cacheResp).catch(() => {});
+          const objUrl = URL.createObjectURL(new Blob([buf], { type: contentType }));
+          this.objectUrls.set(id, objUrl);
+          return objUrl;
+        }
+        // Fallback if Cache API unavailable: reuse canonical HTTP URL directly
+        this.objectUrls.set(id, url);
+        return url;
+      } catch (_) {
+        // Fallback to direct canonical URL once before marking failed
+        return url;
+      } finally {
+        this.inflightImages.delete(id);
+      }
+    })();
+
+    this.inflightImages.set(id, task);
+    return task;
+  },
+
+  preloadTopEmojis(count = 8) {
+    const top = this.getTopEmojis(count);
+    if (!top.length) return;
+    const schedule = typeof requestIdleCallback === 'function' ? requestIdleCallback : (fn) => setTimeout(fn, 60);
+    schedule(() => {
+      top.forEach((em) => {
+        if (!this.objectUrls.has(em.id) && !this.inflightImages.has(em.id)) {
+          this.resolveImageSrc(em.id).catch(() => {});
+        }
+      });
+    });
+  },
+
+  bindImageElement(imgEl) {
+    if (!imgEl || imgEl.dataset.emojiBound === '1') return;
+    imgEl.dataset.emojiBound = '1';
+    const emojiId = imgEl.getAttribute('data-emoji-id');
+    const slot = imgEl.closest('.custom-emoji-slot');
+    if (!emojiId) return;
+
+    const finishLoad = (src) => {
+      if (!src) {
+        if (slot) {
+          slot.classList.remove('loading');
+          slot.innerHTML = `<span class="custom-emoji-fallback" title=":${escapeHtml(emojiId)}:">✦</span>`;
+        }
+        return;
+      }
+      imgEl.onload = () => {
+        imgEl.classList.add('is-loaded');
+        if (slot) slot.classList.remove('loading');
+      };
+      imgEl.onerror = () => {
+        this.failedIds.add(emojiId);
+        if (slot) {
+          slot.classList.remove('loading');
+          slot.innerHTML = `<span class="custom-emoji-fallback" title=":${escapeHtml(emojiId)}:">✦</span>`;
+        }
+      };
+      imgEl.src = src;
+      if (imgEl.complete && imgEl.naturalWidth > 0) {
+        imgEl.classList.add('is-loaded');
+        if (slot) slot.classList.remove('loading');
+      }
+    };
+
+    const cached = this.objectUrls.get(emojiId);
+    if (cached) {
+      finishLoad(cached);
+      return;
+    }
+
+    const triggerFetch = () => {
+      this.resolveImageSrc(emojiId).then(finishLoad).catch(() => finishLoad(null));
+    };
+
+    const isLazy = imgEl.getAttribute('data-emoji-lazy') === '1';
+    if (isLazy && typeof IntersectionObserver !== 'undefined') {
+      if (!this.observer) {
+        this.observer = new IntersectionObserver(
+          (entries) => {
+            entries.forEach((entry) => {
+              if (!entry.isIntersecting) return;
+              const target = entry.target;
+              this.observer.unobserve(target);
+              const eid = target.getAttribute('data-emoji-id');
+              if (eid && !target.getAttribute('src')) {
+                this.resolveImageSrc(eid)
+                  .then((src) => {
+                    const s = target.closest('.custom-emoji-slot');
+                    if (!src) {
+                      if (s) {
+                        s.classList.remove('loading');
+                        s.innerHTML = `<span class="custom-emoji-fallback">✦</span>`;
+                      }
+                      return;
+                    }
+                    target.onload = () => {
+                      target.classList.add('is-loaded');
+                      if (s) s.classList.remove('loading');
+                    };
+                    target.onerror = () => {
+                      this.failedIds.add(eid);
+                      if (s) {
+                        s.classList.remove('loading');
+                        s.innerHTML = `<span class="custom-emoji-fallback">✦</span>`;
+                      }
+                    };
+                    target.src = src;
+                  })
+                  .catch(() => {});
+              }
+            });
+          },
+          { rootMargin: '80px' }
+        );
+      }
+      this.observer.observe(imgEl);
+    } else {
+      triggerFetch();
+    }
+  }
+};
+
+function hydrateVisibleEmojiNodes() {
+  document.querySelectorAll('img[data-emoji-id]').forEach((img) => {
+    EmojiCacheManager.bindImageElement(img);
+  });
+}
+
+function extractEmojiIdsFromText(text) {
   const raw = String(text || '');
+  const ids = [];
+  EMOJI_TOKEN_REGEX.lastIndex = 0;
+  let match;
+  while ((match = EMOJI_TOKEN_REGEX.exec(raw)) !== null) {
+    if (match[1]) ids.push(match[1].toLowerCase());
+  }
+  return ids;
+}
+
+function renderCustomEmojiSlotHtml(emojiId, { lazy = false, sizeClass = '' } = {}) {
+  const cleanId = String(emojiId || '').trim().toLowerCase();
+  const cachedSrc = EmojiCacheManager.objectUrls.get(cleanId) || '';
+  const loadedClass = cachedSrc ? 'is-loaded' : '';
+  const loadingClass = cachedSrc ? '' : 'loading';
+  return `<span class="custom-emoji-slot ${sizeClass} ${loadingClass}" title=":${escapeHtml(cleanId)}:"><img class="custom-emoji ${loadedClass}" data-emoji-id="${escapeHtml(cleanId)}" data-emoji-lazy="${lazy ? '1' : '0'}" ${cachedSrc ? `src="${escapeHtml(cachedSrc)}"` : ''} alt=":${escapeHtml(cleanId)}:" loading="lazy" decoding="async" /></span>`;
+}
+
+function formatPlainPreviewWithEmojis(text) {
+  return String(text || '').replace(EMOJI_TOKEN_REGEX, (_, id) => `:${id}:`);
+}
+
+function renderMentionSegmentHtml(segmentText) {
+  const raw = String(segmentText || '');
   const tokens = extractMentionTokens(raw);
   if (tokens.length === 0) return escapeHtml(raw);
   let out = '';
   let last = 0;
   for (const t of tokens) {
     out += escapeHtml(raw.slice(last, t.start));
-    out += `<span class="discussion-mention-tag">${escapeHtml(raw.slice(t.start, t.end))}</span>`;
+    out += `<span class="mention">${escapeHtml(raw.slice(t.start, t.end))}</span>`;
     last = t.end;
   }
   out += escapeHtml(raw.slice(last));
+  return out;
+}
+
+function renderMentionHighlightedHtml(text) {
+  const raw = String(text || '');
+  EMOJI_TOKEN_REGEX.lastIndex = 0;
+  let out = '';
+  let last = 0;
+  let match;
+  while ((match = EMOJI_TOKEN_REGEX.exec(raw)) !== null) {
+    if (match.index > last) {
+      out += renderMentionSegmentHtml(raw.slice(last, match.index));
+    }
+    out += renderCustomEmojiSlotHtml(match[1], { lazy: false });
+    last = match.index + match[0].length;
+  }
+  if (last < raw.length) {
+    out += renderMentionSegmentHtml(raw.slice(last));
+  }
   return out;
 }
 
@@ -2907,25 +3355,27 @@ function updateMentionDropdownDom(scope, suggestions) {
   const box = document.getElementById(`mention-dropdown-${scope}`);
   if (!box) return;
   if (!suggestions || suggestions.length === 0) {
+    box.classList.remove('open');
     box.style.display = 'none';
     box.innerHTML = '';
     return;
   }
+  box.classList.add('open');
   box.style.display = 'flex';
   box.innerHTML = suggestions
     .map(
       (u) => `
       <button
         type="button"
-        class="mention-autocomplete-item"
+        class="m-opt"
         data-pick-mention-id="${escapeHtml(u.id || u.user_id || '')}"
         data-pick-mention-name="${escapeHtml(u.username)}"
         data-pick-mention-avatar="${escapeHtml(u.avatar_key || 'avatar_1')}"
         data-pick-mention-scope="${escapeHtml(scope)}"
       >
-        ${renderAvatarCircle(u.avatar_key || 'avatar_1', u.username, 26)}
-        <span>${escapeHtml(u.username)}</span>
-        <span style="margin-left:auto;font-size:11px;color:var(--accent-primary);font-weight:600;">+ Tag</span>
+        ${renderAvatarCircle(u.avatar_key || 'avatar_1', u.username, 28)}
+        <span class="m-name">${escapeHtml(u.username)}</span>
+        <span class="m-tag-hint">@Tag</span>
       </button>`
     )
     .join('');
@@ -3087,7 +3537,6 @@ function handleDiscussionInputMentionCheck(scope, inputEl) {
 }
 
 function getActiveDiscussionAnime() {
-  if (state.detailAnime && state.detailAnime.animeId) return state.detailAnime;
   if (state.communityCommentsAnimeId !== null) {
     const allGroups = groupCommunityReviewsByAnime(state.communityReviews);
     const grp = allGroups.find((g) => Number(g.anime_id) === Number(state.communityCommentsAnimeId));
@@ -3099,8 +3548,94 @@ function getActiveDiscussionAnime() {
         coverImage: grp.anime_cover_image || ''
       };
     }
+    if (
+      state.communityCommentsAnimeFallback &&
+      Number(state.communityCommentsAnimeFallback.anime_id) === Number(state.communityCommentsAnimeId)
+    ) {
+      const fb = state.communityCommentsAnimeFallback;
+      return {
+        animeId: Number(fb.anime_id),
+        title: fb.anime_title || `Anime #${fb.anime_id}`,
+        titleEnglish: fb.anime_title || `Anime #${fb.anime_id}`,
+        coverImage: fb.anime_cover_image || ''
+      };
+    }
   }
+  if (state.detailAnime && state.detailAnime.animeId) return state.detailAnime;
   return null;
+}
+
+function openCommunityHubForAnime(animeId, options = {}) {
+  const aid = Number(animeId);
+  if (!aid) return;
+  const {
+    tab = 'discussion',
+    fallbackTitle = '',
+    fallbackCover = '',
+    jumpTarget = null,
+    notificationId = null
+  } = options;
+
+  const allGroups = groupCommunityReviewsByAnime(state.communityReviews);
+  const grp = allGroups.find((g) => Number(g.anime_id) === aid);
+  const vaultItem = state.vault.find((v) => Number(v.animeId) === aid);
+  const unseenItem = (state.notifications.unseenAnime || []).find((u) => Number(u.anime_id) === aid);
+
+  if (!grp) {
+    state.communityCommentsAnimeFallback = {
+      anime_id: aid,
+      anime_title: fallbackTitle || vaultItem?.titleEnglish || vaultItem?.title || unseenItem?.anime_title || `Anime #${aid}`,
+      anime_cover_image: fallbackCover || vaultItem?.coverImage || unseenItem?.anime_cover_image || '',
+      is_adult: Boolean(vaultItem?.isAdult),
+      reviews: [],
+      total_count: 0,
+      rated_count: 0,
+      noted_count: 0,
+      average_rating10: null,
+      latest_updated_at: new Date().toISOString()
+    };
+  } else {
+    state.communityCommentsAnimeFallback = null;
+  }
+
+  state.communityCommentsAnimeId = aid;
+  state.communityCommentsTab = tab === 'notes' ? 'notes' : 'discussion';
+  state.pendingCommunityReplyUser = null;
+  state.discussion.emojiTrayOpen = false;
+  state.communityCommentDraftStars = vaultItem && vaultItem.rating10 ? rating10ToStars(vaultItem.rating10) || 0 : 0;
+  state.communityCommentDraftNote = vaultItem ? vaultItem.reviewNotes || '' : '';
+  state.communityNoteSaving = false;
+  state.communityNoteFeedback = '';
+  state.communityNoteError = '';
+
+  if (jumpTarget) {
+    state.pendingNotificationJump = {
+      animeId: aid,
+      commentId: jumpTarget.commentId || null,
+      threadId: jumpTarget.threadId || null,
+      replyId: jumpTarget.replyId || null
+    };
+  }
+
+  renderApp();
+  EmojiCacheManager.ensureMetadata(false);
+
+  if (notificationId && state.session) {
+    markNotificationRead(notificationId);
+  }
+  if (state.session && state.communityCommentsTab === 'discussion') {
+    markAnimeDiscussionSeen(aid);
+  }
+
+  loadAnimeDiscussion(aid, true).then(() => {
+    applyPendingCommunityReplyTarget();
+    if (!state.pendingNotificationJump) {
+      setTimeout(() => {
+        const stream = document.getElementById('livtrak-chat-messages');
+        if (stream) stream.scrollTop = stream.scrollHeight;
+      }, 60);
+    }
+  });
 }
 
 function applyPendingCommunityReplyTarget() {
@@ -3192,14 +3727,19 @@ async function postAnimeComment() {
     state.discussion.commentTags = [];
     state.discussion.mentionSuggestions = [];
     state.discussion.mentionActiveScope = null;
-    state.discussion.success = 'Comment posted successfully';
-    showToast('Comment posted successfully');
+    state.discussion.emojiTrayOpen = false;
+    state.discussion.success = '';
+    EmojiCacheManager.recordUsage(extractEmojiIdsFromText(body));
   } catch (err) {
-    state.discussion.error = err?.message || 'Failed to post comment. Please try again.';
+    state.discussion.error = err?.message || 'Failed to post message. Please try again.';
     showToast(state.discussion.error, true);
   } finally {
     state.discussion.submitting = false;
     renderApp();
+    setTimeout(() => {
+      const stream = document.getElementById('livtrak-chat-messages');
+      if (stream) stream.scrollTop = stream.scrollHeight;
+    }, 40);
   }
 }
 
@@ -3310,8 +3850,9 @@ async function postThreadReply() {
     state.discussion.activeReplyTarget = null;
     state.discussion.mentionSuggestions = [];
     state.discussion.mentionActiveScope = null;
-    state.discussion.success = `Reply posted in @${target.targetUsername}'s thread`;
-    showToast('Reply posted successfully');
+    state.discussion.emojiTrayOpen = false;
+    state.discussion.success = '';
+    EmojiCacheManager.recordUsage(extractEmojiIdsFromText(body));
   } catch (err) {
     state.discussion.error = err?.message || 'Failed to post reply.';
     showToast(state.discussion.error, true);
@@ -3493,31 +4034,56 @@ async function loadUserNotifications(reset = true) {
 async function markNotificationRead(notificationId) {
   if (!state.session || !notificationId) return;
   let wasUnread = false;
+  let targetAnimeId = 0;
   state.notifications.items = state.notifications.items.map((n) => {
-    if (n.id === notificationId && !n.is_read) {
-      wasUnread = true;
-      return { ...n, is_read: true };
+    if (n.id === notificationId) {
+      targetAnimeId = Number(n.anime_id || 0);
+      if (!n.is_read) {
+        wasUnread = true;
+        return { ...n, is_read: true };
+      }
     }
     return n;
   });
   if (wasUnread) {
     state.notifications.unreadCount = Math.max(0, state.notifications.unreadCount - 1);
+    if (targetAnimeId > 0) {
+      const stillUnreadForAnime = state.notifications.items.some(
+        (n) => Number(n.anime_id) === targetAnimeId && !n.is_read
+      );
+      if (!stillUnreadForAnime) {
+        state.notifications.unseenAnime = (state.notifications.unseenAnime || []).filter(
+          (u) => Number(u.anime_id) !== targetAnimeId
+        );
+      }
+    }
+    updateCommunityRedDotsInPlace();
   }
   try {
-    await supabaseRequest('/rest/v1/rpc/mark_notification_read', 'POST', {
+    const res = await supabaseRequest('/rest/v1/rpc/mark_notification_read', 'POST', {
       p_notification_id: notificationId
     });
+    const numeric = Number(typeof res === 'object' && res !== null ? res.unread_count : res);
+    if (!Number.isNaN(numeric)) {
+      state.notifications.unreadCount = Math.max(0, numeric);
+      if (state.notifications.unreadCount === 0) {
+        state.notifications.unseenAnime = [];
+      }
+      updateCommunityRedDotsInPlace();
+    }
   } catch (_) {}
 }
 
 async function markAllNotificationsRead() {
   if (!state.session || state.notifications.unreadCount <= 0) return;
   state.notifications.items = state.notifications.items.map((n) => ({ ...n, is_read: true }));
+  state.notifications.unseenAnime = [];
   state.notifications.unreadCount = 0;
+  updateCommunityRedDotsInPlace();
   renderApp();
   try {
     await supabaseRequest('/rest/v1/rpc/mark_all_notifications_read', 'POST', {});
-    showToast('All notifications marked as read');
+    showToast('All tagged notifications marked as read');
   } catch (_) {}
 }
 
@@ -4214,8 +4780,103 @@ function renderCommunityScreen() {
     (u) => !shownAnimeIds.has(Number(u.anime_id))
   );
 
+  const viewTab = state.communityViewTab === 'tagged' ? 'tagged' : 'feed';
+  const unreadTaggedCount = Math.max(
+    Number(state.notifications.unreadCount || 0),
+    (state.notifications.unseenAnime || []).reduce((acc, u) => acc + Math.max(1, Number(u.unseen_count || 1)), 0)
+  );
+  const nState = state.notifications;
+
   return `
     ${topBar}
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:6px;">
+      <div class="community-view-switcher">
+        <button type="button" class="community-view-tab ${viewTab === 'feed' ? 'active' : ''}" data-comm-view-tab="feed">
+          Community Feed
+        </button>
+        <button type="button" class="community-view-tab ${viewTab === 'tagged' ? 'active' : ''}" data-comm-view-tab="tagged">
+          <span>Tagged You</span>
+          ${unreadTaggedCount > 0 ? `<span class="tagged-count-badge">${unreadTaggedCount > 99 ? '99+' : unreadTaggedCount}</span>` : ''}
+        </button>
+      </div>
+      ${
+        viewTab === 'tagged' && unreadTaggedCount > 0
+          ? `<button type="button" class="capsule-pill active" id="btn-comm-tagged-mark-all">Mark all read</button>`
+          : ''
+      }
+    </div>
+
+    ${
+      viewTab === 'tagged'
+        ? `
+          ${nState.error ? `<div class="feedback-banner error" style="margin-bottom:12px;">! ${escapeHtml(nState.error)}</div>` : ''}
+          ${
+            nState.loading && nState.items.length === 0
+              ? `<div class="app-card" style="text-align:center;padding:40px 20px;color:var(--text-secondary);">Loading tagged notifications...</div>`
+              : nState.items.length === 0
+              ? `<div class="app-card" style="text-align:center;padding:42px 24px;">
+                   <div class="serif-heading" style="font-size:24px;margin-bottom:6px;">All caught up</div>
+                   <p style="color:var(--text-secondary);font-size:13.5px;">When someone tags you in any anime template — new or old — it appears here for instant one-tap jump.</p>
+                 </div>`
+              : `
+                <div class="tagged-you-list">
+                  ${nState.items
+                    .map((n) => {
+                      const nType = n.notification_type || n.type || 'mention_comment';
+                      const actionLabel =
+                        nType === 'thread_reply'
+                          ? 'replied to you'
+                          : nType === 'mention_reply'
+                          ? 'tagged you in a reply'
+                          : 'tagged you';
+                      const snippet = formatPlainPreviewWithEmojis(n.preview_text || n.content_preview || '');
+                      const commName = (n.community_name && !/livtrak/i.test(n.community_name)) ? n.community_name : 'Community';
+                      return `
+                        <button
+                          type="button"
+                          class="tagged-you-card ${n.is_read ? '' : 'unread'}"
+                          data-open-tagged-notif="${escapeHtml(n.id)}"
+                          data-notif-anime="${Number(n.anime_id || 0)}"
+                          data-notif-title="${escapeHtml(n.anime_title || '')}"
+                          data-notif-cover="${escapeHtml(n.anime_cover_image || '')}"
+                          data-notif-comment="${escapeHtml(n.comment_id || '')}"
+                          data-notif-thread="${escapeHtml(n.thread_id || '')}"
+                          data-notif-reply="${escapeHtml(n.reply_id || '')}"
+                        >
+                          ${
+                            n.anime_cover_image
+                              ? `<img class="tagged-you-thumb" src="${escapeHtml(n.anime_cover_image)}" alt="" loading="lazy" />`
+                              : `<div class="tagged-you-thumb" style="display:grid;place-items:center;color:#E8C88F;font-weight:700;">★</div>`
+                          }
+                          <div class="tagged-you-body">
+                            <div class="tagged-you-meta-top">
+                              <span class="tagged-you-community-pill">${escapeHtml(commName)}</span>
+                              <span class="tagged-you-time">${escapeHtml(formatDiscussionTimestamp(n.created_at))}</span>
+                            </div>
+                            <div class="tagged-you-anime-title">${escapeHtml(n.anime_title || `Anime #${n.anime_id}`)}</div>
+                            <div class="tagged-you-who">
+                              ${renderAvatarCircle(n.sender_avatar_key || 'avatar_1', n.sender_username || 'Member', 20)}
+                              <span><strong style="color:var(--highlight);">@${escapeHtml(n.sender_username || 'Member')}</strong> ${actionLabel}</span>
+                            </div>
+                            ${snippet ? `<div class="tagged-you-snippet">“${escapeHtml(snippet)}”</div>` : ''}
+                          </div>
+                          ${!n.is_read ? `<span class="community-card-red-dot" title="Unread"></span>` : ''}
+                        </button>
+                      `;
+                    })
+                    .join('')}
+                </div>
+                ${
+                  nState.hasMore
+                    ? `<button type="button" class="btn-secondary" id="btn-comm-tagged-load-more" style="width:100%;margin-top:12px;" ${nState.loadingMore ? 'disabled' : ''}>
+                         ${nState.loadingMore ? 'LOADING...' : 'LOAD OLDER TAGS'}
+                       </button>`
+                    : ''
+                }
+              `
+          }
+        `
+        : `
     <div class="capsule-strip">
       <button class="capsule-pill ${!state.communitySentimentFilter ? 'active' : ''}" data-comm-sentiment="">
         ALL (${allGroups.length})
@@ -4387,6 +5048,8 @@ function renderCommunityScreen() {
               })
               .join('')}
           </div>`
+    }
+    `
     }
   `;
 }
@@ -4759,265 +5422,287 @@ function renderAnimeDetailScreen() {
   `;
 }
 
-function renderAnimeDiscussionSection(anime) {
-  const d = state.discussion;
-  const currentUserId = state.session?.userId || null;
-  const draftCheck = validateContentMentions(d.draft, (d.commentTags || []).length);
-  const replyCheck = validateContentMentions(d.replyDraft, (d.replyTags || []).length);
-  const hl = d.highlightTarget || {};
-
+function renderEmojiTrayHtml(scope) {
+  EmojiCacheManager.hydrateFromLocalStorage();
+  const topEmojis = EmojiCacheManager.getTopEmojis(8);
+  const allEmojis = EmojiCacheManager.getAllEmojis();
+  const isOpen = Boolean(state.discussion.emojiTrayOpen);
   return `
-    <div class="app-card" id="anime-discussion-section" style="border-radius:24px;margin-bottom:24px;display:flex;flex-direction:column;gap:14px;">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
-        <div>
-          <div class="micro-label" style="color:var(--accent-primary);">COMMUNITY DISCUSSION</div>
-          <h2 class="serif-heading" style="font-size:24px;line-height:28px;">
-            Comments <span class="tabular-num" style="color:var(--accent-primary);font-size:18px;">(${d.totalComments})</span>
-          </h2>
-        </div>
+    <div class="emoji-tray ${isOpen ? 'open' : ''}" id="livtrak-emoji-tray">
+      <div class="emoji-tray-head">
+        <span class="emoji-tray-label">Top Emojis</span>
+        <span class="emoji-tray-label" style="color:#66667A;">${allEmojis.length} available</span>
       </div>
-
       ${
-        state.session
-          ? `
-            <div class="discussion-composer-wrap">
-              <textarea
-                id="inp-discussion-comment"
-                class="auth-input"
-                style="height:84px;padding:12px;resize:vertical;"
-                placeholder="Write a comment..."
-                ${d.submitting ? 'disabled' : ''}
-              >${escapeHtml(d.draft || '')}</textarea>
-              ${renderSelectedTagChipsHtml('comment', d.commentTags)}
-              <div id="mention-dropdown-comment" class="mention-autocomplete-dropdown" style="display:none;"></div>
-              <div class="discussion-mention-bar">
-                <span id="mention-counter-comment" class="mention-counter-pill ${draftCheck.ok ? '' : 'over-limit'}">
-                  ${draftCheck.totalMentions}/${MAX_MENTIONS_PER_CONTENT} tagged
-                </span>
-                <button type="button" class="btn-primary" id="btn-post-discussion-comment" style="height:40px;padding:0 20px;font-size:12.5px;" ${
-                  d.submitting ? 'disabled' : ''
-                }>
-                  ${d.submitting ? 'POSTING...' : 'POST COMMENT'}
-                </button>
-              </div>
-            </div>
-          `
+        allEmojis.length === 0
+          ? `<div style="padding:14px 4px;text-align:center;color:#9A9AA8;font-size:12px;">
+               No custom emojis found yet. Upload GIF/PNG/WebP files to your Supabase <strong>community_emojis</strong> bucket.
+             </div>`
           : `
-            <div style="padding:12px 14px;border-radius:16px;background:var(--elevated-surface);border:1px solid var(--border-subtle);font-size:13px;color:var(--text-secondary);">
-              Sign in to post comments, tag members with @, and reply in threads.
+            <div class="emoji-top-bar">
+              ${topEmojis
+                .map(
+                  (em) => `
+                    <button
+                      type="button"
+                      class="emoji-btn"
+                      data-insert-emoji-id="${escapeHtml(em.id)}"
+                      data-insert-emoji-scope="${escapeHtml(scope)}"
+                      title=":${escapeHtml(em.id)}:"
+                    >
+                      ${renderCustomEmojiSlotHtml(em.id, { lazy: false, sizeClass: 'size-lg' })}
+                    </button>
+                  `
+                )
+                .join('')}
+            </div>
+            <div class="emoji-grid">
+              ${allEmojis
+                .map(
+                  (em) => `
+                    <button
+                      type="button"
+                      class="emoji-btn"
+                      data-insert-emoji-id="${escapeHtml(em.id)}"
+                      data-insert-emoji-scope="${escapeHtml(scope)}"
+                      title=":${escapeHtml(em.id)}:"
+                    >
+                      ${renderCustomEmojiSlotHtml(em.id, { lazy: true, sizeClass: 'size-lg' })}
+                    </button>
+                  `
+                )
+                .join('')}
             </div>
           `
       }
+    </div>
+  `;
+}
 
-      ${d.success ? `<div class="feedback-banner success">✓ ${escapeHtml(d.success)}</div>` : ''}
-      ${d.error ? `<div class="feedback-banner error">! ${escapeHtml(d.error)}</div>` : ''}
+function renderComposerEmojiPreviewHtml(draftText) {
+  const ids = extractEmojiIdsFromText(draftText);
+  if (!ids.length) return '';
+  const uniquePreview = ids.slice(0, 8);
+  return `
+    <div class="chat-composer-emoji-preview">
+      ${uniquePreview
+        .map(
+          (eid) => `
+            <span class="chat-composer-emoji-chip">
+              ${renderCustomEmojiSlotHtml(eid, { lazy: false })}
+              <span>:${escapeHtml(eid)}:</span>
+            </span>
+          `
+        )
+        .join('')}
+    </div>
+  `;
+}
 
+function renderAnimeDiscussionSection(anime, options = {}) {
+  const inModal = Boolean(options.inModal);
+  const d = state.discussion;
+  const currentUserId = state.session?.userId || null;
+  const hl = d.highlightTarget || {};
+  const isReplyingMode = Boolean(d.activeReplyTarget);
+  const activeScope = isReplyingMode ? 'reply' : 'comment';
+  const activeDraft = isReplyingMode ? (d.replyDraft || '') : (d.draft || '');
+  const activeTags = isReplyingMode ? (d.replyTags || []) : (d.commentTags || []);
+
+  // Live Chat chronological order (oldest -> newest at bottom)
+  const chronological = [...(d.comments || [])].reverse();
+
+  return `
+    <div class="livtrak-chat-shell ${inModal ? '' : 'inline-detail-chat'}" id="anime-discussion-section">
       ${
-        d.loading
-          ? `<div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:13px;">Loading discussion...</div>`
-          : d.comments.length === 0
-          ? `<div style="padding:24px 16px;text-align:center;border-radius:18px;background:var(--elevated-surface);border:1px dashed var(--border-subtle);color:var(--text-secondary);font-size:13.5px;">
-               No comments yet. Start the discussion for ${escapeHtml(resolveTitle(anime))}!
+        !inModal
+          ? `<div style="padding:14px 18px 10px;border-bottom:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:space-between;">
+               <span style="font-size:13px;font-weight:700;color:#E8C88F;letter-spacing:0.4px;">Live Chat</span>
+               <span class="tabular-num" style="font-size:11.5px;color:#9A9AA8;">${d.totalComments} ${d.totalComments === 1 ? 'message' : 'messages'}</span>
              </div>`
-          : `
-            <div style="display:flex;flex-direction:column;gap:12px;">
-              ${d.comments
+          : ''
+      }
+
+      ${d.error ? `<div class="feedback-banner error" style="margin:10px 16px 0;">! ${escapeHtml(d.error)}</div>` : ''}
+
+      <div class="chat-messages" id="livtrak-chat-messages">
+        ${
+          d.hasMore
+            ? `<button type="button" class="c-thread-toggle" id="btn-discussion-load-more" style="align-self:center;" ${d.loadingMore ? 'disabled' : ''}>
+                 ${d.loadingMore ? 'Loading earlier messages...' : 'Load earlier messages'}
+               </button>`
+            : ''
+        }
+
+        ${
+          d.loading && chronological.length === 0
+            ? `<div style="margin:auto;text-align:center;color:#9A9AA8;font-size:13px;padding:30px 12px;">Loading chat...</div>`
+            : chronological.length === 0
+            ? `<div style="margin:auto;text-align:center;color:#9A9AA8;font-size:13px;padding:34px 16px;">
+                 No messages yet for <strong style="color:#F8F4EB;">${escapeHtml(resolveTitle(anime))}</strong>. Say hi!
+               </div>`
+            : chronological
                 .map((c) => {
-                  const isOwnComment = currentUserId && c.user_id === currentUserId;
+                  const isMine = Boolean(currentUserId && c.user_id === currentUserId);
                   const isEditingThis = d.editingCommentId === c.id;
-                  const isReplyingOnThisComment = d.activeReplyTarget && d.activeReplyTarget.commentId === c.id;
                   const isCommentHighlighted = hl.commentId === c.id && !hl.replyId && !hl.threadId;
                   const threads = Array.isArray(c.threads) ? c.threads : [];
 
                   return `
-                    <div
-                      class="discussion-comment-card ${isCommentHighlighted ? 'highlight-pulse' : ''}"
-                      id="discussion-comment-${escapeHtml(c.id)}"
-                      data-ctx-comment="${escapeHtml(c.id)}"
-                      data-ctx-uid="${escapeHtml(c.user_id)}"
-                      data-ctx-name="${escapeHtml(c.username || 'Member')}"
-                      data-ctx-owner="${isOwnComment ? '1' : '0'}"
-                    >
-                      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
-                        <div style="display:flex;align-items:center;gap:10px;min-width:0;">
-                          ${renderAvatarCircle(c.avatar_key || 'avatar_1', c.username, 36)}
-                          <div style="min-width:0;">
-                            <div style="font-size:14px;font-weight:700;color:var(--text-primary);">${escapeHtml(c.username || 'Member')}</div>
-                            <div style="font-size:11.5px;color:var(--text-muted);">
-                              ${escapeHtml(formatDiscussionTimestamp(c.created_at))}${
-                                c.updated_at && c.updated_at !== c.created_at ? ' • edited' : ''
-                              }
-                            </div>
+                    <div class="c-msg-group ${isCommentHighlighted ? 'highlight-pulse' : ''}" id="discussion-comment-${escapeHtml(c.id)}">
+                      <div
+                        class="c-msg ${isMine ? 'mine' : ''}"
+                        data-ctx-comment="${escapeHtml(c.id)}"
+                        data-ctx-uid="${escapeHtml(c.user_id)}"
+                        data-ctx-name="${escapeHtml(c.username || 'Member')}"
+                        data-ctx-owner="${isMine ? '1' : '0'}"
+                      >
+                        ${!isMine ? `<div class="c-msg-avatar-wrap">${renderAvatarCircle(c.avatar_key || 'avatar_1', c.username, 32)}</div>` : ''}
+                        <div class="c-bubble-wrap">
+                          ${
+                            !isMine
+                              ? `<div class="c-user">
+                                   <span>${escapeHtml(c.username || 'Member')}</span>
+                                   <span class="c-time">${escapeHtml(formatDiscussionTimestamp(c.created_at))}${c.updated_at && c.updated_at !== c.created_at ? ' • edited' : ''}</span>
+                                 </div>`
+                              : `<div class="c-time" style="margin-right:4px;">${escapeHtml(formatDiscussionTimestamp(c.created_at))}${c.updated_at && c.updated_at !== c.created_at ? ' • edited' : ''}</div>`
+                          }
+
+                          ${
+                            isEditingThis
+                              ? `
+                                <div class="c-bubble" style="min-width:220px;">
+                                  <textarea id="inp-discussion-edit-comment" class="auth-input" style="height:66px;padding:8px;resize:vertical;width:100%;">${escapeHtml(
+                                    d.editingCommentDraft
+                                  )}</textarea>
+                                  <div id="mention-dropdown-edit_comment" class="mention-dropdown"></div>
+                                  <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:6px;">
+                                    <button type="button" class="c-micro-action" data-cancel-edit-comment>Cancel</button>
+                                    <button type="button" class="btn-primary" data-save-edit-comment="${escapeHtml(c.id)}" style="height:30px;padding:0 12px;font-size:11.5px;" ${
+                                      d.submitting ? 'disabled' : ''
+                                    }>Save</button>
+                                  </div>
+                                </div>
+                              `
+                              : `
+                                <div class="c-bubble ${isCommentHighlighted ? 'highlight-pulse' : ''}">${renderMentionHighlightedHtml(c.content ?? c.body ?? '')}</div>
+                                ${renderMentionsDisplayHtml(c.mentions)}
+                              `
+                          }
+
+                          <div class="c-bubble-footer">
+                            ${
+                              state.session
+                                ? `<button
+                                     type="button"
+                                     class="c-micro-action"
+                                     data-start-reply-comment="${escapeHtml(c.id)}"
+                                     data-reply-target-uid="${escapeHtml(c.user_id)}"
+                                     data-reply-target-name="${escapeHtml(c.username || 'Member')}"
+                                   >Reply</button>`
+                                : ''
+                            }
+                            ${
+                              isMine && !isEditingThis
+                                ? `
+                                  <button type="button" class="c-micro-action" data-edit-comment="${escapeHtml(c.id)}">Edit</button>
+                                  <button type="button" class="c-micro-action danger" data-delete-comment="${escapeHtml(c.id)}">Delete</button>
+                                `
+                                : ''
+                            }
                           </div>
                         </div>
                       </div>
 
                       ${
-                        isEditingThis
-                          ? `
-                            <div class="discussion-composer-wrap">
-                              <textarea id="inp-discussion-edit-comment" class="auth-input" style="height:78px;padding:10px;resize:vertical;">${escapeHtml(
-                                d.editingCommentDraft
-                              )}</textarea>
-                              <div id="mention-dropdown-edit_comment" class="mention-autocomplete-dropdown" style="display:none;"></div>
-                              <div class="discussion-mention-bar">
-                                <span id="mention-counter-edit_comment" class="mention-counter-pill ${
-                                  validateContentMentions(d.editingCommentDraft).ok ? '' : 'over-limit'
-                                }">${validateContentMentions(d.editingCommentDraft).totalMentions}/${MAX_MENTIONS_PER_CONTENT} tagged</span>
-                                <div style="display:flex;gap:8px;">
-                                  <button type="button" class="discussion-action-btn" data-cancel-edit-comment>Cancel</button>
-                                  <button type="button" class="btn-primary" data-save-edit-comment="${escapeHtml(c.id)}" style="height:34px;padding:0 14px;font-size:12px;" ${
-                                    d.submitting ? 'disabled' : ''
-                                  }>Save</button>
-                                </div>
-                              </div>
-                            </div>
-                          `
-                          : `
-                            <div class="discussion-comment-body">${renderMentionHighlightedHtml(c.content ?? c.body ?? '')}</div>
-                            ${renderMentionsDisplayHtml(c.mentions)}
-                          `
-                      }
-
-                      <div class="discussion-action-row">
-                        ${
-                          state.session
-                            ? `<button
-                                 type="button"
-                                 class="discussion-action-btn"
-                                 data-start-reply-comment="${escapeHtml(c.id)}"
-                                 data-reply-target-uid="${escapeHtml(c.user_id)}"
-                                 data-reply-target-name="${escapeHtml(c.username || 'Member')}"
-                               >Reply to @${escapeHtml(c.username || 'Member')}</button>`
-                            : ''
-                        }
-                        ${
-                          isOwnComment && !isEditingThis
-                            ? `
-                              <button type="button" class="discussion-action-btn" data-edit-comment="${escapeHtml(c.id)}">Edit</button>
-                              <button type="button" class="discussion-action-btn danger" data-delete-comment="${escapeHtml(c.id)}">Delete</button>
-                            `
-                            : ''
-                        }
-                      </div>
-
-                      ${
                         threads.length > 0
                           ? `
-                            <div class="discussion-threads-container">
+                            <div class="c-thread-wrap">
                               ${threads
                                 .map((th) => {
                                   const isExpanded = Boolean(d.expandedThreads[th.id]);
                                   const replies = Array.isArray(th.replies) ? th.replies : [];
                                   const isThreadHighlighted = hl.threadId === th.id && !hl.replyId;
                                   return `
-                                    <div class="reply-thread-card ${isThreadHighlighted ? 'highlight-pulse' : ''}" id="discussion-thread-${escapeHtml(th.id)}">
-                                      <button type="button" class="reply-thread-header" data-toggle-thread="${escapeHtml(th.id)}">
-                                        <span>
-                                          Thread for <strong style="color:var(--accent-primary);">@${escapeHtml(th.target_username || 'Member')}</strong>
-                                          <span style="color:var(--text-muted);font-weight:500;"> • ${replies.length} ${replies.length === 1 ? 'reply' : 'replies'}</span>
-                                        </span>
-                                        <span style="color:var(--accent-primary);font-size:11.5px;">${isExpanded ? 'Hide ▲' : 'Show ▼'}</span>
+                                    <div id="discussion-thread-${escapeHtml(th.id)}" class="${isThreadHighlighted ? 'highlight-pulse' : ''}" style="display:flex;flex-direction:column;gap:8px;">
+                                      <button type="button" class="c-thread-toggle" data-toggle-thread="${escapeHtml(th.id)}">
+                                        @${escapeHtml(th.target_username || 'Member')} • ${replies.length} ${replies.length === 1 ? 'reply' : 'replies'} ${isExpanded ? '▲' : '▼'}
                                       </button>
-
                                       ${
                                         isExpanded
-                                          ? `
-                                            <div class="reply-thread-body chat-thread-body">
-                                              ${replies
-                                                .map((r) => {
-                                                  const isOwnReply = currentUserId && r.user_id === currentUserId;
-                                                  const isEditingReply = d.editingReplyId === r.id;
-                                                  const isReplyHighlighted = hl.replyId === r.id;
-                                                  return `
-                                                    <div
-                                                      class="reply-item reply-chat-row ${isOwnReply ? 'is-own' : ''} ${isReplyHighlighted ? 'highlight-pulse' : ''}"
-                                                      id="discussion-reply-${escapeHtml(r.id)}"
-                                                      data-ctx-reply="${escapeHtml(r.id)}"
-                                                      data-ctx-reply-cid="${escapeHtml(c.id)}"
-                                                      data-ctx-reply-tid="${escapeHtml(th.id)}"
-                                                      data-ctx-uid="${escapeHtml(r.user_id)}"
-                                                      data-ctx-name="${escapeHtml(r.username || 'Member')}"
-                                                      data-ctx-owner="${isOwnReply ? '1' : '0'}"
-                                                    >
-                                                      <div class="reply-chat-avatar">${renderAvatarCircle(r.avatar_key || 'avatar_1', r.username, 26)}</div>
-                                                      <div class="reply-chat-bubble ${isOwnReply ? 'is-own' : ''}">
-                                                        <div class="reply-chat-meta">
-                                                          <span class="reply-chat-sender">${escapeHtml(r.username || 'Member')}</span>
-                                                          <span class="reply-chat-time">
-                                                            ${escapeHtml(formatDiscussionTimestamp(r.created_at))}${
-                                                              r.updated_at && r.updated_at !== r.created_at ? ' • edited' : ''
-                                                            }
-                                                          </span>
-                                                        </div>
-
-                                                        ${
-                                                          isEditingReply
-                                                            ? `
-                                                              <div class="discussion-composer-wrap" style="margin-top:4px;">
-                                                                <textarea id="inp-discussion-edit-reply" class="auth-input" style="height:60px;padding:8px 10px;resize:vertical;">${escapeHtml(
-                                                                  d.editingReplyDraft
-                                                                )}</textarea>
-                                                                <div id="mention-dropdown-edit_reply" class="mention-autocomplete-dropdown" style="display:none;"></div>
-                                                                <div class="discussion-mention-bar">
-                                                                  <span id="mention-counter-edit_reply" class="mention-counter-pill ${
-                                                                    validateContentMentions(d.editingReplyDraft).ok ? '' : 'over-limit'
-                                                                  }">${validateContentMentions(d.editingReplyDraft).totalMentions}/${MAX_MENTIONS_PER_CONTENT} tagged</span>
-                                                                  <div style="display:flex;gap:6px;">
-                                                                    <button type="button" class="discussion-action-btn" data-cancel-edit-reply>Cancel</button>
-                                                                    <button type="button" class="btn-primary" data-save-edit-reply="${escapeHtml(r.id)}" data-edit-reply-cid="${escapeHtml(c.id)}" data-edit-reply-tid="${escapeHtml(th.id)}" style="height:30px;padding:0 12px;font-size:11.5px;" ${
-                                                                      d.submitting ? 'disabled' : ''
-                                                                    }>Save</button>
-                                                                  </div>
-                                                                </div>
+                                          ? replies
+                                              .map((r) => {
+                                                const isOwnReply = Boolean(currentUserId && r.user_id === currentUserId);
+                                                const isEditingReply = d.editingReplyId === r.id;
+                                                const isReplyHighlighted = hl.replyId === r.id;
+                                                return `
+                                                  <div
+                                                    class="c-msg ${isOwnReply ? 'mine' : ''}"
+                                                    id="discussion-reply-${escapeHtml(r.id)}"
+                                                    data-ctx-reply="${escapeHtml(r.id)}"
+                                                    data-ctx-reply-cid="${escapeHtml(c.id)}"
+                                                    data-ctx-reply-tid="${escapeHtml(th.id)}"
+                                                    data-ctx-uid="${escapeHtml(r.user_id)}"
+                                                    data-ctx-name="${escapeHtml(r.username || 'Member')}"
+                                                    data-ctx-owner="${isOwnReply ? '1' : '0'}"
+                                                  >
+                                                    ${!isOwnReply ? `<div class="c-msg-avatar-wrap">${renderAvatarCircle(r.avatar_key || 'avatar_1', r.username, 26)}</div>` : ''}
+                                                    <div class="c-bubble-wrap">
+                                                      ${
+                                                        !isOwnReply
+                                                          ? `<div class="c-user">
+                                                               <span>${escapeHtml(r.username || 'Member')}</span>
+                                                               <span class="c-time">${escapeHtml(formatDiscussionTimestamp(r.created_at))}</span>
+                                                             </div>`
+                                                          : `<div class="c-time" style="margin-right:4px;">${escapeHtml(formatDiscussionTimestamp(r.created_at))}</div>`
+                                                      }
+                                                      ${
+                                                        isEditingReply
+                                                          ? `
+                                                            <div class="c-bubble" style="min-width:200px;">
+                                                              <textarea id="inp-discussion-edit-reply" class="auth-input" style="height:56px;padding:8px;resize:vertical;width:100%;">${escapeHtml(
+                                                                d.editingReplyDraft
+                                                              )}</textarea>
+                                                              <div id="mention-dropdown-edit_reply" class="mention-dropdown"></div>
+                                                              <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:6px;">
+                                                                <button type="button" class="c-micro-action" data-cancel-edit-reply>Cancel</button>
+                                                                <button type="button" class="btn-primary" data-save-edit-reply="${escapeHtml(r.id)}" data-edit-reply-cid="${escapeHtml(c.id)}" data-edit-reply-tid="${escapeHtml(th.id)}" style="height:28px;padding:0 11px;font-size:11px;" ${
+                                                                  d.submitting ? 'disabled' : ''
+                                                                }>Save</button>
                                                               </div>
-                                                            `
-                                                            : `
-                                                              <div class="reply-chat-text">${renderMentionHighlightedHtml(r.content ?? r.body ?? '')}</div>
-                                                              ${renderMentionsDisplayHtml(r.mentions)}
-                                                            `
+                                                            </div>
+                                                          `
+                                                          : `
+                                                            <div class="c-bubble ${isReplyHighlighted ? 'highlight-pulse' : ''}">${renderMentionHighlightedHtml(r.content ?? r.body ?? '')}</div>
+                                                            ${renderMentionsDisplayHtml(r.mentions)}
+                                                          `
+                                                      }
+                                                      <div class="c-bubble-footer">
+                                                        ${
+                                                          state.session
+                                                            ? `<button
+                                                                 type="button"
+                                                                 class="c-micro-action"
+                                                                 data-start-reply-comment="${escapeHtml(c.id)}"
+                                                                 data-reply-target-uid="${escapeHtml(r.user_id)}"
+                                                                 data-reply-target-name="${escapeHtml(r.username || 'Member')}"
+                                                               >Reply</button>`
+                                                            : ''
                                                         }
-
-                                                        <div class="reply-chat-actions">
-                                                          ${
-                                                            state.session
-                                                              ? `<button
-                                                                   type="button"
-                                                                   class="reply-chat-link"
-                                                                   data-start-reply-comment="${escapeHtml(c.id)}"
-                                                                   data-reply-target-uid="${escapeHtml(r.user_id)}"
-                                                                   data-reply-target-name="${escapeHtml(r.username || 'Member')}"
-                                                                 >Reply</button>`
-                                                              : ''
-                                                          }
-                                                          ${
-                                                            isOwnReply && !isEditingReply
-                                                              ? `
-                                                                <button type="button" class="reply-chat-link" data-edit-reply="${escapeHtml(r.id)}" data-edit-reply-cid="${escapeHtml(c.id)}" data-edit-reply-tid="${escapeHtml(th.id)}">Edit</button>
-                                                                <button type="button" class="reply-chat-link danger" data-delete-reply="${escapeHtml(r.id)}" data-delete-reply-cid="${escapeHtml(c.id)}" data-delete-reply-tid="${escapeHtml(th.id)}">Delete</button>
-                                                              `
-                                                              : ''
-                                                          }
-                                                        </div>
+                                                        ${
+                                                          isOwnReply && !isEditingReply
+                                                            ? `
+                                                              <button type="button" class="c-micro-action" data-edit-reply="${escapeHtml(r.id)}" data-edit-reply-cid="${escapeHtml(c.id)}" data-edit-reply-tid="${escapeHtml(th.id)}">Edit</button>
+                                                              <button type="button" class="c-micro-action danger" data-delete-reply="${escapeHtml(r.id)}" data-delete-reply-cid="${escapeHtml(c.id)}" data-delete-reply-tid="${escapeHtml(th.id)}">Delete</button>
+                                                            `
+                                                            : ''
+                                                        }
                                                       </div>
                                                     </div>
-                                                  `;
-                                                })
-                                                .join('')}
-
-                                              ${
-                                                state.session && !(isReplyingOnThisComment && d.activeReplyTarget?.targetUserId === th.target_user_id)
-                                                  ? `<button
-                                                       type="button"
-                                                       class="reply-chat-join-btn"
-                                                       data-start-reply-comment="${escapeHtml(c.id)}"
-                                                       data-reply-target-uid="${escapeHtml(th.target_user_id)}"
-                                                       data-reply-target-name="${escapeHtml(th.target_username || 'Member')}"
-                                                     >Reply in thread...</button>`
-                                                  : ''
-                                              }
-                                            </div>
-                                          `
+                                                  </div>
+                                                `;
+                                              })
+                                              .join('')
                                           : ''
                                       }
                                     </div>
@@ -5028,50 +5713,78 @@ function renderAnimeDiscussionSection(anime) {
                           `
                           : ''
                       }
-
-                      ${
-                        isReplyingOnThisComment
-                          ? `
-                            <div class="discussion-inline-reply-box discussion-chat-composer">
-                              <div class="reply-chat-composer-header">
-                                <span style="font-size:12px;font-weight:700;color:var(--accent-primary);">
-                                  Replying to @${escapeHtml(d.activeReplyTarget.targetUsername)}
-                                </span>
-                                <button type="button" class="reply-chat-link" id="btn-cancel-reply-composer">Cancel</button>
-                              </div>
-                              ${renderSelectedTagChipsHtml('reply', d.replyTags)}
-                              <div id="mention-dropdown-reply" class="mention-autocomplete-dropdown" style="display:none;"></div>
-                              <div class="reply-chat-input-row">
-                                <textarea
-                                  id="inp-discussion-reply"
-                                  class="auth-input reply-chat-textarea"
-                                  rows="1"
-                                  placeholder="Message @${escapeHtml(d.activeReplyTarget.targetUsername)}..."
-                                  ${d.submitting ? 'disabled' : ''}
-                                >${escapeHtml(d.replyDraft || '')}</textarea>
-                                <button type="button" class="btn-primary reply-chat-send-btn" id="btn-post-thread-reply" ${
-                                  d.submitting ? 'disabled' : ''
-                                }>${d.submitting ? '...' : 'Send'}</button>
-                              </div>
-                              <span id="mention-counter-reply" style="display:none;">${replyCheck.totalMentions}/${MAX_MENTIONS_PER_CONTENT}</span>
-                            </div>
-                          `
-                          : ''
-                      }
                     </div>
                   `;
                 })
-                .join('')}
-            </div>
-          `
-      }
+                .join('')
+        }
+      </div>
 
       ${
-        d.hasMore
-          ? `<button type="button" class="btn-secondary" id="btn-discussion-load-more" style="width:100%;" ${d.loadingMore ? 'disabled' : ''}>
-               ${d.loadingMore ? 'LOADING MORE...' : 'LOAD MORE COMMENTS'}
-             </button>`
-          : ''
+        state.session
+          ? `
+            <div class="chat-composer-dock">
+              <div id="mention-dropdown-${activeScope}" class="mention-dropdown"></div>
+
+              ${
+                isReplyingMode
+                  ? `
+                    <div class="chat-reply-banner">
+                      <span>Replying to <strong>@${escapeHtml(d.activeReplyTarget.targetUsername)}</strong></span>
+                      <button type="button" class="c-micro-action" id="btn-cancel-reply-composer" style="color:#E8C88F;">✕ Cancel</button>
+                    </div>
+                  `
+                  : ''
+              }
+
+              ${activeTags.length > 0 ? `<div style="padding:4px 16px 2px;background:#0A0A10;">${renderSelectedTagChipsHtml(activeScope, activeTags)}</div>` : ''}
+              ${renderComposerEmojiPreviewHtml(activeDraft)}
+              ${renderEmojiTrayHtml(activeScope)}
+
+              <div class="chat-input-bar">
+                <div class="chat-input-wrap">
+                  <button
+                    type="button"
+                    class="emoji-toggle-btn ${d.emojiTrayOpen ? 'active' : ''}"
+                    id="btn-toggle-emoji-tray"
+                    title="Custom Emojis"
+                    aria-label="Toggle custom emojis"
+                  >
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="12" cy="12" r="10"></circle>
+                      <path d="M8 14s1.5 2 4 2 4-2 4-2"></path>
+                      <line x1="9" y1="9" x2="9.01" y2="9"></line>
+                      <line x1="15" y1="9" x2="15.01" y2="9"></line>
+                    </svg>
+                  </button>
+                  <textarea
+                    id="${isReplyingMode ? 'inp-discussion-reply' : 'inp-discussion-comment'}"
+                    class="chat-input"
+                    rows="1"
+                    placeholder="${isReplyingMode ? `Reply to @${escapeHtml(d.activeReplyTarget.targetUsername)}...` : 'Message...'}"
+                    ${d.submitting ? 'disabled' : ''}
+                  >${escapeHtml(activeDraft)}</textarea>
+                </div>
+                <button
+                  type="button"
+                  class="chat-send"
+                  id="${isReplyingMode ? 'btn-post-thread-reply' : 'btn-post-discussion-comment'}"
+                  aria-label="Send message"
+                  ${d.submitting ? 'disabled' : ''}
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="22" y1="2" x2="11" y2="13"></line>
+                    <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                  </svg>
+                </button>
+              </div>
+            </div>
+          `
+          : `
+            <div style="padding:12px 16px;border-top:1px solid rgba(255,255,255,0.06);background:#0A0A10;font-size:12.5px;color:#9A9AA8;text-align:center;">
+              Sign in to join Live Chat, send custom emojis, and tag members with @.
+            </div>
+          `
       }
     </div>
   `;
@@ -6111,185 +6824,184 @@ function renderModals() {
 
   if (state.communityCommentsAnimeId !== null) {
     const allGroups = groupCommunityReviewsByAnime(state.communityReviews);
-    const grp = allGroups.find((g) => Number(g.anime_id) === Number(state.communityCommentsAnimeId));
+    const grp =
+      allGroups.find((g) => Number(g.anime_id) === Number(state.communityCommentsAnimeId)) ||
+      (state.communityCommentsAnimeFallback &&
+      Number(state.communityCommentsAnimeFallback.anime_id) === Number(state.communityCommentsAnimeId)
+        ? state.communityCommentsAnimeFallback
+        : null);
     if (grp) {
       const avgStarsNum = grp.average_rating10 ? rating10ToStars(grp.average_rating10) || 0 : 0;
       const draftStars = Number(state.communityCommentDraftStars || 0);
-      const modalTab = state.communityCommentsTab === 'discussion' ? 'discussion' : 'notes';
+      const modalTab = state.communityCommentsTab === 'notes' ? 'notes' : 'discussion';
       const hasUnseen = (state.notifications.unseenAnime || []).some((u) => Number(u.anime_id) === Number(grp.anime_id));
-      const loadedForThisAnime = Number(state.discussion.animeId) === Number(grp.anime_id);
-      const discCountLabel = loadedForThisAnime && state.discussion.totalComments > 0
-        ? `Discussion (${state.discussion.totalComments})`
-        : 'Discussion & Replies';
       const modalAnime = {
         animeId: Number(grp.anime_id),
-        title: grp.anime_title || 'Anime',
-        titleEnglish: grp.anime_title || 'Anime',
+        title: grp.anime_title || `Anime #${grp.anime_id}`,
+        titleEnglish: grp.anime_title || `Anime #${grp.anime_id}`,
         coverImage: grp.anime_cover_image || ''
       };
       overlays += `
         <div class="modal-backdrop" id="modal-backdrop">
-          <div class="modal-sheet community-comments-modal" onclick="event.stopPropagation()">
-            <div style="display:flex;align-items:center;gap:14px;justify-content:space-between;">
-              <div style="display:flex;align-items:center;gap:12px;min-width:0;">
-                <img src="${escapeHtml(grp.anime_cover_image)}" alt="" style="width:48px;height:68px;border-radius:12px;object-fit:cover;flex-shrink:0;" />
-                <div style="min-width:0;">
-                  <div class="micro-label" style="color:var(--accent-primary);">COMMUNITY ANIME HUB</div>
-                  <div style="display:flex;align-items:center;gap:8px;min-width:0;">
-                    <h3 class="serif-heading" style="font-size:21px;line-height:25px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(grp.anime_title)}</h3>
-                    ${grp.is_adult ? `<span class="adult-18-badge" style="flex-shrink:0;">18+</span>` : ''}
-                  </div>
-                  <div style="display:flex;align-items:center;gap:8px;margin-top:2px;">
-                    ${
-                      avgStarsNum > 0
-                        ? `<span style="color:var(--accent-primary);font-size:13px;font-weight:700;">★ ${avgStarsNum.toFixed(1)} avg</span>
-                           <span style="color:var(--text-muted);font-size:12px;">•</span>`
-                        : ''
-                    }
-                    <span style="color:var(--text-secondary);font-size:12px;">${grp.total_count} member${grp.total_count === 1 ? '' : 's'}</span>
-                  </div>
+          <div class="modal-sheet livtrak-hub-modal" onclick="event.stopPropagation()">
+            <div class="hub-header">
+              ${
+                grp.anime_cover_image
+                  ? `<img class="hub-poster" src="${escapeHtml(grp.anime_cover_image)}" alt="" data-open-detail="${Number(grp.anime_id)}" />`
+                  : `<div class="hub-poster" style="display:grid;place-items:center;background:#14141E;color:#E8C88F;font-weight:700;" data-open-detail="${Number(grp.anime_id)}">★</div>`
+              }
+              <div class="hub-info">
+                <div class="hub-eyebrow">COMMUNITY HUB</div>
+                <div class="hub-title-row">
+                  <div class="hub-title" data-open-detail="${Number(grp.anime_id)}">${escapeHtml(grp.anime_title)}</div>
+                  ${grp.is_adult ? `<span class="adult-18-badge" style="flex-shrink:0;">18+</span>` : ''}
+                </div>
+                <div class="hub-meta">
+                  ${avgStarsNum > 0 ? `<span class="hub-avg">★ ${avgStarsNum.toFixed(1)} avg</span><span>•</span>` : ''}
+                  <span>${grp.total_count} member${grp.total_count === 1 ? '' : 's'}</span>
                 </div>
               </div>
-              <button type="button" class="btn-secondary" id="btn-close-modal" style="height:36px;padding:0 14px;font-size:12px;">Close</button>
+              <button type="button" class="hub-close" id="btn-close-modal" aria-label="Close">✕</button>
             </div>
 
-            <div class="community-modal-tabs">
+            <div class="hub-tabs">
               <button
                 type="button"
-                class="community-modal-tab-btn ${modalTab === 'notes' ? 'active' : ''}"
-                data-comm-modal-tab="notes"
-              >
-                Notes &amp; Ratings (${grp.reviews.length})
-              </button>
-              <button
-                type="button"
-                class="community-modal-tab-btn ${modalTab === 'discussion' ? 'active' : ''}"
+                class="hub-tab ${modalTab === 'discussion' ? 'active' : ''}"
                 data-comm-modal-tab="discussion"
               >
-                ${hasUnseen && modalTab !== 'discussion' ? `<span class="community-red-dot" style="position:static;display:inline-block;margin-right:6px;"></span>` : ''}
-                ${discCountLabel}
+                ${hasUnseen && modalTab !== 'discussion' ? `<span class="community-card-red-dot small"></span>` : ''}
+                Live Chat
+              </button>
+              <button
+                type="button"
+                class="hub-tab ${modalTab === 'notes' ? 'active' : ''}"
+                data-comm-modal-tab="notes"
+              >
+                Reviews (${grp.reviews.length})
               </button>
             </div>
 
-            ${
-              modalTab === 'discussion'
-                ? `
-                  <div class="community-modal-discussion-scroll">
-                    ${renderAnimeDiscussionSection(modalAnime)}
-                  </div>
-                `
-                : `
-                  <div class="community-comments-list">
-                    ${grp.reviews
-                      .map((rev) => {
-                        const rStars = rev.rating ? rating10ToStars(rev.rating) || 0 : 0;
-                        const rSent = rev.rating ? sentimentFromRating10(rev.rating) : null;
-                        const hasNote = String(rev.review_notes || '').trim().length > 0;
-                        return `
-                          <div
-                            class="community-comment-item"
-                            data-ctx-comm-note="1"
-                            data-ctx-uid="${escapeHtml(rev.user_id || '')}"
-                            data-ctx-name="${escapeHtml(rev.username || 'Member')}"
-                            data-ctx-av="${escapeHtml(rev.avatar_key || 'avatar_1')}"
-                          >
-                            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
-                              <div style="display:flex;align-items:center;gap:10px;min-width:0;">
-                                ${renderAvatarCircle(rev.avatar_key || 'avatar_1', rev.username, 34)}
-                                <div style="min-width:0;">
-                                  <div style="font-size:14px;font-weight:600;color:var(--text-primary);">${escapeHtml(rev.username || 'Member')}</div>
-                                  <div style="font-size:11.5px;color:var(--text-muted);">${escapeHtml(formatReviewDate(rev.updated_at))}</div>
-                                </div>
-                              </div>
-                              <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+            <div class="hub-tab-panel">
+              ${
+                modalTab === 'discussion'
+                  ? renderAnimeDiscussionSection(modalAnime, { inModal: true })
+                  : `
+                    <div class="hub-reviews-scroll">
+                      ${
+                        grp.reviews.length === 0
+                          ? `<div style="text-align:center;color:#9A9AA8;font-size:13px;padding:34px 12px;">No written reviews yet. Share your star rating or note below!</div>`
+                          : grp.reviews
+                              .map((rev) => {
+                                const rStars = rev.rating ? rating10ToStars(rev.rating) || 0 : 0;
+                                const rSent = rev.rating ? sentimentFromRating10(rev.rating) : null;
+                                const hasNote = String(rev.review_notes || '').trim().length > 0;
+                                return `
+                                  <div
+                                    class="community-comment-item"
+                                    data-ctx-comm-note="1"
+                                    data-ctx-uid="${escapeHtml(rev.user_id || '')}"
+                                    data-ctx-name="${escapeHtml(rev.username || 'Member')}"
+                                    data-ctx-av="${escapeHtml(rev.avatar_key || 'avatar_1')}"
+                                  >
+                                    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+                                      <div style="display:flex;align-items:center;gap:10px;min-width:0;">
+                                        ${renderAvatarCircle(rev.avatar_key || 'avatar_1', rev.username, 34)}
+                                        <div style="min-width:0;">
+                                          <div style="font-size:14px;font-weight:600;color:var(--text-primary);">${escapeHtml(rev.username || 'Member')}</div>
+                                          <div style="font-size:11.5px;color:var(--text-muted);">${escapeHtml(formatReviewDate(rev.updated_at))}</div>
+                                        </div>
+                                      </div>
+                                      <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+                                        ${
+                                          state.session
+                                            ? `<button
+                                                 type="button"
+                                                 class="community-note-reply-btn"
+                                                 data-comm-note-reply-uid="${escapeHtml(rev.user_id || '')}"
+                                                 data-comm-note-reply-name="${escapeHtml(rev.username || 'Member')}"
+                                                 data-comm-note-reply-av="${escapeHtml(rev.avatar_key || 'avatar_1')}"
+                                               >↩ Reply</button>`
+                                            : ''
+                                        }
+                                        ${
+                                          rStars > 0
+                                            ? `<div style="display:flex;flex-direction:column;align-items:flex-end;gap:3px;">
+                                                <div style="display:inline-flex;align-items:center;gap:4px;">
+                                                  <span style="display:inline-flex;gap:1px;">${renderFiveStarsHtml(rStars)}</span>
+                                                  <span class="tabular-num" style="font-size:13.5px;font-weight:700;color:var(--highlight);">${rStars.toFixed(1)}</span>
+                                                </div>
+                                                ${rSent ? `<span class="sentiment-pill soft ${rSent.key}" style="font-size:9px;padding:2px 7px;">${rSent.shortLabel.toUpperCase()}</span>` : ''}
+                                              </div>`
+                                            : `<span class="sentiment-pill soft cinema" style="font-size:9px;padding:2px 8px;">NOTE</span>`
+                                        }
+                                      </div>
+                                    </div>
+                                    ${
+                                      hasNote
+                                        ? `<div class="review-quote-box" style="padding:11px 14px;">
+                                            <div class="review-quote-bar"></div>
+                                            <div class="review-quote-text" style="font-size:13.5px;">“${escapeHtml(rev.review_notes)}”</div>
+                                          </div>`
+                                        : ''
+                                    }
+                                  </div>
+                                `;
+                              })
+                              .join('')
+                      }
+                    </div>
+
+                    ${
+                      state.session
+                        ? `<div class="hub-reviews-composer">
+                            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                              <span class="micro-label" style="color:var(--accent-primary);">YOUR RATING &amp; REVIEW</span>
+                              <div style="display:inline-flex;align-items:center;gap:4px;">
+                                ${[1, 2, 3, 4, 5]
+                                  .map(
+                                    (st) =>
+                                      `<button type="button" data-comm-modal-star="${st}" style="background:none;border:none;cursor:pointer;font-size:20px;color:${
+                                        draftStars >= st - 0.5 ? 'var(--accent-primary)' : '#383D4E'
+                                      };">★</button>`
+                                  )
+                                  .join('')}
                                 ${
-                                  state.session
-                                    ? `<button
-                                         type="button"
-                                         class="community-note-reply-btn"
-                                         data-comm-note-reply-uid="${escapeHtml(rev.user_id || '')}"
-                                         data-comm-note-reply-name="${escapeHtml(rev.username || 'Member')}"
-                                         data-comm-note-reply-av="${escapeHtml(rev.avatar_key || 'avatar_1')}"
-                                       >↩ Reply</button>`
+                                  draftStars > 0
+                                    ? `<span class="tabular-num" style="font-size:12.5px;font-weight:700;color:var(--highlight);margin-left:4px;">${draftStars.toFixed(1)}</span>`
                                     : ''
                                 }
-                                ${
-                                  rStars > 0
-                                    ? `<div style="display:flex;flex-direction:column;align-items:flex-end;gap:3px;">
-                                        <div style="display:inline-flex;align-items:center;gap:4px;">
-                                          <span style="display:inline-flex;gap:1px;">${renderFiveStarsHtml(rStars)}</span>
-                                          <span class="tabular-num" style="font-size:13.5px;font-weight:700;color:var(--highlight);">${rStars.toFixed(1)}</span>
-                                        </div>
-                                        ${rSent ? `<span class="sentiment-pill soft ${rSent.key}" style="font-size:9px;padding:2px 7px;">${rSent.shortLabel.toUpperCase()}</span>` : ''}
-                                      </div>`
-                                    : `<span class="sentiment-pill soft cinema" style="font-size:9px;padding:2px 8px;">NOTE</span>`
-                                }
                               </div>
                             </div>
-
+                            <div style="display:flex;gap:8px;align-items:center;">
+                              <input
+                                id="inp-comm-modal-note"
+                                class="auth-input"
+                                style="height:42px;flex:1;"
+                                placeholder="Write your review for this anime..."
+                                value="${escapeHtml(state.communityCommentDraftNote || '')}"
+                                ${state.communityNoteSaving ? 'disabled' : ''}
+                              />
+                              <button type="button" class="btn-primary" id="btn-comm-modal-submit" style="height:42px;padding:0 16px;" ${
+                                state.communityNoteSaving ? 'disabled' : ''
+                              }>${state.communityNoteSaving ? 'POSTING...' : 'POST'}</button>
+                            </div>
                             ${
-                              hasNote
-                                ? `<div class="review-quote-box" style="padding:11px 14px;">
-                                    <div class="review-quote-bar"></div>
-                                    <div class="review-quote-text" style="font-size:13.5px;">“${escapeHtml(rev.review_notes)}”</div>
-                                  </div>`
+                              state.communityNoteFeedback
+                                ? `<div class="feedback-banner success" style="margin-top:4px;">✓ ${escapeHtml(state.communityNoteFeedback)}</div>`
                                 : ''
                             }
-                          </div>
-                        `;
-                      })
-                      .join('')}
-                  </div>
-
-                  ${
-                    state.session
-                      ? `<div class="community-comment-composer">
-                          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-                            <span class="micro-label" style="color:var(--accent-primary);">ADD OR UPDATE YOUR NOTE &amp; RATING</span>
-                            <div style="display:inline-flex;align-items:center;gap:4px;">
-                              ${[1, 2, 3, 4, 5]
-                                .map(
-                                  (st) =>
-                                    `<button type="button" data-comm-modal-star="${st}" style="background:none;border:none;cursor:pointer;font-size:20px;color:${
-                                      draftStars >= st - 0.5 ? 'var(--accent-primary)' : '#383D4E'
-                                    };">★</button>`
-                                )
-                                .join('')}
-                              ${
-                                draftStars > 0
-                                  ? `<span class="tabular-num" style="font-size:12.5px;font-weight:700;color:var(--highlight);margin-left:4px;">${draftStars.toFixed(1)}</span>`
-                                  : ''
-                              }
-                            </div>
-                          </div>
-                          <div style="display:flex;gap:8px;align-items:center;">
-                            <input
-                              id="inp-comm-modal-note"
-                              class="auth-input"
-                              style="height:44px;flex:1;"
-                              placeholder="Write your note for this anime..."
-                              value="${escapeHtml(state.communityCommentDraftNote || '')}"
-                              ${state.communityNoteSaving ? 'disabled' : ''}
-                            />
-                            <button type="button" class="btn-primary" id="btn-comm-modal-submit" style="height:44px;padding:0 18px;" ${
-                              state.communityNoteSaving ? 'disabled' : ''
-                            }>${state.communityNoteSaving ? 'POSTING...' : 'POST'}</button>
-                          </div>
-                          ${
-                            state.communityNoteFeedback
-                              ? `<div class="feedback-banner success" style="margin-top:8px;">✓ ${escapeHtml(state.communityNoteFeedback)}</div>`
-                              : ''
-                          }
-                          ${
-                            state.communityNoteError
-                              ? `<div class="feedback-banner error" style="margin-top:8px;">! ${escapeHtml(state.communityNoteError)}</div>`
-                              : ''
-                          }
-                        </div>`
-                      : ''
-                  }
-                `
-            }
+                            ${
+                              state.communityNoteError
+                                ? `<div class="feedback-banner error" style="margin-top:4px;">! ${escapeHtml(state.communityNoteError)}</div>`
+                                : ''
+                            }
+                          </div>`
+                        : ''
+                    }
+                  `
+              }
+            </div>
           </div>
         </div>
       `;
@@ -6999,7 +7711,11 @@ function bindAppEvents() {
       window.scrollTo({ top: 0, behavior: 'smooth' });
       renderApp();
       if (target === 'community') {
-        refreshUnreadNotificationCount().then(() => renderApp());
+        EmojiCacheManager.ensureMetadata(false);
+        refreshUnreadNotificationCount().then(() => updateCommunityRedDotsInPlace());
+        if (state.communityViewTab === 'tagged' && state.session) {
+          loadUserNotifications(true);
+        }
       }
     };
   });
@@ -7410,6 +8126,42 @@ function bindAppEvents() {
   if (btnNewColInline) btnNewColInline.onclick = () => { state.showCreateCollectionModal = true; renderApp(); };
 
   // Community events
+  document.querySelectorAll('[data-comm-view-tab]').forEach((btn) => {
+    btn.onclick = () => {
+      const next = btn.getAttribute('data-comm-view-tab') === 'tagged' ? 'tagged' : 'feed';
+      state.communityViewTab = next;
+      renderApp();
+      if (next === 'tagged' && state.session) {
+        loadUserNotifications(true);
+      }
+    };
+  });
+  const btnCommTaggedMarkAll = document.getElementById('btn-comm-tagged-mark-all');
+  if (btnCommTaggedMarkAll) {
+    btnCommTaggedMarkAll.onclick = () => markAllNotificationsRead();
+  }
+  const btnCommTaggedLoadMore = document.getElementById('btn-comm-tagged-load-more');
+  if (btnCommTaggedLoadMore) {
+    btnCommTaggedLoadMore.onclick = () => loadUserNotifications(false);
+  }
+  document.querySelectorAll('[data-open-tagged-notif]').forEach((btn) => {
+    btn.onclick = () => {
+      const notifId = btn.getAttribute('data-open-tagged-notif');
+      const aid = Number(btn.getAttribute('data-notif-anime') || 0);
+      if (!aid) return;
+      openCommunityHubForAnime(aid, {
+        tab: 'discussion',
+        fallbackTitle: btn.getAttribute('data-notif-title') || '',
+        fallbackCover: btn.getAttribute('data-notif-cover') || '',
+        notificationId: notifId,
+        jumpTarget: {
+          commentId: btn.getAttribute('data-notif-comment') || null,
+          threadId: btn.getAttribute('data-notif-thread') || null,
+          replyId: btn.getAttribute('data-notif-reply') || null
+        }
+      });
+    };
+  });
   document.querySelectorAll('[data-comm-sentiment]').forEach((btn) => {
     btn.onclick = () => {
       state.communitySentimentFilter = btn.getAttribute('data-comm-sentiment') || null;
@@ -7426,21 +8178,7 @@ function bindAppEvents() {
     el.onclick = (e) => {
       e.stopPropagation();
       const aid = Number(el.getAttribute('data-open-comments'));
-      const existing = state.vault.find((v) => Number(v.animeId) === aid);
-      const hasUnseen = (state.notifications.unseenAnime || []).some((u) => Number(u.anime_id) === aid);
-      state.communityCommentsAnimeId = aid;
-      state.communityCommentsTab = hasUnseen ? 'discussion' : 'notes';
-      state.pendingCommunityReplyUser = null;
-      state.communityCommentDraftStars = existing && existing.rating10 ? rating10ToStars(existing.rating10) || 0 : 0;
-      state.communityCommentDraftNote = existing ? existing.reviewNotes || '' : '';
-      state.communityNoteSaving = false;
-      state.communityNoteFeedback = '';
-      state.communityNoteError = '';
-      renderApp();
-      loadAnimeDiscussion(aid, true).then(() => applyPendingCommunityReplyTarget());
-      if (hasUnseen && state.session) {
-        markAnimeDiscussionSeen(aid);
-      }
+      openCommunityHubForAnime(aid, { tab: 'discussion' });
     };
   });
 
@@ -7773,15 +8511,34 @@ function bindAppEvents() {
     };
   }
 
-  // Anime Discussion & Threaded Reply events
+  // Anime Discussion & LivTrAk Live Chat + Custom Emoji Tray events
+  const autoGrowTextarea = (el) => {
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 92)}px`;
+  };
   const inpDiscComment = document.getElementById('inp-discussion-comment');
   if (inpDiscComment) {
-    inpDiscComment.oninput = () => handleDiscussionInputMentionCheck('comment', inpDiscComment);
+    autoGrowTextarea(inpDiscComment);
+    inpDiscComment.oninput = () => {
+      autoGrowTextarea(inpDiscComment);
+      handleDiscussionInputMentionCheck('comment', inpDiscComment);
+    };
     inpDiscComment.onclick = () => handleDiscussionInputMentionCheck('comment', inpDiscComment);
+    inpDiscComment.onkeydown = (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        postAnimeComment();
+      }
+    };
   }
   const inpDiscReply = document.getElementById('inp-discussion-reply');
   if (inpDiscReply) {
-    inpDiscReply.oninput = () => handleDiscussionInputMentionCheck('reply', inpDiscReply);
+    autoGrowTextarea(inpDiscReply);
+    inpDiscReply.oninput = () => {
+      autoGrowTextarea(inpDiscReply);
+      handleDiscussionInputMentionCheck('reply', inpDiscReply);
+    };
     inpDiscReply.onclick = () => handleDiscussionInputMentionCheck('reply', inpDiscReply);
     inpDiscReply.onkeydown = (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
@@ -7790,6 +8547,48 @@ function bindAppEvents() {
       }
     };
   }
+  const btnToggleEmojiTray = document.getElementById('btn-toggle-emoji-tray');
+  if (btnToggleEmojiTray) {
+    btnToggleEmojiTray.onclick = (e) => {
+      e.stopPropagation();
+      state.discussion.emojiTrayOpen = !state.discussion.emojiTrayOpen;
+      renderApp();
+      if (state.discussion.emojiTrayOpen) {
+        EmojiCacheManager.ensureMetadata(false);
+        hydrateVisibleEmojiNodes();
+      }
+    };
+  }
+  document.querySelectorAll('[data-insert-emoji-id]').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const eid = btn.getAttribute('data-insert-emoji-id');
+      const scope = btn.getAttribute('data-insert-emoji-scope') === 'reply' ? 'reply' : 'comment';
+      if (!eid) return;
+      const token = `[emoji:${eid}]`;
+      const inputId = scope === 'reply' ? 'inp-discussion-reply' : 'inp-discussion-comment';
+      const el = document.getElementById(inputId);
+      const currentVal = el ? el.value : (scope === 'reply' ? state.discussion.replyDraft : state.discussion.draft) || '';
+      const pos = el && typeof el.selectionStart === 'number' ? el.selectionStart : currentVal.length;
+      const before = currentVal.slice(0, pos);
+      const after = currentVal.slice(pos);
+      const spacerBefore = before && !/\s$/.test(before) ? ' ' : '';
+      const spacerAfter = after && !/^\s/.test(after) ? ' ' : ' ';
+      const nextText = `${before}${spacerBefore}${token}${spacerAfter}${after}`;
+      if (scope === 'reply') state.discussion.replyDraft = nextText;
+      else state.discussion.draft = nextText;
+      renderApp();
+      setTimeout(() => {
+        const nextEl = document.getElementById(inputId);
+        if (nextEl) {
+          nextEl.focus();
+          const nextCursor = (before + spacerBefore + token + spacerAfter).length;
+          nextEl.setSelectionRange(nextCursor, nextCursor);
+          autoGrowTextarea(nextEl);
+        }
+      }, 20);
+    };
+  });
   const inpDiscEditComment = document.getElementById('inp-discussion-edit-comment');
   if (inpDiscEditComment) {
     inpDiscEditComment.oninput = () => handleDiscussionInputMentionCheck('edit_comment', inpDiscEditComment);
@@ -7805,19 +8604,20 @@ function bindAppEvents() {
   if (btnLoadMoreDisc && activeDiscAnime) {
     btnLoadMoreDisc.onclick = () => loadAnimeDiscussion(activeDiscAnime.animeId, false);
   }
-  // Open unseen tagged anime card from Community (sets jump target; Red Dot clears only when detail discussion opens)
+  // Open unseen tagged anime card directly in Live Chat modal (supports both new & older templates)
   document.querySelectorAll('[data-open-unseen-anime]').forEach((el) => {
     el.onclick = (e) => {
       if (e.target.closest('[data-open-comments]')) return;
       const aid = Number(el.getAttribute('data-open-unseen-anime'));
       if (!aid) return;
-      state.pendingNotificationJump = {
-        animeId: aid,
-        commentId: el.getAttribute('data-unseen-comment') || null,
-        threadId: el.getAttribute('data-unseen-thread') || null,
-        replyId: el.getAttribute('data-unseen-reply') || null
-      };
-      openAnimeDetail(aid);
+      openCommunityHubForAnime(aid, {
+        tab: 'discussion',
+        jumpTarget: {
+          commentId: el.getAttribute('data-unseen-comment') || null,
+          threadId: el.getAttribute('data-unseen-thread') || null,
+          replyId: el.getAttribute('data-unseen-reply') || null
+        }
+      });
     };
   });
 
@@ -8103,14 +8903,19 @@ function bindAppEvents() {
     state.showProfileEditModal = false;
     state.showCreateCollectionModal = false;
     state.communityCommentsAnimeId = null;
+    state.communityCommentsAnimeFallback = null;
     state.pendingCommunityReplyUser = null;
     state.confirmRemoveHomeAnime = null;
     state.contextMenu = null;
     state.discussion.contextMenu = null;
+    state.discussion.emojiTrayOpen = false;
     renderApp();
   };
   if (backdrop) backdrop.onclick = closeModals;
   if (btnClose) btnClose.onclick = closeModals;
+
+  // Hydrate all lazy/cached custom emoji slots after every render without blocking UI
+  hydrateVisibleEmojiNodes();
 
   // Download Center events
   document.querySelectorAll('[data-trigger-download]').forEach((btn) => {
