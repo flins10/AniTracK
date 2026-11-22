@@ -108,7 +108,11 @@ data class DesktopThreadReply(
     val body: String,
     val createdAt: String = "",
     val updatedAt: String = "",
-    val mentions: List<DesktopMentionOccurrence> = emptyList()
+    val mentions: List<DesktopMentionOccurrence> = emptyList(),
+    val quotedCommentId: String? = null,
+    val quotedReplyId: String? = null,
+    val quotedUsername: String? = null,
+    val quotedPreview: String? = null
 )
 
 data class DesktopReplyThread(
@@ -403,7 +407,11 @@ internal object DesktopDiscussionService {
         body = obj.str("content").ifBlank { obj.str("body") },
         createdAt = obj.str("created_at"),
         updatedAt = obj.str("updated_at"),
-        mentions = parseMentions(obj)
+        mentions = parseMentions(obj),
+        quotedCommentId = obj.str("quoted_comment_id").takeIf { it.isNotBlank() },
+        quotedReplyId = obj.str("quoted_reply_id").takeIf { it.isNotBlank() },
+        quotedUsername = obj.str("quoted_username").takeIf { it.isNotBlank() },
+        quotedPreview = obj.str("quoted_preview").takeIf { it.isNotBlank() }
     )
 
     private fun parseThread(obj: JsonObject): DesktopReplyThread {
@@ -546,7 +554,10 @@ internal object DesktopDiscussionService {
         commentId: String,
         targetUserId: String,
         body: String,
-        taggedUserIds: List<String> = emptyList()
+        taggedUserIds: List<String> = emptyList(),
+        quotedReplyId: String? = null,
+        quotedUsername: String? = null,
+        quotedPreview: String? = null
     ): Result<Triple<DesktopReplyThread, DesktopThreadReply, DesktopPersistedState>> {
         val payload = JsonObject().apply {
             addProperty("p_comment_id", commentId)
@@ -556,6 +567,15 @@ internal object DesktopDiscussionService {
                 val arr = JsonArray()
                 taggedUserIds.forEach { if (it.isNotBlank()) arr.add(it) }
                 if (arr.size() > 0) add("p_tagged_user_ids", arr)
+            }
+            if (!quotedReplyId.isNullOrBlank()) {
+                addProperty("p_quoted_reply_id", quotedReplyId)
+            }
+            if (!quotedUsername.isNullOrBlank()) {
+                addProperty("p_quoted_username", quotedUsername)
+            }
+            if (!quotedPreview.isNullOrBlank()) {
+                addProperty("p_quoted_preview", quotedPreview.take(180))
             }
         }
         return callRpc(session, "create_thread_reply", payload, requireAuth = true).map { (el, active) ->

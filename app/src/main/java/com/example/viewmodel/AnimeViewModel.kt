@@ -289,6 +289,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     private var pendingSignUpEmail: String? = null
     private var pendingSignUpPassword: String? = null
     private var verificationPollJob: Job? = null
+    private var notificationPollJob: Job? = null
 
     private val _privacySettings = MutableStateFlow(PrivacySettings())
     val privacySettings = _privacySettings.asStateFlow()
@@ -420,6 +421,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     init {
         restoreSessionAndInitialData()
         startAutoCloudSyncLoop()
+        startRealtimeNotificationPolling()
     }
 
     private fun buildOptimisticProfile(session: AuthSession): UserProfile {
@@ -2842,11 +2844,30 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun startRealtimeNotificationPolling() {
+        if (notificationPollJob?.isActive == true) return
+        notificationPollJob = viewModelScope.launch {
+            while (isActive) {
+                delay(20_000L)
+                val session = _authSession.value
+                if (session != null && AppConfig.isSupabaseConfigured) {
+                    supabaseDiscussion.fetchUnseenDiscussionAnime(session).onSuccess { summary ->
+                        _unseenDiscussionAnime.value = summary.anime
+                        _unreadNotificationCount.value = summary.totalUnseen
+                    }
+                }
+            }
+        }
+    }
+
     fun postThreadReply(
         commentId: String,
         targetUserId: String,
         content: String,
         taggedUserIds: List<String> = emptyList(),
+        quotedReplyId: String? = null,
+        quotedUsername: String? = null,
+        quotedPreview: String? = null,
         onSuccess: (threadId: String) -> Unit = {}
     ) {
         if (_isDiscussionSubmitting.value) return
@@ -2864,7 +2885,16 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             _isDiscussionSubmitting.value = true
             _discussionErrorMessage.value = null
             _discussionSuccessMessage.value = null
-            supabaseDiscussion.createThreadReply(session, commentId, targetUserId, content, taggedUserIds)
+            supabaseDiscussion.createThreadReply(
+                session = session,
+                commentId = commentId,
+                targetUserId = targetUserId,
+                content = content,
+                taggedUserIds = taggedUserIds,
+                quotedReplyId = quotedReplyId,
+                quotedUsername = quotedUsername,
+                quotedPreview = quotedPreview
+            )
                 .onSuccess { created ->
                     _discussionComments.value = _discussionComments.value.map { comment ->
                         if (comment.id == commentId) {

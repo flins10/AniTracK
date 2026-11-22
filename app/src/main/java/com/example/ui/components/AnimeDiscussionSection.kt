@@ -12,6 +12,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -70,6 +71,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -89,6 +91,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -99,6 +102,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.launch
 import coil.compose.SubcomposeAsyncImage
 import coil.request.CachePolicy
 import coil.request.ImageRequest
@@ -128,10 +132,22 @@ private val LivTrAkAsh = Color(0xFF9A9AA8)
 private val LivTrAkAsh2 = Color(0xFF66667A)
 private val LivTrAkHairline = Color(0x14FFFFFF)
 
+private val SOLO_EMOJI_REGEX = Regex("""^\s*\[emoji:([a-zA-Z0-9_-]{1,64})]\s*$""")
+private val ANY_EMOJI_TOKEN_REGEX = Regex("""\[emoji:([a-zA-Z0-9_-]{1,64})]""")
+
+private fun extractSoloEmojiId(content: String): String? =
+    SOLO_EMOJI_REGEX.matchEntire(content)?.groupValues?.getOrNull(1)?.lowercase()
+
+private fun formatPlainPreviewWithEmojis(content: String): String =
+    ANY_EMOJI_TOKEN_REGEX.replace(content) { ":${it.groupValues[1]}:" }.trim()
+
 private data class ReplyComposerTarget(
     val commentId: String,
     val targetUserId: String,
-    val targetUsername: String
+    val targetUsername: String,
+    val quotedReplyId: String? = null,
+    val quotedUsername: String = targetUsername,
+    val quotedPreview: String = ""
 )
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
@@ -179,15 +195,25 @@ fun AnimeDiscussionSection(
     val expandedThreads = remember(animeId) { mutableStateMapOf<String, Boolean>() }
     var scrolledToHighlightKey by remember(animeId) { mutableStateOf<String?>(null) }
 
+    val coroutineScope = rememberCoroutineScope()
+    var activeHighlightTarget by remember(animeId) { mutableStateOf(highlightTarget) }
+
     // Non-blocking preload of custom emoji metadata & top frequently used emojis
     LaunchedEffect(animeId) {
         viewModel.loadCommunityEmojis()
     }
 
-    // Auto-expand & scroll to highlighted message when jumping from "Tagged You" notification
-    LaunchedEffect(highlightTarget, chronologicalComments) {
-        val target = highlightTarget ?: return@LaunchedEffect
-        val key = "${target.commentId}_${target.replyId.orEmpty()}"
+    LaunchedEffect(highlightTarget) {
+        if (highlightTarget != null) {
+            activeHighlightTarget = highlightTarget
+            scrolledToHighlightKey = null
+        }
+    }
+
+    // Auto-expand & scroll to highlighted message when jumping from notification or clicking a quoted card
+    LaunchedEffect(activeHighlightTarget, chronologicalComments) {
+        val target = activeHighlightTarget ?: return@LaunchedEffect
+        val key = "${target.commentId}_${target.replyId.orEmpty()}_${target.threadId.orEmpty()}"
         if (scrolledToHighlightKey == key) return@LaunchedEffect
         if (!target.threadId.isNullOrBlank()) {
             expandedThreads[target.threadId] = true
@@ -214,7 +240,10 @@ fun AnimeDiscussionSection(
             activeReplyTarget = ReplyComposerTarget(
                 commentId = existingComment.id,
                 targetUserId = existingComment.userId,
-                targetUsername = existingComment.username
+                targetUsername = existingComment.username,
+                quotedReplyId = null,
+                quotedUsername = existingComment.username,
+                quotedPreview = formatPlainPreviewWithEmojis(existingComment.content).take(180)
             )
         } else if (targetUser.id.isNotBlank()) {
             val currentTotal = DiscussionRules.validateContentMentions(draft.text, selectedTags.size).totalEntries
@@ -225,6 +254,17 @@ fun AnimeDiscussionSection(
             }
         }
         onInitialReplyTargetConsumed()
+    }
+
+    val onMentionTapped: (String) -> Unit = { mentionedUsername ->
+        if (isSignedIn) {
+            val clean = mentionedUsername.removePrefix("@").trim()
+            val cur = draft.text
+            val addition = if (cur.isNotEmpty() && !cur.endsWith(" ")) " @$clean " else "@$clean "
+            if (DiscussionRules.validateContentMentions(cur + addition, selectedTags.size).totalEntries <= DiscussionRules.MAX_MENTIONS_PER_CONTENT) {
+                draft = TextFieldValue(cur + addition, TextRange((cur + addition).length))
+            }
+        }
     }
 
     val draftValidation = remember(draft.text, selectedTags) {
@@ -255,7 +295,10 @@ fun AnimeDiscussionSection(
                     commentId = replyTarget.commentId,
                     targetUserId = replyTarget.targetUserId,
                     content = draft.text,
-                    taggedUserIds = selectedTags.map { it.id }
+                    taggedUserIds = selectedTags.map { it.id },
+                    quotedReplyId = replyTarget.quotedReplyId,
+                    quotedUsername = replyTarget.quotedUsername,
+                    quotedPreview = replyTarget.quotedPreview.ifBlank { null }
                 ) { threadId ->
                     expandedThreads[threadId] = true
                     draft = TextFieldValue("")
@@ -443,7 +486,7 @@ fun AnimeDiscussionSection(
 
                         items(chronologicalComments, key = { it.id }) { comment ->
                             val isMine = currentUserId != null && currentUserId == comment.userId
-                            val isHighlighted = highlightTarget?.commentId == comment.id && highlightTarget.replyId == null
+                            val isHighlighted = activeHighlightTarget?.commentId == comment.id && activeHighlightTarget?.replyId == null
                             val isEditingThis = editingCommentId == comment.id
                             val existingAuthorThread = comment.threads.firstOrNull { it.targetUserId == comment.userId }
 
@@ -457,7 +500,7 @@ fun AnimeDiscussionSection(
                                 isSubmitting = isSubmitting,
                                 emojiById = emojiById,
                                 currentUserId = currentUserId,
-                                highlightTarget = highlightTarget,
+                                highlightTarget = activeHighlightTarget,
                                 expandedThreads = expandedThreads,
                                 editingReplyId = editingReplyId,
                                 editingReplyDraft = editingReplyDraft,
@@ -481,7 +524,10 @@ fun AnimeDiscussionSection(
                                     activeReplyTarget = ReplyComposerTarget(
                                         commentId = comment.id,
                                         targetUserId = comment.userId,
-                                        targetUsername = comment.username
+                                        targetUsername = comment.username,
+                                        quotedReplyId = null,
+                                        quotedUsername = comment.username,
+                                        quotedPreview = formatPlainPreviewWithEmojis(comment.content).take(180)
                                     )
                                 },
                                 onStartEditComment = {
@@ -501,7 +547,10 @@ fun AnimeDiscussionSection(
                                     activeReplyTarget = ReplyComposerTarget(
                                         commentId = comment.id,
                                         targetUserId = thread.targetUserId,
-                                        targetUsername = thread.targetUsername
+                                        targetUsername = thread.targetUsername,
+                                        quotedReplyId = null,
+                                        quotedUsername = comment.username,
+                                        quotedPreview = formatPlainPreviewWithEmojis(comment.content).take(180)
                                     )
                                 },
                                 onReplyToReplyAuthor = { reply ->
@@ -511,9 +560,35 @@ fun AnimeDiscussionSection(
                                     activeReplyTarget = ReplyComposerTarget(
                                         commentId = comment.id,
                                         targetUserId = reply.userId,
-                                        targetUsername = reply.username
+                                        targetUsername = reply.username,
+                                        quotedReplyId = reply.id,
+                                        quotedUsername = reply.username,
+                                        quotedPreview = formatPlainPreviewWithEmojis(reply.content).take(180)
                                     )
                                 },
+                                onJumpToQuoted = { targetCid, targetRid ->
+                                    val ownerThreadId = if (!targetRid.isNullOrBlank()) {
+                                        chronologicalComments.firstOrNull { it.id == targetCid }
+                                            ?.threads
+                                            ?.firstOrNull { th -> th.replies.any { it.id == targetRid } }
+                                            ?.id
+                                    } else null
+                                    if (!ownerThreadId.isNullOrBlank()) {
+                                        expandedThreads[ownerThreadId] = true
+                                    }
+                                    activeHighlightTarget = NotificationJumpTarget(
+                                        animeId = animeId,
+                                        commentId = targetCid,
+                                        threadId = ownerThreadId,
+                                        replyId = targetRid
+                                    )
+                                    scrolledToHighlightKey = null
+                                    val jumpIdx = chronologicalComments.indexOfFirst { it.id == targetCid }
+                                    if (jumpIdx >= 0) {
+                                        coroutineScope.launch { listState.animateScrollToItem(jumpIdx) }
+                                    }
+                                },
+                                onMentionClick = onMentionTapped,
                                 onStartEditReply = { reply ->
                                     editingReplyId = reply.id
                                     editingReplyDraft = reply.content
@@ -570,39 +645,60 @@ fun AnimeDiscussionSection(
                     )
                 }
 
-                // Active Reply Context Strip
+                // Active Reply Context Strip with Quoted Message Preview
                 val replyTarget = activeReplyTarget
                 AnimatedVisibility(visible = replyTarget != null) {
                     if (replyTarget != null) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .background(LivTrAkGold.copy(alpha = 0.08f))
-                                .padding(horizontal = 14.dp, vertical = 6.dp),
+                                .background(LivTrAkGold.copy(alpha = 0.09f))
+                                .padding(horizontal = 14.dp, vertical = 7.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            Box(
+                                modifier = Modifier
+                                    .width(3.dp)
+                                    .height(if (replyTarget.quotedPreview.isNotBlank()) 32.dp else 18.dp)
+                                    .clip(CircleShape)
+                                    .background(LivTrAkGold)
+                            )
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
                             ) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.Reply,
-                                    contentDescription = null,
-                                    tint = LivTrAkGold,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Text(
-                                    text = "Replying to @${replyTarget.targetUsername}",
-                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-                                    color = LivTrAkGoldSoft
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.Reply,
+                                        contentDescription = null,
+                                        tint = LivTrAkGold,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                    Text(
+                                        text = "Replying to @${replyTarget.quotedUsername}",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                        color = LivTrAkGoldSoft
+                                    )
+                                }
+                                if (replyTarget.quotedPreview.isNotBlank()) {
+                                    Text(
+                                        text = replyTarget.quotedPreview,
+                                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp),
+                                        color = LivTrAkAsh,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
                             }
                             IconButton(
                                 onClick = { activeReplyTarget = null },
-                                modifier = Modifier.size(24.dp)
+                                modifier = Modifier.size(28.dp)
                             ) {
-                                Icon(Icons.Filled.Close, contentDescription = "Cancel reply", tint = LivTrAkAsh, modifier = Modifier.size(14.dp))
+                                Icon(Icons.Filled.Close, contentDescription = "Cancel reply", tint = LivTrAkAsh, modifier = Modifier.size(15.dp))
                             }
                         }
                     }
@@ -840,6 +936,8 @@ private fun LivTrAkChatMessageItem(
     onDeleteComment: () -> Unit,
     onContinueThread: (CommentReplyThread) -> Unit,
     onReplyToReplyAuthor: (CommentReplyItem) -> Unit,
+    onJumpToQuoted: (commentId: String, replyId: String?) -> Unit,
+    onMentionClick: (String) -> Unit,
     onStartEditReply: (CommentReplyItem) -> Unit,
     onChangeEditReplyDraft: (String) -> Unit,
     onCancelEditReply: () -> Unit,
@@ -862,6 +960,9 @@ private fun LivTrAkChatMessageItem(
         isMine -> Color(0x4DE8C88F)
         else -> LivTrAkHairline
     }
+
+    val soloEmojiId = remember(comment.content) { extractSoloEmojiId(comment.content) }
+    val soloEmojiObj = soloEmojiId?.let { emojiById[it] }
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -910,73 +1011,109 @@ private fun LivTrAkChatMessageItem(
                         )
                     }
 
-                    // Message Bubble
-                    Surface(
-                        shape = bubbleShape,
-                        color = bubbleBg,
-                        border = BorderStroke(1.dp, bubbleBorder),
-                        modifier = Modifier
-                            .widthIn(max = 310.dp)
-                            .clip(bubbleShape)
-                            .pointerInput(comment.id, isSignedIn) {
-                                awaitPointerEventScope {
-                                    while (true) {
-                                        val event = awaitPointerEvent()
-                                        if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed && isSignedIn) {
-                                            onOpenMenu()
+                    // Solo Emoji (NO comment cloud, 3x bigger = 84.dp) OR Message Bubble
+                    if (!isEditing && soloEmojiObj != null) {
+                        Box(
+                            modifier = Modifier
+                                .padding(vertical = 4.dp)
+                                .then(
+                                    if (isHighlighted) {
+                                        Modifier.border(2.dp, LivTrAkGold, CircleShape).padding(3.dp)
+                                    } else {
+                                        Modifier
+                                    }
+                                )
+                                .pointerInput(comment.id, isSignedIn) {
+                                    awaitPointerEventScope {
+                                        while (true) {
+                                            val event = awaitPointerEvent()
+                                            if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed && isSignedIn) {
+                                                onOpenMenu()
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            .combinedClickable(
-                                onClick = onToggleAuthorThread,
-                                onLongClick = onOpenMenu
-                            )
-                            .testTag("discussion_comment_card_${comment.id}")
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(horizontal = 13.dp, vertical = 9.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            if (isEditing) {
-                                OutlinedTextField(
-                                    value = editingDraft,
-                                    onValueChange = onChangeEditCommentDraft,
-                                    maxLines = 4,
-                                    shape = RoundedCornerShape(12.dp),
-                                    modifier = Modifier.fillMaxWidth()
+                                .combinedClickable(
+                                    onClick = onToggleAuthorThread,
+                                    onLongClick = onOpenMenu
                                 )
-                                val editCheck = DiscussionRules.validateContentMentions(editingDraft)
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    AppPrimaryButton(
-                                        text = if (isSubmitting) "Saving..." else "Save",
-                                        enabled = !isSubmitting && editCheck.isValid,
-                                        onClick = onSaveEditComment
-                                    )
-                                    TextButton(onClick = onCancelEditComment) {
-                                        Text("Cancel", color = LivTrAkAsh)
+                                .testTag("discussion_comment_card_${comment.id}")
+                        ) {
+                            CachedCustomEmojiImage(emoji = soloEmojiObj, size = 84.dp)
+                        }
+                        if (comment.mentions.isNotEmpty()) {
+                            ClickableMentionChipsRow(
+                                mentions = comment.mentions,
+                                onMentionClick = onMentionClick
+                            )
+                        }
+                    } else {
+                        Surface(
+                            shape = bubbleShape,
+                            color = bubbleBg,
+                            border = BorderStroke(1.dp, bubbleBorder),
+                            modifier = Modifier
+                                .widthIn(max = 310.dp)
+                                .clip(bubbleShape)
+                                .pointerInput(comment.id, isSignedIn) {
+                                    awaitPointerEventScope {
+                                        while (true) {
+                                            val event = awaitPointerEvent()
+                                            if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed && isSignedIn) {
+                                                onOpenMenu()
+                                            }
+                                        }
                                     }
                                 }
-                            } else {
-                                RichChatMessageText(
-                                    content = comment.content,
-                                    emojiById = emojiById,
-                                    mentionColor = LivTrAkGold,
-                                    textColor = LivTrAkIvory
+                                .combinedClickable(
+                                    onClick = onToggleAuthorThread,
+                                    onLongClick = onOpenMenu
                                 )
-                                if (comment.mentions.isNotEmpty()) {
-                                    val uniqueTags = comment.mentions.map { it.mentionedUsername }.distinct()
-                                    Text(
-                                        text = uniqueTags.joinToString("  ") { "@$it" },
-                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold),
-                                        color = LivTrAkGold
+                                .testTag("discussion_comment_card_${comment.id}")
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 13.dp, vertical = 9.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                if (isEditing) {
+                                    OutlinedTextField(
+                                        value = editingDraft,
+                                        onValueChange = onChangeEditCommentDraft,
+                                        maxLines = 4,
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier.fillMaxWidth()
                                     )
+                                    val editCheck = DiscussionRules.validateContentMentions(editingDraft)
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        AppPrimaryButton(
+                                            text = if (isSubmitting) "Saving..." else "Save",
+                                            enabled = !isSubmitting && editCheck.isValid,
+                                            onClick = onSaveEditComment
+                                        )
+                                        TextButton(onClick = onCancelEditComment) {
+                                            Text("Cancel", color = LivTrAkAsh)
+                                        }
+                                    }
+                                } else {
+                                    RichChatMessageText(
+                                        content = comment.content,
+                                        emojiById = emojiById,
+                                        mentionColor = LivTrAkGold,
+                                        textColor = LivTrAkIvory,
+                                        onMentionClick = onMentionClick
+                                    )
+                                    if (comment.mentions.isNotEmpty()) {
+                                        ClickableMentionChipsRow(
+                                            mentions = comment.mentions,
+                                            onMentionClick = onMentionClick
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
 
-                    // Compact quick reply count/action pill under bubble
+                    // Compact quick reply count/action pill under message
                     if (isSignedIn) {
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -1059,6 +1196,7 @@ private fun LivTrAkChatMessageItem(
                     val isExpanded = expandedThreads[thread.id]
                         ?: (highlightTarget?.threadId == thread.id || (comment.threads.size == 1 && thread.replies.size <= 2))
                     CompactChatReplyThread(
+                        parentComment = comment,
                         thread = thread,
                         isExpanded = isExpanded,
                         currentUserId = currentUserId,
@@ -1071,6 +1209,8 @@ private fun LivTrAkChatMessageItem(
                         onToggleExpand = { expandedThreads[thread.id] = !isExpanded },
                         onContinueThread = { onContinueThread(thread) },
                         onReplyToAuthor = onReplyToReplyAuthor,
+                        onJumpToQuoted = onJumpToQuoted,
+                        onMentionClick = onMentionClick,
                         onStartEditReply = onStartEditReply,
                         onChangeEditReplyDraft = onChangeEditReplyDraft,
                         onCancelEditReply = onCancelEditReply,
@@ -1086,6 +1226,7 @@ private fun LivTrAkChatMessageItem(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun CompactChatReplyThread(
+    parentComment: AnimeCommentItem,
     thread: CommentReplyThread,
     isExpanded: Boolean,
     currentUserId: String?,
@@ -1098,6 +1239,8 @@ private fun CompactChatReplyThread(
     onToggleExpand: () -> Unit,
     onContinueThread: () -> Unit,
     onReplyToAuthor: (CommentReplyItem) -> Unit,
+    onJumpToQuoted: (commentId: String, replyId: String?) -> Unit,
+    onMentionClick: (String) -> Unit,
     onStartEditReply: (CommentReplyItem) -> Unit,
     onChangeEditReplyDraft: (String) -> Unit,
     onCancelEditReply: () -> Unit,
@@ -1152,52 +1295,28 @@ private fun CompactChatReplyThread(
             }
 
             AnimatedVisibility(visible = isExpanded) {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     thread.replies.forEach { reply ->
                         val isReplyMine = currentUserId == reply.userId
                         val isHighlighted = highlightReplyId == reply.id
                         val isEditingReply = editingReplyId == reply.id
+                        val replySoloEmojiId = remember(reply.content) { extractSoloEmojiId(reply.content) }
+                        val replySoloEmojiObj = replySoloEmojiId?.let { emojiById[it] }
+                        val quotedAuthor = reply.quotedUsername?.takeIf { it.isNotBlank() } ?: parentComment.username
+                        val quotedSnippet = remember(reply.quotedPreview, parentComment.content) {
+                            formatPlainPreviewWithEmojis(
+                                reply.quotedPreview?.takeIf { it.isNotBlank() } ?: parentComment.content
+                            )
+                        }
+                        val quotedCid = reply.quotedCommentId?.takeIf { it.isNotBlank() } ?: parentComment.id
 
                         Box(modifier = Modifier.fillMaxWidth()) {
-                            Surface(
-                                shape = RoundedCornerShape(12.dp),
-                                color = when {
-                                    isHighlighted -> LivTrAkGold.copy(alpha = 0.22f)
-                                    isReplyMine -> Color(0x1FE8C88F)
-                                    else -> LivTrAkSurface2
-                                },
-                                border = BorderStroke(
-                                    1.dp,
-                                    if (isHighlighted) LivTrAkGold else LivTrAkHairline
-                                ),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .pointerInput(reply.id, isSignedIn) {
-                                        awaitPointerEventScope {
-                                            while (true) {
-                                                val event = awaitPointerEvent()
-                                                if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed && isSignedIn) {
-                                                    openReplyMenuId = reply.id
-                                                }
-                                            }
-                                        }
-                                    }
-                                    .combinedClickable(
-                                        onClick = {},
-                                        onLongClick = {
-                                            if (isSignedIn) {
-                                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                openReplyMenuId = reply.id
-                                            }
-                                        }
-                                    )
-                                    .testTag("reply_item_${reply.id}")
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                Column(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
+                                if (!isEditingReply && replySoloEmojiObj != null) {
+                                    // Reply header + Quoted preview + Unboxed 84dp solo emoji (NO comment cloud!)
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -1219,34 +1338,166 @@ private fun CompactChatReplyThread(
                                             color = LivTrAkAsh2
                                         )
                                     }
-
-                                    if (isEditingReply) {
-                                        val check = DiscussionRules.validateContentMentions(editingReplyDraft)
-                                        OutlinedTextField(
-                                            value = editingReplyDraft,
-                                            onValueChange = onChangeEditReplyDraft,
-                                            maxLines = 3,
-                                            shape = RoundedCornerShape(10.dp),
-                                            modifier = Modifier.fillMaxWidth()
+                                    if (quotedSnippet.isNotBlank()) {
+                                        QuotedReplyPreviewCard(
+                                            author = quotedAuthor,
+                                            preview = quotedSnippet,
+                                            onClick = { onJumpToQuoted(quotedCid, reply.quotedReplyId) }
                                         )
-                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                            AppPrimaryButton(
-                                                text = if (isSubmitting) "Saving..." else "Save",
-                                                enabled = !isSubmitting && check.isValid,
-                                                onClick = { onSaveEditReply(reply.id) }
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .padding(vertical = 2.dp)
+                                            .then(
+                                                if (isHighlighted) {
+                                                    Modifier.border(2.dp, LivTrAkGold, CircleShape).padding(3.dp)
+                                                } else Modifier
                                             )
-                                            TextButton(onClick = onCancelEditReply) {
-                                                Text("Cancel", color = LivTrAkAsh)
+                                            .combinedClickable(
+                                                onClick = {},
+                                                onLongClick = {
+                                                    if (isSignedIn) {
+                                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                        openReplyMenuId = reply.id
+                                                    }
+                                                }
+                                            )
+                                            .testTag("reply_item_${reply.id}")
+                                    ) {
+                                        CachedCustomEmojiImage(emoji = replySoloEmojiObj, size = 84.dp)
+                                    }
+                                    if (reply.mentions.isNotEmpty()) {
+                                        ClickableMentionChipsRow(mentions = reply.mentions, onMentionClick = onMentionClick)
+                                    }
+                                    if (isSignedIn) {
+                                        Text(
+                                            text = "Reply",
+                                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.Medium),
+                                            color = LivTrAkAsh2,
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .clickable { onReplyToAuthor(reply) }
+                                                .padding(vertical = 2.dp)
+                                        )
+                                    }
+                                } else {
+                                    Surface(
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = when {
+                                            isHighlighted -> LivTrAkGold.copy(alpha = 0.22f)
+                                            isReplyMine -> Color(0x1FE8C88F)
+                                            else -> LivTrAkSurface2
+                                        },
+                                        border = BorderStroke(
+                                            1.dp,
+                                            if (isHighlighted) LivTrAkGold else LivTrAkHairline
+                                        ),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .pointerInput(reply.id, isSignedIn) {
+                                                awaitPointerEventScope {
+                                                    while (true) {
+                                                        val event = awaitPointerEvent()
+                                                        if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed && isSignedIn) {
+                                                            openReplyMenuId = reply.id
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            .combinedClickable(
+                                                onClick = {},
+                                                onLongClick = {
+                                                    if (isSignedIn) {
+                                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                        openReplyMenuId = reply.id
+                                                    }
+                                                }
+                                            )
+                                            .testTag("reply_item_${reply.id}")
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                            verticalArrangement = Arrangement.spacedBy(5.dp)
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                MemberAvatar(
+                                                    avatarKey = reply.avatarKey,
+                                                    avatarUrl = reply.avatarUrl,
+                                                    username = reply.username,
+                                                    size = 20.dp
+                                                )
+                                                Text(
+                                                    text = reply.username,
+                                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                                    color = LivTrAkGoldSoft
+                                                )
+                                                Text(
+                                                    text = formatCommunityTimestamp(reply.createdAt),
+                                                    style = TabularNumSmall.copy(fontSize = 9.5.sp),
+                                                    color = LivTrAkAsh2
+                                                )
+                                            }
+
+                                            if (isEditingReply) {
+                                                val check = DiscussionRules.validateContentMentions(editingReplyDraft)
+                                                OutlinedTextField(
+                                                    value = editingReplyDraft,
+                                                    onValueChange = onChangeEditReplyDraft,
+                                                    maxLines = 3,
+                                                    shape = RoundedCornerShape(10.dp),
+                                                    modifier = Modifier.fillMaxWidth()
+                                                )
+                                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                    AppPrimaryButton(
+                                                        text = if (isSubmitting) "Saving..." else "Save",
+                                                        enabled = !isSubmitting && check.isValid,
+                                                        onClick = { onSaveEditReply(reply.id) }
+                                                    )
+                                                    TextButton(onClick = onCancelEditReply) {
+                                                        Text("Cancel", color = LivTrAkAsh)
+                                                    }
+                                                }
+                                            } else {
+                                                if (quotedSnippet.isNotBlank()) {
+                                                    QuotedReplyPreviewCard(
+                                                        author = quotedAuthor,
+                                                        preview = quotedSnippet,
+                                                        onClick = { onJumpToQuoted(quotedCid, reply.quotedReplyId) }
+                                                    )
+                                                }
+                                                RichChatMessageText(
+                                                    content = reply.content,
+                                                    emojiById = emojiById,
+                                                    mentionColor = LivTrAkGold,
+                                                    textColor = LivTrAkIvory,
+                                                    fontSizeSp = 13f,
+                                                    onMentionClick = onMentionClick
+                                                )
+                                                if (reply.mentions.isNotEmpty()) {
+                                                    ClickableMentionChipsRow(
+                                                        mentions = reply.mentions,
+                                                        onMentionClick = onMentionClick
+                                                    )
+                                                }
+                                                if (isSignedIn) {
+                                                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                                        Text(
+                                                            text = "Reply",
+                                                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.Medium),
+                                                            color = LivTrAkAsh2,
+                                                            modifier = Modifier
+                                                                .clip(RoundedCornerShape(6.dp))
+                                                                .clickable { onReplyToAuthor(reply) }
+                                                                .padding(vertical = 2.dp)
+                                                        )
+                                                    }
+                                                }
                                             }
                                         }
-                                    } else {
-                                        RichChatMessageText(
-                                            content = reply.content,
-                                            emojiById = emojiById,
-                                            mentionColor = LivTrAkGold,
-                                            textColor = LivTrAkIvory,
-                                            fontSizeSp = 13f
-                                        )
                                     }
                                 }
                             }
@@ -1320,8 +1571,90 @@ private fun CompactChatReplyThread(
     }
 }
 
+@Composable
+private fun QuotedReplyPreviewCard(
+    author: String,
+    preview: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = Color(0x0DFFFFFF),
+        border = BorderStroke(1.dp, LivTrAkHairline),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(2.5.dp)
+                    .height(28.dp)
+                    .clip(CircleShape)
+                    .background(LivTrAkGold)
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(1.dp)
+            ) {
+                Text(
+                    text = "@$author",
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp, fontWeight = FontWeight.Bold),
+                    color = LivTrAkGoldSoft,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = preview,
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, lineHeight = 14.sp),
+                    color = LivTrAkAsh,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ClickableMentionChipsRow(
+    mentions: List<com.example.model.ContentMention>,
+    onMentionClick: (String) -> Unit
+) {
+    val uniqueTags = remember(mentions) { mentions.map { it.mentionedUsername }.distinct() }
+    if (uniqueTags.isEmpty()) return
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        uniqueTags.forEach { uname ->
+            Surface(
+                shape = CircleShape,
+                color = LivTrAkGold.copy(alpha = 0.14f),
+                border = BorderStroke(1.dp, LivTrAkGold.copy(alpha = 0.35f)),
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .clickable { onMentionClick(uname) }
+            ) {
+                Text(
+                    text = "@$uname",
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold),
+                    color = LivTrAkGold,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                )
+            }
+        }
+    }
+}
+
 /**
- * Renders chat text with inline gold @mentions AND inline circular 28dp custom emojis
+ * Renders chat text with inline clickable gold @mentions AND inline circular 28dp custom emojis
  * fetched & cached via Coil memory+disk cache using a single canonical Storage URL.
  */
 @Composable
@@ -1330,7 +1663,8 @@ private fun RichChatMessageText(
     emojiById: Map<String, CommunityEmoji>,
     mentionColor: Color,
     textColor: Color,
-    fontSizeSp: Float = 14f
+    fontSizeSp: Float = 14f,
+    onMentionClick: ((String) -> Unit)? = null
 ) {
     val combinedRegex = remember { Regex("""\[emoji:([a-zA-Z0-9_-]{1,64})]|(@[A-Za-z0-9_.-]{2,32})""") }
     val inlineMap = remember(content, emojiById) {
@@ -1373,9 +1707,12 @@ private fun RichChatMessageText(
                         }
                     }
                     mention != null -> {
+                        val uname = mention.removePrefix("@")
+                        pushStringAnnotation(tag = "MENTION", annotation = uname)
                         withStyle(SpanStyle(color = mentionColor, fontWeight = FontWeight.SemiBold)) {
                             append(mention)
                         }
+                        pop()
                     }
                 }
                 cursor = match.range.last + 1
@@ -1388,13 +1725,26 @@ private fun RichChatMessageText(
         }
     }
 
+    var textLayout by remember { mutableStateOf<TextLayoutResult?>(null) }
     Text(
         text = annotated,
         inlineContent = inlineMap,
+        onTextLayout = { textLayout = it },
         style = MaterialTheme.typography.bodyMedium.copy(
             fontSize = fontSizeSp.sp,
             lineHeight = (fontSizeSp + 6f).sp
-        )
+        ),
+        modifier = if (onMentionClick != null) {
+            Modifier.pointerInput(annotated) {
+                detectTapGestures { pos ->
+                    val offset = textLayout?.getOffsetForPosition(pos) ?: return@detectTapGestures
+                    annotated.getStringAnnotations(tag = "MENTION", start = offset, end = offset)
+                        .firstOrNull()?.item?.let { onMentionClick(it) }
+                }
+            }
+        } else {
+            Modifier
+        }
     )
 }
 

@@ -2727,19 +2727,21 @@ function renderSelectedTagChipsHtml(scope, tags) {
 
 function renderMentionsDisplayHtml(mentions) {
   if (!Array.isArray(mentions) || mentions.length === 0) return '';
-  const counts = new Map();
+  const map = new Map();
   for (const m of mentions) {
     const uname = m?.mentioned_username || m?.username || '';
+    const uid = m?.mentioned_user_id || m?.user_id || '';
     if (!uname) continue;
-    counts.set(uname, (counts.get(uname) || 0) + 1);
+    const prev = map.get(uname);
+    map.set(uname, { uid: prev?.uid || uid, count: (prev?.count || 0) + 1 });
   }
-  if (counts.size === 0) return '';
+  if (map.size === 0) return '';
   return `
     <div class="tag-chips-row posted">
-      ${Array.from(counts.entries())
+      ${Array.from(map.entries())
         .map(
-          ([uname, cnt]) =>
-            `<span class="tag-chip posted">Tagged: ${escapeHtml(uname)}${cnt > 1 ? ` ×${cnt}` : ''}</span>`
+          ([uname, info]) =>
+            `<button type="button" class="tag-chip posted clickable-tag" data-mention-click-name="${escapeHtml(uname)}" data-mention-click-uid="${escapeHtml(info.uid || '')}">@${escapeHtml(uname)}${info.count > 1 ? ` ×${info.count}` : ''}</button>`
         )
         .join('')}
     </div>
@@ -3000,18 +3002,29 @@ const EmojiCacheManager = {
     const task = (async () => {
       try {
         if (typeof caches !== 'undefined') {
+          const expectedMime = /\.gif($|\?)/i.test(url)
+            ? 'image/gif'
+            : /\.webp($|\?)/i.test(url)
+            ? 'image/webp'
+            : /\.png($|\?)/i.test(url)
+            ? 'image/png'
+            : (item.mime_type || 'image/gif');
           const cache = await caches.open(EMOJI_IMAGE_CACHE_NAME);
           const cachedResp = await cache.match(url);
           if (cachedResp && cachedResp.ok) {
-            const blob = await cachedResp.blob();
-            const objUrl = URL.createObjectURL(blob);
+            const rawBlob = await cachedResp.blob();
+            const typedBlob = (rawBlob.type && rawBlob.type.startsWith('image/'))
+              ? rawBlob
+              : new Blob([rawBlob], { type: expectedMime });
+            const objUrl = URL.createObjectURL(typedBlob);
             this.objectUrls.set(id, objUrl);
             return objUrl;
           }
           const netResp = await fetch(url, { mode: 'cors', cache: 'force-cache' });
           if (!netResp.ok) throw new Error(`HTTP ${netResp.status}`);
           const buf = await netResp.arrayBuffer();
-          const contentType = netResp.headers.get('content-type') || item.mime_type || 'image/gif';
+          const rawCt = netResp.headers.get('content-type') || '';
+          const contentType = rawCt.startsWith('image/') ? rawCt : expectedMime;
           const cacheResp = new Response(buf, {
             status: 200,
             headers: {
@@ -3165,7 +3178,12 @@ function renderCustomEmojiSlotHtml(emojiId, { lazy = false, sizeClass = '' } = {
   const cachedSrc = EmojiCacheManager.objectUrls.get(cleanId) || '';
   const loadedClass = cachedSrc ? 'is-loaded' : '';
   const loadingClass = cachedSrc ? '' : 'loading';
-  return `<span class="custom-emoji-slot ${sizeClass} ${loadingClass}" title=":${escapeHtml(cleanId)}:"><img class="custom-emoji ${loadedClass}" data-emoji-id="${escapeHtml(cleanId)}" data-emoji-lazy="${lazy ? '1' : '0'}" ${cachedSrc ? `src="${escapeHtml(cachedSrc)}"` : ''} alt=":${escapeHtml(cleanId)}:" loading="lazy" decoding="async" /></span>`;
+  return `<span class="custom-emoji-slot ${sizeClass} ${loadingClass}" title=":${escapeHtml(cleanId)}:"><img class="custom-emoji ${loadedClass}" data-emoji-id="${escapeHtml(cleanId)}" data-emoji-lazy="${lazy ? '1' : '0'}" ${cachedSrc ? `src="${escapeHtml(cachedSrc)}"` : ''} alt=":${escapeHtml(cleanId)}:" loading="${lazy ? 'lazy' : 'eager'}" decoding="auto" /></span>`;
+}
+
+function extractSoloEmojiId(text) {
+  const m = /^\s*\[emoji:([a-zA-Z0-9_-]{1,64})\]\s*$/.exec(String(text || ''));
+  return m ? m[1].toLowerCase() : null;
 }
 
 function formatPlainPreviewWithEmojis(text) {
@@ -3180,7 +3198,9 @@ function renderMentionSegmentHtml(segmentText) {
   let last = 0;
   for (const t of tokens) {
     out += escapeHtml(raw.slice(last, t.start));
-    out += `<span class="mention">${escapeHtml(raw.slice(t.start, t.end))}</span>`;
+    const handleText = raw.slice(t.start, t.end);
+    const uname = t.username || handleText.replace(/^@/, '');
+    out += `<button type="button" class="mention c-mention-btn" data-mention-click-name="${escapeHtml(uname)}">${escapeHtml(handleText)}</button>`;
     last = t.end;
   }
   out += escapeHtml(raw.slice(last));
@@ -3660,7 +3680,11 @@ function applyPendingCommunityReplyTarget() {
     state.discussion.activeReplyTarget = {
       commentId: existingComment.id,
       targetUserId: existingComment.user_id,
-      targetUsername: existingComment.username || pending.username || 'Member'
+      targetUsername: existingComment.username || pending.username || 'Member',
+      quotedCommentId: existingComment.id,
+      quotedReplyId: null,
+      quotedUsername: existingComment.username || pending.username || 'Member',
+      quotedPreview: formatPlainPreviewWithEmojis(existingComment.content ?? existingComment.body ?? '').slice(0, 180)
     };
     state.discussion.replyDraft = '';
     state.discussion.replyTags = [];
@@ -3834,7 +3858,10 @@ async function postThreadReply() {
       p_comment_id: target.commentId,
       p_target_user_id: target.targetUserId,
       p_content: body,
-      p_tagged_user_ids: taggedIds
+      p_tagged_user_ids: taggedIds,
+      p_quoted_reply_id: target.quotedReplyId || null,
+      p_quoted_username: target.quotedUsername || target.targetUsername || null,
+      p_quoted_preview: target.quotedPreview || null
     });
     if (res && res.thread && res.reply) {
       state.discussion.comments = mergeReplyIntoDiscussionComments(
@@ -5584,10 +5611,20 @@ function renderAnimeDiscussionSection(anime, options = {}) {
                                   </div>
                                 </div>
                               `
-                              : `
-                                <div class="c-bubble ${isCommentHighlighted ? 'highlight-pulse' : ''}">${renderMentionHighlightedHtml(c.content ?? c.body ?? '')}</div>
-                                ${renderMentionsDisplayHtml(c.mentions)}
-                              `
+                              : (() => {
+                                  const rawBody = c.content ?? c.body ?? '';
+                                  const soloEid = extractSoloEmojiId(rawBody);
+                                  if (soloEid) {
+                                    return `
+                                      <div class="c-solo-emoji ${isCommentHighlighted ? 'highlight-pulse' : ''}">${renderCustomEmojiSlotHtml(soloEid, { lazy: false, sizeClass: 'size-solo' })}</div>
+                                      ${renderMentionsDisplayHtml(c.mentions)}
+                                    `;
+                                  }
+                                  return `
+                                    <div class="c-bubble ${isCommentHighlighted ? 'highlight-pulse' : ''}">${renderMentionHighlightedHtml(rawBody)}</div>
+                                    ${renderMentionsDisplayHtml(c.mentions)}
+                                  `;
+                                })()
                           }
 
                           <div class="c-bubble-footer">
@@ -5599,6 +5636,9 @@ function renderAnimeDiscussionSection(anime, options = {}) {
                                      data-start-reply-comment="${escapeHtml(c.id)}"
                                      data-reply-target-uid="${escapeHtml(c.user_id)}"
                                      data-reply-target-name="${escapeHtml(c.username || 'Member')}"
+                                     data-reply-quoted-id=""
+                                     data-reply-quoted-author="${escapeHtml(c.username || 'Member')}"
+                                     data-reply-quoted-preview="${escapeHtml(formatPlainPreviewWithEmojis(c.content ?? c.body ?? '').slice(0, 180))}"
                                    >Reply</button>`
                                 : ''
                             }
@@ -5635,6 +5675,23 @@ function renderAnimeDiscussionSection(anime, options = {}) {
                                                 const isOwnReply = Boolean(currentUserId && r.user_id === currentUserId);
                                                 const isEditingReply = d.editingReplyId === r.id;
                                                 const isReplyHighlighted = hl.replyId === r.id;
+                                                const rBody = r.content ?? r.body ?? '';
+                                                const rSoloEid = extractSoloEmojiId(rBody);
+                                                const quotedAuthor = r.quoted_username || c.username || 'Member';
+                                                const quotedPreviewRaw = r.quoted_preview || c.content || c.body || '';
+                                                const quotedPreviewText = formatPlainPreviewWithEmojis(quotedPreviewRaw);
+                                                const quoteButtonHtml = quotedPreviewText
+                                                  ? `<button
+                                                       type="button"
+                                                       class="c-quote-preview"
+                                                       data-jump-comment="${escapeHtml(r.quoted_comment_id || c.id)}"
+                                                       data-jump-reply="${escapeHtml(r.quoted_reply_id || '')}"
+                                                       title="Jump to original message"
+                                                     >
+                                                       <span class="c-quote-author">@${escapeHtml(quotedAuthor)}</span>
+                                                       <span class="c-quote-text">${escapeHtml(quotedPreviewText)}</span>
+                                                     </button>`
+                                                  : '';
                                                 return `
                                                   <div
                                                     class="c-msg ${isOwnReply ? 'mine' : ''}"
@@ -5644,6 +5701,7 @@ function renderAnimeDiscussionSection(anime, options = {}) {
                                                     data-ctx-reply-tid="${escapeHtml(th.id)}"
                                                     data-ctx-uid="${escapeHtml(r.user_id)}"
                                                     data-ctx-name="${escapeHtml(r.username || 'Member')}"
+                                                    data-ctx-quoted-preview="${escapeHtml(formatPlainPreviewWithEmojis(rBody).slice(0, 180))}"
                                                     data-ctx-owner="${isOwnReply ? '1' : '0'}"
                                                   >
                                                     ${!isOwnReply ? `<div class="c-msg-avatar-wrap">${renderAvatarCircle(r.avatar_key || 'avatar_1', r.username, 26)}</div>` : ''}
@@ -5672,8 +5730,17 @@ function renderAnimeDiscussionSection(anime, options = {}) {
                                                               </div>
                                                             </div>
                                                           `
+                                                          : rSoloEid
+                                                          ? `
+                                                            ${quoteButtonHtml}
+                                                            <div class="c-solo-emoji ${isReplyHighlighted ? 'highlight-pulse' : ''}">${renderCustomEmojiSlotHtml(rSoloEid, { lazy: false, sizeClass: 'size-solo' })}</div>
+                                                            ${renderMentionsDisplayHtml(r.mentions)}
+                                                          `
                                                           : `
-                                                            <div class="c-bubble ${isReplyHighlighted ? 'highlight-pulse' : ''}">${renderMentionHighlightedHtml(r.content ?? r.body ?? '')}</div>
+                                                            <div class="c-bubble ${isReplyHighlighted ? 'highlight-pulse' : ''}">
+                                                              ${quoteButtonHtml}
+                                                              <div>${renderMentionHighlightedHtml(rBody)}</div>
+                                                            </div>
                                                             ${renderMentionsDisplayHtml(r.mentions)}
                                                           `
                                                       }
@@ -5686,6 +5753,9 @@ function renderAnimeDiscussionSection(anime, options = {}) {
                                                                  data-start-reply-comment="${escapeHtml(c.id)}"
                                                                  data-reply-target-uid="${escapeHtml(r.user_id)}"
                                                                  data-reply-target-name="${escapeHtml(r.username || 'Member')}"
+                                                                 data-reply-quoted-id="${escapeHtml(r.id)}"
+                                                                 data-reply-quoted-author="${escapeHtml(r.username || 'Member')}"
+                                                                 data-reply-quoted-preview="${escapeHtml(formatPlainPreviewWithEmojis(rBody).slice(0, 180))}"
                                                                >Reply</button>`
                                                             : ''
                                                         }
@@ -5730,8 +5800,15 @@ function renderAnimeDiscussionSection(anime, options = {}) {
                 isReplyingMode
                   ? `
                     <div class="chat-reply-banner">
-                      <span>Replying to <strong>@${escapeHtml(d.activeReplyTarget.targetUsername)}</strong></span>
-                      <button type="button" class="c-micro-action" id="btn-cancel-reply-composer" style="color:#E8C88F;">✕ Cancel</button>
+                      <div class="chat-reply-banner-quote">
+                        <span>Replying to <strong>@${escapeHtml(d.activeReplyTarget.quotedUsername || d.activeReplyTarget.targetUsername)}</strong></span>
+                        ${
+                          d.activeReplyTarget.quotedPreview
+                            ? `<span class="chat-reply-banner-snippet">${escapeHtml(d.activeReplyTarget.quotedPreview)}</span>`
+                            : ''
+                        }
+                      </div>
+                      <button type="button" class="c-micro-action" id="btn-cancel-reply-composer" style="color:#E8C88F;flex-shrink:0;">✕ Cancel</button>
                     </div>
                   `
                   : ''
@@ -8636,17 +8713,36 @@ function bindAppEvents() {
     };
   });
 
-  // Helper to open reply thread & inline reply box for a target user
-  const openReplyForTarget = (commentId, targetUserId, targetUsername) => {
+  // Helper to open reply thread & inline reply box for a target user with quoted context
+  const openReplyForTarget = (commentId, targetUserId, targetUsername, quotedReplyId = null, quotedPreview = '') => {
     const comment = state.discussion.comments.find((c) => c.id === commentId);
     const existingThread = comment?.threads?.find((th) => th.target_user_id === targetUserId);
     if (existingThread) {
       state.discussion.expandedThreads[existingThread.id] = true;
     }
+    let resolvedPreview = String(quotedPreview || '').trim();
+    if (!resolvedPreview && comment) {
+      if (quotedReplyId) {
+        for (const th of comment.threads || []) {
+          const hit = (th.replies || []).find((r) => r.id === quotedReplyId);
+          if (hit) {
+            resolvedPreview = formatPlainPreviewWithEmojis(hit.content ?? hit.body ?? '').slice(0, 180);
+            break;
+          }
+        }
+      }
+      if (!resolvedPreview) {
+        resolvedPreview = formatPlainPreviewWithEmojis(comment.content ?? comment.body ?? '').slice(0, 180);
+      }
+    }
     state.discussion.activeReplyTarget = {
       commentId,
       targetUserId,
-      targetUsername: targetUsername || 'Member'
+      targetUsername: targetUsername || 'Member',
+      quotedCommentId: commentId,
+      quotedReplyId: quotedReplyId || null,
+      quotedUsername: targetUsername || 'Member',
+      quotedPreview: resolvedPreview
     };
     state.discussion.replyDraft = '';
     state.discussion.replyTags = [];
@@ -8655,6 +8751,75 @@ function bindAppEvents() {
     renderApp();
     setTimeout(() => document.getElementById('inp-discussion-reply')?.focus(), 40);
   };
+
+  // Clickable quoted preview inside replies -> jump to original comment or reply and highlight it
+  document.querySelectorAll('[data-jump-comment]').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const cid = btn.getAttribute('data-jump-comment');
+      const rid = btn.getAttribute('data-jump-reply') || null;
+      if (!cid) return;
+      let targetThreadId = null;
+      if (rid) {
+        const parentComment = state.discussion.comments.find((c) => c.id === cid);
+        const ownerThread = (parentComment?.threads || []).find((th) => (th.replies || []).some((r) => r.id === rid));
+        if (ownerThread) {
+          targetThreadId = ownerThread.id;
+          state.discussion.expandedThreads[ownerThread.id] = true;
+        }
+      }
+      state.discussion.highlightTarget = { commentId: cid, threadId: targetThreadId, replyId: rid };
+      renderApp();
+      setTimeout(() => {
+        const domId = rid ? `discussion-reply-${rid}` : `discussion-comment-${cid}`;
+        document.getElementById(domId)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 60);
+    };
+  });
+
+  // Clickable @mention username badges -> tag or reply directly to that user
+  document.querySelectorAll('[data-mention-click-name]').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const uname = btn.getAttribute('data-mention-click-name') || '';
+      if (!uname) return;
+      if (!state.session) {
+        showToast('Sign in to tag or reply to members');
+        return;
+      }
+      const scope = state.discussion.activeReplyTarget ? 'reply' : 'comment';
+      const uid = btn.getAttribute('data-mention-click-uid') || '';
+      const addMentionToComposer = async () => {
+        let resolvedUser = uid ? { id: uid, username: uname, avatar_key: 'avatar_1' } : null;
+        if (!resolvedUser) {
+          try {
+            const found = await searchMentionableUsers(uname);
+            resolvedUser = (found || []).find((u) => String(u.username || '').toLowerCase() === uname.toLowerCase()) || null;
+          } catch (_) {}
+        }
+        if (resolvedUser?.id) {
+          const listKey = scope === 'reply' ? 'replyTags' : 'commentTags';
+          const cur = state.discussion[listKey] || [];
+          const draft = scope === 'reply' ? state.discussion.replyDraft : state.discussion.draft;
+          const check = validateContentMentions(draft || '', cur.length);
+          if (check.totalMentions < MAX_MENTIONS_PER_CONTENT && !cur.some((t) => t.id === resolvedUser.id)) {
+            state.discussion[listKey] = [...cur, resolvedUser];
+            renderApp();
+          }
+          showToast(`Tagged @${resolvedUser.username}`);
+        } else {
+          const inputId = scope === 'reply' ? 'inp-discussion-reply' : 'inp-discussion-comment';
+          const current = (scope === 'reply' ? state.discussion.replyDraft : state.discussion.draft) || '';
+          const addition = current && !/\s$/.test(current) ? ` @${uname} ` : `@${uname} `;
+          if (scope === 'reply') state.discussion.replyDraft = current + addition;
+          else state.discussion.draft = current + addition;
+          renderApp();
+          setTimeout(() => document.getElementById(inputId)?.focus(), 40);
+        }
+      };
+      addMentionToComposer();
+    };
+  });
 
   // Right-click (Desktop) + Long-press (Phone) on Comment Cards & Reply Items -> Context Reply Menu
   const bindContextTriggers = (el, payloadFactory) => {
@@ -8707,6 +8872,7 @@ function bindAppEvents() {
       threadId: item.getAttribute('data-ctx-reply-tid'),
       userId: item.getAttribute('data-ctx-uid'),
       username: item.getAttribute('data-ctx-name') || 'Member',
+      quotedPreview: item.getAttribute('data-ctx-quoted-preview') || '',
       isOwner: item.getAttribute('data-ctx-owner') === '1'
     }));
   });
@@ -8735,7 +8901,13 @@ function bindAppEvents() {
       if (cm.type === 'comm_note') {
         startReplyToCommunityMember(cm.userId, cm.username, cm.avatarKey);
       } else {
-        openReplyForTarget(cm.commentId, cm.userId, cm.username);
+        openReplyForTarget(
+          cm.commentId,
+          cm.userId,
+          cm.username,
+          cm.type === 'reply' ? cm.replyId : null,
+          cm.quotedPreview || ''
+        );
       }
     };
   }
@@ -8782,7 +8954,9 @@ function bindAppEvents() {
       openReplyForTarget(
         btn.getAttribute('data-start-reply-comment'),
         btn.getAttribute('data-reply-target-uid'),
-        btn.getAttribute('data-reply-target-name') || 'Member'
+        btn.getAttribute('data-reply-target-name') || 'Member',
+        btn.getAttribute('data-reply-quoted-id') || null,
+        btn.getAttribute('data-reply-quoted-preview') || ''
       );
     };
   });
@@ -9118,14 +9292,111 @@ setInterval(async () => {
   }
 }, 4000);
 
-// Gentle background sync every 30 seconds (never interrupts scrolling, open modals, or unsaved drafts)
+// Real-time Supabase Notification Socket + Lightweight Polling Fallback
+const NotificationRealtimeManager = {
+  ws: null,
+  heartbeatId: null,
+  reconnectId: null,
+  connectedUserId: null,
+  refCounter: 1,
+  ensureConnected() {
+    const uid = state.session?.userId;
+    const token = state.session?.accessToken;
+    if (!uid || !token) {
+      this.disconnect();
+      return;
+    }
+    if (this.connectedUserId === uid && this.ws && this.ws.readyState <= 1) return;
+    this.disconnect();
+    const baseUrl = getVaultBaseUrl();
+    const pubKey = getVaultPublicKey();
+    if (!baseUrl.startsWith('http')) return;
+    const wsUrl = `${baseUrl.replace(/^http/, 'ws')}/realtime/v1/websocket?apikey=${encodeURIComponent(pubKey)}&vsn=1.0.0`;
+    try {
+      const ws = new WebSocket(wsUrl);
+      this.ws = ws;
+      this.connectedUserId = uid;
+      ws.onopen = () => {
+        const joinRef = String(this.refCounter++);
+        ws.send(JSON.stringify({
+          topic: 'realtime:public:user_notifications',
+          event: 'phx_join',
+          payload: {
+            config: {
+              broadcast: { self: false },
+              presence: { key: '' },
+              postgres_changes: [
+                { event: 'INSERT', schema: 'public', table: 'user_notifications', filter: `recipient_user_id=eq.${uid}` }
+              ]
+            },
+            access_token: token
+          },
+          ref: joinRef
+        }));
+        ws.send(JSON.stringify({ topic: 'realtime:public:user_notifications', event: 'access_token', payload: { access_token: token }, ref: String(this.refCounter++) }));
+        this.heartbeatId = setInterval(() => {
+          if (ws.readyState === 1) {
+            ws.send(JSON.stringify({ topic: 'phoenix', event: 'heartbeat', payload: {}, ref: String(this.refCounter++) }));
+          }
+        }, 25000);
+      };
+      ws.onmessage = (evt) => {
+        try {
+          const msg = JSON.parse(evt.data);
+          if (msg?.event === 'postgres_changes' && msg?.payload?.data?.type === 'INSERT') {
+            refreshUnreadNotificationCount().then(() => {
+              updateCommunityRedDotsInPlace();
+              if (state.tab === 'notifications' || (state.tab === 'community' && state.communityViewTab === 'tagged')) {
+                loadUserNotifications(true);
+              }
+            });
+            const rec = msg?.payload?.data?.record;
+            if (rec && rec.sender_user_id !== uid) {
+              const preview = formatPlainPreviewWithEmojis(rec.preview_text || '').slice(0, 60);
+              showToast(preview ? `New reply/mention: ${preview}` : 'You have a new reply or @mention!');
+            }
+          }
+        } catch (_) {}
+      };
+      ws.onclose = () => {
+        if (this.heartbeatId) clearInterval(this.heartbeatId);
+        this.heartbeatId = null;
+        if (state.session?.userId === uid) {
+          this.reconnectId = setTimeout(() => this.ensureConnected(), 8000);
+        }
+      };
+      ws.onerror = () => {};
+    } catch (_) {}
+  },
+  disconnect() {
+    if (this.heartbeatId) clearInterval(this.heartbeatId);
+    if (this.reconnectId) clearTimeout(this.reconnectId);
+    this.heartbeatId = null;
+    this.reconnectId = null;
+    this.connectedUserId = null;
+    if (this.ws) {
+      try { this.ws.close(); } catch (_) {}
+      this.ws = null;
+    }
+  }
+};
+
+// Gentle background sync every 30s + fast notification unread check every 15s
 let lastSilentSyncAt = 0;
 function triggerThrottledSilentSync() {
   const now = Date.now();
   if (!state.session || document.hidden || now - lastSilentSyncAt < 15000) return;
   lastSilentSyncAt = now;
+  NotificationRealtimeManager.ensureConnected();
   loadCloudData(true);
 }
+
+setInterval(() => {
+  if (state.session && !document.hidden) {
+    NotificationRealtimeManager.ensureConnected();
+    refreshUnreadNotificationCount().then(() => updateCommunityRedDotsInPlace());
+  }
+}, 15000);
 
 setInterval(() => {
   if (state.session && !document.hidden) {
@@ -9133,6 +9404,10 @@ setInterval(() => {
     loadCloudData(true);
   }
 }, 30000);
+
+if (state.session) {
+  NotificationRealtimeManager.ensureConnected();
+}
 
 window.addEventListener('focus', () => {
   triggerThrottledSilentSync();

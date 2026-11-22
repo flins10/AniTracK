@@ -49,8 +49,91 @@ import kotlinx.coroutines.launch
 private data class DesktopLiveReplyTarget(
     val commentId: String,
     val targetUserId: String,
-    val targetUsername: String
+    val targetUsername: String,
+    val quotedReplyId: String? = null,
+    val quotedUsername: String = targetUsername,
+    val quotedPreview: String = ""
 )
+
+@Composable
+private fun DesktopQuotedReplyPreviewCard(
+    quotedUsername: String,
+    quotedPreview: String,
+    onClick: () -> Unit
+) {
+    val cleanSnippet = remember(quotedPreview) {
+        DesktopEmojiCacheService.formatPreviewSnippet(quotedPreview).ifBlank { "Original message" }
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color(0x14E8C88F))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .width(3.dp)
+                .height(26.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(ChampagneGold)
+        )
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+            Text(
+                text = "@$quotedUsername",
+                color = ChampagneGold,
+                fontSize = 10.5.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = cleanSnippet,
+                color = WarmSilver,
+                fontSize = 11.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun DesktopClickableMentionChipsRow(
+    mentions: List<DesktopMentionOccurrence>,
+    enabled: Boolean,
+    onMentionClick: (String) -> Unit
+) {
+    val uniqueNames = remember(mentions) { mentions.map { it.mentionedUsername }.distinct() }
+    if (uniqueNames.isEmpty()) return
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        uniqueNames.forEach { uname ->
+            Surface(
+                shape = CircleShape,
+                color = ChampagneGold.copy(alpha = 0.14f),
+                border = BorderStroke(1.dp, ChampagneGold.copy(alpha = 0.35f)),
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .then(if (enabled) Modifier.clickable { onMentionClick(uname) } else Modifier)
+            ) {
+                Text(
+                    text = "@$uname",
+                    color = ChampagneGoldSoft,
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                )
+            }
+        }
+    }
+}
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -99,16 +182,66 @@ internal fun DesktopLivTrAkChatSection(
     val chronologicalComments = remember(comments) { comments.asReversed() }
     val draftEmojiIds = remember(draft.text) { DesktopEmojiCacheService.extractEmojiIds(draft.text) }
 
-    fun openReplyFor(comment: DesktopAnimeComment, targetUserId: String, targetUsername: String) {
+    fun openReplyFor(
+        comment: DesktopAnimeComment,
+        targetUserId: String,
+        targetUsername: String,
+        quotedReplyId: String? = null,
+        quotedPreview: String = comment.body
+    ) {
+        val cleanSnippet = DesktopEmojiCacheService.formatPreviewSnippet(quotedPreview)
+            .ifBlank { quotedPreview.trim() }
+            .take(180)
         activeReplyTarget = DesktopLiveReplyTarget(
             commentId = comment.id,
             targetUserId = targetUserId,
-            targetUsername = targetUsername
+            targetUsername = targetUsername,
+            quotedReplyId = quotedReplyId,
+            quotedUsername = targetUsername,
+            quotedPreview = cleanSnippet
         )
         errorMsg = null
         comment.threads.firstOrNull { it.targetUserId == targetUserId }?.let { existing ->
             expandedThreads = expandedThreads + (existing.id to true)
         }
+    }
+
+    fun jumpToQuotedTarget(commentId: String, replyId: String?) {
+        val targetComment = comments.firstOrNull { it.id == commentId }
+        val owningThreadId = if (!replyId.isNullOrBlank()) {
+            targetComment?.threads?.firstOrNull { th -> th.replies.any { it.id == replyId } }?.id
+        } else null
+        if (owningThreadId != null) {
+            expandedThreads = expandedThreads + (owningThreadId to true)
+        }
+        scrolledToHighlightKey = null
+        highlightedTarget = DesktopNotificationJumpTarget(
+            animeId = anime.id,
+            commentId = commentId,
+            threadId = owningThreadId,
+            replyId = replyId
+        )
+    }
+
+    fun appendMentionToDraft(username: String) {
+        if (!isAuthenticated || session.isGuest) return
+        val clean = username.trim().removePrefix("@")
+        if (clean.isBlank()) return
+        val cur = draft.text
+        if (cur.contains("@$clean", ignoreCase = true) ||
+            selectedTags.any { it.username.equals(clean, ignoreCase = true) }
+        ) {
+            return
+        }
+        val check = DesktopDiscussionRules.validateMentions(cur, selectedTags.size)
+        if (check.totalMentions >= DesktopDiscussionRules.MAX_MENTIONS_PER_CONTENT) {
+            onShowToast("Maximum ${DesktopDiscussionRules.MAX_MENTIONS_PER_CONTENT} mentions allowed.", true)
+            return
+        }
+        val needsSpace = cur.isNotEmpty() && !cur.last().isWhitespace()
+        val nextText = cur + (if (needsSpace) " " else "") + "@$clean "
+        draft = TextFieldValue(nextText, TextRange(nextText.length))
+        activeMentionQuery = null
     }
 
     fun loadPage(reset: Boolean) {
@@ -197,7 +330,12 @@ internal fun DesktopLivTrAkChatSection(
                 c.username.equals(target.username, ignoreCase = true)
         }
         if (existingComment != null) {
-            openReplyFor(existingComment, existingComment.userId, existingComment.username)
+            openReplyFor(
+                comment = existingComment,
+                targetUserId = existingComment.userId,
+                targetUsername = existingComment.username,
+                quotedPreview = existingComment.body
+            )
         } else if (target.userId.isNotBlank()) {
             val check = DesktopDiscussionRules.validateMentions(draft.text, selectedTags.size)
             if (check.totalMentions < DesktopDiscussionRules.MAX_MENTIONS_PER_CONTENT &&
@@ -250,7 +388,10 @@ internal fun DesktopLivTrAkChatSection(
                         commentId = replyTarget.commentId,
                         targetUserId = replyTarget.targetUserId,
                         body = clean,
-                        taggedUserIds = tagIds
+                        taggedUserIds = tagIds,
+                        quotedReplyId = replyTarget.quotedReplyId,
+                        quotedUsername = replyTarget.quotedUsername,
+                        quotedPreview = replyTarget.quotedPreview
                     ).onSuccess { (thread, reply, active) ->
                         onSessionUpdated(active)
                         comments = DesktopDiscussionRules.mergeReplyIntoComments(comments, replyTarget.commentId, thread, reply)
@@ -425,74 +566,111 @@ internal fun DesktopLivTrAkChatSection(
                                                     fontSize = 10.sp
                                                 )
                                             }
-                                            Surface(
-                                                shape = bubbleShape,
-                                                color = when {
-                                                    isHighlighted -> ChampagneGold.copy(alpha = 0.24f)
-                                                    isMine -> Color(0x26E8C88F)
-                                                    else -> Color(0x0DFFFFFF)
-                                                },
-                                                border = BorderStroke(
-                                                    1.dp,
-                                                    when {
-                                                        isHighlighted -> ChampagneGold
-                                                        isMine -> Color(0x4DE8C88F)
-                                                        else -> Color(0x14FFFFFF)
-                                                    }
-                                                ),
-                                                modifier = Modifier
-                                                    .clip(bubbleShape)
-                                                    .pointerInput(comment.id, isAuthenticated) {
-                                                        awaitPointerEventScope {
-                                                            while (true) {
-                                                                val ev = awaitPointerEvent()
-                                                                if (ev.type == PointerEventType.Press && ev.buttons.isSecondaryPressed && isAuthenticated && !session.isGuest) {
-                                                                    menuExpanded = true
+                                            val soloCommentEmoji = remember(comment.body, comment.mentions, emojiById, isEditingThis) {
+                                                if (!isEditingThis && comment.mentions.isEmpty()) {
+                                                    DesktopEmojiCacheService.extractSoloEmojiId(comment.body)?.let { emojiById[it] }
+                                                } else null
+                                            }
+                                            if (soloCommentEmoji != null) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .clip(RoundedCornerShape(14.dp))
+                                                        .then(
+                                                            if (isHighlighted) {
+                                                                Modifier
+                                                                    .background(ChampagneGold.copy(alpha = 0.16f))
+                                                                    .border(1.5.dp, ChampagneGold, RoundedCornerShape(14.dp))
+                                                                    .padding(4.dp)
+                                                            } else Modifier
+                                                        )
+                                                        .pointerInput(comment.id, isAuthenticated) {
+                                                            awaitPointerEventScope {
+                                                                while (true) {
+                                                                    val ev = awaitPointerEvent()
+                                                                    if (ev.type == PointerEventType.Press && ev.buttons.isSecondaryPressed && isAuthenticated && !session.isGuest) {
+                                                                        menuExpanded = true
+                                                                    }
                                                                 }
                                                             }
                                                         }
-                                                    }
-                                            ) {
-                                                Column(
-                                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                                                    verticalArrangement = Arrangement.spacedBy(6.dp)
                                                 ) {
-                                                    if (isEditingThis) {
-                                                        OutlinedTextField(
-                                                            value = editingCommentDraft,
-                                                            onValueChange = { editingCommentDraft = it },
-                                                            maxLines = 4,
-                                                            shape = RoundedCornerShape(12.dp),
-                                                            modifier = Modifier.fillMaxWidth()
-                                                        )
-                                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                                            Button(
-                                                                onClick = {
-                                                                    val updated = editingCommentDraft.text.trim()
-                                                                    if (updated.isNotEmpty() && !submitting) {
-                                                                        submitting = true
-                                                                        scope.launch {
-                                                                            DesktopDiscussionService.updateComment(session, comment.id, updated)
-                                                                                .onSuccess { (u, active) ->
-                                                                                    onSessionUpdated(active)
-                                                                                    comments = comments.map { if (it.id == comment.id) it.copy(body = u.body, updatedAt = u.updatedAt, mentions = u.mentions) else it }
-                                                                                    editingCommentId = null
-                                                                                }
-                                                                                .onFailure { onShowToast(it.message ?: "Update failed", true) }
-                                                                            submitting = false
-                                                                        }
-                                                                    }
-                                                                },
-                                                                shape = CircleShape,
-                                                                colors = ButtonDefaults.buttonColors(containerColor = ChampagneGold, contentColor = ChampagneOnGold)
-                                                            ) { Text("Save", fontWeight = FontWeight.Bold) }
-                                                            TextButton(onClick = { editingCommentId = null }) { Text("Cancel", color = WarmSilver) }
+                                                    DesktopCachedEmojiImage(emoji = soloCommentEmoji, size = 84.dp)
+                                                }
+                                            } else {
+                                                Surface(
+                                                    shape = bubbleShape,
+                                                    color = when {
+                                                        isHighlighted -> ChampagneGold.copy(alpha = 0.24f)
+                                                        isMine -> Color(0x26E8C88F)
+                                                        else -> Color(0x0DFFFFFF)
+                                                    },
+                                                    border = BorderStroke(
+                                                        1.dp,
+                                                        when {
+                                                            isHighlighted -> ChampagneGold
+                                                            isMine -> Color(0x4DE8C88F)
+                                                            else -> Color(0x14FFFFFF)
                                                         }
-                                                    } else {
-                                                        DesktopRichChatText(content = comment.body, emojiById = emojiById)
-                                                        if (comment.mentions.isNotEmpty()) {
-                                                            val tagsStr = comment.mentions.map { it.mentionedUsername }.distinct().joinToString("  ") { "@$it" }
-                                                            Text(tagsStr, color = ChampagneGold, fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
+                                                    ),
+                                                    modifier = Modifier
+                                                        .clip(bubbleShape)
+                                                        .pointerInput(comment.id, isAuthenticated) {
+                                                            awaitPointerEventScope {
+                                                                while (true) {
+                                                                    val ev = awaitPointerEvent()
+                                                                    if (ev.type == PointerEventType.Press && ev.buttons.isSecondaryPressed && isAuthenticated && !session.isGuest) {
+                                                                        menuExpanded = true
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                ) {
+                                                    Column(
+                                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                                    ) {
+                                                        if (isEditingThis) {
+                                                            OutlinedTextField(
+                                                                value = editingCommentDraft,
+                                                                onValueChange = { editingCommentDraft = it },
+                                                                maxLines = 4,
+                                                                shape = RoundedCornerShape(12.dp),
+                                                                modifier = Modifier.fillMaxWidth()
+                                                            )
+                                                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                                Button(
+                                                                    onClick = {
+                                                                        val updated = editingCommentDraft.text.trim()
+                                                                        if (updated.isNotEmpty() && !submitting) {
+                                                                            submitting = true
+                                                                            scope.launch {
+                                                                                DesktopDiscussionService.updateComment(session, comment.id, updated)
+                                                                                    .onSuccess { (u, active) ->
+                                                                                        onSessionUpdated(active)
+                                                                                        comments = comments.map { if (it.id == comment.id) it.copy(body = u.body, updatedAt = u.updatedAt, mentions = u.mentions) else it }
+                                                                                        editingCommentId = null
+                                                                                    }
+                                                                                    .onFailure { onShowToast(it.message ?: "Update failed", true) }
+                                                                                submitting = false
+                                                                            }
+                                                                        }
+                                                                    },
+                                                                    shape = CircleShape,
+                                                                    colors = ButtonDefaults.buttonColors(containerColor = ChampagneGold, contentColor = ChampagneOnGold)
+                                                                ) { Text("Save", fontWeight = FontWeight.Bold) }
+                                                                TextButton(onClick = { editingCommentId = null }) { Text("Cancel", color = WarmSilver) }
+                                                            }
+                                                        } else {
+                                                            DesktopRichChatText(
+                                                                content = comment.body,
+                                                                emojiById = emojiById,
+                                                                onMentionClick = if (isAuthenticated && !session.isGuest) ::appendMentionToDraft else null
+                                                            )
+                                                            DesktopClickableMentionChipsRow(
+                                                                mentions = comment.mentions,
+                                                                enabled = isAuthenticated && !session.isGuest,
+                                                                onMentionClick = ::appendMentionToDraft
+                                                            )
                                                         }
                                                     }
                                                 }
@@ -506,7 +684,9 @@ internal fun DesktopLivTrAkChatSection(
                                                         "Reply",
                                                         color = Color(0xFF66667A),
                                                         fontSize = 10.5.sp,
-                                                        modifier = Modifier.clickable { openReplyFor(comment, comment.userId, comment.username) }
+                                                        modifier = Modifier.clickable {
+                                                            openReplyFor(comment, comment.userId, comment.username, quotedPreview = comment.body)
+                                                        }
                                                     )
                                                     if (isMine && !isEditingThis) {
                                                         Text(
@@ -550,7 +730,7 @@ internal fun DesktopLivTrAkChatSection(
                                             leadingIcon = { Icon(Icons.AutoMirrored.Outlined.Reply, contentDescription = null, tint = ChampagneGold, modifier = Modifier.size(16.dp)) },
                                             onClick = {
                                                 menuExpanded = false
-                                                openReplyFor(comment, comment.userId, comment.username)
+                                                openReplyFor(comment, comment.userId, comment.username, quotedPreview = comment.body)
                                             }
                                         )
                                         if (isMine && !isEditingThis) {
@@ -626,19 +806,86 @@ internal fun DesktopLivTrAkChatSection(
                                                             val isReplyMine = session.userId.isNotBlank() && session.userId == reply.userId
                                                             val isReplyHighlighted = highlightedTarget?.replyId == reply.id
                                                             val isEditingThisReply = editingReplyId == reply.id
-                                                            Surface(
-                                                                shape = RoundedCornerShape(10.dp),
-                                                                color = when {
-                                                                    isReplyHighlighted -> ChampagneGold.copy(alpha = 0.22f)
-                                                                    isReplyMine -> Color(0x1FE8C88F)
-                                                                    else -> Color(0xFF14141E)
-                                                                },
-                                                                border = BorderStroke(1.dp, if (isReplyHighlighted) ChampagneGold else Color(0x14FFFFFF)),
-                                                                modifier = Modifier.fillMaxWidth()
-                                                            ) {
+                                                            val soloReplyEmoji = remember(reply.body, reply.mentions, emojiById, isEditingThisReply) {
+                                                                if (!isEditingThisReply && reply.mentions.isEmpty()) {
+                                                                    DesktopEmojiCacheService.extractSoloEmojiId(reply.body)?.let { emojiById[it] }
+                                                                } else null
+                                                            }
+                                                            val qUser = reply.quotedUsername ?: comment.username
+                                                            val qPrev = reply.quotedPreview ?: comment.body
+                                                            val qCommentId = reply.quotedCommentId ?: comment.id
+                                                            val qReplyId = reply.quotedReplyId
+                                                            val replyActionsContent: @Composable () -> Unit = {
+                                                                if (isAuthenticated && !session.isGuest && !isEditingThisReply) {
+                                                                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                                                        Text(
+                                                                            "Reply",
+                                                                            color = Color(0xFF66667A),
+                                                                            fontSize = 10.sp,
+                                                                            modifier = Modifier.clickable {
+                                                                                openReplyFor(
+                                                                                    comment = comment,
+                                                                                    targetUserId = reply.userId,
+                                                                                    targetUsername = reply.username,
+                                                                                    quotedReplyId = reply.id,
+                                                                                    quotedPreview = reply.body
+                                                                                )
+                                                                            }
+                                                                        )
+                                                                        if (isReplyMine) {
+                                                                            Text(
+                                                                                "Edit",
+                                                                                color = Color(0xFF66667A),
+                                                                                fontSize = 10.sp,
+                                                                                modifier = Modifier.clickable {
+                                                                                    editingReplyId = reply.id
+                                                                                    editingReplyDraft = TextFieldValue(reply.body)
+                                                                                }
+                                                                            )
+                                                                            Text(
+                                                                                "Delete",
+                                                                                color = CrimsonWaste.copy(alpha = 0.85f),
+                                                                                fontSize = 10.sp,
+                                                                                modifier = Modifier.clickable {
+                                                                                    scope.launch {
+                                                                                        DesktopDiscussionService.deleteThreadReply(session, reply.id)
+                                                                                            .onSuccess { active ->
+                                                                                                onSessionUpdated(active)
+                                                                                                comments = comments.map { c ->
+                                                                                                    if (c.id != comment.id) c else c.copy(
+                                                                                                        threads = c.threads.mapNotNull { th ->
+                                                                                                            if (th.id != thread.id) th else {
+                                                                                                                val rem = th.replies.filterNot { it.id == reply.id }
+                                                                                                                if (rem.isEmpty()) null else th.copy(replies = rem, replyCount = rem.size)
+                                                                                                            }
+                                                                                                        }
+                                                                                                    )
+                                                                                                }
+                                                                                            }
+                                                                                            .onFailure { onShowToast(it.message ?: "Delete failed", true) }
+                                                                                    }
+                                                                                }
+                                                                            )
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                            if (soloReplyEmoji != null) {
                                                                 Column(
-                                                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-                                                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                                                    modifier = Modifier
+                                                                        .fillMaxWidth()
+                                                                        .clip(RoundedCornerShape(10.dp))
+                                                                        .then(
+                                                                            if (isReplyHighlighted) {
+                                                                                Modifier
+                                                                                    .background(ChampagneGold.copy(alpha = 0.18f))
+                                                                                    .border(1.dp, ChampagneGold, RoundedCornerShape(10.dp))
+                                                                                    .padding(8.dp)
+                                                                            } else {
+                                                                                Modifier.padding(vertical = 2.dp)
+                                                                            }
+                                                                        ),
+                                                                    verticalArrangement = Arrangement.spacedBy(5.dp)
                                                                 ) {
                                                                     Row(
                                                                         verticalAlignment = Alignment.CenterVertically,
@@ -652,91 +899,100 @@ internal fun DesktopLivTrAkChatSection(
                                                                         Text(reply.username, color = ChampagneGoldSoft, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                                                                         Text(DesktopDiscussionRules.formatRelativeTime(reply.createdAt), color = Color(0xFF66667A), fontSize = 9.5.sp)
                                                                     }
-                                                                    if (isEditingThisReply) {
-                                                                        OutlinedTextField(
-                                                                            value = editingReplyDraft,
-                                                                            onValueChange = { editingReplyDraft = it },
-                                                                            maxLines = 3,
-                                                                            modifier = Modifier.fillMaxWidth()
-                                                                        )
-                                                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                                                            Button(
-                                                                                onClick = {
-                                                                                    val upd = editingReplyDraft.text.trim()
-                                                                                    if (upd.isNotEmpty() && !submitting) {
-                                                                                        submitting = true
-                                                                                        scope.launch {
-                                                                                            DesktopDiscussionService.updateThreadReply(session, reply.id, upd)
-                                                                                                .onSuccess { (u, active) ->
-                                                                                                    onSessionUpdated(active)
-                                                                                                    comments = comments.map { c ->
-                                                                                                        if (c.id != comment.id) c else c.copy(
-                                                                                                            threads = c.threads.map { th ->
-                                                                                                                if (th.id != thread.id) th else th.copy(
-                                                                                                                    replies = th.replies.map { r -> if (r.id == reply.id) u else r }
-                                                                                                                )
-                                                                                                            }
-                                                                                                        )
-                                                                                                    }
-                                                                                                    editingReplyId = null
-                                                                                                }
-                                                                                                .onFailure { onShowToast(it.message ?: "Update failed", true) }
-                                                                                            submitting = false
-                                                                                        }
-                                                                                    }
-                                                                                },
-                                                                                shape = CircleShape,
-                                                                                colors = ButtonDefaults.buttonColors(containerColor = ChampagneGold, contentColor = ChampagneOnGold)
-                                                                            ) { Text("Save", fontWeight = FontWeight.Bold) }
-                                                                            TextButton(onClick = { editingReplyId = null }) { Text("Cancel", color = WarmSilver) }
-                                                                        }
-                                                                    } else {
-                                                                        DesktopRichChatText(content = reply.body, emojiById = emojiById, fontSizeSp = 12.5f)
-                                                                    }
-                                                                    if (isAuthenticated && !session.isGuest && !isEditingThisReply) {
-                                                                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                                                            Text(
-                                                                                "Reply",
-                                                                                color = Color(0xFF66667A),
-                                                                                fontSize = 10.sp,
-                                                                                modifier = Modifier.clickable { openReplyFor(comment, reply.userId, reply.username) }
+                                                                    DesktopQuotedReplyPreviewCard(
+                                                                        quotedUsername = qUser,
+                                                                        quotedPreview = qPrev,
+                                                                        onClick = { jumpToQuotedTarget(qCommentId, qReplyId) }
+                                                                    )
+                                                                    DesktopCachedEmojiImage(emoji = soloReplyEmoji, size = 84.dp)
+                                                                    replyActionsContent()
+                                                                }
+                                                            } else {
+                                                                Surface(
+                                                                    shape = RoundedCornerShape(10.dp),
+                                                                    color = when {
+                                                                        isReplyHighlighted -> ChampagneGold.copy(alpha = 0.22f)
+                                                                        isReplyMine -> Color(0x1FE8C88F)
+                                                                        else -> Color(0xFF14141E)
+                                                                    },
+                                                                    border = BorderStroke(1.dp, if (isReplyHighlighted) ChampagneGold else Color(0x14FFFFFF)),
+                                                                    modifier = Modifier.fillMaxWidth()
+                                                                ) {
+                                                                    Column(
+                                                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                                                        verticalArrangement = Arrangement.spacedBy(5.dp)
+                                                                    ) {
+                                                                        Row(
+                                                                            verticalAlignment = Alignment.CenterVertically,
+                                                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                                        ) {
+                                                                            DesktopAvatarImage(
+                                                                                avatarKey = reply.avatarKey,
+                                                                                username = reply.username,
+                                                                                modifier = Modifier.size(18.dp).clip(CircleShape)
                                                                             )
-                                                                            if (isReplyMine) {
-                                                                                Text(
-                                                                                    "Edit",
-                                                                                    color = Color(0xFF66667A),
-                                                                                    fontSize = 10.sp,
-                                                                                    modifier = Modifier.clickable {
-                                                                                        editingReplyId = reply.id
-                                                                                        editingReplyDraft = TextFieldValue(reply.body)
-                                                                                    }
-                                                                                )
-                                                                                Text(
-                                                                                    "Delete",
-                                                                                    color = CrimsonWaste.copy(alpha = 0.85f),
-                                                                                    fontSize = 10.sp,
-                                                                                    modifier = Modifier.clickable {
-                                                                                        scope.launch {
-                                                                                            DesktopDiscussionService.deleteThreadReply(session, reply.id)
-                                                                                                .onSuccess { active ->
-                                                                                                    onSessionUpdated(active)
-                                                                                                    comments = comments.map { c ->
-                                                                                                        if (c.id != comment.id) c else c.copy(
-                                                                                                            threads = c.threads.mapNotNull { th ->
-                                                                                                                if (th.id != thread.id) th else {
-                                                                                                                    val rem = th.replies.filterNot { it.id == reply.id }
-                                                                                                                    if (rem.isEmpty()) null else th.copy(replies = rem, replyCount = rem.size)
-                                                                                                                }
-                                                                                                            }
-                                                                                                        )
-                                                                                                    }
-                                                                                                }
-                                                                                                .onFailure { onShowToast(it.message ?: "Delete failed", true) }
-                                                                                        }
-                                                                                    }
-                                                                                )
-                                                                            }
+                                                                            Text(reply.username, color = ChampagneGoldSoft, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                                                            Text(DesktopDiscussionRules.formatRelativeTime(reply.createdAt), color = Color(0xFF66667A), fontSize = 9.5.sp)
                                                                         }
+                                                                        if (!isEditingThisReply) {
+                                                                            DesktopQuotedReplyPreviewCard(
+                                                                                quotedUsername = qUser,
+                                                                                quotedPreview = qPrev,
+                                                                                onClick = { jumpToQuotedTarget(qCommentId, qReplyId) }
+                                                                            )
+                                                                        }
+                                                                        if (isEditingThisReply) {
+                                                                            OutlinedTextField(
+                                                                                value = editingReplyDraft,
+                                                                                onValueChange = { editingReplyDraft = it },
+                                                                                maxLines = 3,
+                                                                                modifier = Modifier.fillMaxWidth()
+                                                                            )
+                                                                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                                                Button(
+                                                                                    onClick = {
+                                                                                        val upd = editingReplyDraft.text.trim()
+                                                                                        if (upd.isNotEmpty() && !submitting) {
+                                                                                            submitting = true
+                                                                                            scope.launch {
+                                                                                                DesktopDiscussionService.updateThreadReply(session, reply.id, upd)
+                                                                                                    .onSuccess { (u, active) ->
+                                                                                                        onSessionUpdated(active)
+                                                                                                        comments = comments.map { c ->
+                                                                                                            if (c.id != comment.id) c else c.copy(
+                                                                                                                threads = c.threads.map { th ->
+                                                                                                                    if (th.id != thread.id) th else th.copy(
+                                                                                                                        replies = th.replies.map { r -> if (r.id == reply.id) u else r }
+                                                                                                                    )
+                                                                                                                }
+                                                                                                            )
+                                                                                                        }
+                                                                                                        editingReplyId = null
+                                                                                                    }
+                                                                                                    .onFailure { onShowToast(it.message ?: "Update failed", true) }
+                                                                                                submitting = false
+                                                                                            }
+                                                                                        }
+                                                                                    },
+                                                                                    shape = CircleShape,
+                                                                                    colors = ButtonDefaults.buttonColors(containerColor = ChampagneGold, contentColor = ChampagneOnGold)
+                                                                                ) { Text("Save", fontWeight = FontWeight.Bold) }
+                                                                                TextButton(onClick = { editingReplyId = null }) { Text("Cancel", color = WarmSilver) }
+                                                                            }
+                                                                        } else {
+                                                                            DesktopRichChatText(
+                                                                                content = reply.body,
+                                                                                emojiById = emojiById,
+                                                                                fontSizeSp = 12.5f,
+                                                                                onMentionClick = if (isAuthenticated && !session.isGuest) ::appendMentionToDraft else null
+                                                                            )
+                                                                            DesktopClickableMentionChipsRow(
+                                                                                mentions = reply.mentions,
+                                                                                enabled = isAuthenticated && !session.isGuest,
+                                                                                onMentionClick = ::appendMentionToDraft
+                                                                            )
+                                                                        }
+                                                                        replyActionsContent()
                                                                     }
                                                                 }
                                                             }
@@ -747,7 +1003,16 @@ internal fun DesktopLivTrAkChatSection(
                                                                 color = ChampagneGold,
                                                                 fontSize = 11.sp,
                                                                 fontWeight = FontWeight.SemiBold,
-                                                                modifier = Modifier.clickable { openReplyFor(comment, thread.targetUserId, thread.targetUsername) }
+                                                                modifier = Modifier.clickable {
+                                                                    val lastReply = thread.replies.lastOrNull()
+                                                                    openReplyFor(
+                                                                        comment = comment,
+                                                                        targetUserId = thread.targetUserId,
+                                                                        targetUsername = thread.targetUsername,
+                                                                        quotedReplyId = lastReply?.id,
+                                                                        quotedPreview = lastReply?.body ?: comment.body
+                                                                    )
+                                                                }
                                                             )
                                                         }
                                                     }
@@ -811,11 +1076,36 @@ internal fun DesktopLivTrAkChatSection(
                         modifier = Modifier
                             .fillMaxWidth()
                             .background(ChampagneGold.copy(alpha = 0.08f))
-                            .padding(horizontal = 14.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                            .padding(horizontal = 14.dp, vertical = 7.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Replying to @${rTarget.targetUsername}", color = ChampagneGoldSoft, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold)
+                        Box(
+                            modifier = Modifier
+                                .width(3.dp)
+                                .height(30.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(ChampagneGold)
+                        )
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                            Text(
+                                "Replying to @${rTarget.quotedUsername}",
+                                color = ChampagneGoldSoft,
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            if (rTarget.quotedPreview.isNotBlank()) {
+                                Text(
+                                    rTarget.quotedPreview,
+                                    color = WarmSilver,
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
                         Icon(
                             imageVector = Icons.Outlined.Close,
                             contentDescription = "Cancel reply",

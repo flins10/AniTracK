@@ -2871,13 +2871,19 @@ fun AnimeUniverseDesktopRoot() {
         }
     }
 
-    // Initial cloud sync + automatic 15-second background sync loop
+    // Initial cloud sync + automatic 15-second background sync & notification polling loop
     LaunchedEffect(isAuthenticated, isGuestMode, sessionState.userId, sessionState.guestId) {
         if (isAuthenticated || isGuestMode) {
             syncWithCloud()
+            if (isAuthenticated && !sessionState.isGuest) {
+                refreshUnseenDiscussionAnime()
+            }
             while (isActive) {
                 delay(15_000L)
                 syncWithCloud()
+                if (isAuthenticated && !sessionState.isGuest) {
+                    refreshUnseenDiscussionAnime()
+                }
             }
         }
     }

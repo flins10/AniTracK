@@ -9,6 +9,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -28,12 +29,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toComposeImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -53,10 +57,21 @@ import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.jetbrains.skia.Bitmap as SkiaBitmap
+import org.jetbrains.skia.Canvas as SkiaCanvas
+import org.jetbrains.skia.Codec as SkiaCodec
+import org.jetbrains.skia.Data as SkiaData
 import org.jetbrains.skia.Image as SkiaImage
 import java.io.File
 import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
+
+data class DesktopAnimatedEmoji(
+    val frames: List<ImageBitmap>,
+    val durationsMs: List<Long>
+) {
+    val firstFrame: ImageBitmap get() = frames.first()
+}
 
 data class DesktopCommunityEmoji(
     val id: String,
@@ -74,6 +89,7 @@ internal object DesktopEmojiCacheService {
     private val SUPPORTED_BUCKETS = listOf("community_emojis", "community-emojis")
     private val jsonMedia = "application/json".toMediaType()
     val EMOJI_TOKEN_REGEX = Regex("""\[emoji:([a-zA-Z0-9_-]{1,64})]""")
+    val SOLO_EMOJI_REGEX = Regex("""^\s*\[emoji:([a-zA-Z0-9_-]{1,64})]\s*$""")
 
     private val cacheRoot = File(System.getProperty("user.home"), ".anime_universe")
     private val metaFile = File(cacheRoot, "emoji_meta_v1.json")
@@ -89,12 +105,17 @@ internal object DesktopEmojiCacheService {
     @Volatile
     private var memoryLoadedAt: Long = 0L
 
-    private val bitmapCache = ConcurrentHashMap<String, ImageBitmap>()
-    private val inflightDownloads = ConcurrentHashMap<String, Deferred<ImageBitmap?>>()
+    private val animCache = ConcurrentHashMap<String, DesktopAnimatedEmoji>()
+    private val inflightDownloads = ConcurrentHashMap<String, Deferred<DesktopAnimatedEmoji?>>()
 
     fun extractEmojiIds(text: String): List<String> {
         if (text.isBlank()) return emptyList()
         return EMOJI_TOKEN_REGEX.findAll(text).map { it.groupValues[1] }.toList()
+    }
+
+    fun extractSoloEmojiId(text: String): String? {
+        if (text.isBlank()) return null
+        return SOLO_EMOJI_REGEX.matchEntire(text)?.groupValues?.getOrNull(1)
     }
 
     fun formatPreviewSnippet(text: String): String {
@@ -102,7 +123,8 @@ internal object DesktopEmojiCacheService {
         return EMOJI_TOKEN_REGEX.replace(text, "✨").trim()
     }
 
-    fun getCachedBitmap(emojiId: String): ImageBitmap? = bitmapCache[emojiId]
+    fun getCachedAnimation(emojiId: String): DesktopAnimatedEmoji? = animCache[emojiId]
+    fun getCachedBitmap(emojiId: String): ImageBitmap? = animCache[emojiId]?.firstFrame
 
     fun readCachedMetaSync(): List<DesktopCommunityEmoji> {
         if (memoryList.isNotEmpty()) return applyUsageScores(memoryList)
@@ -161,8 +183,11 @@ internal object DesktopEmojiCacheService {
         }
     }
 
-    suspend fun loadEmojiBitmap(emoji: DesktopCommunityEmoji): ImageBitmap? {
-        bitmapCache[emoji.id]?.let { return it }
+    suspend fun loadEmojiBitmap(emoji: DesktopCommunityEmoji): ImageBitmap? =
+        loadEmojiAnimation(emoji)?.firstFrame
+
+    suspend fun loadEmojiAnimation(emoji: DesktopCommunityEmoji): DesktopAnimatedEmoji? {
+        animCache[emoji.id]?.let { return it }
         val existing = inflightDownloads[emoji.id]
         if (existing != null) return existing.await()
 
@@ -189,9 +214,9 @@ internal object DesktopEmojiCacheService {
                     }
                 } ?: return@runCatching null
 
-                val bmp = SkiaImage.makeFromEncoded(bytes).toComposeImageBitmap()
-                bitmapCache[emoji.id] = bmp
-                bmp
+                val anim = decodeAnimatedOrStatic(bytes) ?: return@runCatching null
+                animCache[emoji.id] = anim
+                anim
             }.getOrNull()
         }
 
@@ -202,6 +227,52 @@ internal object DesktopEmojiCacheService {
         } finally {
             if (prev == null) inflightDownloads.remove(emoji.id, deferred)
         }
+    }
+
+    private fun decodeAnimatedOrStatic(bytes: ByteArray): DesktopAnimatedEmoji? {
+        val codecAnim = runCatching {
+            val data = SkiaData.makeFromBytes(bytes)
+            val codec = SkiaCodec.makeFromData(data)
+            try {
+                val frameCount = codec.frameCount
+                if (frameCount > 1) {
+                    val frameInfos = runCatching { codec.framesInfo }.getOrNull()
+                    val info = codec.imageInfo
+                    val limit = frameCount.coerceAtMost(120)
+                    val frames = ArrayList<ImageBitmap>(limit)
+                    val durations = ArrayList<Long>(limit)
+                    val prevSkiaImages = ArrayList<SkiaImage>(limit)
+                    for (i in 0 until limit) {
+                        val bmp = SkiaBitmap()
+                        bmp.allocPixels(info)
+                        val reqFrame = frameInfos?.getOrNull(i)?.requiredFrame ?: -1
+                        if (reqFrame in 0 until prevSkiaImages.size) {
+                            SkiaCanvas(bmp).use { canvas ->
+                                canvas.drawImage(prevSkiaImages[reqFrame], 0f, 0f)
+                            }
+                            codec.readPixels(bmp, i, reqFrame)
+                        } else {
+                            codec.readPixels(bmp, i)
+                        }
+                        val snap = SkiaImage.makeFromBitmap(bmp)
+                        prevSkiaImages.add(snap)
+                        frames.add(snap.toComposeImageBitmap())
+                        bmp.close()
+                        val dur = frameInfos?.getOrNull(i)?.duration?.toLong() ?: 80L
+                        durations.add(if (dur < 20L) 80L else dur)
+                    }
+                    if (frames.isNotEmpty()) return@runCatching DesktopAnimatedEmoji(frames, durations)
+                }
+                null
+            } finally {
+                codec.close()
+                data.close()
+            }
+        }.getOrNull()
+        if (codecAnim != null) return codecAnim
+
+        val single = runCatching { SkiaImage.makeFromEncoded(bytes).toComposeImageBitmap() }.getOrNull() ?: return null
+        return DesktopAnimatedEmoji(frames = listOf(single), durationsMs = listOf(100L))
     }
 
     suspend fun recordUsage(session: DesktopPersistedState?, emojiIds: List<String>): List<DesktopCommunityEmoji> =
@@ -255,8 +326,12 @@ internal object DesktopEmojiCacheService {
         return runCatching {
             httpClient.newCall(req).execute().use { resp ->
                 val raw = resp.body?.string().orEmpty().trim()
-                if (!resp.isSuccessful || !raw.startsWith("[")) return@use null
-                val arr = JsonParser.parseString(raw).asJsonArray
+                if (!resp.isSuccessful) return@use null
+                val arr = when {
+                    raw.startsWith("[") -> JsonParser.parseString(raw).asJsonArray
+                    raw.startsWith("{") -> JsonParser.parseString(raw).asJsonObject.getAsJsonArray("emojis")
+                    else -> null
+                } ?: return@use null
                 if (arr.size() == 0) return@use null
                 val byId = LinkedHashMap<String, DesktopCommunityEmoji>()
                 arr.forEach { el ->
@@ -397,24 +472,37 @@ internal fun DesktopCachedEmojiImage(
     size: Dp,
     modifier: Modifier = Modifier
 ) {
-    var bitmap by remember(emoji.id) { mutableStateOf(DesktopEmojiCacheService.getCachedBitmap(emoji.id)) }
+    var anim by remember(emoji.id) { mutableStateOf(DesktopEmojiCacheService.getCachedAnimation(emoji.id)) }
     var failed by remember(emoji.id) { mutableStateOf(false) }
+    var frameIndex by remember(emoji.id) { mutableStateOf(0) }
 
     LaunchedEffect(emoji.id, emoji.url) {
-        if (bitmap == null) {
-            val loaded = DesktopEmojiCacheService.loadEmojiBitmap(emoji)
+        if (anim == null) {
+            val loaded = DesktopEmojiCacheService.loadEmojiAnimation(emoji)
             if (loaded != null) {
-                bitmap = loaded
+                anim = loaded
             } else {
                 failed = true
             }
         }
     }
 
-    val currentBmp = bitmap
-    if (currentBmp != null) {
+    val currentAnim = anim
+    LaunchedEffect(currentAnim) {
+        if (currentAnim != null && currentAnim.frames.size > 1) {
+            frameIndex = 0
+            while (true) {
+                val delayMs = currentAnim.durationsMs.getOrElse(frameIndex) { 80L }.coerceAtLeast(20L)
+                kotlinx.coroutines.delay(delayMs)
+                frameIndex = (frameIndex + 1) % currentAnim.frames.size
+            }
+        }
+    }
+
+    if (currentAnim != null && currentAnim.frames.isNotEmpty()) {
+        val safeIdx = frameIndex.coerceIn(0, currentAnim.frames.lastIndex)
         Image(
-            bitmap = currentBmp,
+            bitmap = currentAnim.frames[safeIdx],
             contentDescription = emoji.id,
             contentScale = ContentScale.Crop,
             modifier = modifier.size(size).clip(CircleShape)
@@ -448,7 +536,8 @@ internal fun DesktopRichChatText(
     emojiById: Map<String, DesktopCommunityEmoji>,
     mentionColor: Color = ChampagneGold,
     textColor: Color = IvoryText,
-    fontSizeSp: Float = 13.5f
+    fontSizeSp: Float = 13.5f,
+    onMentionClick: ((String) -> Unit)? = null
 ) {
     val combinedRegex = remember { Regex("""\[emoji:([a-zA-Z0-9_-]{1,64})]|(@[A-Za-z0-9_.-]{2,32})""") }
     val inlineMap = remember(content, emojiById) {
@@ -466,7 +555,7 @@ internal fun DesktopRichChatText(
         map
     }
 
-    val annotated = remember(content, emojiById, mentionColor, textColor) {
+    val annotated = remember(content, emojiById, mentionColor, textColor, onMentionClick) {
         buildAnnotatedString {
             var cursor = 0
             combinedRegex.findAll(content).forEach { match ->
@@ -487,9 +576,18 @@ internal fun DesktopRichChatText(
                         }
                     }
                     mention != null -> {
-                        withStyle(SpanStyle(color = mentionColor, fontWeight = FontWeight.SemiBold)) {
+                        val cleanHandle = mention.removePrefix("@")
+                        pushStringAnnotation(tag = "MENTION", annotation = cleanHandle)
+                        withStyle(
+                            SpanStyle(
+                                color = mentionColor,
+                                fontWeight = FontWeight.SemiBold,
+                                textDecoration = if (onMentionClick != null) TextDecoration.Underline else TextDecoration.None
+                            )
+                        ) {
                             append(mention)
                         }
+                        pop()
                     }
                 }
                 cursor = match.range.last + 1
@@ -502,11 +600,28 @@ internal fun DesktopRichChatText(
         }
     }
 
+    var textLayout by remember(annotated) { mutableStateOf<TextLayoutResult?>(null) }
+    val tapModifier = if (onMentionClick != null) {
+        Modifier.pointerInput(annotated, onMentionClick) {
+            detectTapGestures { offset ->
+                val layout = textLayout ?: return@detectTapGestures
+                val pos = layout.getOffsetForPosition(offset)
+                annotated.getStringAnnotations(tag = "MENTION", start = pos, end = pos)
+                    .firstOrNull()
+                    ?.let { ann -> onMentionClick(ann.item) }
+            }
+        }
+    } else {
+        Modifier
+    }
+
     Text(
         text = annotated,
         inlineContent = inlineMap,
         fontSize = fontSizeSp.sp,
-        lineHeight = (fontSizeSp + 6f).sp
+        lineHeight = (fontSizeSp + 6f).sp,
+        onTextLayout = { textLayout = it },
+        modifier = tapModifier
     )
 }
 

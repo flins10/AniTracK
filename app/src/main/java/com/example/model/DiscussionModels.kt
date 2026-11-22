@@ -22,6 +22,10 @@ data class CommentReplyItem(
     val avatarKey: String = BuiltInAvatar.AVATAR_1.key,
     val avatarUrl: String? = null,
     val content: String,
+    val quotedCommentId: String? = null,
+    val quotedReplyId: String? = null,
+    val quotedUsername: String? = null,
+    val quotedPreview: String? = null,
     val createdAt: String,
     val updatedAt: String,
     val mentions: List<ContentMention> = emptyList()

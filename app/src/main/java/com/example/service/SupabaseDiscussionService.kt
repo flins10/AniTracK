@@ -210,7 +210,10 @@ class SupabaseDiscussionService {
         commentId: String,
         targetUserId: String,
         content: String,
-        taggedUserIds: List<String> = emptyList()
+        taggedUserIds: List<String> = emptyList(),
+        quotedReplyId: String? = null,
+        quotedUsername: String? = null,
+        quotedPreview: String? = null
     ): Result<ThreadReplyCreationResult> = withContext(Dispatchers.IO) {
         if (!AppConfig.isSupabaseConfigured) {
             return@withContext Result.failure(Exception("Cloud discussion service is not configured."))
@@ -221,6 +224,9 @@ class SupabaseDiscussionService {
                 .put("p_target_user_id", targetUserId)
                 .put("p_content", content.trim())
                 .put("p_tagged_user_ids", JSONArray(taggedUserIds))
+                .put("p_quoted_reply_id", quotedReplyId?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
+                .put("p_quoted_username", quotedUsername?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
+                .put("p_quoted_preview", quotedPreview?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
             client.newCall(rpcRequest("create_thread_reply", session.accessToken, payload)).execute().use { resp ->
                 val body = resp.body?.string().orEmpty().trim()
                 if (!resp.isSuccessful) {
@@ -517,6 +523,10 @@ class SupabaseDiscussionService {
             avatarKey = obj.optString("avatar_key", "avatar_1").ifBlank { "avatar_1" },
             avatarUrl = obj.optString("avatar_url").takeIf { it.isNotBlank() && it != "null" },
             content = obj.optString("content", ""),
+            quotedCommentId = obj.optString("quoted_comment_id").takeIf { it.isNotBlank() && it != "null" },
+            quotedReplyId = obj.optString("quoted_reply_id").takeIf { it.isNotBlank() && it != "null" },
+            quotedUsername = obj.optString("quoted_username").takeIf { it.isNotBlank() && it != "null" },
+            quotedPreview = obj.optString("quoted_preview").takeIf { it.isNotBlank() && it != "null" },
             createdAt = obj.optString("created_at", ""),
             updatedAt = obj.optString("updated_at", ""),
             mentions = parseMentions(obj.optJSONArray("mentions"))

@@ -193,8 +193,12 @@ class CommunityEmojiCacheService(private val context: Context) {
         return runCatching {
             client.newCall(req).execute().use { resp ->
                 val body = resp.body?.string().orEmpty().trim()
-                if (!resp.isSuccessful || !body.startsWith("[")) return@use null
-                val arr = JSONArray(body)
+                if (!resp.isSuccessful) return@use null
+                val arr = when {
+                    body.startsWith("[") -> JSONArray(body)
+                    body.startsWith("{") -> JSONObject(body).optJSONArray("emojis")
+                    else -> null
+                } ?: return@use null
                 if (arr.length() == 0) return@use null
                 val byId = LinkedHashMap<String, CommunityEmoji>()
                 for (i in 0 until arr.length()) {

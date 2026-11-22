@@ -294,6 +294,7 @@ dependencies {
   implementation(libs.androidx.room.ktx)
   implementation(libs.androidx.room.runtime)
   implementation(libs.coil.compose)
+  implementation(libs.coil.gif)
   implementation(libs.converter.gson)
   implementation(libs.converter.moshi)
   implementation(libs.kotlinx.coroutines.android)
