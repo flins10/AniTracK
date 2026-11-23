@@ -138,7 +138,14 @@ fun MyListScreen(
             val matchesStatus = selectedStatus == null || anime.watchStatusEnum == selectedStatus
             val matchesSentiment = selectedSentiment == null || SentimentCategory.fromScore100(anime.userScore) == selectedSentiment
             val title = anime.getResolvedTitle(preferences.titleLanguage)
-            val matchesQuery = filterText.isBlank() || title.contains(filterText, ignoreCase = true)
+            val matchesQuery = filterText.isBlank() || com.example.util.EnglishTitleMapper.matchesAllKeywords(
+                filterText,
+                title,
+                anime.titleEnglish,
+                anime.titleRomaji,
+                anime.titlePinyin,
+                anime.genres
+            )
             matchesStatus && matchesSentiment && matchesQuery
         }.let { list ->
             when (sortMode) {

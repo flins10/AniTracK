@@ -1606,8 +1606,21 @@ fun QuickSearchBottomSheet(
     val matches = remember(combinedPool, query, titlePreference) {
         if (query.isBlank()) combinedPool.take(10)
         else combinedPool.filter {
-            it.getResolvedTitle(titlePreference).contains(query, ignoreCase = true) ||
-                it.genres.contains(query, ignoreCase = true)
+            com.example.util.EnglishTitleMapper.matchesAllKeywords(
+                query,
+                it.getResolvedTitle(titlePreference),
+                it.titleEnglish,
+                it.titleRomaji,
+                it.titlePinyin,
+                it.genres
+            )
+        }.sortedByDescending {
+            com.example.util.EnglishTitleMapper.scoreKeywordMatch(
+                rawQuery = query,
+                resolvedEnglish = it.getResolvedTitle(titlePreference),
+                officialEnglish = it.titleEnglish,
+                romaji = it.titleRomaji ?: it.titlePinyin
+            )
         }.take(16)
     }
 

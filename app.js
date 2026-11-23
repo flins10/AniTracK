@@ -957,11 +957,612 @@ async function resolveLoginIdentifier(identifier) {
   return text;
 }
 
+// ============================================================================
+// ENGLISH & ALTERNATE ENGLISH TITLE MAPPER (DONGHUA + ANIME) & KEYWORD SEARCH
+// ============================================================================
+
+const TITLE_DICTIONARY_ENTRIES = [
+  // Chinese Donghua (Pinyin -> Official & Alternate English Titles)
+  ['Wanmei Shijie', 'Perfect World', ['Perfect World Donghua'], true],
+  ['Xian Ni', 'Renegade Immortal', ['Immortal Renegade', 'Wang Lin'], true],
+  ['Tunshi Xingkong', 'Swallowed Star', ['Swallow the Starry Sky', 'Devouring the Starry Sky'], true],
+  ['Douluo Dalu 2: Jueshi Tangmen', 'Soul Land 2: The Peerless Tang Clan', ['Unrivaled Tang Sect', 'Soul Land II'], true],
+  ['Douluo Dalu II', 'Soul Land 2: The Peerless Tang Clan', ['Soul Land 2', 'Peerless Tang Clan'], true],
+  ['Douluo Dalu', 'Soul Land', ['Combat Continent', 'Douluo Continent'], true],
+  ['Dou Po Cang Qiong', 'Battle Through the Heavens', ['Fights Break Sphere', 'Fight Break Sphere', 'BTTH'], true],
+  ['Doupo Cangqiong', 'Battle Through the Heavens', ['Fights Break Sphere', 'BTTH'], true],
+  ['Fan Ren Xiu Xian Chuan', "A Record of a Mortal's Journey to Immortality", ["Mortal's Journey to Immortality", "Record of a Mortal's Journey to Immortality", 'RMJI'], true],
+  ['Fanren Xiuxian Zhuan', "A Record of a Mortal's Journey to Immortality", ["Mortal's Journey to Immortality"], true],
+  ['Zhe Tian', 'Shrouding the Heavens', ['Shroud the Heavens', 'Covering the Sky'], true],
+  ['Shen Yin Wang Zuo', 'Throne of Seal', ['Sealed Divine Throne', 'Divine Throne'], true],
+  ['Shenyin Wangzuo', 'Throne of Seal', ['Sealed Divine Throne'], true],
+  ['Mu Shen Ji', 'Tales of Herding Gods', ['Herding Gods', 'Record of Herding Gods'], true],
+  ['Jian Lai', 'Sword of Coming', ['Sword Come', 'Unsheathed'], true],
+  ['Gui Mi Zhi Zhu', 'Lord of the Mysteries', ['Lord of Mysteries', 'LOTM'], true],
+  ['Guimi Zhi Zhu', 'Lord of the Mysteries', ['Lord of Mysteries'], true],
+  ['Shi Xiong A Shi Xiong', 'Big Brother', ['My Senior Brother Is Too Steady', 'Senior Brother Is Too Steady'], true],
+  ['Cang Yuan Tu', 'The Demon Hunter', ['Archean Eon Art'], true],
+  ['Bai Lian Cheng Shen', 'Apotheosis', ['Elevation to the Status of a God', 'Refining into a God'], true],
+  ['Wu Shen Zhu Zai', 'Martial Master', ['Dominant Martial God', 'God of Martial Arts'], true],
+  ['Lian Qi Shi Wan Nian', 'One Hundred Thousand Years of Qi Refining', ['100,000 Years of Qi Refining', '100000 Years of Qi Refining'], true],
+  ['Zhu Xian', 'Jade Dynasty', ['Legend of Chusen'], true],
+  ['Da Zhu Zai', 'The Great Ruler', ['Great Ruler'], true],
+  ['Ni Tian Xie Shen', 'Against the Gods', ['Against the Sky Supreme'], true],
+  ['Ni Tian Zhizun', 'Against the Sky Supreme', ['Against the Gods', 'Supreme Against the Sky'], true],
+  ['Shiguang Dailiren', 'Link Click', ['Time Agent', 'Time Agents'], true],
+  ['Tian Guan Ci Fu', "Heaven Official's Blessing", ['Heaven Official Blessing', 'TGCF'], true],
+  ['Mo Dao Zu Shi', 'The Founder of Diabolism', ['Grandmaster of Demonic Cultivation', 'The Grandmaster of Demonic Cultivation', 'MDZS'], true],
+  ['Yi Nian Yong Heng', 'A Will Eternal', ['One Thought Eternity', 'Will Eternal'], true],
+  ['Wu Dong Qian Kun', 'Martial Universe', ['Martial Movement Upheaval'], true],
+  ['Xing Chen Bian', 'Stellar Transformations', ['Stellar Transformation', 'Legend of Immortals'], true],
+  ['Yao Shen Ji', 'Tales of Demons and Gods', ['Demons and Gods'], true],
+  ['Xian Wang de Richang Shenghuo', 'The Daily Life of the Immortal King', ['Daily Life of the Immortal King', 'Immortal King'], true],
+  ['Quan Zhi Gao Shou', "The King's Avatar", ["King's Avatar", 'Full-Time Expert'], true],
+  ['Quanzhi Gaoshou', "The King's Avatar", ["King's Avatar"], true],
+  ['Quanzhi Fashi', 'Full-Time Magister', ['Versatile Mage'], true],
+  ['Quan Zhi Fa Shi', 'Full-Time Magister', ['Versatile Mage'], true],
+  ['Cike Wu Liuqi', 'Scissor Seven', ['Killer Seven'], true],
+  ['Wu Liuqi', 'Scissor Seven', ['Killer Seven'], true],
+  ['Wu Shan Wu Xing', 'Fog Hill of Five Elements', ['Fog Hill of the Five Elements'], true],
+  ['Zhan Shen', 'Slay the Gods', ['I Learned to Slay Gods in a Mental Hospital', 'God Slayer'], true],
+  ['Huo Feng Liao Yuan', 'The Ravages of Time', ['Ravages of Time'], true],
+  ['Juan Siliang', 'The Island of Siliang', ['Island of Siliang'], true],
+  ['Si Liang Dao', 'The Island of Siliang', ['Island of Siliang'], true],
+  ['Xian Wu Chuan', 'Legend of Xianwu', ['Legend of Martial Immortal', 'Xianwu Emperor'], true],
+  ['Xian Wu Di Zun', 'Legend of Xianwu', ['Xianwu Emperor', 'Immortal Martial Emperor'], true],
+  ['Yuan Zun', 'Dragon Prince Yuan', ['Dragon Prince Yuan'], true],
+  ['Sheng Xu', 'The Sacred Ruins', ['Sacred Ruins'], true],
+  ['Hua Jianghu: Bu Liang Ren', 'A Portrait of Jianghu: The Degenerate', ['The Degenerate Drawing Jianghu', 'The Degenerate'], true],
+  ['Bu Liang Ren', 'The Degenerate: Drawing Jianghu', ['The Degenerate', 'Bad Guys'], true],
+  ['Da Wang Rao Ming', 'Spare Me, Great Lord!', ['Spare Me Great Lord'], true],
+  ['Yi Ren Zhi Xia', 'The Outcast', ['Hitori no Shita: The Outcast', 'Under One Person'], true],
+  ['Zhen Hun Jie', 'Rakshasa Street', ['Requiem Street'], true],
+  ['Ling Long: Incarnation', 'Ling Cage: Incarnation', ['Spirit Cage: Incarnation', 'Ling Cage'], true],
+  ['Ling Long', 'Ling Cage: Incarnation', ['Spirit Cage'], true],
+  ['Wan Jie Duzun', 'Ten Thousand Worlds', ['Lord of Ten Thousand Worlds'], true],
+  ['Wan Jie Xian Zong', 'Wonderland of Ten Thousand Deities', ['Wonderland'], true],
+  ['Wan Jie Fa Shen', 'God of All Realms', ['Law God of Ten Thousand Worlds'], true],
+  ['Wan Jie Shen Zhu', 'Lord of the Universe', ['God of Ten Thousand Worlds'], true],
+  ['Ling Jian Zun', 'Spirit Sword Sovereign', ['Sword Spirit Sovereign'], true],
+  ['Du Bu Xiao Yao', 'One Step Toward Freedom', ['Step to Freedom'], true],
+  ['Shen Wu Tian Zun', 'Supreme Martial God', ['Legend of the Supreme Soldier'], true],
+  ['Dan Dao Zhi Zun', 'Alchemy Supreme', ['Supreme Alchemist'], true],
+  ['Jue Shi Wu Hun', 'Peerless Battle Spirit', ['Peerless Martial Spirit'], true],
+  ['Jue Shi Wu Shen', 'Peerless Martial God', ['Peerless Martial God'], true],
+  ['Shen Mu', 'Tomb of Fallen Gods', ['Divine Tomb'], true],
+  ['Long She Yan Yi', "Dragon's Disciple", ['Dragon Snake Evolution'], true],
+  ['Chao Neng Lifang', 'Super Cube', ['Super Cube Donghua'], true],
+  ['Tu Bian Yingxiong X', 'To Be Hero X', ['To Be Hero X'], true],
+  ['Tu Bian Yingxiong', 'To Be Hero', ['To Be Hero'], true],
+  ['Shi Kun', 'All Devouring Whale: Homecoming', ['All Devouring Whale'], true],
+  ['Kun Tun Tianxia', 'All Devouring Whale: Homecoming', ['All Devouring Whale'], true],
+  ['Tian Xing Jiu Ge', 'Nine Songs of the Moving Heavens', ['Nine Songs'], true],
+  ['Qin Shi Ming Yue', 'The Legend of Qin', ["Qin's Moon"], true],
+  ['Wu Geng Ji', 'The Legend and the Hero', ["Chronicles of the God's Order"], true],
+  ['Xi Xing Ji', 'The Westward', ['Journey to the Westward'], true],
+  ['Shao Nian Ge Xing', 'Great Journey of Teenagers', ['The Blood of Youth', 'Youths and Golden Coffin'], true],
+  ['Shao Nian Bai Ma Zui Chun Feng', "Young Brewmaster's Adventure", ['Dashing Youth'], true],
+  ['An He Chuan', 'Tales of Dark River', ['Blood River'], true],
+  ['Cang Lan Jue', 'Love Between Fairy and Devil', ['Love Between Fairy and Devil'], true],
+  ['Cang Lan Zhi Jue', 'Love Between Fairy and Devil', ['Love Between Fairy and Devil'], true],
+  ['Shan He Jian Xin', 'Thousand Autumns', ['Thousand Autumns'], true],
+  ['Chuan Shu Zijiu Zhinan', 'Scumbag System', ["The Scum Villain's Self-Saving System"], true],
+  ['Tian Bao Fuyao Lu', 'Legend of Exorcism', ['Legend of Exorcism'], true],
+  ['Dinghai Fusheng Lu', 'Dinghai Fusheng Records', ['Epic of Divinity Light'], true],
+  ['Liang Bu Yi', 'No Doubt in Us', ['No Doubt in Us'], true],
+  ['You Shou Yan', 'Fabulous Beasts', ['Fabulous Beasts'], true],
+  ['Fei Ren Zai', 'Non-Human', ['Fabulous Beasts'], true],
+  ['Luo Xiaohei Zhan Ji', 'The Legend of Hei', ['The Legend of Luo Xiaohei'], true],
+  ['Bai She: Yuan Qi', 'White Snake', ['White Snake Origin'], true],
+  ['Qing She: Jie Qi', 'Green Snake', ['White Snake 2: Green Snake'], true],
+  ['Da Yu Hai Tang', 'Big Fish & Begonia', ['Big Fish and Begonia'], true],
+  ['Nezha: Mo Tong Jiang Shi', 'Ne Zha', ['Nezha: Birth of the Demon Child'], true],
+  ['Jiang Ziya', 'Jiang Ziya: Legend of Deification', ['Legend of Deification'], true],
+  ['Hu Yao Xiao Hongniang', 'Fox Spirit Matchmaker', ['Fox Spirit Matchmaker'], true],
+  ['Bing Huo Mo Chu', 'The Magic Chef of Ice and Fire', ['Magic Chef of Ice and Fire'], true],
+  ['Xue Ying Ling Zhu', 'Snow Eagle Lord', ['Lord Xue Ying'], true],
+  ['Yong Sheng', 'Immortality', ['Eternal Life'], true],
+  ['Xing Wu Shen Jue', 'Star Martial God Technique', ['Star Martial God'], true],
+  ['Wan Gu Jian Shen', 'Eternal Sword God', ['Ten Thousand Ancient Sword God'], true],
+  ['Wan Gu Shen Hua', 'My Heroic Husband', ['Eternal Myth'], true],
+  ['Jian Yu Feng Yun', 'Sword Domain', ['The Wind and Cloud of Sword Domain'], true],
+  ['Shen Lan Qi Yu Wushuang Zhu', 'The Land of Miracles', ['Land of Miracles'], true],
+  ['Chang Sheng Jie', 'World of Immortals', ['Immortal World'], true],
+  ['Yuan Long', 'Carp Reborn', ['First Dragon'], true],
+  ['Wu Lian Dian Feng', 'Martial Peak', ['Peak of Martial Arts'], true],
+  ['Zhen Dao Ge', 'Song of the Real Blade', ['True Blade Song'], true],
+  ['Hu He Yao Shi Lu', 'Tiger Crane', ['Record of Tiger and Crane'], true],
+  ['Shi Fang Wu Sheng', 'Ten Directions Martial Saint', ['Martial Saint of Ten Directions'], true],
+  ['Zhi Zun Shen Ming', 'Supreme God Emperor', ['Supreme God'], true],
+  ['Tian Huang Zhan Shen', 'Desolate God of War', ['God of War'], true],
+  ['Zui Qiang Fan Pai', 'Strongest Anti M.E.T.A', ['Ultimate Scheming System'], true],
+  ['Zui Hou De Zhao Huan Shi', 'The Last Summoner', ['Last Summoner'], true],
+  ['Tong Ling Fei', 'Psychic Princess', ['Psychic Princess'], true],
+  ['Xiao Lu He Xiao Lan', 'Beryl and Sapphire', ['Beryl and Sapphire'], true],
+  ['Guan Hai Ce', 'Watching the Sea', ['Strategies of Watching the Sea'], true],
+  ['Feng Shen Bang', 'New Gods: Yang Jian', ['Investiture of the Gods'], true],
+  ['Tai Yi Jian Xian Chuan', 'Legend of Taiyi Sword Immortal', ['Taiyi Sword Immortal'], true],
+  ['Wu Ying Sanqian Dao', 'Three Thousand Paths of Martial Arts', ['Three Thousand Martial Paths'], true],
+  ['Jiu Tian Xuan Di Jue', 'Nine Heavens Profound Emperor', ['Nine Star Hegemon'], true],
+  ['Zhen Wu Dian Feng', 'True Martial World', ['Peak of True Martial Arts'], true],
+  ['Wan Gu Zui Qiang Zong', 'The All-Devouring Sect', ['Strongest Sect of All Times'], true],
+  ['Da Dao Chao Tian', 'The Path Toward Heaven', ['Path Toward Heaven'], true],
+  ['Shen Lan Zhi Yue', 'Deep Blue Moon', ['Deep Blue Moon'], true],
+  ['Xinghai Qihang', 'Starry Journey', ['Starry Journey'], true],
+  ['Bi Lan Zhi Yu', 'Azure Legacy', ['Azure Legacy'], true],
+  ['Jiyi Guanli Ju', 'False Memory', ['Memory Management Bureau'], true],
+  ['Bai Ri Cheng Wang', 'Crowned in a Hundred Days', ['Crowned in a Hundred Days'], true],
+  ['Shi Yi Ci Yuan', 'Eleventh Dimension', ['Eleventh Dimension'], true],
+  ['Lu Shidai', "Lu's Time", ["Lu's Time"], true],
+  ['Xian Zun Nai Ba Dang Dao', 'Immortal Sovereign Dad', ['Immortal Dad'], true],
+  ['Wo De Shi Xiong Tai Wen Jian Le', 'My Senior Brother Is Too Steady', ['Big Brother'], true],
+  ['Tun Tian Ji', 'Heaven Swallowing Record', ['Swallowing the Heavens'], true],
+  ['Chao Shen Xue Yuan', 'Transcend the Gods', ['Super God Academy'], true],
+  ['Xiong Bing Lian', 'The Black Troop', ['Transcend the Gods: The Black Troop'], true],
+  ['Bai Yao Pu', 'Fairies Albums', ['Manual of Hundred Demons'], true],
+  ['Da Li Si Ri Zhi', 'White Cat Legend', ['Journal of Dali Temple'], true],
+  ['Huan Chong Shi', 'The Monster Pet Evolution', ['Monster Pet Evolution'], true],
+  // Major Japanese Anime (Romaji -> Official English)
+  ['Tensei Shitara Slime Datta Ken', 'That Time I Got Reincarnated as a Slime', ['Tensura', 'Slime Isekai'], false],
+  ['Mairimashita! Iruma-kun', 'Welcome to Demon School! Iruma-kun', ['Iruma-kun'], false],
+  ['Re:Zero kara Hajimeru Isekai Seikatsu', 'Re:ZERO -Starting Life in Another World-', ['Re:Zero', 'Starting Life in Another World'], false],
+  ['Mushoku Tensei: Isekai Ittara Honki Dasu', 'Mushoku Tensei: Jobless Reincarnation', ['Jobless Reincarnation'], false],
+  ['Kimetsu no Yaiba', 'Demon Slayer: Kimetsu no Yaiba', ['Demon Slayer'], false],
+  ['Shingeki no Kyojin', 'Attack on Titan', ['AOT'], false],
+  ['Boku no Hero Academia', 'My Hero Academia', ['MHA'], false],
+  ['Sousou no Frieren', "Frieren: Beyond Journey's End", ['Frieren'], false],
+  ['Kusuriya no Hitorigoto', 'The Apothecary Diaries', ['Apothecary Diaries'], false],
+  ['Kage no Jitsuryokusha ni Naritakute!', 'The Eminence in Shadow', ['Eminence in Shadow'], false],
+  ['Tate no Yuusha no Nariagari', 'The Rising of the Shield Hero', ['Shield Hero'], false],
+  ['Kono Subarashii Sekai ni Shukufuku o!', "KONOSUBA -God's blessing on this wonderful world!", ['Konosuba'], false],
+  ['Kaguya-sama wa Kokurasetai', 'Kaguya-sama: Love is War', ['Love is War'], false],
+  ['Youjo Senki', 'Saga of Tanya the Evil', ['Tanya the Evil'], false],
+  ['BLEACH: Sennen Kessen-hen', 'BLEACH: Thousand-Year Blood War', ['Bleach TYBW'], false],
+  ['Ore dake Level Up na Ken', 'Solo Leveling', ['Solo Leveling'], false],
+  ['Meitantei Conan', 'Detective Conan', ['Case Closed'], false],
+  ['Kaijuu 8-gou', 'Kaiju No. 8', ['Kaiju 8'], false],
+  ['Dungeon Meshi', 'Delicious in Dungeon', ['Delicious in Dungeon'], false],
+  ['Boku no Kokoro no Yabai Yatsu', 'The Dangers in My Heart', ['Dangers in My Heart'], false],
+  ['Yofukashi no Uta', 'Call of the Night', ['Call of the Night'], false],
+  ['Youkoso Jitsuryoku Shijou Shugi no Kyoushitsu e', 'Classroom of the Elite', ['COTE'], false],
+  ['Kami no Tou', 'Tower of God', ['Tower of God'], false],
+  ['Hagane no Renkinjutsushi', 'Fullmetal Alchemist', ['FMA', 'Fullmetal Alchemist: Brotherhood'], false],
+  ['Enen no Shouboutai', 'Fire Force', ['Fire Force'], false],
+  ['Nanatsu no Taizai', 'The Seven Deadly Sins', ['Seven Deadly Sins'], false],
+  ['Yakusoku no Neverland', 'The Promised Neverland', ['Promised Neverland'], false],
+  ['Ansatsu Kyoushitsu', 'Assassination Classroom', ['Assassination Classroom'], false],
+  ['Seishun Buta Yarou wa Bunny Girl Senpai no Yume wo Minai', 'Rascal Does Not Dream of Bunny Girl Senpai', ['Bunny Girl Senpai'], false],
+  ['Dungeon ni Deai wo Motomeru no wa Machigatteiru Darou ka', 'Is It Wrong to Try to Pick Up Girls in a Dungeon?', ['DanMachi'], false],
+  ['Shigatsu wa Kimi no Uso', 'Your Lie in April', ['Your Lie in April'], false],
+  ['Koe no Katachi', 'A Silent Voice', ['Silent Voice'], false],
+  ['Kimi no Na wa.', 'Your Name.', ['Your Name'], false],
+  ['Tenki no Ko', 'Weathering With You', ['Weathering With You'], false],
+  ['Sen to Chihiro no Kamikakushi', 'Spirited Away', ['Spirited Away'], false],
+  ['Mononoke Hime', 'Princess Mononoke', ['Princess Mononoke'], false],
+  ['Howl no Ugoku Shiro', "Howl's Moving Castle", ["Howl's Moving Castle"], false]
+];
+
+const ENGLISH_CORE_WORDS = new Set([
+  'the', 'of', 'in', 'to', 'and', 'for', 'with', 'from', 'by', 'on', 'at', 'as', 'my', 'our', 'your',
+  'world', 'god', 'gods', 'immortal', 'immortality', 'eternal', 'eternity', 'heaven', 'heavens', 'heavenly',
+  'sky', 'star', 'stars', 'starry', 'soul', 'spirit', 'martial', 'sword', 'blade', 'master', 'lord', 'king',
+  'emperor', 'prince', 'princess', 'queen', 'demon', 'demons', 'devil', 'angel', 'dragon', 'phoenix', 'tiger',
+  'wolf', 'beast', 'beasts', 'monster', 'hero', 'legend', 'legends', 'tales', 'tale', 'story', 'chronicles',
+  'record', 'records', 'journey', 'adventure', 'quest', 'battle', 'war', 'fight', 'fights', 'slay', 'slayer',
+  'hunter', 'assassin', 'killer', 'shadow', 'dark', 'light', 'blood', 'fire', 'ice', 'wind', 'thunder',
+  'earth', 'sea', 'river', 'mountain', 'island', 'land', 'realm', 'realms', 'universe', 'cosmos', 'space',
+  'time', 'life', 'death', 'dead', 'tomb', 'grave', 'ruins', 'sacred', 'divine', 'holy', 'supreme', 'sovereign',
+  'peerless', 'unrivaled', 'great', 'grand', 'ancient', 'mortal', 'renegade', 'against', 'through', 'beyond',
+  'swallowed', 'devouring', 'shrouding', 'herding', 'coming', 'throne', 'seal', 'sealed', 'dynasty', 'jade',
+  'cultivation', 'alchemy', 'refining', 'sect', 'clan', 'school', 'academy', 'brother', 'sister', 'senior',
+  'steady', 'perfect', 'stellar', 'transformations', 'apotheosis', 'mysteries', 'mystery', 'magic', 'magister',
+  'mage', 'summoner', 'outcast', 'degenerate', 'street', 'cage', 'incarnation', 'click', 'link', 'blessing',
+  'official', 'avatar', 'scissor', 'seven', 'fog', 'hill', 'five', 'elements', 'ravages', 'spare', 'me',
+  'daily', 'will', 'thousand', 'ten', 'hundred', 'years', 'step', 'freedom', 'disciple', 'super', 'cube',
+  'whale', 'songs', 'youth', 'love', 'between', 'fairy', 'autumns', 'system', 'exorcism', 'doubt', 'fabulous',
+  'snake', 'white', 'green', 'black', 'red', 'blue', 'gold', 'golden', 'silver', 'big', 'fish', 'begonia',
+  'fox', 'matchmaker', 'chef', 'snow', 'eagle', 'peak', 'domain', 'miracles', 'carp', 'reborn', 'path',
+  'toward', 'season', 'part', 'movie', 'special', 'edition', 'reincarnated', 'slime', 'titan', 'attack',
+  'apothecary', 'diaries', 'shield', 'eminence', 'classroom', 'elite', 'tower', 'solo', 'leveling', 'online',
+  'piece', 'punch', 'note', 'detective', 'silent', 'voice', 'name', 'weathering', 'spirited', 'away',
+  'moving', 'castle', 'promised', 'neverland', 'deadly', 'sins', 'clover', 'stone', 'force'
+]);
+
+const PINYIN_MARKERS = new Set([
+  'zh', 'ch', 'sh', 'xi', 'qi', 'ji', 'yu', 'lv', 'xue', 'zhe', 'tian', 'xian', 'shen', 'dou', 'luo',
+  'wang', 'zuo', 'cang', 'qiong', 'ling', 'zun', 'jian', 'wan', 'jie', 'wu', 'dao', 'mo', 'feng', 'yun',
+  'long', 'huo', 'bing', 'lei', 'xing', 'kong', 'tun', 'shi', 'ren', 'chuan', 'zhuan', 'zhi', 'bu', 'nian',
+  'fan', 'bai', 'hei', 'qing', 'hong', 'jin', 'yin', 'yuan', 'mu', 'gu', 'shan', 'he', 'xiao', 'da', 'tai',
+  'jue', 'yao', 'shijie', 'dalu', 'xingkong', 'cangqiong', 'xiuxian', 'wangzuo', 'dailiren', 'gaoshou',
+  'fashi', 'liuqi', 'liang', 'jianghu', 'siliang', 'yongheng', 'qiankun', 'zhan', 'gong', 'cheng', 'ming',
+  'shuang', 'huan', 'chong', 'shao', 'chun', 'qiu', 'dong', 'xia', 'dizi', 'zong', 'men'
+]);
+
+const NON_ENGLISH_LATIN_MARKERS = new Set([
+  'el', 'la', 'los', 'las', 'del', 'una', 'con', 'para', 'por', 'der', 'die', 'das', 'und', 'ein', 'eine',
+  'les', 'des', 'une', 'dans', 'pour', 'avec', 'cua', 'nguoi', 'dau', 'pha', 'gioi', 'tinh', 'tien'
+]);
+
+const JAPANESE_GRAMMAR_TOKENS = new Set([
+  'no', 'wa', 'ga', 'wo', 'ni', 'kara', 'made', 'datta', 'ken', 'naritakute', 'shitara', 'desu', 'deshita',
+  'monogatari', 'sekai', 'isekai', 'yuusha', 'maou', 'mahou', 'shoujo', 'shounen', 'gakuen', 'koukou',
+  'kyoushitsu', 'senpai', 'sensei', 'tachi', 'tensei', 'akuyaku', 'reijou'
+]);
+
+function normalizeTitleKey(raw) {
+  if (!raw) return '';
+  return String(raw)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+const TITLE_DICT_MAP = new Map();
+const TITLE_DICT_PREFIXES = [];
+for (const [pinyinOrRomaji, englishTitle, alts, isDonghua] of TITLE_DICTIONARY_ENTRIES) {
+  const entry = { pinyinOrRomaji, englishTitle, alternateEnglish: alts || [], isDonghua: Boolean(isDonghua) };
+  const key = normalizeTitleKey(pinyinOrRomaji);
+  if (key && !TITLE_DICT_MAP.has(key)) TITLE_DICT_MAP.set(key, entry);
+  const compact = key.replace(/\s+/g, '');
+  if (compact.length >= 6 && !TITLE_DICT_MAP.has(compact)) TITLE_DICT_MAP.set(compact, entry);
+  if (key.length >= 5) TITLE_DICT_PREFIXES.push([key, entry]);
+}
+TITLE_DICT_PREFIXES.sort((a, b) => b[0].length - a[0].length);
+
+function hasNonLatinScript(text) {
+  return /[\u0400-\u052F\u0590-\u06FF\u0900-\u097F\u0E00-\u0E7F\u3040-\u30FF\u3400-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF]/.test(
+    String(text || '')
+  );
+}
+
+function hasNonEnglishDiacritics(text) {
+  return /[\u1E00-\u1EFFđĐăĂơƠưƯñÑßçÇłŁżŻąĄęĘ]/.test(String(text || ''));
+}
+
+function applyEnglishTitlePatterns(text) {
+  return String(text || '')
+    .trim()
+    .replace(/\b4th Season\b/gi, 'Season 4')
+    .replace(/\b3rd Season\b/gi, 'Season 3')
+    .replace(/\b2nd Season\b/gi, 'Season 2')
+    .replace(/\b1st Season\b/gi, 'Season 1')
+    .replace(/\bDai\s*(\d+)\s*Ki\b/gi, 'Season $1')
+    .replace(/\bDi\s*Er\s*Ji\b/gi, 'Season 2')
+    .replace(/\bDi\s*San\s*Ji\b/gi, 'Season 3')
+    .replace(/\bDi\s*Si\s*Ji\b/gi, 'Season 4')
+    .replace(/\bDi\s*Wu\s*Ji\b/gi, 'Season 5')
+    .replace(/\bDi\s*Liu\s*Ji\b/gi, 'Season 6')
+    .replace(/\bDi\s*(\d+)\s*Ji\b/gi, 'Season $1')
+    .replace(/\bNian\s*Fan\b/gi, 'Annual Edition')
+    .replace(/\bTebie\s*Pian\b/gi, 'Special')
+    .replace(/\bFanwai\b/gi, 'Special')
+    .replace(/\bQianzhuan\b/gi, 'Prequel')
+    .replace(/\bJuchang\s*Ban\b/gi, 'Movie')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isLikelyPinyin(candidate, romaji = '') {
+  const trimmed = String(candidate || '').trim();
+  if (!trimmed || hasNonLatinScript(trimmed)) return false;
+
+  const normCand = normalizeTitleKey(trimmed);
+  const compactCand = normCand.replace(/\s+/g, '');
+  const compactRom = normalizeTitleKey(romaji).replace(/\s+/g, '');
+
+  if (
+    compactRom.length >= 4 &&
+    (compactCand === compactRom ||
+      (compactCand.startsWith(compactRom) && compactCand.length - compactRom.length <= 4))
+  ) {
+    const toks = normCand.split(' ').filter(Boolean);
+    const engHits = toks.filter((t) => ENGLISH_CORE_WORDS.has(t) && t.length >= 3).length;
+    if (engHits === 0) return true;
+  }
+
+  if (TITLE_DICT_MAP.get(normCand)?.isDonghua || TITLE_DICT_MAP.get(compactCand)?.isDonghua) {
+    return true;
+  }
+
+  const tokens = normCand.split(' ').filter((t) => t && !/^\d+$/.test(t));
+  if (!tokens.length) return false;
+
+  const engHits = tokens.filter((t) => ENGLISH_CORE_WORDS.has(t)).length;
+  if (engHits >= 2 || (engHits === 1 && tokens.length <= 2)) return false;
+
+  let pinyinScore = 0;
+  for (const tok of tokens) {
+    if (PINYIN_MARKERS.has(tok)) pinyinScore += 2;
+    else if (/^(zh|ch|sh|x|q|z|c)[aeiou][a-z]{0,4}$/.test(tok)) pinyinScore += 1;
+    else if (/^[a-z]*(ang|eng|ing|ong|uan|ian|iao|iang|iong|ue|uo|ou|ai|ei)$/.test(tok) && !ENGLISH_CORE_WORDS.has(tok)) {
+      pinyinScore += 1;
+    }
+  }
+  return pinyinScore >= Math.max(2, tokens.length);
+}
+
+function scoreEnglishSynonym(candidate, romaji, isDonghua) {
+  const clean = String(candidate || '').trim();
+  if (clean.length < 3 || clean.length > 120) return -100;
+  if (hasNonLatinScript(clean)) return -100;
+  if (hasNonEnglishDiacritics(clean)) return -80;
+
+  const norm = normalizeTitleKey(clean);
+  if (!norm) return -100;
+  const compact = norm.replace(/\s+/g, '');
+  const compactRom = normalizeTitleKey(romaji).replace(/\s+/g, '');
+
+  const lettersOnly = clean.replace(/[^a-zA-Z]/g, '');
+  if (!lettersOnly) return -100;
+  if (lettersOnly.length <= 5 && lettersOnly === lettersOnly.toUpperCase() && !clean.includes(' ')) {
+    return -60;
+  }
+
+  if (compactRom.length >= 4 && compact === compactRom) return -50;
+  if (isDonghua && isLikelyPinyin(clean, romaji)) return -70;
+
+  const tokens = norm.split(' ').filter(Boolean);
+  if (!tokens.length) return -100;
+
+  const engHits = tokens.filter((t) => ENGLISH_CORE_WORDS.has(t)).length;
+  const jpHits = tokens.filter((t) => JAPANESE_GRAMMAR_TOKENS.has(t)).length;
+  if (jpHits >= 2 || (jpHits >= 1 && engHits === 0)) return -50;
+
+  const foreignHits = tokens.filter((t) => NON_ENGLISH_LATIN_MARKERS.has(t)).length;
+  if (foreignHits >= 1 && engHits === 0) return -45;
+
+  const lowerClean = clean.toLowerCase();
+  for (const [, engTitle, alts] of TITLE_DICTIONARY_ENTRIES) {
+    if (engTitle.toLowerCase() === lowerClean || (alts || []).some((a) => a.toLowerCase() === lowerClean)) {
+      return 200;
+    }
+  }
+
+  let score = 0;
+  if (engHits > 0) {
+    score += 40 + engHits * 18;
+  } else if (isDonghua) {
+    const isAscii = /^[\x00-\x7F]+$/.test(clean);
+    if (isAscii && !isLikelyPinyin(clean, romaji) && tokens.length >= 1 && tokens.length <= 10) {
+      score += 18;
+    } else {
+      return -20;
+    }
+  } else {
+    return -10;
+  }
+
+  if (tokens.length >= 2 && tokens.length <= 9) score += 12;
+  if (clean.length >= 6 && clean.length <= 75) score += 8;
+  if (clean.includes('(') && clean.includes(')')) score -= 6;
+  if (/^[\x00-\x7F]+$/.test(clean)) score += 6;
+  return score;
+}
+
+function pickBestEnglishSynonym(synonyms, romaji, isDonghua) {
+  if (!Array.isArray(synonyms) || !synonyms.length) return null;
+  let best = null;
+  let bestScore = 0;
+  for (const syn of synonyms) {
+    const clean = String(syn || '').trim();
+    if (!clean) continue;
+    const sc = scoreEnglishSynonym(clean, romaji, isDonghua);
+    if (sc > bestScore) {
+      bestScore = sc;
+      best = clean;
+    }
+  }
+  return best;
+}
+
+function extractTitleTrailingSuffix(raw, matchedPrefixNorm) {
+  const normFull = normalizeTitleKey(raw);
+  if (!normFull.startsWith(matchedPrefixNorm) || normFull.length === matchedPrefixNorm.length) return '';
+  const rem = normFull.slice(matchedPrefixNorm.length).trim();
+  if (!rem) return '';
+
+  let m = rem.match(/^(?:season\s*)?(\d+)$/);
+  if (m) {
+    const n = Number(m[1]);
+    if (n >= 2 && n <= 20) return `Season ${n}`;
+  }
+  m = rem.match(/^(ii|iii|iv|v|vi|vii|viii|ix|x)$/);
+  if (m) {
+    const roman = { ii: 2, iii: 3, iv: 4, v: 5, vi: 6, vii: 7, viii: 8, ix: 9, x: 10 };
+    if (roman[m[1]]) return `Season ${roman[m[1]]}`;
+  }
+  m = rem.match(/^(\d+)(?:nd|rd|th)\s+season$/);
+  if (m) return `Season ${m[1]}`;
+  m = rem.match(/^di\s*(\d+|er|san|si|wu|liu|qi|ba)\s*ji$/);
+  if (m) {
+    const cn = { er: '2', san: '3', si: '4', wu: '5', liu: '6', qi: '7', ba: '8' };
+    return `Season ${cn[m[1]] || m[1]}`;
+  }
+  if (rem.includes('nian fan')) return 'Annual Edition';
+  if (rem.includes('movie') || rem.includes('juchang')) return 'Movie';
+  if (rem.includes('special') || rem.includes('tebie') || rem.includes('fanwai')) return 'Special';
+  if (rem.includes('qianzhuan') || rem.includes('prequel')) return 'Prequel';
+  m = rem.match(/^part\s*(\d+)$/);
+  if (m) return `Part ${m[1]}`;
+  return '';
+}
+
+function findInTitleDictionary(query) {
+  const clean = String(query || '').trim();
+  if (!clean) return null;
+  const norm = normalizeTitleKey(clean);
+  const compact = norm.replace(/\s+/g, '');
+
+  const exact = TITLE_DICT_MAP.get(norm) || TITLE_DICT_MAP.get(compact);
+  if (exact) return exact.englishTitle;
+
+  for (const [prefixNorm, entry] of TITLE_DICT_PREFIXES) {
+    if (norm === prefixNorm || norm.startsWith(`${prefixNorm} `)) {
+      const suffix = extractTitleTrailingSuffix(clean, prefixNorm);
+      if (suffix && !entry.englishTitle.toLowerCase().includes(suffix.toLowerCase())) {
+        return `${entry.englishTitle} ${suffix}`;
+      }
+      return entry.englishTitle;
+    }
+  }
+  return null;
+}
+
+function resolveEnglishTitle(titleEnglish, titleRomaji, synonyms = [], isDonghua = false) {
+  const eng = String(titleEnglish || '').trim();
+  const rom = String(titleRomaji || '').trim();
+  const effectiveDonghua =
+    Boolean(isDonghua) ||
+    Boolean(rom && TITLE_DICT_MAP.get(normalizeTitleKey(rom))?.isDonghua) ||
+    Boolean(eng && TITLE_DICT_MAP.get(normalizeTitleKey(eng))?.isDonghua);
+
+  if (eng) {
+    const mappedEng = findInTitleDictionary(eng);
+    if (mappedEng) return mappedEng;
+    const engIsPinyin = effectiveDonghua && isLikelyPinyin(eng, rom);
+    if (!engIsPinyin && !hasNonLatinScript(eng)) {
+      return applyEnglishTitlePatterns(eng);
+    }
+  }
+
+  if (rom) {
+    const mappedRom = findInTitleDictionary(rom);
+    if (mappedRom) return mappedRom;
+  }
+
+  if (Array.isArray(synonyms)) {
+    for (const syn of synonyms) {
+      const mapped = findInTitleDictionary(syn);
+      if (mapped) return mapped;
+    }
+  }
+
+  const bestSyn = pickBestEnglishSynonym(synonyms, rom, effectiveDonghua);
+  if (bestSyn) return applyEnglishTitlePatterns(bestSyn);
+
+  if (rom) {
+    const trans = applyEnglishTitlePatterns(rom);
+    if (trans !== rom) return trans;
+  }
+
+  if (eng) return applyEnglishTitlePatterns(eng);
+  return rom || '';
+}
+
+function scoreSingleTextMatch(normQuery, queryTokens, rawText) {
+  const normText = normalizeTitleKey(rawText);
+  if (!normText) return 0;
+
+  if (normText === normQuery) return 140;
+  if (normText.startsWith(`${normQuery} `)) return 120;
+  if (normText.startsWith(normQuery)) return 110;
+  if (normText.includes(` ${normQuery} `)) return 100;
+  if (normText.includes(normQuery)) return 90;
+
+  const textTokens = normText.split(' ').filter(Boolean);
+  if (!textTokens.length) return 0;
+
+  let exactWord = 0;
+  let prefixWord = 0;
+  let substrWord = 0;
+  for (const qt of queryTokens) {
+    if (textTokens.some((t) => t === qt)) exactWord++;
+    else if (textTokens.some((t) => t.startsWith(qt))) prefixWord++;
+    else if (normText.includes(qt)) substrWord++;
+  }
+
+  const total = exactWord + prefixWord + substrWord;
+  if (!total) return 0;
+  const allMatched = total === queryTokens.length;
+  if (allMatched && exactWord === queryTokens.length) return 95;
+  if (allMatched && exactWord + prefixWord === queryTokens.length) return 82;
+  if (allMatched) return 70;
+  return exactWord * 28 + prefixWord * 20 + substrWord * 10;
+}
+
+function expandSearchQueries(rawQuery, donghuaOnly = false, maxExtra = 2) {
+  const normQuery = normalizeTitleKey(rawQuery);
+  if (normQuery.length < 2) return [];
+  const queryTokens = normQuery.split(' ').filter((t) => t.length >= 2);
+  if (!queryTokens.length) return [];
+
+  const scored = [];
+  const seen = new Set();
+  for (const [pinyinOrRomaji, englishTitle, alts, isDonghua] of TITLE_DICTIONARY_ENTRIES) {
+    if (donghuaOnly && !isDonghua) continue;
+    const pinyinNorm = normalizeTitleKey(pinyinOrRomaji);
+    if (pinyinNorm === normQuery || seen.has(pinyinNorm)) continue;
+    seen.add(pinyinNorm);
+
+    const candidates = [englishTitle, ...(alts || [])];
+    let best = 0;
+    for (const c of candidates) {
+      const sc = scoreSingleTextMatch(normQuery, queryTokens, c);
+      if (sc > best) best = sc;
+    }
+    if (best >= 40) {
+      scored.push([pinyinOrRomaji, best + (isDonghua ? 15 : 0)]);
+    }
+  }
+
+  scored.sort((a, b) => b[1] - a[1]);
+  return scored.slice(0, maxExtra).map((x) => x[0]);
+}
+
+function scoreKeywordMatch(rawQuery, resolvedEnglish, officialEnglish, romaji, synonyms = []) {
+  const normQuery = normalizeTitleKey(rawQuery);
+  if (!normQuery) return 0;
+  const queryTokens = normQuery.split(' ').filter(Boolean);
+  if (!queryTokens.length) return 0;
+
+  let best = 0;
+  const fields = [];
+  if (resolvedEnglish) fields.push([resolvedEnglish, 12]);
+  if (officialEnglish) fields.push([officialEnglish, 10]);
+  if (romaji) fields.push([romaji, 6]);
+  if (Array.isArray(synonyms)) {
+    for (const syn of synonyms) {
+      if (syn) fields.push([syn, 8]);
+    }
+  }
+  for (const [text, bonus] of fields) {
+    const sc = scoreSingleTextMatch(normQuery, queryTokens, text);
+    if (sc > 0 && sc + bonus > best) {
+      best = sc + bonus;
+    }
+  }
+  return best;
+}
+
+function matchesAllKeywords(rawQuery, ...fields) {
+  const normQuery = normalizeTitleKey(rawQuery);
+  if (!normQuery) return true;
+  const tokens = normQuery.split(' ').filter(Boolean);
+  const combined = fields
+    .flat()
+    .filter(Boolean)
+    .map((f) => normalizeTitleKey(f))
+    .join(' ');
+  if (!combined) return false;
+  return tokens.every((tok) => combined.includes(tok));
+}
+
 function resolveTitle(item) {
+  if (!item) return 'Anime';
   const pref = state.prefs.titleLanguage;
   if (pref === 'ROMAJI') return item.titleRomaji || item.title || item.titleEnglish || 'Anime';
   if (pref === 'NATIVE') return item.titleNative || item.titleEnglish || item.titleRomaji || item.title || 'Anime';
-  return item.titleEnglish || item.title || item.titleRomaji || 'Anime';
+  const isDonghua = String(item.countryOfOrigin || '').toUpperCase() === 'CN';
+  const resolved = resolveEnglishTitle(
+    item.titleEnglish || item.title || '',
+    item.titleRomaji || '',
+    item.synonyms || [],
+    isDonghua
+  );
+  return resolved || item.titleEnglish || item.title || item.titleRomaji || 'Anime';
 }
 
 function formatCompactCountdown(airingUnix) {
@@ -1484,23 +2085,33 @@ function groupCommunityReviewsByAnime(reviews) {
 
 let discoverFetchToken = 0;
 let discoverScrollRaf = null;
+let discoverSearchDebounceTimer = null;
 
 function mapDiscoverMediaItem(m) {
   const airingAt = m.nextAiringEpisode?.airingAt || null;
   const dow = airingAt ? (((new Date(airingAt * 1000).getDay() + 6) % 7) + 1) : ((m.id % 7) + 1);
   const genres = normalizeAnimeGenresWithAdult(m.genres || [], Boolean(m.isAdult));
+  const synonyms = Array.isArray(m.synonyms) ? m.synonyms.filter(Boolean) : [];
+  const country = m.countryOfOrigin || 'JP';
+  const isDonghua = String(country).toUpperCase() === 'CN';
+  const officialEnglish = m.title?.english || '';
+  const romaji = m.title?.romaji || '';
+  const resolvedEnglish = resolveEnglishTitle(officialEnglish, romaji, synonyms, isDonghua) || officialEnglish || romaji || 'Anime';
   return {
     animeId: m.id,
-    title: m.title?.english || m.title?.romaji || 'Anime',
-    titleEnglish: m.title?.english || '',
-    titleRomaji: m.title?.romaji || '',
+    title: resolvedEnglish,
+    titleEnglish: resolvedEnglish,
+    officialTitleEnglish: officialEnglish,
+    titleRomaji: romaji,
     titleNative: m.title?.native || '',
+    synonyms,
+    popularity: m.popularity || 0,
     coverImage: m.coverImage?.extraLarge || m.coverImage?.large || '',
     bannerImage: m.bannerImage || '',
     format: m.format || 'TV',
     mediaStatus: m.status || 'RELEASING',
     seasonYear: m.seasonYear || null,
-    countryOfOrigin: m.countryOfOrigin || 'JP',
+    countryOfOrigin: country,
     totalEpisodes: m.episodes || null,
     averageScore: m.averageScore || null,
     genres,
@@ -1517,6 +2128,45 @@ function mapDiscoverMediaItem(m) {
     isPinned: false,
     isFavorite: false
   };
+}
+
+function renderDiscoverResultsShellHtml() {
+  if (state.isSearching) {
+    return `<div class="app-card" style="text-align:center;padding:48px;"><p style="color:var(--accent-primary);">Searching Anime &amp; Donghua catalog...</p></div>`;
+  }
+  if (!state.discover.length) {
+    const q = state.searchQuery.trim();
+    return `<div class="app-card" style="text-align:center;padding:44px 20px;">
+      <p style="color:var(--text-primary);font-size:16px;font-weight:700;margin:0 0 6px;">${q ? `No matches found for "${escapeHtml(q)}"` : 'No titles available'}</p>
+      <p style="color:var(--text-muted);font-size:13px;margin:0;">Try searching with English or alternate Donghua keywords, or clear active filters.</p>
+    </div>`;
+  }
+  return `
+    <div class="poster-grid" id="discover-poster-grid">${state.discover.map((it) => renderPosterTrackerCard(it, false)).join('')}</div>
+    <div id="discover-sentinel-wrap">${renderDiscoverFooterHtml()}</div>
+  `;
+}
+
+function updateDiscoverResultsShellDom() {
+  const countEl = document.getElementById('discover-count-label');
+  if (countEl) {
+    countEl.textContent = `${state.discover.length} TITLES`;
+  }
+  const clearBtn = document.getElementById('btn-clear-disc-search');
+  if (clearBtn) {
+    clearBtn.style.display = state.searchQuery ? '' : 'none';
+  }
+  const shell = document.getElementById('discover-results-shell');
+  if (shell) {
+    shell.innerHTML = renderDiscoverResultsShellHtml();
+    bindCardInteractionHandlers(shell);
+    const btnMore = document.getElementById('btn-discover-load-more');
+    if (btnMore) {
+      btnMore.onclick = () => fetchDiscoverCatalog(true);
+    }
+    return true;
+  }
+  return false;
 }
 
 function renderDiscoverFooterHtml() {
@@ -1704,7 +2354,8 @@ window.addEventListener(
   { passive: true }
 );
 
-async function fetchDiscoverCatalog(loadMore = false) {
+async function fetchDiscoverCatalog(loadMore = false, options = {}) {
+  const inPlace = Boolean(options?.inPlace);
   if (loadMore) {
     if (state.isSearching || state.discoverLoadingMore || !state.discoverHasNextPage) return;
     state.discoverLoadingMore = true;
@@ -1715,26 +2366,33 @@ async function fetchDiscoverCatalog(loadMore = false) {
     state.discoverHasNextPage = true;
     state.discoverLoadingMore = false;
     state.discoverLastPageStartIndex = 0;
-    renderApp();
+    if (!(inPlace && state.tab === 'discover' && updateDiscoverResultsShellDom())) {
+      renderApp();
+    }
   }
 
   const targetPage = loadMore ? state.discoverPage + 1 : 1;
   const myToken = loadMore ? discoverFetchToken : ++discoverFetchToken;
+  const trimmedSearch = state.searchQuery.trim();
+  const baseSort = state.discoverSort || 'POPULARITY_DESC';
+  const effectiveSort = trimmedSearch
+    ? ['SEARCH_MATCH', ...(baseSort !== 'SEARCH_MATCH' ? [baseSort] : [])]
+    : [baseSort];
 
-  const variables = {
+  const baseVariables = {
     page: targetPage,
     perPage: 30,
     isAdult: Boolean(state.prefs.showAdultContent),
-    sort: [state.discoverSort || 'POPULARITY_DESC']
+    sort: effectiveSort
   };
-  if (state.searchQuery.trim()) variables.search = state.searchQuery.trim();
-  if (state.discoverFormat !== 'ALL') variables.format = state.discoverFormat;
-  if (state.discoverStatus !== 'ALL') variables.status = state.discoverStatus;
-  if (state.discoverGenre) variables.genre = state.discoverGenre;
-  if (state.discoverMode === 'donghua') variables.countryOfOrigin = 'CN';
+  if (trimmedSearch) baseVariables.search = trimmedSearch;
+  if (state.discoverFormat !== 'ALL') baseVariables.format = state.discoverFormat;
+  if (state.discoverStatus !== 'ALL') baseVariables.status = state.discoverStatus;
+  if (state.discoverGenre) baseVariables.genre = state.discoverGenre;
+  if (state.discoverMode === 'donghua') baseVariables.countryOfOrigin = 'CN';
   if (state.discoverMode === 'seasonal') {
-    variables.season = getCurrentAnimeSeason();
-    variables.seasonYear = new Date().getFullYear();
+    baseVariables.season = getCurrentAnimeSeason();
+    baseVariables.seasonYear = new Date().getFullYear();
   }
 
   const gql = `
@@ -1770,6 +2428,8 @@ async function fetchDiscoverCatalog(loadMore = false) {
         ) {
           id
           title { english romaji native }
+          synonyms
+          popularity
           coverImage { extraLarge large }
           bannerImage
           format
@@ -1787,29 +2447,69 @@ async function fetchDiscoverCatalog(loadMore = false) {
     }
   `;
 
-  try {
-    let json = null;
+  const runAniListQuery = async (vars) => {
     for (let attempt = 0; attempt < 2; attempt++) {
-      const resp = await fetch('https://graphql.anilist.co', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: gql, variables })
-      });
-      if (resp.status === 429 && attempt === 0) {
-        await new Promise((r) => setTimeout(r, 700));
-        continue;
+      try {
+        const resp = await fetch('https://graphql.anilist.co', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: gql, variables: vars })
+        });
+        if (resp.status === 429 && attempt === 0) {
+          await new Promise((r) => setTimeout(r, 700));
+          continue;
+        }
+        if (!resp.ok) return null;
+        return await resp.json();
+      } catch (_) {
+        if (attempt === 0) await new Promise((r) => setTimeout(r, 400));
       }
-      if (!resp.ok) break;
-      json = await resp.json();
-      break;
     }
+    return null;
+  };
 
+  try {
+    const extraQueries =
+      !loadMore && trimmedSearch.length >= 2
+        ? expandSearchQueries(trimmedSearch, state.discoverMode === 'donghua', 2)
+        : [];
+
+    const queryPayloads = [
+      baseVariables,
+      ...extraQueries.map((alias) => ({
+        ...baseVariables,
+        page: 1,
+        perPage: 12,
+        search: alias,
+        sort: ['SEARCH_MATCH', 'POPULARITY_DESC']
+      }))
+    ];
+
+    const responses = await Promise.all(queryPayloads.map((v) => runAniListQuery(v)));
     if (myToken !== discoverFetchToken) return;
 
-    const pageObj = json?.data?.Page;
-    const list = pageObj?.media || [];
-    const mapped = list.map(mapDiscoverMediaItem);
-    const hasNext = Boolean(pageObj?.pageInfo?.hasNextPage) && mapped.length > 0;
+    const primaryPage = responses[0]?.data?.Page;
+    const hasNext = Boolean(primaryPage?.pageInfo?.hasNextPage) && (primaryPage?.media?.length || 0) > 0;
+
+    const mergedById = new Map();
+    for (const resp of responses) {
+      const list = resp?.data?.Page?.media || [];
+      for (const m of list) {
+        if (m?.id && !mergedById.has(Number(m.id))) {
+          mergedById.set(Number(m.id), mapDiscoverMediaItem(m));
+        }
+      }
+    }
+
+    let mapped = Array.from(mergedById.values());
+    if (!loadMore && trimmedSearch) {
+      mapped.sort((a, b) => {
+        const scoreA = scoreKeywordMatch(trimmedSearch, a.title, a.officialTitleEnglish, a.titleRomaji, a.synonyms);
+        const scoreB = scoreKeywordMatch(trimmedSearch, b.title, b.officialTitleEnglish, b.titleRomaji, b.synonyms);
+        if (scoreB !== scoreA) return scoreB - scoreA;
+        return (b.popularity || 0) - (a.popularity || 0);
+      });
+    }
 
     if (loadMore) {
       const existingIds = new Set(state.discover.map((d) => Number(d.animeId)));
@@ -1845,7 +2545,9 @@ async function fetchDiscoverCatalog(loadMore = false) {
       state.discoverHasNextPage = hasNext;
       state.discoverLastPageStartIndex = 0;
       state.isSearching = false;
-      renderApp();
+      if (!(inPlace && state.tab === 'discover' && updateDiscoverResultsShellDom())) {
+        renderApp();
+      }
       requestAnimationFrame(() => checkDiscoverInfiniteScroll());
     }
   } catch (_) {
@@ -1855,7 +2557,9 @@ async function fetchDiscoverCatalog(loadMore = false) {
       updateDiscoverFooterDom();
     } else {
       state.isSearching = false;
-      renderApp();
+      if (!(inPlace && state.tab === 'discover' && updateDiscoverResultsShellDom())) {
+        renderApp();
+      }
     }
   }
 }
@@ -1869,7 +2573,9 @@ const ANILIST_SEASON_BATCH_QUERY = `
       media(id_in: $ids, type: ANIME) {
         id
         type
+        countryOfOrigin
         title { english romaji userPreferred }
+        synonyms
         coverImage { extraLarge large medium }
         format
         status
@@ -1883,7 +2589,9 @@ const ANILIST_SEASON_BATCH_QUERY = `
             node {
               id
               type
+              countryOfOrigin
               title { english romaji userPreferred }
+              synonyms
               coverImage { extraLarge large medium }
               format
               status
@@ -2149,9 +2857,21 @@ async function resolveFullSeasonChain(rootMedia) {
   }
 
   const rootId = Number(rootMedia.id);
+  const rootIsDonghua = String(rootMedia.countryOfOrigin || '').toUpperCase() === 'CN';
   return orderedIds.map((id, idx) => {
     const sn = nodesById.get(id);
-    const title = sn?.title?.english || sn?.title?.userPreferred || sn?.title?.romaji || `Season ${idx + 1}`;
+    const snIsDonghua = rootIsDonghua || String(sn?.countryOfOrigin || '').toUpperCase() === 'CN';
+    const title =
+      resolveEnglishTitle(
+        sn?.title?.english || '',
+        sn?.title?.romaji || sn?.title?.userPreferred || '',
+        sn?.synonyms || [],
+        snIsDonghua
+      ) ||
+      sn?.title?.english ||
+      sn?.title?.userPreferred ||
+      sn?.title?.romaji ||
+      `Season ${idx + 1}`;
     return {
       id,
       seasonNumber: idx + 1,
@@ -2230,6 +2950,7 @@ async function openAnimeDetail(animeId) {
         id
         type
         title { english romaji native userPreferred }
+        synonyms
         coverImage { extraLarge large medium }
         bannerImage
         format
@@ -2251,7 +2972,9 @@ async function openAnimeDetail(animeId) {
             node {
               id
               type
+              countryOfOrigin
               title { english romaji userPreferred }
+              synonyms
               coverImage { extraLarge large medium }
               format
               status
@@ -2279,19 +3002,28 @@ async function openAnimeDetail(animeId) {
     const m = json?.data?.Media;
     if (m) {
       const existing = state.vault.find((v) => v.animeId === animeId);
+      const detailCountry = m.countryOfOrigin || 'JP';
+      const detailIsDonghua = String(detailCountry).toUpperCase() === 'CN';
+      const detailSynonyms = Array.isArray(m.synonyms) ? m.synonyms.filter(Boolean) : [];
+      const detailResolvedTitle =
+        resolveEnglishTitle(m.title?.english || '', m.title?.romaji || '', detailSynonyms, detailIsDonghua) ||
+        m.title?.english ||
+        m.title?.romaji ||
+        'Anime';
       state.detailAnime = {
         ...(existing || {}),
         animeId: m.id,
-        title: m.title?.english || m.title?.romaji || 'Anime',
-        titleEnglish: m.title?.english || '',
+        title: detailResolvedTitle,
+        titleEnglish: detailResolvedTitle,
         titleRomaji: m.title?.romaji || '',
         titleNative: m.title?.native || '',
+        synonyms: detailSynonyms,
         coverImage: m.coverImage?.extraLarge || m.coverImage?.large || '',
         bannerImage: m.bannerImage || '',
         format: m.format || 'TV',
         mediaStatus: m.status || 'RELEASING',
         seasonYear: m.seasonYear || m.startDate?.year || null,
-        countryOfOrigin: m.countryOfOrigin || 'JP',
+        countryOfOrigin: detailCountry,
         totalEpisodes: m.episodes || existing?.totalEpisodes || null,
         averageScore: m.averageScore || null,
         genres: normalizeAnimeGenresWithAdult(m.genres || [], Boolean(m.isAdult)),
@@ -4770,8 +5502,8 @@ function renderDiscoverScreen() {
     ${topBar}
     <div class="app-search-bar">
       <span class="search-icon">${SVG_ICONS.search}</span>
-      <input id="inp-discover-search" placeholder="Search 25,000+ anime &amp; Donghua..." value="${escapeHtml(state.searchQuery)}" />
-      ${state.searchQuery ? `<button class="clear-btn" id="btn-clear-disc-search">✕</button>` : ''}
+      <input id="inp-discover-search" autocomplete="off" placeholder="Search anime &amp; Donghua by keywords..." value="${escapeHtml(state.searchQuery)}" />
+      <button class="clear-btn" id="btn-clear-disc-search" style="display:${state.searchQuery ? '' : 'none'};">✕</button>
     </div>
 
     <div class="capsule-strip">
@@ -4801,14 +5533,9 @@ function renderDiscoverScreen() {
       <span class="micro-label" id="discover-count-label" style="color:var(--accent-primary);">${state.discover.length} TITLES</span>
     </div>
 
-    ${
-      state.isSearching
-        ? `<div class="app-card" style="text-align:center;padding:48px;"><p style="color:var(--accent-primary);">Loading Anime Universe catalog...</p></div>`
-        : `
-          <div class="poster-grid" id="discover-poster-grid">${state.discover.map((it) => renderPosterTrackerCard(it, false)).join('')}</div>
-          <div id="discover-sentinel-wrap">${renderDiscoverFooterHtml()}</div>
-        `
-    }
+    <div id="discover-results-shell">
+      ${renderDiscoverResultsShellHtml()}
+    </div>
   `;
 }
 
@@ -4817,6 +5544,7 @@ function renderDiscoverScreen() {
 // ============================================================================
 
 function renderMyListScreen() {
+  const myQuery = state.myListQuery.trim();
   const filtered = state.vault
     .filter((item) => {
       if (state.myListStatusFilter !== 'ALL' && item.status !== state.myListStatusFilter) return false;
@@ -4828,13 +5556,29 @@ function renderMyListScreen() {
         const col = state.collections.find((c) => c.id === state.myListCollectionFilter);
         if (col && !(col.animeIds || []).includes(item.animeId)) return false;
       }
-      if (state.myListQuery.trim()) {
-        const t = resolveTitle(item).toLowerCase();
-        if (!t.includes(state.myListQuery.trim().toLowerCase())) return false;
+      if (myQuery) {
+        if (
+          !matchesAllKeywords(
+            myQuery,
+            resolveTitle(item),
+            item.title,
+            item.titleEnglish,
+            item.titleRomaji,
+            item.synonyms || [],
+            item.genres || []
+          )
+        ) {
+          return false;
+        }
       }
       return true;
     })
     .sort((a, b) => {
+      if (myQuery) {
+        const scA = scoreKeywordMatch(myQuery, resolveTitle(a), a.titleEnglish, a.titleRomaji, a.synonyms || []);
+        const scB = scoreKeywordMatch(myQuery, resolveTitle(b), b.titleEnglish, b.titleRomaji, b.synonyms || []);
+        if (scB !== scA) return scB - scA;
+      }
       if (state.myListSort === 'TITLE') return resolveTitle(a).localeCompare(resolveTitle(b));
       if (state.myListSort === 'RATING') return (b.rating10 || 0) - (a.rating10 || 0);
       if (state.myListSort === 'PROGRESS') return (b.watchedEpisodes || 0) - (a.watchedEpisodes || 0);
@@ -8180,19 +8924,45 @@ function bindAppEvents() {
     };
   });
 
-  // Discover events
+  // Discover events (live debounced keyword search without losing focus)
   const inpDisc = document.getElementById('inp-discover-search');
+  const btnClearDisc = document.getElementById('btn-clear-disc-search');
   if (inpDisc) {
-    inpDisc.onchange = (e) => {
-      state.searchQuery = e.target.value;
-      fetchDiscoverCatalog();
+    inpDisc.oninput = (e) => {
+      const nextVal = e.target.value;
+      state.searchQuery = nextVal;
+      if (btnClearDisc) btnClearDisc.style.display = nextVal ? '' : 'none';
+      if (discoverSearchDebounceTimer) clearTimeout(discoverSearchDebounceTimer);
+      discoverSearchDebounceTimer = setTimeout(() => {
+        discoverSearchDebounceTimer = null;
+        fetchDiscoverCatalog(false, { inPlace: true });
+      }, nextVal.trim() ? 260 : 80);
+    };
+    inpDisc.onkeydown = (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (discoverSearchDebounceTimer) {
+          clearTimeout(discoverSearchDebounceTimer);
+          discoverSearchDebounceTimer = null;
+        }
+        state.searchQuery = e.target.value;
+        fetchDiscoverCatalog(false, { inPlace: true });
+      }
     };
   }
-  const btnClearDisc = document.getElementById('btn-clear-disc-search');
   if (btnClearDisc) {
     btnClearDisc.onclick = () => {
+      if (discoverSearchDebounceTimer) {
+        clearTimeout(discoverSearchDebounceTimer);
+        discoverSearchDebounceTimer = null;
+      }
       state.searchQuery = '';
-      fetchDiscoverCatalog();
+      if (inpDisc) {
+        inpDisc.value = '';
+        inpDisc.focus();
+      }
+      btnClearDisc.style.display = 'none';
+      fetchDiscoverCatalog(false, { inPlace: true });
     };
   }
 
@@ -8257,8 +9027,18 @@ function bindAppEvents() {
   const inpMyList = document.getElementById('inp-mylist-search');
   if (inpMyList) {
     inpMyList.oninput = (e) => {
+      const pos = e.target.selectionStart;
       state.myListQuery = e.target.value;
       renderApp();
+      const refreshed = document.getElementById('inp-mylist-search');
+      if (refreshed) {
+        refreshed.focus();
+        if (typeof pos === 'number') {
+          try {
+            refreshed.setSelectionRange(pos, pos);
+          } catch (_) {}
+        }
+      }
     };
   }
   const btnCreateCol = document.getElementById('btn-create-collection');

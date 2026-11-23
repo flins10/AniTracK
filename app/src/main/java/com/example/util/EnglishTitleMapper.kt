@@ -1,336 +1,543 @@
 package com.example.util
 
+import java.text.Normalizer
+
+data class TitleDictionaryEntry(
+    val pinyinOrRomaji: String,
+    val englishTitle: String,
+    val alternateEnglish: List<String> = emptyList(),
+    val isDonghua: Boolean = false
+)
+
 object EnglishTitleMapper {
-    private val titleMap = mapOf(
-        // Slime series
-        "Tensei Shitara Slime Datta Ken 4th Season" to "That Time I Got Reincarnated as a Slime Season 4",
-        "Tensei Shitara Slime Datta Ken 3rd Season" to "That Time I Got Reincarnated as a Slime Season 3",
-        "Tensei Shitara Slime Datta Ken 2nd Season" to "That Time I Got Reincarnated as a Slime Season 2",
-        "Tensei Shitara Slime Datta Ken" to "That Time I Got Reincarnated as a Slime",
-        "Tensei Shitara Slime Datta Ken: Tensura Nikki" to "The Slime Diaries: That Time I Got Reincarnated as a Slime",
-        "Tensei Shitara Slime Datta Ken: Coleus no Yume" to "That Time I Got Reincarnated as a Slime: Visions of Coleus",
 
-        // Iruma-kun series
-        "Mairimashita! Iruma-kun 4" to "Welcome to Demon School! Iruma-kun Season 4",
-        "Mairimashita! Iruma-kun 3" to "Welcome to Demon School! Iruma-kun Season 3",
-        "Mairimashita! Iruma-kun 2" to "Welcome to Demon School! Iruma-kun Season 2",
-        "Mairimashita! Iruma-kun" to "Welcome to Demon School! Iruma-kun",
+    val entries: List<TitleDictionaryEntry> = listOf(
+        // =====================================================================
+        // CHINESE DONGHUA (Curated Official & Alternate English Titles)
+        // =====================================================================
+        TitleDictionaryEntry("Wanmei Shijie", "Perfect World", listOf("Wanmei Shijie", "Perfect World Donghua"), true),
+        TitleDictionaryEntry("Xian Ni", "Renegade Immortal", listOf("Xian Ni", "Immortal Renegade", "Wang Lin"), true),
+        TitleDictionaryEntry("Tunshi Xingkong", "Swallowed Star", listOf("Swallow the Starry Sky", "Devouring the Starry Sky"), true),
+        TitleDictionaryEntry("Douluo Dalu 2: Jueshi Tangmen", "Soul Land 2: The Peerless Tang Clan", listOf("Unrivaled Tang Sect", "Soul Land II"), true),
+        TitleDictionaryEntry("Douluo Dalu II", "Soul Land 2: The Peerless Tang Clan", listOf("Soul Land 2", "Peerless Tang Clan"), true),
+        TitleDictionaryEntry("Douluo Dalu", "Soul Land", listOf("Combat Continent", "Douluo Continent"), true),
+        TitleDictionaryEntry("Dou Po Cang Qiong", "Battle Through the Heavens", listOf("Fights Break Sphere", "Fight Break Sphere", "BTTH"), true),
+        TitleDictionaryEntry("Doupo Cangqiong", "Battle Through the Heavens", listOf("Fights Break Sphere", "BTTH"), true),
+        TitleDictionaryEntry("Fan Ren Xiu Xian Chuan", "A Record of a Mortal's Journey to Immortality", listOf("Mortal's Journey to Immortality", "Record of a Mortal's Journey to Immortality", "RMJI"), true),
+        TitleDictionaryEntry("Fanren Xiuxian Zhuan", "A Record of a Mortal's Journey to Immortality", listOf("Mortal's Journey to Immortality"), true),
+        TitleDictionaryEntry("Zhe Tian", "Shrouding the Heavens", listOf("Shroud the Heavens", "Covering the Sky"), true),
+        TitleDictionaryEntry("Shen Yin Wang Zuo", "Throne of Seal", listOf("Sealed Divine Throne", "Divine Throne"), true),
+        TitleDictionaryEntry("Shenyin Wangzuo", "Throne of Seal", listOf("Sealed Divine Throne"), true),
+        TitleDictionaryEntry("Mu Shen Ji", "Tales of Herding Gods", listOf("Herding Gods", "Record of Herding Gods"), true),
+        TitleDictionaryEntry("Jian Lai", "Sword of Coming", listOf("Sword Come", "Unsheathed"), true),
+        TitleDictionaryEntry("Gui Mi Zhi Zhu", "Lord of the Mysteries", listOf("Lord of Mysteries", "LOTM"), true),
+        TitleDictionaryEntry("Guimi Zhi Zhu", "Lord of the Mysteries", listOf("Lord of Mysteries"), true),
+        TitleDictionaryEntry("Shi Xiong A Shi Xiong", "Big Brother", listOf("My Senior Brother Is Too Steady", "Senior Brother Is Too Steady"), true),
+        TitleDictionaryEntry("Cang Yuan Tu", "The Demon Hunter", listOf("Archean Eon Art", "Cangyuan Tu"), true),
+        TitleDictionaryEntry("Bai Lian Cheng Shen", "Apotheosis", listOf("Elevation to the Status of a God", "Refining into a God"), true),
+        TitleDictionaryEntry("Wu Shen Zhu Zai", "Martial Master", listOf("Dominant Martial God", "God of Martial Arts"), true),
+        TitleDictionaryEntry("Lian Qi Shi Wan Nian", "One Hundred Thousand Years of Qi Refining", listOf("100,000 Years of Qi Refining", "100000 Years of Qi Refining"), true),
+        TitleDictionaryEntry("Zhu Xian", "Jade Dynasty", listOf("Legend of Chusen", "Zhu Xian"), true),
+        TitleDictionaryEntry("Da Zhu Zai", "The Great Ruler", listOf("Great Ruler"), true),
+        TitleDictionaryEntry("Ni Tian Xie Shen", "Against the Gods", listOf("Against the Sky Supreme"), true),
+        TitleDictionaryEntry("Ni Tian Zhizun", "Against the Sky Supreme", listOf("Against the Gods", "Supreme Against the Sky"), true),
+        TitleDictionaryEntry("Shiguang Dailiren", "Link Click", listOf("Time Agent", "Time Agents"), true),
+        TitleDictionaryEntry("Tian Guan Ci Fu", "Heaven Official's Blessing", listOf("Heaven Official Blessing", "TGCF"), true),
+        TitleDictionaryEntry("Mo Dao Zu Shi", "The Founder of Diabolism", listOf("Grandmaster of Demonic Cultivation", "The Grandmaster of Demonic Cultivation", "MDZS"), true),
+        TitleDictionaryEntry("Yi Nian Yong Heng", "A Will Eternal", listOf("One Thought Eternity", "Will Eternal"), true),
+        TitleDictionaryEntry("Wu Dong Qian Kun", "Martial Universe", listOf("Martial Movement Upheaval"), true),
+        TitleDictionaryEntry("Xing Chen Bian", "Stellar Transformations", listOf("Stellar Transformation", "Legend of Immortals"), true),
+        TitleDictionaryEntry("Yao Shen Ji", "Tales of Demons and Gods", listOf("Demons and Gods"), true),
+        TitleDictionaryEntry("Xian Wang de Richang Shenghuo", "The Daily Life of the Immortal King", listOf("Daily Life of the Immortal King", "Immortal King"), true),
+        TitleDictionaryEntry("Quan Zhi Gao Shou", "The King's Avatar", listOf("King's Avatar", "Full-Time Expert"), true),
+        TitleDictionaryEntry("Quanzhi Gaoshou", "The King's Avatar", listOf("King's Avatar"), true),
+        TitleDictionaryEntry("Quanzhi Fashi", "Full-Time Magister", listOf("Versatile Mage"), true),
+        TitleDictionaryEntry("Quan Zhi Fa Shi", "Full-Time Magister", listOf("Versatile Mage"), true),
+        TitleDictionaryEntry("Cike Wu Liuqi", "Scissor Seven", listOf("Killer Seven", "Wu Liuqi"), true),
+        TitleDictionaryEntry("Wu Liuqi", "Scissor Seven", listOf("Killer Seven"), true),
+        TitleDictionaryEntry("Cikang Qi", "Scissor Seven", listOf("Killer Seven"), true),
+        TitleDictionaryEntry("Wu Shan Wu Xing", "Fog Hill of Five Elements", listOf("Fog Hill of the Five Elements"), true),
+        TitleDictionaryEntry("Zhan Shen", "Slay the Gods", listOf("I Learned to Slay Gods in a Mental Hospital", "God Slayer"), true),
+        TitleDictionaryEntry("Zhan Shen: Fan Shen", "Slay the Gods", listOf("Slay the Gods"), true),
+        TitleDictionaryEntry("Huo Feng Liao Yuan", "The Ravages of Time", listOf("Ravages of Time"), true),
+        TitleDictionaryEntry("Juan Siliang", "The Island of Siliang", listOf("Island of Siliang"), true),
+        TitleDictionaryEntry("Si Liang Dao", "The Island of Siliang", listOf("Island of Siliang"), true),
+        TitleDictionaryEntry("Xian Wu Chuan", "Legend of Xianwu", listOf("Legend of Martial Immortal", "Xianwu Emperor"), true),
+        TitleDictionaryEntry("Xian Wu Di Zun", "Legend of Xianwu", listOf("Xianwu Emperor", "Immortal Martial Emperor"), true),
+        TitleDictionaryEntry("Yuan Zun", "Dragon Prince Yuan", listOf("Yuan Zun"), true),
+        TitleDictionaryEntry("Sheng Xu", "The Sacred Ruins", listOf("Sacred Ruins"), true),
+        TitleDictionaryEntry("Hua Jianghu: Bu Liang Ren", "A Portrait of Jianghu: The Degenerate", listOf("The Degenerate Drawing Jianghu", "Bu Liang Ren", "The Degenerate"), true),
+        TitleDictionaryEntry("Bu Liang Ren", "The Degenerate: Drawing Jianghu", listOf("The Degenerate", "Bad Guys"), true),
+        TitleDictionaryEntry("Da Wang Rao Ming", "Spare Me, Great Lord!", listOf("Spare Me Great Lord"), true),
+        TitleDictionaryEntry("Yi Ren Zhi Xia", "The Outcast", listOf("Hitori no Shita: The Outcast", "Under One Person"), true),
+        TitleDictionaryEntry("Zhen Hun Jie", "Rakshasa Street", listOf("Requiem Street"), true),
+        TitleDictionaryEntry("Ling Long: Incarnation", "Ling Cage: Incarnation", listOf("Spirit Cage: Incarnation", "Ling Cage"), true),
+        TitleDictionaryEntry("Ling Long", "Ling Cage: Incarnation", listOf("Spirit Cage"), true),
+        TitleDictionaryEntry("Wan Jie Duzun", "Ten Thousand Worlds", listOf("Lord of Ten Thousand Worlds"), true),
+        TitleDictionaryEntry("Wan Jie Xian Zong", "Wonderland of Ten Thousand Deities", listOf("Wonderland"), true),
+        TitleDictionaryEntry("Wan Jie Fa Shen", "God of All Realms", listOf("Law God of Ten Thousand Worlds"), true),
+        TitleDictionaryEntry("Wan Jie Shen Zhu", "Lord of the Universe", listOf("God of Ten Thousand Worlds"), true),
+        TitleDictionaryEntry("Ling Jian Zun", "Spirit Sword Sovereign", listOf("Sword Spirit Sovereign"), true),
+        TitleDictionaryEntry("Du Bu Xiao Yao", "One Step Toward Freedom", listOf("Step to Freedom"), true),
+        TitleDictionaryEntry("Shen Wu Tian Zun", "Supreme Martial God", listOf("Legend of the Supreme Soldier"), true),
+        TitleDictionaryEntry("Dan Dao Zhi Zun", "Alchemy Supreme", listOf("Supreme Alchemist"), true),
+        TitleDictionaryEntry("Jue Shi Wu Hun", "Peerless Battle Spirit", listOf("Peerless Martial Spirit"), true),
+        TitleDictionaryEntry("Jue Shi Wu Shen", "Peerless Martial God", listOf("Peerless Martial God"), true),
+        TitleDictionaryEntry("Shen Mu", "Tomb of Fallen Gods", listOf("Divine Tomb"), true),
+        TitleDictionaryEntry("Long She Yan Yi", "Dragon's Disciple", listOf("Dragon Snake Evolution"), true),
+        TitleDictionaryEntry("Chao Neng Lifang", "Super Cube", listOf("Super Cube Donghua"), true),
+        TitleDictionaryEntry("Tu Bian Yingxiong X", "To Be Hero X", listOf("To Be Hero X"), true),
+        TitleDictionaryEntry("Tu Bian Yingxiong", "To Be Hero", listOf("To Be Hero"), true),
+        TitleDictionaryEntry("Shi Kun", "All Devouring Whale: Homecoming", listOf("All Devouring Whale"), true),
+        TitleDictionaryEntry("Kun Tun Tianxia", "All Devouring Whale: Homecoming", listOf("All Devouring Whale"), true),
+        TitleDictionaryEntry("Tian Xing Jiu Ge", "Nine Songs of the Moving Heavens", listOf("Nine Songs"), true),
+        TitleDictionaryEntry("Qin Shi Ming Yue", "The Legend of Qin", listOf("Qin's Moon"), true),
+        TitleDictionaryEntry("Wu Geng Ji", "The Legend and the Hero", listOf("Chronicles of the God's Order"), true),
+        TitleDictionaryEntry("Xi Xing Ji", "The Westward", listOf("Journey to the Westward"), true),
+        TitleDictionaryEntry("Shao Nian Ge Xing", "Great Journey of Teenagers", listOf("The Blood of Youth", "Youths and Golden Coffin"), true),
+        TitleDictionaryEntry("Shao Nian Bai Ma Zui Chun Feng", "Young Brewmaster's Adventure", listOf("Dashing Youth"), true),
+        TitleDictionaryEntry("An He Chuan", "Tales of Dark River", listOf("Blood River"), true),
+        TitleDictionaryEntry("Cang Lan Jue", "Love Between Fairy and Devil", listOf("Cang Lan Jue"), true),
+        TitleDictionaryEntry("Cang Lan Zhi Jue", "Love Between Fairy and Devil", listOf("Love Between Fairy and Devil"), true),
+        TitleDictionaryEntry("Shan He Jian Xin", "Thousand Autumns", listOf("Thousand Autumns"), true),
+        TitleDictionaryEntry("Chuan Shu Zijiu Zhinan", "Scumbag System", listOf("The Scum Villain's Self-Saving System"), true),
+        TitleDictionaryEntry("Tian Bao Fuyao Lu", "Legend of Exorcism", listOf("Tianbao Fuyao Lu"), true),
+        TitleDictionaryEntry("Dinghai Fusheng Lu", "Dinghai Fusheng Records", listOf("Epic of Divinity Light"), true),
+        TitleDictionaryEntry("Dinghai Qiao Shen Lu", "Dinghai Fusheng Records", listOf("Epic of Divinity Light"), true),
+        TitleDictionaryEntry("Liang Bu Yi", "No Doubt in Us", listOf("No Doubt in Us"), true),
+        TitleDictionaryEntry("You Shou Yan", "Fabulous Beasts", listOf("Fabulous Beasts"), true),
+        TitleDictionaryEntry("Fei Ren Zai", "Non-Human", listOf("Fabulous Beasts", "Fei Ren Zai"), true),
+        TitleDictionaryEntry("Luo Xiaohei Zhan Ji", "The Legend of Hei", listOf("The Legend of Luo Xiaohei"), true),
+        TitleDictionaryEntry("Bai She: Yuan Qi", "White Snake", listOf("White Snake Origin"), true),
+        TitleDictionaryEntry("Qing She: Jie Qi", "Green Snake", listOf("White Snake 2: Green Snake"), true),
+        TitleDictionaryEntry("Da Yu Hai Tang", "Big Fish & Begonia", listOf("Big Fish and Begonia"), true),
+        TitleDictionaryEntry("Nezha: Mo Tong Jiang Shi", "Ne Zha", listOf("Nezha: Birth of the Demon Child"), true),
+        TitleDictionaryEntry("Jiang Ziya", "Jiang Ziya: Legend of Deification", listOf("Legend of Deification"), true),
+        TitleDictionaryEntry("Hu Yao Xiao Hongniang", "Fox Spirit Matchmaker", listOf("Fox Spirit Matchmaker"), true),
+        TitleDictionaryEntry("Bing Huo Mo Chu", "The Magic Chef of Ice and Fire", listOf("Magic Chef of Ice and Fire"), true),
+        TitleDictionaryEntry("Xue Ying Ling Zhu", "Snow Eagle Lord", listOf("Lord Xue Ying"), true),
+        TitleDictionaryEntry("Yong Sheng", "Immortality", listOf("Eternal Life", "Yong Sheng"), true),
+        TitleDictionaryEntry("Xing Wu Shen Jue", "Star Martial God Technique", listOf("Star Martial God"), true),
+        TitleDictionaryEntry("Wan Gu Jian Shen", "Eternal Sword God", listOf("Ten Thousand Ancient Sword God"), true),
+        TitleDictionaryEntry("Wan Gu Shen Hua", "My Heroic Husband", listOf("Eternal Myth"), true),
+        TitleDictionaryEntry("Jian Yu Feng Yun", "Sword Domain", listOf("The Wind and Cloud of Sword Domain"), true),
+        TitleDictionaryEntry("Shen Lan Qi Yu Wushuang Zhu", "The Land of Miracles", listOf("Land of Miracles"), true),
+        TitleDictionaryEntry("Chang Sheng Jie", "World of Immortals", listOf("Immortal World"), true),
+        TitleDictionaryEntry("Yuan Long", "Carp Reborn", listOf("First Dragon"), true),
+        TitleDictionaryEntry("Wu Lian Dian Feng", "Martial Peak", listOf("Peak of Martial Arts"), true),
+        TitleDictionaryEntry("Zhen Dao Ge", "Song of the Real Blade", listOf("True Blade Song"), true),
+        TitleDictionaryEntry("Hu He Yao Shi Lu", "Tiger Crane", listOf("Record of Tiger and Crane"), true),
+        TitleDictionaryEntry("Shi Fang Wu Sheng", "Ten Directions Martial Saint", listOf("Martial Saint of Ten Directions"), true),
+        TitleDictionaryEntry("Zhi Zun Shen Ming", "Supreme God Emperor", listOf("Supreme God"), true),
+        TitleDictionaryEntry("Tian Huang Zhan Shen", "Desolate God of War", listOf("God of War"), true),
+        TitleDictionaryEntry("Zui Qiang Fan Pai", "Strongest Anti M.E.T.A", listOf("Ultimate Scheming System"), true),
+        TitleDictionaryEntry("Zui Hou De Zha", "The Last Summoner", listOf("Last Summoner"), true),
+        TitleDictionaryEntry("Zui Hou De Zhao Huan Shi", "The Last Summoner", listOf("Last Summoner"), true),
+        TitleDictionaryEntry("Tong Ling Fei", "Psychic Princess", listOf("Psychic Princess"), true),
+        TitleDictionaryEntry("Xiao Lu He Xiao Lan", "Beryl and Sapphire", listOf("Beryl and Sapphire"), true),
+        TitleDictionaryEntry("Guan Hai Ce", "Watching the Sea", listOf("Strategies of Watching the Sea"), true),
+        TitleDictionaryEntry("Feng Shen Bang", "New Gods: Yang Jian", listOf("Investiture of the Gods"), true),
+        TitleDictionaryEntry("Tai Yi Jian Xian Chuan", "Legend of Taiyi Sword Immortal", listOf("Taiyi Sword Immortal"), true),
+        TitleDictionaryEntry("Wu Ying Sanqian Dao", "Three Thousand Paths of Martial Arts", listOf("Three Thousand Martial Paths"), true),
+        TitleDictionaryEntry("Jiu Tian Xuan Di Jue", "Nine Heavens Profound Emperor", listOf("Nine Star Hegemon"), true),
+        TitleDictionaryEntry("Zhen Wu Dian Feng", "True Martial World", listOf("Peak of True Martial Arts"), true),
+        TitleDictionaryEntry("Wan Gu Zui Qiang Zong", "The All-Devouring Sect", listOf("Strongest Sect of All Times"), true),
+        TitleDictionaryEntry("Da Dao Chao Tian", "The Path Toward Heaven", listOf("Path Toward Heaven"), true),
+        TitleDictionaryEntry("Shen Lan Zhi Yue", "Deep Blue Moon", listOf("Deep Blue Moon"), true),
+        TitleDictionaryEntry("Xinghai Qihang", "Starry Journey", listOf("Starry Journey"), true),
+        TitleDictionaryEntry("Bi Lan Zhi Yu", "Azure Legacy", listOf("Azure Legacy"), true),
+        TitleDictionaryEntry("Jiyi Guanli Ju", "False Memory", listOf("Memory Management Bureau"), true),
+        TitleDictionaryEntry("Bai Ri Cheng Wang", "Crowned in a Hundred Days", listOf("Crowned in a Hundred Days"), true),
+        TitleDictionaryEntry("Shi Yi Ci Yuan", "Eleventh Dimension", listOf("Eleventh Dimension"), true),
+        TitleDictionaryEntry("Shen Qi Ta Bang", "God's Tower Ranking", listOf("God's Tower Ranking"), true),
+        TitleDictionaryEntry("Lu Shidai", "Lu's Time", listOf("Lu's Time"), true),
+        TitleDictionaryEntry("Kuiba", "Kuiba", listOf("Kuiba"), true),
+        TitleDictionaryEntry("Wu Dong", "Martial Universe", listOf("Martial Universe"), true),
+        TitleDictionaryEntry("Xian Zun Nai Ba Dang Dao", "Immortal Sovereign Dad", listOf("Immortal Dad"), true),
+        TitleDictionaryEntry("Wo De Shi Xiong Tai Wen Jian Le", "My Senior Brother Is Too Steady", listOf("Big Brother"), true),
+        TitleDictionaryEntry("Shen Yin", "Throne of Seal", listOf("Sealed Divine Throne"), true),
+        TitleDictionaryEntry("Tun Tian Ji", "Heaven Swallowing Record", listOf("Swallowing the Heavens"), true),
+        TitleDictionaryEntry("Chao Shen Xue Yuan", "Transcend the Gods", listOf("Super God Academy"), true),
+        TitleDictionaryEntry("Xiong Bing Lian", "The Black Troop", listOf("Transcend the Gods: The Black Troop"), true),
+        TitleDictionaryEntry("Shi Xiong", "Big Brother", listOf("My Senior Brother Is Too Steady"), true),
+        TitleDictionaryEntry("Bai Yao Pu", "Fairies Albums", listOf("Manual of Hundred Demons"), true),
+        TitleDictionaryEntry("Da Li Si Ri Zhi", "White Cat Legend", listOf("Journal of Dali Temple"), true),
+        TitleDictionaryEntry("Wu Shuang Shu", "Peerless Martial Spirit", listOf("Peerless Art"), true),
+        TitleDictionaryEntry("Tian Ying", "Sky Shadow", listOf("Heavenly Shadow"), true),
+        TitleDictionaryEntry("Huan Chong Shi", "The Monster Pet Evolution", listOf("Monster Pet Evolution"), true),
+        TitleDictionaryEntry("Gu Long Feng Yun Lu", "Chronicles of Gu Long", listOf("Gu Long"), true),
+        TitleDictionaryEntry("Shi Jiu Tian", "19 Days", listOf("19 Days"), true),
 
-        // Re:Zero
-        "Re:Zero kara Hajimeru Isekai Seikatsu 4th Season" to "Re:ZERO -Starting Life in Another World- Season 4",
-        "Re:Zero kara Hajimeru Isekai Seikatsu 3rd Season" to "Re:ZERO -Starting Life in Another World- Season 3",
-        "Re:Zero kara Hajimeru Isekai Seikatsu 2nd Season" to "Re:ZERO -Starting Life in Another World- Season 2",
-        "Re:Zero kara Hajimeru Isekai Seikatsu" to "Re:ZERO -Starting Life in Another World-",
-
-        // Mushoku Tensei
-        "Mushoku Tensei III: Isekai Ittara Honki Dasu" to "Mushoku Tensei: Jobless Reincarnation Season 3",
-        "Mushoku Tensei II: Isekai Ittara Honki Dasu" to "Mushoku Tensei: Jobless Reincarnation Season 2",
-        "Mushoku Tensei: Isekai Ittara Honki Dasu" to "Mushoku Tensei: Jobless Reincarnation",
-
-        // Major Japanese Anime (Old & New)
-        "Mahou Shoujo Lyrical Nanoha EX: Detonation" to "Magical Girl Lyrical Nanoha EX",
-        "Mahou Shoujo Lyrical Nanoha EX" to "Magical Girl Lyrical Nanoha EX",
-        "Futsutsuka na Akujo dewa Gozaimasu ga" to "Though I Am an Inept Villainess",
-        "Futsutsuka na Akujo dewa Gozai" to "Though I Am an Inept Villainess",
-        "Oni no Hanayome" to "The Demon's Bride",
-        "Meitantei Conan" to "Detective Conan",
-        "Kimetsu no Yaiba: Yuukaku-hen" to "Demon Slayer: Entertainment District Arc",
-        "Kimetsu no Yaiba: Katanakaji no Sato-hen" to "Demon Slayer: Swordsmith Village Arc",
-        "Kimetsu no Yaiba: Hashira Geiko-hen" to "Demon Slayer: Hashira Training Arc",
-        "Kimetsu no Yaiba" to "Demon Slayer: Kimetsu no Yaiba",
-        "Shingeki no Kyojin" to "Attack on Titan",
-        "Boku no Hero Academia" to "My Hero Academia",
-        "Jujutsu Kaisen 2nd Season" to "Jujutsu Kaisen Season 2",
-        "Jujutsu Kaisen" to "Jujutsu Kaisen",
-        "Sousou no Frieren" to "Frieren: Beyond Journey's End",
-        "Kusuriya no Hitorigoto" to "The Apothecary Diaries",
-        "Kage no Jitsuryokusha ni Naritakute!" to "The Eminence in Shadow",
-        "Tate no Yuusha no Nariagari" to "The Rising of the Shield Hero",
-        "Kono Subarashii Sekai ni Shukufuku o!" to "KONOSUBA -God's blessing on this wonderful world!",
-        "Kaguya-sama wa Kokurasetai: Tensai-tachi no Renai Zunousen" to "Kaguya-sama: Love is War",
-        "Kaguya-sama wa Kokurasetai" to "Kaguya-sama: Love is War",
-        "Youjo Senki II" to "Saga of Tanya the Evil Season 2",
-        "Youjo Senki" to "Saga of Tanya the Evil",
-        "BLEACH: Sennen Kessen-hen - Kashin-tan" to "BLEACH: Thousand-Year Blood War - The Calamity",
-        "BLEACH: Sennen Kessen-hen" to "BLEACH: Thousand-Year Blood War",
-        "Bleach" to "Bleach",
-        "Super no Ura de Yani Suu Futari" to "Smoking Behind the Supermarket with You",
-        "Yomi no Tsugai" to "Daemons of the Shadow Realm",
-        "Katainaka no Ossan, Kensei ni Naru II" to "From Old Country Bumpkin to Master Swordsman Season 2",
-        "Katainaka no Ossan, Kensei ni Naru" to "From Old Country Bumpkin to Master Swordsman",
-        "Gaikotsu Kishi-sama, Tadaima Isekai e Odekakechuu II" to "Skeleton Knight in Another World Season 2",
-        "Otomege Sekai wa Mob ni Kibishii Sekai desu 2" to "Trapped in a Dating Sim Season 2",
-        "Tsuihou Sareta Tensei Juukishi wa Game Chishiki de Musou Suru" to "The Exiled Heavy Knight Knows How to Game the System",
-        "Ore dake Level Up na Ken" to "Solo Leveling",
-        "Solo Leveling" to "Solo Leveling",
-        "Chainsaw Man" to "Chainsaw Man",
-        "SPY FAMILY" to "Spy x Family",
-        "Spy x Family" to "Spy x Family",
-        "Oshi no Ko" to "Oshi no Ko [My Star]",
-        "Bocchi the Rock!" to "Bocchi the Rock!",
-        "Dandadan" to "Dandadan",
-        "Kaijuu 8-gou" to "Kaiju No. 8",
-        "Wind Breaker" to "Wind Breaker",
-        "Mashle: Magic and Muscles" to "Mashle: Magic and Muscles",
-        "Mashle" to "Mashle: Magic and Muscles",
-        "Dungeon Meshi" to "Delicious in Dungeon",
-        "Shangri-La Frontier" to "Shangri-La Frontier",
-        "Boku no Kokoro no Yabai Yatsu" to "The Dangers in My Heart",
-        "Yofukashi no Uta" to "Call of the Night",
-        "Rakudai Kishi no Cavalry" to "Chivalry of a Failed Knight",
-        "Mahouka Koukou no Rettousei" to "The Irregular at Magic High School",
-        "Youkoso Jitsuryoku Shijou Shugi no Kyoushitsu e" to "Classroom of the Elite",
-        "Kami no Tou: Tower of God" to "Tower of God",
-        "Kami no Tou" to "Tower of God",
-        "Tower of God" to "Tower of God",
-        "God of High School" to "The God of High School",
-        "Noblesse" to "Noblesse",
-        "One Piece" to "One Piece",
-        "Naruto: Shippuuden" to "Naruto: Shippuden",
-        "Naruto" to "Naruto",
-        "Dragon Ball Daima" to "Dragon Ball Daima",
-        "Dragon Ball Super" to "Dragon Ball Super",
-        "Dragon Ball Z" to "Dragon Ball Z",
-        "Dragon Ball" to "Dragon Ball",
-        "Hunter x Hunter (2011)" to "Hunter x Hunter",
-        "Hunter x Hunter" to "Hunter x Hunter",
-        "Fullmetal Alchemist: Brotherhood" to "Fullmetal Alchemist: Brotherhood",
-        "Hagane no Renkinjutsushi" to "Fullmetal Alchemist",
-        "Steins;Gate" to "Steins;Gate",
-        "Death Note" to "Death Note",
-        "Code Geass: Hangyaku no Lelouch" to "Code Geass: Lelouch of the Rebellion",
-        "Gintama" to "Gintama",
-        "Sword Art Online" to "Sword Art Online",
-        "No Game No Life" to "No Game No Life",
-        "Toradora!" to "Toradora!",
-        "Mob Psycho 100" to "Mob Psycho 100",
-        "Vinland Saga" to "Vinland Saga",
-        "One Punch Man" to "One-Punch Man",
-        "Shokugeki no Souma" to "Food Wars! Shokugeki no Soma",
-        "Haikyuu!!" to "Haikyu!!",
-        "Kuroko no Basket" to "Kuroko's Basketball",
-        "Slam Dunk" to "Slam Dunk",
-        "Neon Genesis Evangelion" to "Neon Genesis Evangelion",
-        "Shin Seiki Evangelion" to "Neon Genesis Evangelion",
-        "Cowboy Bebop" to "Cowboy Bebop",
-        "Samurai Champloo" to "Samurai Champloo",
-        "Trigun" to "Trigun",
-        "Berserk" to "Berserk",
-        "Monster" to "Monster",
-        "Ghost in the Shell" to "Ghost in the Shell",
-        "Koukyoushihen Eureka Seven" to "Eureka Seven",
-        "Tengen Toppa Gurren Lagann" to "Gurren Lagann",
-        "Kill la Kill" to "Kill la Kill",
-        "Fate/stay night" to "Fate/stay night",
-        "Fate/Zero" to "Fate/Zero",
-        "Overlord" to "Overlord",
-        "Yakusoku no Neverland" to "The Promised Neverland",
-        "Tokyo Ghoul" to "Tokyo Ghoul",
-        "Noragami" to "Noragami",
-        "Akame ga Kill!" to "Akame ga Kill!",
-        "Parasyte -the maxim-" to "Parasyte -the maxim-",
-        "Kiseijuu: Sei no Kakuritsu" to "Parasyte -the maxim-",
-        "Nanatsu no Taizai" to "The Seven Deadly Sins",
-        "Black Clover" to "Black Clover",
-        "Dr. STONE" to "Dr. STONE",
-        "Fire Force" to "Fire Force",
-        "Enen no Shouboutai" to "Fire Force",
-        "Sazae-san" to "Sazae-san",
-        "Chibi Maruko-chan" to "Chibi Maruko-chan",
-        "Doraemon" to "Doraemon",
-        "Crayon Shin-chan" to "Shin-chan",
-
-        // Chinese Donghua (Extensive English Title Mapping)
-        "Wanmei Shijie" to "Perfect World",
-        "Wu Shen Zhu Zai" to "Martial Master",
-        "Lian Qi Shi Wan Nian" to "100,000 Years of Qi Refining",
-        "Zhu Xian" to "Jade Dynasty",
-        "Da Zhu Zai" to "The Great Ruler",
-        "Ni Tian Xie Shen" to "Against the Gods",
-        "Shiguang Dailiren III" to "Link Click Season 3",
-        "Shiguang Dailiren II" to "Link Click Season 2",
-        "Shiguang Dailiren" to "Link Click",
-        "Tian Guan Ci Fu" to "Heaven Official's Blessing",
-        "Xian Ni" to "Renegade Immortal",
-        "Douluo Dalu 2: Jueshi Tangmen" to "Soul Land 2: The Peerless Tang Clan",
-        "Douluo Dalu II" to "Soul Land 2",
-        "Douluo Dalu" to "Soul Land",
-        "Zhe Tian" to "Shrouding the Heavens",
-        "Tunshi Xingkong" to "Swallowed Star",
-        "Yi Nian Yong Heng" to "A Will Eternal",
-        "Fan Ren Xiu Xian Chuan" to "A Record of a Mortal's Journey to Immortality",
-        "Dou Po Cang Qiong" to "Battle Through the Heavens",
-        "Wan Gu Shen Hua" to "My Heroic Husband",
-        "Wan Jie Duzun" to "Ten Thousand Worlds",
-        "Shen Yin Wang Zuo" to "Throne of Seal",
-        "Yao Shen Ji" to "Tales of Demons and Gods",
-        "Xian Wang de Richang Shenghuo" to "The Daily Life of the Immortal King",
-        "Wan Jie Xian Zong" to "Wonderland of Ten Thousand Deities",
-        "Wu Dong Qian Kun" to "Martial Universe",
-        "Xing Chen Bian" to "Stellar Transformations",
-        "Cang Lan Jue" to "Love Between Fairy and Devil",
-        "Mo Dao Zu Shi" to "The Grandmaster of Demonic Cultivation",
-        "Quan Zhi Gao Shou" to "The King's Avatar",
-        "Cikang Qi" to "Scissor Seven",
-        "Wu Shan Wu Xing" to "Fog Hill of Five Elements",
-        "Bai Lian Cheng Shen" to "Apotheosis",
-        "Cang Yuan Tu" to "The Demon Hunter",
-        "Ni Tian Zhizun" to "Against the Gods",
-        "Zhi Zun Shen Ming" to "Supreme God Emperor",
-        "Duo Xuan Bian" to "Thousand Autumns",
-        "Bi Lan Zhi Yu" to "Azure Legacy",
-        "Zui Hou De Zha" to "The Last Summoner",
-        "Jiyi Guanli Ju" to "False Memory",
-        "Bai Ri Cheng Wang" to "Crowned in a Hundred Days",
-        "Li Xiongmao" to "Raised by Demons: Panda Li",
-        "Shan He Jian Xin" to "Thousand Autumns",
-        "Ling Long: Incarnation" to "Ling Cage: Incarnation",
-        "Huayao" to "The Legend of Hei",
-        "Feng Shen Bang" to "New Gods: Yang Jian",
-        "Nezha: Mo Tong Jiang Shi" to "Ne Zha",
-        "Jiang Ziya" to "Legend of Deification",
-        "Bai She: Yuan Qi" to "White Snake",
-        "Qing She: Jie Qi" to "Green Snake",
-        "Da Yu Hai Tang" to "Big Fish & Begonia",
-        "Zhen Hun Jie" to "Rakshasa Street",
-        "Quanzhi Fashi" to "Full-Time Magister",
-        "Xinghai Qihang" to "Starry Journey",
-        "Shen Lan Zhi Yue" to "Deep Blue Moon",
-        "Yuan Zun" to "Dragon Prince Yuan",
-        "Sheng Xu" to "The Sacred Ruins",
-        "Bu Liang Ren" to "The Degenerate",
-        "Zhen Dao Ge" to "Song of the Real Blade",
-        "Fei Ren Zai" to "Non-Human",
-        "Lu Shidai" to "Lu's Time",
-        "Chuan Shu Zijiu Zhinan" to "Scumbag System",
-        "Tian Bao Fuyao Lu" to "Legend of Exorcism",
-        "Dinghai Qiao Shen Lu" to "Dinghai Fusheng Records",
-        "Liang Bu Yi" to "No Doubt In Us",
-        "You Shou Yan" to "Fabulous Beasts",
-        "Xiao Lu He Xiao Lan" to "Beryl and Sapphire",
-        "Tong Ling Fei" to "Psychic Princess",
-        "Shi Yi Ci Yuan" to "Eleventh Dimension",
-        "Cang Lan Zhi Jue" to "Love Between Fairy and Devil",
-        "Shi Zong Zhi Wu" to "Dance of the Dead",
-        "Guan Hai Ce" to "Watching the Sea",
-        "Shen Qi Ta Bang" to "God's Tower Ranking",
-        "Zui Qiang Fan Pai" to "Strongest Anti M.E.T.A",
-        "Tian Huang Zhan Shen" to "Desolate God of War",
-        "Shen Wu Tian Zun" to "Supreme Martial God",
-        "Du Bu Xiao Yao" to "One Step Toward Freedom",
-        "Wan Jie Fa Shen" to "God of All Realms",
-        "Ling Jian Zun" to "Spirit Sword Sovereign",
-        "Kuiba" to "Kuiba",
-
-        // More Classic and Seasonal Japanese Anime
-        "Choujigen Game Neptune" to "Hyperdimension Neptunia",
-        "Ansatsu Kyoushitsu" to "Assassination Classroom",
-        "Seishun Buta Yarou wa Bunny Girl Senpai no Yume wo Minai" to "Rascal Does Not Dream of Bunny Girl Senpai",
-        "Hataraku Saibou" to "Cells at Work!",
-        "Tensei Shitara Ken Deshita" to "Reincarnated as a Sword",
-        "Kinsou no Vermeil" to "Vermeil in Gold",
-        "Itai no wa Iya nano de Bougyoryoku ni Kyokufuri Shitai to Omoimasu" to "BOFURI: I Don't Want to Get Hurt, so I'll Max Out My Defense",
-        "Jidouhanbaiki ni Umarekawatta Ore wa Meikyuu wo Samayou" to "Reborn as a Vending Machine, I Now Wander the Dungeon",
-        "Tensei Kizoku, Kantei Skill de Nariagaru" to "As a Reincarnated Aristocrat, I'll Use My Appraisal Skill",
-        "Hitoribocchi no Isekai Kouryaku" to "Loner Life in Another World",
-        "Dungeon ni Deai wo Motomeru no wa Machigatteiru Darou ka" to "Is It Wrong to Try to Pick Up Girls in a Dungeon?",
-        "Dungeon ni Deai" to "Is It Wrong to Try to Pick Up Girls in a Dungeon?",
-        "DanMachi" to "Is It Wrong to Try to Pick Up Girls in a Dungeon?",
-        "Sentouin, Hakenshimasu!" to "Combatants Will Be Dispatched!",
-        "Shinmai Renkinjutsushi no Tenpo Keiei" to "Management of a Novice Alchemist",
-        "Ningen Fushin no Boukensha-tachi ga Sekai wo Sukuu You desu" to "Apparently, Disillusioned Adventurers Will Save the World",
-        "Isekai Ojisan" to "Uncle from Another World",
-        "Akuyaku Reijou Nanode Last Boss wo Kattemimashita" to "I'm the Villainess, So I'm Taming the Final Boss",
-        "Watashi no Oshi wa Akuyaku Reijou." to "I'm in Love with the Villainess",
-        "Tearmoon Teikoku Monogatari" to "Tearmoon Empire",
-        "Shangri-La Frontier: Kusoge Hunter, Kamige ni Idoman to Su" to "Shangri-La Frontier",
-        "Akuyaku Reijou Level 99" to "Villainess Level 99: I May Be the Hidden Boss but I'm Not the Demon Lord",
-        "Oroka na Tenshi wa Akuma to Odoru" to "The Foolish Angel Dances with the Devil",
-        "Kuroshitsuji" to "Black Butler",
-        "Mahoutsukai no Yome" to "The Ancient Magus' Bride",
-        "Shigatsu wa Kimi no Uso" to "Your Lie in April",
-        "Ano Hi Mita Hana no Namae wo Bokutachi wa Mada Shiranai." to "Anohana: The Flower We Saw That Day",
-        "Koe no Katachi" to "A Silent Voice",
-        "Kimi no Na wa." to "Your Name.",
-        "Tenki no Ko" to "Weathering With You",
-        "Suzume no Tojimari" to "Suzume",
-        "Hotarubi no Mori e" to "Into the Forest of Fireflies' Light",
-        "Sen to Chihiro no Kamikakushi" to "Spirited Away",
-        "Mononoke Hime" to "Princess Mononoke",
-        "Tonari no Totoro" to "My Neighbor Totoro",
-        "Howl no Ugoku Shiro" to "Howl's Moving Castle",
-        "Kimi ni Todoke" to "Kimi ni Todoke: From Me to You",
-        "Ouran Koukou Host Club" to "Ouran High School Host Club",
-        "Clannad: After Story" to "Clannad: After Story",
-        "Clannad" to "Clannad",
-        "Angel Beats!" to "Angel Beats!",
-        "Charlotte" to "Charlotte",
-        "Guilty Crown" to "Guilty Crown",
-        "Mirai Nikki" to "The Future Diary",
-        "Elfen Lied" to "Elfen Lied",
-        "Higurashi no Naku Koro ni" to "Higurashi: When They Cry",
-        "Another" to "Another",
-        "Death Parade" to "Death Parade",
-        "Psycho-Pass" to "Psycho-Pass",
-        "Darker than Black" to "Darker than Black",
-        "Hellsing Ultimate" to "Hellsing Ultimate",
-        "Black Lagoon" to "Black Lagoon",
-        "Baccano!" to "Baccano!",
-        "Durarara!!" to "Durarara!!",
-        "Samurai Champloo" to "Samurai Champloo",
-        "Great Teacher Onizuka" to "Great Teacher Onizuka",
-        "Rurouni Kenshin" to "Rurouni Kenshin",
-        "Yu Yu Hakusho" to "Yu Yu Hakusho",
-        "InuYasha" to "Inuyasha",
-        "Bleach: Sennen Kessen-hen" to "BLEACH: Thousand-Year Blood War",
-        "Cardcaptor Sakura" to "Cardcaptor Sakura",
-        "Sailor Moon" to "Sailor Moon",
-        "Bishoujo Senshi Sailor Moon" to "Sailor Moon"
+        // =====================================================================
+        // MAJOR JAPANESE ANIME (Romaji -> Official English)
+        // =====================================================================
+        TitleDictionaryEntry("Tensei Shitara Slime Datta Ken", "That Time I Got Reincarnated as a Slime", listOf("Tensura", "Slime Isekai")),
+        TitleDictionaryEntry("Mairimashita! Iruma-kun", "Welcome to Demon School! Iruma-kun", listOf("Iruma-kun")),
+        TitleDictionaryEntry("Re:Zero kara Hajimeru Isekai Seikatsu", "Re:ZERO -Starting Life in Another World-", listOf("Re:Zero", "Starting Life in Another World")),
+        TitleDictionaryEntry("Mushoku Tensei: Isekai Ittara Honki Dasu", "Mushoku Tensei: Jobless Reincarnation", listOf("Jobless Reincarnation")),
+        TitleDictionaryEntry("Kimetsu no Yaiba", "Demon Slayer: Kimetsu no Yaiba", listOf("Demon Slayer")),
+        TitleDictionaryEntry("Shingeki no Kyojin", "Attack on Titan", listOf("AOT")),
+        TitleDictionaryEntry("Boku no Hero Academia", "My Hero Academia", listOf("MHA")),
+        TitleDictionaryEntry("Sousou no Frieren", "Frieren: Beyond Journey's End", listOf("Frieren")),
+        TitleDictionaryEntry("Kusuriya no Hitorigoto", "The Apothecary Diaries", listOf("Apothecary Diaries")),
+        TitleDictionaryEntry("Kage no Jitsuryokusha ni Naritakute!", "The Eminence in Shadow", listOf("Eminence in Shadow")),
+        TitleDictionaryEntry("Tate no Yuusha no Nariagari", "The Rising of the Shield Hero", listOf("Shield Hero")),
+        TitleDictionaryEntry("Kono Subarashii Sekai ni Shukufuku o!", "KONOSUBA -God's blessing on this wonderful world!", listOf("Konosuba")),
+        TitleDictionaryEntry("Kaguya-sama wa Kokurasetai", "Kaguya-sama: Love is War", listOf("Love is War")),
+        TitleDictionaryEntry("Youjo Senki", "Saga of Tanya the Evil", listOf("Tanya the Evil")),
+        TitleDictionaryEntry("BLEACH: Sennen Kessen-hen", "BLEACH: Thousand-Year Blood War", listOf("Bleach TYBW")),
+        TitleDictionaryEntry("Ore dake Level Up na Ken", "Solo Leveling", listOf("Solo Leveling")),
+        TitleDictionaryEntry("Meitantei Conan", "Detective Conan", listOf("Case Closed")),
+        TitleDictionaryEntry("Kaijuu 8-gou", "Kaiju No. 8", listOf("Kaiju 8")),
+        TitleDictionaryEntry("Dungeon Meshi", "Delicious in Dungeon", listOf("Delicious in Dungeon")),
+        TitleDictionaryEntry("Boku no Kokoro no Yabai Yatsu", "The Dangers in My Heart", listOf("Dangers in My Heart")),
+        TitleDictionaryEntry("Yofukashi no Uta", "Call of the Night", listOf("Call of the Night")),
+        TitleDictionaryEntry("Youkoso Jitsuryoku Shijou Shugi no Kyoushitsu e", "Classroom of the Elite", listOf("COTE")),
+        TitleDictionaryEntry("Kami no Tou", "Tower of God", listOf("Tower of God")),
+        TitleDictionaryEntry("Hagane no Renkinjutsushi", "Fullmetal Alchemist", listOf("FMA", "Fullmetal Alchemist: Brotherhood")),
+        TitleDictionaryEntry("Code Geass: Hangyaku no Lelouch", "Code Geass: Lelouch of the Rebellion", listOf("Code Geass")),
+        TitleDictionaryEntry("Shokugeki no Souma", "Food Wars! Shokugeki no Soma", listOf("Food Wars")),
+        TitleDictionaryEntry("Enen no Shouboutai", "Fire Force", listOf("Fire Force")),
+        TitleDictionaryEntry("Nanatsu no Taizai", "The Seven Deadly Sins", listOf("Seven Deadly Sins")),
+        TitleDictionaryEntry("Yakusoku no Neverland", "The Promised Neverland", listOf("Promised Neverland")),
+        TitleDictionaryEntry("Kiseijuu: Sei no Kakuritsu", "Parasyte -the maxim-", listOf("Parasyte")),
+        TitleDictionaryEntry("Ansatsu Kyoushitsu", "Assassination Classroom", listOf("Assassination Classroom")),
+        TitleDictionaryEntry("Seishun Buta Yarou wa Bunny Girl Senpai no Yume wo Minai", "Rascal Does Not Dream of Bunny Girl Senpai", listOf("Bunny Girl Senpai")),
+        TitleDictionaryEntry("Dungeon ni Deai wo Motomeru no wa Machigatteiru Darou ka", "Is It Wrong to Try to Pick Up Girls in a Dungeon?", listOf("DanMachi")),
+        TitleDictionaryEntry("Shigatsu wa Kimi no Uso", "Your Lie in April", listOf("Your Lie in April")),
+        TitleDictionaryEntry("Koe no Katachi", "A Silent Voice", listOf("Silent Voice")),
+        TitleDictionaryEntry("Kimi no Na wa.", "Your Name.", listOf("Your Name")),
+        TitleDictionaryEntry("Tenki no Ko", "Weathering With You", listOf("Weathering With You")),
+        TitleDictionaryEntry("Sen to Chihiro no Kamikakushi", "Spirited Away", listOf("Spirited Away")),
+        TitleDictionaryEntry("Mononoke Hime", "Princess Mononoke", listOf("Princess Mononoke")),
+        TitleDictionaryEntry("Howl no Ugoku Shiro", "Howl's Moving Castle", listOf("Howl's Moving Castle")),
+        TitleDictionaryEntry("Katainaka no Ossan, Kensei ni Naru", "From Old Country Bumpkin to Master Swordsman", listOf("Old Country Bumpkin")),
+        TitleDictionaryEntry("Super no Ura de Yani Suu Futari", "Smoking Behind the Supermarket with You", listOf("Smoking Behind the Supermarket")),
+        TitleDictionaryEntry("Yomi no Tsugai", "Daemons of the Shadow Realm", listOf("Daemons of the Shadow Realm")),
+        TitleDictionaryEntry("Oni no Hanayome", "The Demon's Bride", listOf("Demon's Bride")),
+        TitleDictionaryEntry("Futsutsuka na Akujo dewa Gozaimasu ga", "Though I Am an Inept Villainess", listOf("Inept Villainess"))
     )
+
+    // Precomputed normalized lookup tables (sorted longest key first for clean prefix matching)
+    private val normalizedMap: Map<String, TitleDictionaryEntry> by lazy {
+        val map = LinkedHashMap<String, TitleDictionaryEntry>()
+        for (entry in entries) {
+            val key = normalizeKey(entry.pinyinOrRomaji)
+            if (key.isNotEmpty() && !map.containsKey(key)) {
+                map[key] = entry
+            }
+            val compactKey = key.replace(" ", "")
+            if (compactKey.length >= 6 && !map.containsKey(compactKey)) {
+                map[compactKey] = entry
+            }
+        }
+        map
+    }
+
+    private val sortedPrefixEntries: List<Pair<String, TitleDictionaryEntry>> by lazy {
+        entries.map { normalizeKey(it.pinyinOrRomaji) to it }
+            .filter { it.first.length >= 5 }
+            .sortedByDescending { it.first.length }
+    }
 
     private val patternReplacements = listOf(
-        Regex("(?i)Tensei Shitara Slime Datta Ken") to "That Time I Got Reincarnated as a Slime",
-        Regex("(?i)Mairimashita! Iruma-kun") to "Welcome to Demon School! Iruma-kun",
-        Regex("(?i)Meitantei Conan") to "Detective Conan",
-        Regex("(?i)Shiguang Dailiren") to "Link Click",
-        Regex("(?i)Tian Guan Ci Fu") to "Heaven Official's Blessing",
-        Regex("(?i)Xian Ni") to "Renegade Immortal",
-        Regex("(?i)Douluo Dalu 2") to "Soul Land 2",
-        Regex("(?i)Douluo Dalu") to "Soul Land",
-        Regex("(?i)Zhe Tian") to "Shrouding the Heavens",
-        Regex("(?i)Tunshi Xingkong") to "Swallowed Star",
-        Regex("(?i)Yi Nian Yong Heng") to "A Will Eternal",
-        Regex("(?i)Fan Ren Xiu Xian Chuan") to "A Record of a Mortal's Journey to Immortality",
-        Regex("(?i)Dou Po Cang Qiong") to "Battle Through the Heavens",
-        Regex("(?i)Shen Yin Wang Zuo") to "Throne of Seal",
-        Regex("(?i)Yao Shen Ji") to "Tales of Demons and Gods",
-        Regex("(?i)Xian Wang de Richang Shenghuo") to "The Daily Life of the Immortal King",
-        Regex("(?i)Wu Dong Qian Kun") to "Martial Universe",
-        Regex("(?i)Xing Chen Bian") to "Stellar Transformations",
-        Regex("(?i)Mo Dao Zu Shi") to "The Grandmaster of Demonic Cultivation",
-        Regex("(?i)Quan Zhi Gao Shou") to "The King's Avatar",
-        Regex("(?i)Bai Lian Cheng Shen") to "Apotheosis",
-        Regex("(?i)Cang Yuan Tu") to "The Demon Hunter",
-        Regex("(?i)Wanmei Shijie") to "Perfect World",
-        Regex("(?i)Wu Shen Zhu Zai") to "Martial Master",
-        Regex("(?i)Zhu Xian") to "Jade Dynasty",
-        Regex("(?i)Ni Tian Zhizun") to "Against the Gods",
-        Regex("(?i)Ni Tian Xie Shen") to "Against the Gods",
-        Regex("(?i)Kimetsu no Yaiba") to "Demon Slayer",
-        Regex("(?i)Boku no Hero Academia") to "My Hero Academia",
-        Regex("(?i)Shingeki no Kyojin") to "Attack on Titan",
-        Regex("(?i)Sousou no Frieren") to "Frieren: Beyond Journey's End",
-        Regex("(?i)Kusuriya no Hitorigoto") to "The Apothecary Diaries",
-        Regex("(?i)Kage no Jitsuryokusha") to "The Eminence in Shadow",
-        Regex("(?i)4th Season") to "Season 4",
-        Regex("(?i)3rd Season") to "Season 3",
-        Regex("(?i)2nd Season") to "Season 2",
-        Regex("(?i)1st Season") to "Season 1",
-        Regex("(?i)Dai (\\d+) Ki") to "Season $1"
+        Regex("(?i)\\b4th Season\\b") to "Season 4",
+        Regex("(?i)\\b3rd Season\\b") to "Season 3",
+        Regex("(?i)\\b2nd Season\\b") to "Season 2",
+        Regex("(?i)\\b1st Season\\b") to "Season 1",
+        Regex("(?i)\\bDai\\s*(\\d+)\\s*Ki\\b") to "Season $1",
+        Regex("(?i)\\bDi\\s*Er\\s*Ji\\b") to "Season 2",
+        Regex("(?i)\\bDi\\s*San\\s*Ji\\b") to "Season 3",
+        Regex("(?i)\\bDi\\s*Si\\s*Ji\\b") to "Season 4",
+        Regex("(?i)\\bDi\\s*Wu\\s*Ji\\b") to "Season 5",
+        Regex("(?i)\\bDi\\s*Liu\\s*Ji\\b") to "Season 6",
+        Regex("(?i)\\bDi\\s*(\\d+)\\s*Ji\\b") to "Season $1",
+        Regex("(?i)\\bNian\\s*Fan\\b") to "Annual Edition",
+        Regex("(?i)\\bTebie\\s*Pian\\b") to "Special",
+        Regex("(?i)\\bFanwai\\b") to "Special",
+        Regex("(?i)\\bQianzhuan\\b") to "Prequel",
+        Regex("(?i)\\bJuchang\\s*Ban\\b") to "Movie"
     )
 
+    private val ENGLISH_CORE_WORDS = setOf(
+        "the", "of", "in", "to", "and", "for", "with", "from", "by", "on", "at", "as", "my", "our", "your",
+        "world", "god", "gods", "immortal", "immortality", "eternal", "eternity", "heaven", "heavens", "heavenly",
+        "sky", "star", "stars", "starry", "soul", "spirit", "martial", "sword", "blade", "master", "lord", "king",
+        "emperor", "prince", "princess", "queen", "demon", "demons", "devil", "angel", "dragon", "phoenix", "tiger",
+        "wolf", "beast", "beasts", "monster", "hero", "legend", "legends", "tales", "tale", "story", "chronicles",
+        "record", "records", "journey", "adventure", "quest", "battle", "war", "fight", "fights", "slay", "slayer",
+        "hunter", "assassin", "killer", "shadow", "dark", "light", "blood", "fire", "ice", "wind", "thunder",
+        "earth", "sea", "river", "mountain", "island", "land", "realm", "realms", "universe", "cosmos", "space",
+        "time", "life", "death", "dead", "tomb", "grave", "ruins", "sacred", "divine", "holy", "supreme", "sovereign",
+        "peerless", "unrivaled", "great", "grand", "ancient", "mortal", "renegade", "against", "through", "beyond",
+        "swallowed", "devouring", "shrouding", "herding", "coming", "throne", "seal", "sealed", "dynasty", "jade",
+        "cultivation", "alchemy", "refining", "sect", "clan", "school", "academy", "brother", "sister", "senior",
+        "steady", "perfect", "stellar", "transformations", "apotheosis", "mysteries", "mystery", "magic", "magister",
+        "mage", "summoner", "outcast", "degenerate", "street", "cage", "incarnation", "click", "link", "blessing",
+        "official", "avatar", "scissor", "seven", "fog", "hill", "five", "elements", "ravages", "spare", "me",
+        "daily", "will", "thousand", "ten", "hundred", "years", "step", "freedom", "disciple", "super", "cube",
+        "whale", "songs", "youth", "love", "between", "fairy", "autumns", "system", "exorcism", "doubt", "fabulous",
+        "snake", "white", "green", "black", "red", "blue", "gold", "golden", "silver", "big", "fish", "begonia",
+        "fox", "matchmaker", "chef", "snow", "eagle", "peak", "domain", "miracles", "carp", "reborn", "path",
+        "toward", "season", "part", "movie", "special", "edition", "reincarnated", "slime", "titan", "attack",
+        "apothecary", "diaries", "shield", "eminence", "classroom", "elite", "tower", "solo", "leveling", "online",
+        "piece", "punch", "notebook", "note", "detective", "classroom", "silent", "voice", "name", "weathering",
+        "spirited", "away", "moving", "castle", "promised", "neverland", "deadly", "sins", "clover", "stone", "force"
+    )
+
+    private val PINYIN_MARKERS = setOf(
+        "zh", "ch", "sh", "xi", "qi", "ji", "yu", "lv", "xue", "zhe", "tian", "xian", "shen", "dou", "luo",
+        "wang", "zuo", "cang", "qiong", "ling", "zun", "jian", "wan", "jie", "wu", "dao", "mo", "feng", "yun",
+        "long", "huo", "bing", "lei", "xing", "kong", "tun", "shi", "ren", "chuan", "zhuan", "zhi", "bu", "nian",
+        "fan", "bai", "hei", "qing", "hong", "jin", "yin", "yuan", "mu", "gu", "shan", "he", "xiao", "da", "tai",
+        "jue", "yao", "shijie", "dalu", "xingkong", "cangqiong", "xiuxian", "wangzuo", "dailiren", "gaoshou",
+        "fashi", "liuqi", "liang", "jianghu", "siliang", "yongheng", "qiankun", "zhan", "gong", "cheng", "ming",
+        "shuang", "huan", "chong", "shao", "chun", "qiu", "dong", "xia", "dizi", "zong", "men"
+    )
+
+    private val NON_ENGLISH_LATIN_MARKERS = setOf(
+        "el", "la", "los", "las", "del", "una", "con", "para", "por", "der", "die", "das", "und", "ein", "eine",
+        "les", "des", "une", "dans", "pour", "avec", "cua", "nguoi", "dau", "pha", "the", "gioi", "tinh", "tien"
+    )
+
+    private val JAPANESE_GRAMMAR_TOKENS = setOf(
+        "no", "wa", "ga", "wo", "ni", "kara", "made", "datta", "ken", "naritakute", "shitara", "desu", "deshita",
+        "monogatari", "sekai", "isekai", "yuusha", "maou", "mahou", "shoujo", "shounen", "gakuen", "koukou",
+        "kyoushitsu", "senpai", "sensei", "tachi", "tensei", "akuyaku", "reijou"
+    )
+
+    fun normalizeKey(raw: String?): String {
+        if (raw.isNullOrBlank()) return ""
+        val decomposed = Normalizer.normalize(raw, Normalizer.Form.NFD)
+            .replace(Regex("\\p{InCombiningDiacriticalMarks}+"), "")
+        return decomposed
+            .lowercase()
+            .replace(Regex("[^a-z0-9]+"), " ")
+            .trim()
+            .replace(Regex("\\s+"), " ")
+    }
+
+    private fun compactAlphaNum(raw: String?): String {
+        return normalizeKey(raw).replace(" ", "")
+    }
+
+    private fun hasNonLatinScript(text: String): Boolean {
+        return text.any { ch ->
+            val code = ch.code
+            // CJK, Hiragana, Katakana, Hangul, Cyrillic, Arabic, Thai, Hebrew, Devanagari
+            (code in 0x0400..0x052F) ||
+                (code in 0x0590..0x06FF) ||
+                (code in 0x0E00..0x0E7F) ||
+                (code in 0x0900..0x097F) ||
+                (code in 0x3040..0x30FF) ||
+                (code in 0x3400..0x9FFF) ||
+                (code in 0xAC00..0xD7AF) ||
+                (code in 0xF900..0xFAFF)
+        }
+    }
+
+    private fun hasVietnameseOrNonEnglishDiacritics(text: String): Boolean {
+        return text.any { ch ->
+            val code = ch.code
+            (code in 0x1E00..0x1EFF) || // Vietnamese Latin Extended Additional
+                ch in setOf('đ', 'Đ', 'ă', 'Ă', 'ơ', 'Ơ', 'ư', 'Ư', 'ñ', 'Ñ', 'ß', 'ç', 'Ç', 'ł', 'Ł', 'ż', 'Ż', 'ą', 'Ą', 'ę', 'Ę')
+        }
+    }
+
     /**
-     * Resolves title with PRIMARY focus on English titles for ALL anime & donghua (Requirement B).
+     * Detects whether a Latin-script string looks like Chinese Pinyin (especially when comparing against romaji).
+     */
+    fun isLikelyPinyin(candidate: String, romaji: String? = null): Boolean {
+        val trimmed = candidate.trim()
+        if (trimmed.isEmpty()) return false
+        if (hasNonLatinScript(trimmed)) return false
+
+        val normCand = normalizeKey(trimmed)
+        val compactCand = normCand.replace(" ", "")
+        val compactRom = compactAlphaNum(romaji)
+
+        // Direct match or spacing/diacritic variant of romaji
+        if (compactRom.length >= 4 && (compactCand == compactRom || compactCand.startsWith(compactRom) && compactCand.length - compactRom.length <= 4)) {
+            // Only treat as Pinyin if it doesn't contain obvious English words
+            val tokens = normCand.split(" ").filter { it.isNotEmpty() }
+            val englishHits = tokens.count { it in ENGLISH_CORE_WORDS && it.length >= 3 }
+            if (englishHits == 0) return true
+        }
+
+        // Check curated Donghua Pinyin keys
+        if (normalizedMap[normCand]?.isDonghua == true || normalizedMap[compactCand]?.isDonghua == true) {
+            return true
+        }
+
+        val tokens = normCand.split(" ").filter { it.isNotEmpty() && !it.all(Char::isDigit) }
+        if (tokens.isEmpty()) return false
+
+        val englishHits = tokens.count { it in ENGLISH_CORE_WORDS }
+        if (englishHits >= 2) return false
+        if (englishHits == 1 && tokens.size <= 2) return false
+
+        // Count pinyin-like tokens
+        var pinyinTokenScore = 0
+        for (tok in tokens) {
+            if (tok in PINYIN_MARKERS) {
+                pinyinTokenScore += 2
+            } else if (Regex("^(zh|ch|sh|x|q|z|c)[aeiou][a-z]{0,4}$").matches(tok)) {
+                pinyinTokenScore += 1
+            } else if (Regex("^[a-z]*(ang|eng|ing|ong|uan|ian|iao|iang|iong|ue|uo|ou|ai|ei)$").matches(tok) && tok !in ENGLISH_CORE_WORDS) {
+                pinyinTokenScore += 1
+            }
+        }
+        return pinyinTokenScore >= maxOf(2, tokens.size)
+    }
+
+    /**
+     * Scores an AniList synonym for how strongly it represents a clean English / alternate English title.
+     * Returns <= 0 if the candidate should be rejected (non-Latin, Pinyin, acronym, non-English).
+     */
+    fun scoreEnglishSynonym(candidate: String, romaji: String?, isDonghua: Boolean): Int {
+        val clean = candidate.trim()
+        if (clean.length < 3 || clean.length > 120) return -100
+        if (hasNonLatinScript(clean)) return -100
+        if (hasVietnameseOrNonEnglishDiacritics(clean)) return -80
+
+        val norm = normalizeKey(clean)
+        if (norm.isEmpty()) return -100
+        val compact = norm.replace(" ", "")
+        val compactRom = compactAlphaNum(romaji)
+
+        // Reject pure acronyms (e.g. "BTTH", "RMJI", "PW", "SL", "LOTM")
+        val lettersOnly = clean.filter { it.isLetter() }
+        if (lettersOnly.isEmpty()) return -100
+        if (lettersOnly.length <= 5 && lettersOnly.all { it.isUpperCase() } && !clean.contains(" ")) {
+            return -60
+        }
+
+        // Reject exact/spacing variant of romaji/pinyin
+        if (compactRom.length >= 4 && compact == compactRom) {
+            return -50
+        }
+
+        if (isDonghua && isLikelyPinyin(clean, romaji)) {
+            return -70
+        }
+
+        val tokens = norm.split(" ").filter { it.isNotEmpty() }
+        if (tokens.isEmpty()) return -100
+
+        // Reject Japanese romaji grammar
+        val jpHits = tokens.count { it in JAPANESE_GRAMMAR_TOKENS }
+        if (jpHits >= 2 || (jpHits >= 1 && tokens.count { it in ENGLISH_CORE_WORDS } == 0)) {
+            return -50
+        }
+
+        // Penalize obvious Spanish/French/German/Vietnamese tokens when English words are absent
+        val foreignHits = tokens.count { it in NON_ENGLISH_LATIN_MARKERS && it != "the" }
+        val englishWordHits = tokens.count { it in ENGLISH_CORE_WORDS }
+        if (foreignHits >= 1 && englishWordHits == 0) {
+            return -45
+        }
+
+        // Check if this synonym itself maps to a known English title
+        if (entries.any { it.englishTitle.equals(clean, ignoreCase = true) || it.alternateEnglish.any { alt -> alt.equals(clean, ignoreCase = true) } }) {
+            return 200
+        }
+
+        var score = 0
+        if (englishWordHits > 0) {
+            score += 40 + (englishWordHits * 18)
+        } else if (isDonghua) {
+            // Even single-word or uncommon English titles (e.g. "Apotheosis", "Immortality", "Rakshasa", "Kuiba")
+            // if clean ASCII Title Case and NOT Pinyin, still allow as valid English candidate!
+            val looksAsciiTitle = clean.all { it.code < 128 }
+            if (looksAsciiTitle && !isLikelyPinyin(clean, romaji) && tokens.size in 1..10) {
+                score += 18
+            } else {
+                return -20
+            }
+        } else {
+            return -10
+        }
+
+        // Prefer natural title length & multi-word readable English titles
+        if (tokens.size in 2..9) score += 12
+        if (clean.length in 6..75) score += 8
+        // Slight penalty for parenthetical fan-tag clutter like "(Donghua)" or "(TV)"
+        if (clean.contains("(") && clean.contains(")")) score -= 6
+        // Prefer pure ASCII English titles over accented ones
+        if (clean.all { it.code < 128 }) score += 6
+
+        return score
+    }
+
+    private fun extractTrailingSuffix(raw: String, matchedPrefixNorm: String): String {
+        val clean = raw.trim()
+        val normFull = normalizeKey(clean)
+        if (!normFull.startsWith(matchedPrefixNorm) || normFull.length == matchedPrefixNorm.length) {
+            return ""
+        }
+        val remainder = normFull.removePrefix(matchedPrefixNorm).trim()
+        if (remainder.isEmpty()) return ""
+
+        // Recognize clean season / part / movie / special / year suffixes
+        Regex("^(?:season\\s*)?(\\d+)$").matchEntire(remainder)?.let { m ->
+            val num = m.groupValues[1].toIntOrNull()
+            if (num != null && num in 2..20) return "Season $num"
+        }
+        Regex("^(ii|iii|iv|v|vi|vii|viii|ix|x)$").matchEntire(remainder)?.let { m ->
+            val num = when (m.groupValues[1]) {
+                "ii" -> 2; "iii" -> 3; "iv" -> 4; "v" -> 5; "vi" -> 6
+                "vii" -> 7; "viii" -> 8; "ix" -> 9; "x" -> 10
+                else -> null
+            }
+            if (num != null) return "Season $num"
+        }
+        Regex("^(\\d+)(?:nd|rd|th)\\s+season$").matchEntire(remainder)?.let { m ->
+            return "Season ${m.groupValues[1]}"
+        }
+        Regex("^di\\s*(\\d+|er|san|si|wu|liu|qi|ba)\\s*ji$").matchEntire(remainder)?.let { m ->
+            val num = when (m.groupValues[1]) {
+                "er" -> "2"; "san" -> "3"; "si" -> "4"; "wu" -> "5"; "liu" -> "6"; "qi" -> "7"; "ba" -> "8"
+                else -> m.groupValues[1]
+            }
+            return "Season $num"
+        }
+        if (remainder.contains("nian fan")) return "Annual Edition"
+        if (remainder.contains("movie") || remainder.contains("juchang")) return "Movie"
+        if (remainder.contains("special") || remainder.contains("tebie") || remainder.contains("fanwai")) return "Special"
+        if (remainder.contains("qianzhuan") || remainder.contains("prequel")) return "Prequel"
+        Regex("^part\\s*(\\d+)$").matchEntire(remainder)?.let { m ->
+            return "Part ${m.groupValues[1]}"
+        }
+        return ""
+    }
+
+    private fun findInTitleMap(query: String): String? {
+        val clean = query.trim()
+        if (clean.isEmpty()) return null
+        val norm = normalizeKey(clean)
+        val compact = norm.replace(" ", "")
+
+        // 1. Exact normalized or compact match
+        normalizedMap[norm]?.let { return it.englishTitle }
+        normalizedMap[compact]?.let { return it.englishTitle }
+
+        // 2. Longest prefix match (word-boundary safe) preserving season/part suffixes
+        for ((prefixNorm, entry) in sortedPrefixEntries) {
+            if (norm == prefixNorm || norm.startsWith("$prefixNorm ")) {
+                val suffix = extractTrailingSuffix(clean, prefixNorm)
+                return if (suffix.isNotEmpty() && !entry.englishTitle.contains(suffix, ignoreCase = true)) {
+                    "${entry.englishTitle} $suffix"
+                } else {
+                    entry.englishTitle
+                }
+            }
+        }
+        return null
+    }
+
+    /**
+     * Resolves display title for UI (works on already-stored Room/Supabase entities too).
+     * For Donghua, automatically replaces Pinyin with English / alternate English when available.
      */
     fun resolveTitle(
         titleEnglish: String?,
@@ -338,31 +545,35 @@ object EnglishTitleMapper {
         titleNative: String?,
         titlePinyin: String?,
         isDonghua: Boolean,
-        preference: String = "ENGLISH"
+        preference: String = "ENGLISH",
+        synonyms: List<String>? = null
     ): String {
         val prefClean = preference.uppercase().trim()
         return when (prefClean) {
             "ORIGINAL", "NATIVE" -> {
                 titleNative?.trim()?.takeIf { it.isNotEmpty() }
-                    ?: getEnglishOrRomajiFallback(titleEnglish, titleRomaji, titlePinyin)
+                    ?: getEnglishOrRomajiFallback(titleEnglish, titleRomaji, titlePinyin, isDonghua, synonyms)
             }
             "ROMAJI_PINYIN", "ROMAJI", "PINYIN" -> {
                 if (isDonghua) {
                     titlePinyin?.trim()?.takeIf { it.isNotEmpty() }
                         ?: titleRomaji?.trim()?.takeIf { it.isNotEmpty() }
-                        ?: getEnglishOrRomajiFallback(titleEnglish, titleRomaji, titlePinyin)
+                        ?: getEnglishOrRomajiFallback(titleEnglish, titleRomaji, titlePinyin, isDonghua, synonyms)
                 } else {
                     titleRomaji?.trim()?.takeIf { it.isNotEmpty() }
                         ?: titleEnglish?.trim()?.takeIf { it.isNotEmpty() }
-                        ?: getEnglishOrRomajiFallback(titleEnglish, titleRomaji, titlePinyin)
+                        ?: getEnglishOrRomajiFallback(titleEnglish, titleRomaji, titlePinyin, isDonghua, synonyms)
                 }
             }
             else -> {
-                // Strict Title Selection Priority for ENGLISH (Requirement B):
-                // 1. "title.english" when it is non-null and non-empty.
-                // 2. "title.romaji" (or pinyin) only when English title is genuinely unavailable.
-                // 3. "title.native" only when both English and romaji are unavailable.
-                // 4. Otherwise, display a clear unavailable-title fallback.
+                val resolved = resolve(
+                    titleEnglish = titleEnglish,
+                    titleRomaji = titleRomaji ?: titlePinyin,
+                    synonyms = synonyms,
+                    isDonghua = isDonghua
+                )
+                if (!resolved.isNullOrBlank()) return resolved
+
                 val eng = titleEnglish?.trim()?.takeIf { it.isNotEmpty() }
                 if (eng != null) return eng
 
@@ -373,7 +584,7 @@ object EnglishTitleMapper {
                 val nat = titleNative?.trim()?.takeIf { it.isNotEmpty() }
                 if (nat != null) return nat
 
-                return "Untitled Anime"
+                "Untitled Anime"
             }
         }
     }
@@ -381,34 +592,52 @@ object EnglishTitleMapper {
     private fun getEnglishOrRomajiFallback(
         titleEnglish: String?,
         titleRomaji: String?,
-        titlePinyin: String?
+        titlePinyin: String?,
+        isDonghua: Boolean,
+        synonyms: List<String>?
     ): String {
-        return titleEnglish?.trim()?.takeIf { it.isNotEmpty() }
+        return resolve(titleEnglish, titleRomaji ?: titlePinyin, synonyms, isDonghua)
+            ?: titleEnglish?.trim()?.takeIf { it.isNotEmpty() }
             ?: titleRomaji?.trim()?.takeIf { it.isNotEmpty() }
             ?: titlePinyin?.trim()?.takeIf { it.isNotEmpty() }
             ?: "Untitled Anime"
     }
 
     /**
-     * Resolves an English title from available AniList title fields, dictionary mappings, or synonyms.
-     * Always preserves official AniList English title if available.
+     * Resolves the best English or alternate English title from AniList fields, curated dictionary, and synonyms.
+     * For Donghua, never settles for Pinyin if a real English / alternate English title is available.
      */
-    fun resolve(titleEnglish: String?, titleRomaji: String?, synonyms: List<String>? = null): String? {
+    fun resolve(
+        titleEnglish: String?,
+        titleRomaji: String?,
+        synonyms: List<String>? = null,
+        isDonghua: Boolean = false
+    ): String? {
         val eng = titleEnglish?.trim()?.takeIf { it.isNotEmpty() }
         val rom = titleRomaji?.trim()?.takeIf { it.isNotEmpty() }
 
-        // 1. Direct official English title takes precedence
+        val effectiveDonghua = isDonghua ||
+            (rom != null && normalizedMap[normalizeKey(rom)]?.isDonghua == true) ||
+            (eng != null && normalizedMap[normalizeKey(eng)]?.isDonghua == true)
+
+        // 1. Official English title — accept directly unless it is actually Pinyin for a Donghua
         if (eng != null) {
-            val mapped = findInTitleMap(eng)
-            if (mapped != null) return mapped
-            return applyPatterns(eng)
+            val mappedFromEng = findInTitleMap(eng)
+            if (mappedFromEng != null) return mappedFromEng
+
+            val engIsPinyin = effectiveDonghua && isLikelyPinyin(eng, rom)
+            if (!engIsPinyin && !hasNonLatinScript(eng)) {
+                return applyPatterns(eng)
+            }
         }
 
-        // 2. Direct dictionary match on Romaji or Synonyms
+        // 2. Curated dictionary match on Romaji / Pinyin
         if (rom != null) {
-            val mapped = findInTitleMap(rom)
-            if (mapped != null) return mapped
+            val mappedFromRom = findInTitleMap(rom)
+            if (mappedFromRom != null) return mappedFromRom
         }
+
+        // 3. Curated dictionary match on any synonym
         synonyms?.forEach { syn ->
             val cleanSyn = syn.trim()
             if (cleanSyn.isNotEmpty()) {
@@ -417,92 +646,167 @@ object EnglishTitleMapper {
             }
         }
 
-        // 3. Pattern replacements on Romaji (e.g. "Sousou no Frieren" -> "Frieren: Beyond Journey's End", "Season 4", etc.)
+        // 4. Best-scoring alternate English title from AniList synonyms
+        val bestSyn = pickBestEnglishSynonym(synonyms, rom, effectiveDonghua)
+        if (bestSyn != null) {
+            return applyPatterns(bestSyn)
+        }
+
+        // 5. Pattern replacements on Romaji if it actually translated something
         if (rom != null) {
             val trans = applyPatterns(rom)
             if (trans != rom) return trans
         }
 
-        // 4. Check synonyms for an English synonym (Latin script, non-romaji)
-        synonyms?.forEach { syn ->
-            val cleanSyn = syn.trim()
-            if (cleanSyn.isNotEmpty() && looksLikeEnglish(cleanSyn)) {
-                return applyPatterns(cleanSyn)
+        // 6. If official English was present (even if flagged as pinyin), fall back to it
+        if (eng != null) return applyPatterns(eng)
+
+        return null
+    }
+
+    fun pickBestEnglishSynonym(
+        synonyms: List<String>?,
+        romaji: String?,
+        isDonghua: Boolean
+    ): String? {
+        if (synonyms.isNullOrEmpty()) return null
+        var bestCandidate: String? = null
+        var bestScore = 0
+        for (syn in synonyms) {
+            val clean = syn.trim()
+            if (clean.isEmpty()) continue
+            val sc = scoreEnglishSynonym(clean, romaji, isDonghua)
+            if (sc > bestScore) {
+                bestScore = sc
+                bestCandidate = clean
+            }
+        }
+        return bestCandidate
+    }
+
+    /**
+     * Expands a user's English keyword query into matching Donghua/Anime Pinyin/Romaji titles
+     * so AniList finds titles even when it only indexed their Pinyin name.
+     */
+    fun expandSearchQueries(rawQuery: String, donghuaOnly: Boolean = false, maxExtra: Int = 2): List<String> {
+        val normQuery = normalizeKey(rawQuery)
+        if (normQuery.length < 2) return emptyList()
+        val queryTokens = normQuery.split(" ").filter { it.length >= 2 }
+        if (queryTokens.isEmpty()) return emptyList()
+
+        val scored = ArrayList<Pair<String, Int>>()
+        val seenPinyin = HashSet<String>()
+
+        for (entry in entries) {
+            if (donghuaOnly && !entry.isDonghua) continue
+            val pinyinNorm = normalizeKey(entry.pinyinOrRomaji)
+            if (pinyinNorm == normQuery || !seenPinyin.add(pinyinNorm)) continue
+
+            val candidates = listOf(entry.englishTitle) + entry.alternateEnglish
+            var bestScore = 0
+            for (cand in candidates) {
+                val sc = scoreSingleTextMatch(normQuery, queryTokens, cand)
+                if (sc > bestScore) bestScore = sc
+            }
+            if (bestScore >= 40) {
+                // Boost Donghua slightly since AniList English indexing is weakest for Donghua
+                scored.add(entry.pinyinOrRomaji to (bestScore + if (entry.isDonghua) 15 else 0))
             }
         }
 
-        return null
+        return scored
+            .sortedByDescending { it.second }
+            .map { it.first }
+            .distinctBy { normalizeKey(it) }
+            .take(maxExtra)
     }
 
-    private fun findInTitleMap(query: String): String? {
-        val clean = query.trim()
-        if (clean.isEmpty()) return null
+    /**
+     * Scores how well a catalog item matches the user's typed keywords across English, Romaji/Pinyin, and synonyms.
+     */
+    fun scoreKeywordMatch(
+        rawQuery: String,
+        resolvedEnglish: String?,
+        officialEnglish: String?,
+        romaji: String?,
+        synonyms: List<String>? = null
+    ): Int {
+        val normQuery = normalizeKey(rawQuery)
+        if (normQuery.isEmpty()) return 0
+        val queryTokens = normQuery.split(" ").filter { it.isNotEmpty() }
+        if (queryTokens.isEmpty()) return 0
 
-        // 1. Exact match
-        titleMap[clean]?.let { return it }
-
-        // 2. Case-insensitive exact match
-        titleMap.entries.firstOrNull { clean.equals(it.key, ignoreCase = true) }?.value?.let { return it }
-
-        // 3. Substring containment match
-        titleMap.entries.firstOrNull { clean.contains(it.key, ignoreCase = true) }?.value?.let { return it }
-
-        return null
+        var best = 0
+        val fields = buildList {
+            if (!resolvedEnglish.isNullOrBlank()) add(resolvedEnglish to 12)
+            if (!officialEnglish.isNullOrBlank()) add(officialEnglish to 10)
+            if (!romaji.isNullOrBlank()) add(romaji to 6)
+            synonyms.orEmpty().forEach { if (it.isNotBlank()) add(it to 8) }
+        }
+        for ((text, weightBonus) in fields) {
+            val base = scoreSingleTextMatch(normQuery, queryTokens, text)
+            if (base > 0) {
+                val total = base + weightBonus
+                if (total > best) best = total
+            }
+        }
+        return best
     }
 
-    private fun looksLikeEnglish(str: String): Boolean {
-        if (str.isBlank()) return false
-        val englishWords = setOf(
-            "the", "of", "in", "a", "an", "season", "world", "hero", "life", "king",
-            "immortal", "blade", "chronicles", "legend", "war", "battle", "demon", "spirit",
-            "lord", "god", "land", "click", "star", "case", "closed", "hunter", "seal",
-            "quest", "level", "online", "academy", "school", "punch", "piece", "slayer",
-            "titan", "girl", "boy", "man", "reincarnated", "another", "journey", "diaries",
-            "shadow", "magic", "sword", "shield", "slime", "gate", "death", "note", "ball",
-            "clover", "tail", "force", "brotherhood", "alchemist", "bleach", "avatar", "master",
-            "perfect", "apothecary", "villainess", "bride", "supermarket", "daemons", "re:zero",
-            "spy", "family", "dr.", "stone", "moon", "prince", "exorcism", "mononoke"
-        )
-        val lower = str.lowercase()
-        return englishWords.any { lower.contains(it) }
+    /**
+     * Returns true if every keyword typed by the user appears in any of the item's titles/synonyms/genres.
+     */
+    fun matchesAllKeywords(rawQuery: String, vararg fields: String?): Boolean {
+        val normQuery = normalizeKey(rawQuery)
+        if (normQuery.isEmpty()) return true
+        val tokens = normQuery.split(" ").filter { it.isNotEmpty() }
+        val combined = fields.filterNotNull().joinToString(" ") { normalizeKey(it) }
+        if (combined.isEmpty()) return false
+        return tokens.all { combined.contains(it) }
     }
 
-    private fun isJapaneseGrammar(str: String): Boolean {
-        val lower = " " + str.lowercase() + " "
-        val particles = listOf(" no ", " wa ", " ga ", " wo ", " ni ", " de ", " kara ", " made ", " to ", " datta ", " ken ", " naritakute ", " shite ")
-        return particles.any { lower.contains(it) }
-    }
+    private fun scoreSingleTextMatch(normQuery: String, queryTokens: List<String>, rawText: String): Int {
+        val normText = normalizeKey(rawText)
+        if (normText.isEmpty()) return 0
 
-    private fun cleanTitle(title: String): String {
-        return applyPatterns(title)
+        if (normText == normQuery) return 140
+        if (normText.startsWith("$normQuery ")) return 120
+        if (normText.startsWith(normQuery)) return 110
+        if (normText.contains(" $normQuery ")) return 100
+        if (normText.contains(normQuery)) return 90
+
+        val textTokens = normText.split(" ").filter { it.isNotEmpty() }
+        if (textTokens.isEmpty()) return 0
+
+        var exactWordMatches = 0
+        var prefixWordMatches = 0
+        var substringMatches = 0
+
+        for (qt in queryTokens) {
+            when {
+                textTokens.any { it == qt } -> exactWordMatches++
+                textTokens.any { it.startsWith(qt) } -> prefixWordMatches++
+                normText.contains(qt) -> substringMatches++
+            }
+        }
+
+        val totalMatched = exactWordMatches + prefixWordMatches + substringMatches
+        if (totalMatched == 0) return 0
+
+        val allMatched = totalMatched == queryTokens.size
+        return when {
+            allMatched && exactWordMatches == queryTokens.size -> 95
+            allMatched && (exactWordMatches + prefixWordMatches) == queryTokens.size -> 82
+            allMatched -> 70
+            else -> (exactWordMatches * 28) + (prefixWordMatches * 20) + (substringMatches * 10)
+        }
     }
 
     private fun applyPatterns(text: String): String {
-        var result = text
+        var result = text.trim()
         for ((regex, replacement) in patternReplacements) {
             result = regex.replace(result, replacement)
         }
-        return result
-    }
-
-    private fun isPureRomaji(str: String): Boolean {
-        val lower = str.lowercase()
-        return lower.startsWith("tensei shitara slime") ||
-                lower.startsWith("mairimashita! iruma") ||
-                lower.startsWith("meitantei conan") ||
-                lower.startsWith("shiguang dailiren") ||
-                lower.startsWith("tian guan ci fu") ||
-                lower.startsWith("xian ni") ||
-                lower.startsWith("douluo dalu") ||
-                lower.startsWith("zhe tian") ||
-                lower.startsWith("tunshi xingkong") ||
-                lower.startsWith("wanmei shijie") ||
-                lower.startsWith("wu shen zhu zai") ||
-                lower.startsWith("zhu xian") ||
-                lower.startsWith("sousou no frieren") ||
-                lower.startsWith("kusuriya no hitorigoto") ||
-                lower.startsWith("boku no hero") ||
-                lower.startsWith("shingeki no kyojin") ||
-                lower.startsWith("kimetsu no yaiba")
+        return result.replace(Regex("\\s+"), " ").trim()
     }
 }

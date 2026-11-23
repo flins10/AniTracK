@@ -586,6 +586,8 @@ object AniListQueries {
                   status
                   episodes
                   seasonYear
+                  countryOfOrigin
+                  synonyms
                   startDate {
                     year
                     month
@@ -610,6 +612,8 @@ object AniListQueries {
                   }
                   format
                   averageScore
+                  countryOfOrigin
+                  synonyms
                 }
               }
             }
@@ -636,6 +640,8 @@ object AniListQueries {
             status
             episodes
             seasonYear
+            countryOfOrigin
+            synonyms
             startDate {
               year
               month
@@ -662,6 +668,8 @@ object AniListQueries {
                   status
                   episodes
                   seasonYear
+                  countryOfOrigin
+                  synonyms
                   startDate {
                     year
                     month
@@ -695,6 +703,8 @@ object AniListQueries {
               status
               episodes
               seasonYear
+              countryOfOrigin
+              synonyms
               startDate {
                 year
                 month
@@ -721,6 +731,8 @@ object AniListQueries {
                     status
                     episodes
                     seasonYear
+                    countryOfOrigin
+                    synonyms
                     startDate {
                       year
                       month

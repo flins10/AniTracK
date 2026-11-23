@@ -72,6 +72,9 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -1036,10 +1039,16 @@ private suspend fun fetchFullCloudSnapshot(session: DesktopPersistedState): Clou
                         val row = el.asJsonObject
                         val animeObj = row.get("anime")?.takeIf { it.isJsonObject }?.asJsonObject
                         val id = animeObj?.get("anilist_id").asIntOrNull() ?: row.get("anime_id").asIntOrNull() ?: return@mapNotNull null
-                        val title = animeObj?.get("title_english").asStringOrNull()?.takeIf { it.isNotBlank() }
-                            ?: animeObj?.get("title_romaji").asStringOrNull()?.takeIf { it.isNotBlank() }
-                            ?: "Anime #$id"
+                        val rawEng = animeObj?.get("title_english").asStringOrNull()
                         val romaji = animeObj?.get("title_romaji").asStringOrNull().orEmpty()
+                        val title = DesktopEnglishTitleMapper.resolve(
+                            titleEnglish = rawEng,
+                            titleRomaji = romaji,
+                            synonyms = null,
+                            isDonghua = false
+                        ) ?: rawEng?.takeIf { it.isNotBlank() }
+                            ?: romaji.takeIf { it.isNotBlank() }
+                            ?: "Anime #$id"
                         val rawRating = row.get("personal_rating").asFloatOrNull() ?: 0f
                         val userStars = if (rawRating > 5f) rawRating / 2f else rawRating
                         val avg100 = animeObj?.get("average_score").asFloatOrNull() ?: 0f
@@ -1210,8 +1219,11 @@ private suspend fun fetchFullCloudSnapshot(session: DesktopPersistedState): Clou
                         val animeId = animeObj?.get("anilist_id").asIntOrNull() ?: row.get("anime_id").asIntOrNull() ?: 0
                         val key = "$rowUserId:$animeId"
                         if (!seenKeys.add(key)) return@forEach
-                        val title = animeObj?.get("title_english").asStringOrNull()?.takeIf { it.isNotBlank() }
-                            ?: animeObj?.get("title_romaji").asStringOrNull()?.takeIf { it.isNotBlank() }
+                        val rawEng = animeObj?.get("title_english").asStringOrNull()
+                        val rawRom = animeObj?.get("title_romaji").asStringOrNull()
+                        val title = DesktopEnglishTitleMapper.resolve(rawEng, rawRom, null, false)
+                            ?: rawEng?.takeIf { it.isNotBlank() }
+                            ?: rawRom?.takeIf { it.isNotBlank() }
                             ?: "Anime #$animeId"
                         val cover = animeObj?.get("cover_image").asStringOrNull().orEmpty()
                         val genres = animeObj?.get("genres")?.takeIf { it.isJsonArray }?.asJsonArray
@@ -1266,8 +1278,11 @@ private suspend fun fetchFullCloudSnapshot(session: DesktopPersistedState): Clou
                     val animeId = animeObj?.get("anilist_id").asIntOrNull() ?: row.get("anime_id").asIntOrNull() ?: 0
                     val key = "$rowUserId:$animeId"
                     if (!seenKeys.add(key)) return@forEach
-                    val title = animeObj?.get("title_english").asStringOrNull()?.takeIf { it.isNotBlank() }
-                        ?: animeObj?.get("title_romaji").asStringOrNull()?.takeIf { it.isNotBlank() }
+                    val rawEng = animeObj?.get("title_english").asStringOrNull()
+                    val rawRom = animeObj?.get("title_romaji").asStringOrNull()
+                    val title = DesktopEnglishTitleMapper.resolve(rawEng, rawRom, null, false)
+                        ?: rawEng?.takeIf { it.isNotBlank() }
+                        ?: rawRom?.takeIf { it.isNotBlank() }
                         ?: "Anime #$animeId"
                     val cover = animeObj?.get("cover_image").asStringOrNull().orEmpty()
                     val genres = animeObj?.get("genres")?.takeIf { it.isJsonArray }?.asJsonArray
@@ -1891,13 +1906,19 @@ private suspend fun fetchAniListDiscover(
     page: Int = 1,
     perPage: Int = 30
 ): DesktopDiscoverPage = withContext(Dispatchers.IO) {
-    val sort = when (mode) {
+    val trimmedSearch = search.trim()
+    val baseSort = when (mode) {
         "popular" -> "POPULARITY_DESC"
         "top" -> "SCORE_DESC"
         "seasonal" -> "POPULARITY_DESC"
         "donghua" -> "POPULARITY_DESC"
         "airing" -> "TRENDING_DESC"
         else -> "TRENDING_DESC"
+    }
+    val sortExpr = if (trimmedSearch.isNotEmpty()) {
+        if (baseSort == "SEARCH_MATCH") "[SEARCH_MATCH]" else "[SEARCH_MATCH, $baseSort]"
+    } else {
+        "[$baseSort]"
     }
     val statusFilter = if (mode == "airing") ", status: RELEASING" else ""
     val seasonalFilter = if (mode == "seasonal") {
@@ -1913,9 +1934,12 @@ private suspend fun fetchAniListDiscover(
               hasNextPage
               currentPage
             }
-            media(type: ANIME, sort: [$sort], search: ${'$'}search, genre: ${'$'}genre$statusFilter$seasonalFilter$countryFilter$adultFilter) {
+            media(type: ANIME, sort: $sortExpr, search: ${'$'}search, genre: ${'$'}genre$statusFilter$seasonalFilter$countryFilter$adultFilter) {
               id
               title { english romaji }
+              synonyms
+              popularity
+              countryOfOrigin
               coverImage { extraLarge large }
               bannerImage
               format
@@ -1930,82 +1954,155 @@ private suspend fun fetchAniListDiscover(
           }
         }
     """.trimIndent()
-    val vars = JsonObject().apply {
-        addProperty("page", page)
-        addProperty("perPage", perPage)
-        if (search.isNotBlank()) addProperty("search", search.trim())
-        if (genre != "All Genres") addProperty("genre", genre)
-    }
-    val payload = JsonObject().apply {
-        addProperty("query", query)
-        add("variables", vars)
-    }
 
-    var attempt = 0
-    while (attempt < 2) {
-        attempt++
-        val outcome = runCatching {
-            val req = Request.Builder()
-                .url("https://graphql.anilist.co")
-                .post(gson.toJson(payload).toRequestBody("application/json".toMediaType()))
-                .build()
-            httpClient.newCall(req).execute().use { resp ->
-                if (resp.code == 429) return@use null
-                if (!resp.isSuccessful) return@use DesktopDiscoverPage(emptyList(), false)
-                val body = resp.body?.string().orEmpty()
-                val root = gson.fromJson(body, JsonObject::class.java)
-                val pageObj = root?.getAsJsonObject("data")?.getAsJsonObject("Page")
-                    ?: return@use DesktopDiscoverPage(emptyList(), false)
-                val hasNext = pageObj.get("pageInfo")?.takeIf { it.isJsonObject }?.asJsonObject
-                    ?.get("hasNextPage")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
-                val mediaArr = pageObj.getAsJsonArray("media")
-                    ?: return@use DesktopDiscoverPage(emptyList(), false)
-                val parsed = mediaArr.map { el ->
-                    val obj = el.asJsonObject
-                    val id = obj.get("id").asInt
-                    val titleObj = obj.getAsJsonObject("title")
-                    val romaji = titleObj?.get("romaji").asStringOrNull().orEmpty()
-                    val title = titleObj?.get("english").asStringOrNull()?.takeIf { it.isNotBlank() }
-                        ?: romaji.ifBlank { "Anime #$id" }
-                    val coverObj = obj.getAsJsonObject("coverImage")
-                    val cover = coverObj?.get("extraLarge").asStringOrNull()
-                        ?: coverObj?.get("large").asStringOrNull().orEmpty()
-                    val banner = obj.get("bannerImage").asStringOrNull().orEmpty()
-                    val format = obj.get("format").asStringOrNull() ?: "TV"
-                    val status = obj.get("status").asStringOrNull() ?: "RELEASING"
-                    val eps = obj.get("episodes").asIntOrNull()
-                    val year = obj.get("seasonYear").asIntOrNull()
-                    val score100 = obj.get("averageScore").asIntOrNull() ?: 0
-                    val nextAiring = obj.get("nextAiringEpisode")?.takeIf { it.isJsonObject }?.asJsonObject
-                        ?.get("airingAt").asLongOrNull()
-                    val desc = obj.get("description").asStringOrNull().orEmpty()
-                        .replace(Regex("<[^>]+>"), "")
-                    val genresList = obj.get("genres")?.takeIf { it.isJsonArray }?.asJsonArray
-                        ?.mapNotNull { it.asStringOrNull() } ?: emptyList()
+    data class RawParsed(
+        val item: DesktopAnimeItem,
+        val officialEnglish: String?,
+        val synonyms: List<String>,
+        val popularity: Int
+    )
 
-                    DesktopAnimeItem(
-                        id = id,
-                        title = title,
-                        titleRomaji = romaji,
-                        coverImage = cover,
-                        bannerImage = banner,
-                        format = format,
-                        status = status,
-                        totalEpisodes = eps,
-                        catalogStars = if (score100 > 0) (score100 / 20f) else 0f,
-                        airingDayOfWeek = computeDayOfWeek(id, nextAiring),
-                        seasonYear = year,
-                        genres = genresList,
-                        synopsis = desc
-                    )
+    suspend fun runQuery(searchTerm: String?, targetPage: Int, targetPerPage: Int): Pair<List<RawParsed>, Boolean> {
+        val vars = JsonObject().apply {
+            addProperty("page", targetPage)
+            addProperty("perPage", targetPerPage)
+            if (!searchTerm.isNullOrBlank()) addProperty("search", searchTerm)
+            if (genre != "All Genres") addProperty("genre", genre)
+        }
+        val payload = JsonObject().apply {
+            addProperty("query", query)
+            add("variables", vars)
+        }
+
+        var attempt = 0
+        while (attempt < 2) {
+            attempt++
+            val outcome = runCatching {
+                val req = Request.Builder()
+                    .url("https://graphql.anilist.co")
+                    .post(gson.toJson(payload).toRequestBody("application/json".toMediaType()))
+                    .build()
+                httpClient.newCall(req).execute().use { resp ->
+                    if (resp.code == 429) return@use null
+                    if (!resp.isSuccessful) return@use (emptyList<RawParsed>() to false)
+                    val body = resp.body?.string().orEmpty()
+                    val root = gson.fromJson(body, JsonObject::class.java)
+                    val pageObj = root?.getAsJsonObject("data")?.getAsJsonObject("Page")
+                        ?: return@use (emptyList<RawParsed>() to false)
+                    val hasNext = pageObj.get("pageInfo")?.takeIf { it.isJsonObject }?.asJsonObject
+                        ?.get("hasNextPage")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+                    val mediaArr = pageObj.getAsJsonArray("media")
+                        ?: return@use (emptyList<RawParsed>() to false)
+                    val parsed = mediaArr.map { el ->
+                        val obj = el.asJsonObject
+                        val id = obj.get("id").asInt
+                        val titleObj = obj.getAsJsonObject("title")
+                        val officialEnglish = titleObj?.get("english").asStringOrNull()
+                        val romaji = titleObj?.get("romaji").asStringOrNull().orEmpty()
+                        val synonyms = obj.get("synonyms")?.takeIf { it.isJsonArray }?.asJsonArray
+                            ?.mapNotNull { it.asStringOrNull()?.trim()?.takeIf { s -> s.isNotEmpty() } }
+                            ?: emptyList()
+                        val country = obj.get("countryOfOrigin").asStringOrNull() ?: "JP"
+                        val isDonghua = country.equals("CN", ignoreCase = true)
+                        val title = DesktopEnglishTitleMapper.resolve(
+                            titleEnglish = officialEnglish,
+                            titleRomaji = romaji,
+                            synonyms = synonyms,
+                            isDonghua = isDonghua
+                        ) ?: officialEnglish?.takeIf { it.isNotBlank() }
+                            ?: romaji.ifBlank { "Anime #$id" }
+                        val coverObj = obj.getAsJsonObject("coverImage")
+                        val cover = coverObj?.get("extraLarge").asStringOrNull()
+                            ?: coverObj?.get("large").asStringOrNull().orEmpty()
+                        val banner = obj.get("bannerImage").asStringOrNull().orEmpty()
+                        val format = obj.get("format").asStringOrNull() ?: "TV"
+                        val status = obj.get("status").asStringOrNull() ?: "RELEASING"
+                        val eps = obj.get("episodes").asIntOrNull()
+                        val year = obj.get("seasonYear").asIntOrNull()
+                        val score100 = obj.get("averageScore").asIntOrNull() ?: 0
+                        val popularity = obj.get("popularity").asIntOrNull() ?: 0
+                        val nextAiring = obj.get("nextAiringEpisode")?.takeIf { it.isJsonObject }?.asJsonObject
+                            ?.get("airingAt").asLongOrNull()
+                        val desc = obj.get("description").asStringOrNull().orEmpty()
+                            .replace(Regex("<[^>]+>"), "")
+                        val genresList = obj.get("genres")?.takeIf { it.isJsonArray }?.asJsonArray
+                            ?.mapNotNull { it.asStringOrNull() } ?: emptyList()
+
+                        RawParsed(
+                            item = DesktopAnimeItem(
+                                id = id,
+                                title = title,
+                                titleRomaji = romaji,
+                                coverImage = cover,
+                                bannerImage = banner,
+                                format = format,
+                                status = status,
+                                totalEpisodes = eps,
+                                catalogStars = if (score100 > 0) (score100 / 20f) else 0f,
+                                airingDayOfWeek = computeDayOfWeek(id, nextAiring),
+                                seasonYear = year,
+                                genres = genresList,
+                                synopsis = desc
+                            ),
+                            officialEnglish = officialEnglish,
+                            synonyms = synonyms,
+                            popularity = popularity
+                        )
+                    }
+                    parsed to (hasNext && parsed.isNotEmpty())
                 }
-                DesktopDiscoverPage(items = parsed, hasNextPage = hasNext && parsed.isNotEmpty())
-            }
-        }.getOrNull()
-        if (outcome != null) return@withContext outcome
-        if (attempt < 2) delay(700L)
+            }.getOrNull()
+            if (outcome != null) return outcome
+            if (attempt < 2) delay(700L)
+        }
+        return emptyList<RawParsed>() to false
     }
-    DesktopDiscoverPage(emptyList(), false)
+
+    val extraQueries = if (page == 1 && trimmedSearch.length >= 2) {
+        DesktopEnglishTitleMapper.expandSearchQueries(
+            rawQuery = trimmedSearch,
+            donghuaOnly = mode == "donghua",
+            maxExtra = 2
+        )
+    } else {
+        emptyList()
+    }
+
+    val batchResults = coroutineScope {
+        val primary = async { runQuery(trimmedSearch.takeIf { it.isNotEmpty() }, page, perPage) }
+        val extras = extraQueries.map { alias -> async { runQuery(alias, 1, 12) } }
+        listOf(primary.await()) + extras.awaitAll()
+    }
+
+    val primaryHasNext = batchResults.firstOrNull()?.second ?: false
+    val mergedById = LinkedHashMap<Int, RawParsed>()
+    for ((list, _) in batchResults) {
+        for (entry in list) {
+            if (!mergedById.containsKey(entry.item.id)) {
+                mergedById[entry.item.id] = entry
+            }
+        }
+    }
+
+    val finalItems = if (page == 1 && trimmedSearch.isNotEmpty()) {
+        mergedById.values
+            .sortedWith(
+                compareByDescending<RawParsed> {
+                    DesktopEnglishTitleMapper.scoreKeywordMatch(
+                        rawQuery = trimmedSearch,
+                        resolvedEnglish = it.item.title,
+                        officialEnglish = it.officialEnglish,
+                        romaji = it.item.titleRomaji,
+                        synonyms = it.synonyms
+                    )
+                }.thenByDescending { it.popularity }
+            )
+            .map { it.item }
+    } else {
+        mergedById.values.map { it.item }
+    }
+
+    DesktopDiscoverPage(items = finalItems, hasNextPage = primaryHasNext && finalItems.isNotEmpty())
 }
 
 data class DesktopSeasonEntry(
@@ -2022,9 +2119,11 @@ data class DesktopSeasonEntry(
 private data class DesktopChainNode(
     val id: Int,
     val type: String?,
+    val countryOfOrigin: String?,
     val titleEnglish: String?,
     val titleUserPreferred: String?,
     val titleRomaji: String?,
+    val synonyms: List<String>,
     val format: String?,
     val status: String?,
     val episodes: Int?,
@@ -2035,10 +2134,18 @@ private data class DesktopChainNode(
     val edges: List<Pair<String, DesktopChainNode>>
 ) {
     val displayTitle: String
-        get() = titleEnglish?.takeIf { it.isNotBlank() }
-            ?: titleUserPreferred?.takeIf { it.isNotBlank() }
-            ?: titleRomaji?.takeIf { it.isNotBlank() }
-            ?: "Anime #$id"
+        get() {
+            val isDonghua = countryOfOrigin.equals("CN", ignoreCase = true)
+            return DesktopEnglishTitleMapper.resolve(
+                titleEnglish = titleEnglish,
+                titleRomaji = titleRomaji ?: titleUserPreferred,
+                synonyms = synonyms,
+                isDonghua = isDonghua
+            ) ?: titleEnglish?.takeIf { it.isNotBlank() }
+                ?: titleUserPreferred?.takeIf { it.isNotBlank() }
+                ?: titleRomaji?.takeIf { it.isNotBlank() }
+                ?: "Anime #$id"
+        }
 }
 
 private object DesktopSeasonResolver {
@@ -2056,7 +2163,9 @@ private object DesktopSeasonResolver {
             media(id_in: ${'$'}ids, type: ANIME) {
               id
               type
+              countryOfOrigin
               title { english romaji userPreferred }
+              synonyms
               format
               status
               episodes
@@ -2068,7 +2177,9 @@ private object DesktopSeasonResolver {
                   node {
                     id
                     type
+                    countryOfOrigin
                     title { english romaji userPreferred }
+                    synonyms
                     format
                     status
                     episodes
@@ -2086,6 +2197,9 @@ private object DesktopSeasonResolver {
         val id = obj.get("id").asInt
         val titleObj = obj.get("title")?.takeIf { it.isJsonObject }?.asJsonObject
         val startObj = obj.get("startDate")?.takeIf { it.isJsonObject }?.asJsonObject
+        val synonyms = obj.get("synonyms")?.takeIf { it.isJsonArray }?.asJsonArray
+            ?.mapNotNull { it.asStringOrNull()?.trim()?.takeIf { s -> s.isNotEmpty() } }
+            ?: emptyList()
         val relEdges = mutableListOf<Pair<String, DesktopChainNode>>()
         val edgesArr = obj.get("relations")?.takeIf { it.isJsonObject }?.asJsonObject
             ?.get("edges")?.takeIf { it.isJsonArray }?.asJsonArray
@@ -2101,9 +2215,11 @@ private object DesktopSeasonResolver {
         return DesktopChainNode(
             id = id,
             type = obj.get("type").asStringOrNull(),
+            countryOfOrigin = obj.get("countryOfOrigin").asStringOrNull(),
             titleEnglish = titleObj?.get("english").asStringOrNull(),
             titleUserPreferred = titleObj?.get("userPreferred").asStringOrNull(),
             titleRomaji = titleObj?.get("romaji").asStringOrNull(),
+            synonyms = synonyms,
             format = obj.get("format").asStringOrNull(),
             status = obj.get("status").asStringOrNull(),
             episodes = obj.get("episodes").asIntOrNull(),
@@ -2210,6 +2326,8 @@ private object DesktopSeasonResolver {
             }
             nodesById[candidate.id] = if (candidate.edges.isNotEmpty() && prev.edges.isEmpty()) {
                 candidate.copy(
+                    countryOfOrigin = candidate.countryOfOrigin ?: prev.countryOfOrigin,
+                    synonyms = if (candidate.synonyms.isNotEmpty()) candidate.synonyms else prev.synonyms,
                     startYear = candidate.startYear ?: prev.startYear,
                     startMonth = candidate.startMonth ?: prev.startMonth,
                     startDay = candidate.startDay ?: prev.startDay,
@@ -2218,6 +2336,8 @@ private object DesktopSeasonResolver {
                 )
             } else {
                 prev.copy(
+                    countryOfOrigin = prev.countryOfOrigin ?: candidate.countryOfOrigin,
+                    synonyms = if (prev.synonyms.isNotEmpty()) prev.synonyms else candidate.synonyms,
                     startYear = prev.startYear ?: candidate.startYear,
                     startMonth = prev.startMonth ?: candidate.startMonth,
                     startDay = prev.startDay ?: candidate.startDay,
@@ -2337,6 +2457,8 @@ private object DesktopSeasonResolver {
               Media(id: ${'$'}id, type: ANIME) {
                 id
                 title { english romaji }
+                synonyms
+                countryOfOrigin
                 coverImage { extraLarge large }
                 bannerImage
                 format
@@ -2367,8 +2489,18 @@ private object DesktopSeasonResolver {
                     ?: return@use null
                 val id = obj.get("id").asInt
                 val titleObj = obj.getAsJsonObject("title")
+                val officialEnglish = titleObj?.get("english").asStringOrNull()
                 val romaji = titleObj?.get("romaji").asStringOrNull().orEmpty()
-                val title = titleObj?.get("english").asStringOrNull()?.takeIf { it.isNotBlank() }
+                val synonyms = obj.get("synonyms")?.takeIf { it.isJsonArray }?.asJsonArray
+                    ?.mapNotNull { it.asStringOrNull()?.trim()?.takeIf { s -> s.isNotEmpty() } }
+                    ?: emptyList()
+                val isDonghua = obj.get("countryOfOrigin").asStringOrNull().equals("CN", ignoreCase = true)
+                val title = DesktopEnglishTitleMapper.resolve(
+                    titleEnglish = officialEnglish,
+                    titleRomaji = romaji,
+                    synonyms = synonyms,
+                    isDonghua = isDonghua
+                ) ?: officialEnglish?.takeIf { it.isNotBlank() }
                     ?: romaji.ifBlank { "Anime #$id" }
                 val coverObj = obj.getAsJsonObject("coverImage")
                 val cover = coverObj?.get("extraLarge").asStringOrNull()
@@ -5120,18 +5252,39 @@ private fun DesktopLibraryScreen(
     Spacer(modifier = Modifier.height(16.dp))
 
     val filteredList = remember(watchlist, statusFilter, ratingFilter, searchQuery, sortMode) {
+        val trimmedQuery = searchQuery.trim()
         watchlist
             .filter { item ->
+                val resolvedTitle = DesktopEnglishTitleMapper.resolve(item.title, item.titleRomaji, null, false) ?: item.title
                 (statusFilter == "all" || item.watchStatus == statusFilter) &&
                     (ratingFilter == "all" || SentimentTier.fromStars(item.userStars)?.key == ratingFilter) &&
-                    (searchQuery.isBlank() || item.title.contains(searchQuery, ignoreCase = true))
+                    (trimmedQuery.isEmpty() || DesktopEnglishTitleMapper.matchesAllKeywords(
+                        trimmedQuery,
+                        resolvedTitle,
+                        item.title,
+                        item.titleRomaji,
+                        item.genres.joinToString(" ")
+                    ))
             }
             .let { list ->
-                when (sortMode) {
+                val baseSorted = when (sortMode) {
                     "title" -> list.sortedBy { it.title.lowercase() }
                     "rating" -> list.sortedByDescending { it.userStars }
                     "progress" -> list.sortedByDescending { it.watchedEpisodes }
                     else -> list
+                }
+                if (trimmedQuery.isNotEmpty()) {
+                    baseSorted.sortedByDescending { item ->
+                        val resolvedTitle = DesktopEnglishTitleMapper.resolve(item.title, item.titleRomaji, null, false) ?: item.title
+                        DesktopEnglishTitleMapper.scoreKeywordMatch(
+                            rawQuery = trimmedQuery,
+                            resolvedEnglish = resolvedTitle,
+                            officialEnglish = item.title,
+                            romaji = item.titleRomaji
+                        )
+                    }
+                } else {
+                    baseSorted
                 }
             }
     }

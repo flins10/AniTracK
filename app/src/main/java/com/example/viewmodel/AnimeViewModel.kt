@@ -1604,7 +1604,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updateSearchQuery(query: String) {
         _searchQuery.value = query
-        performSearch(resetPage = true)
+        performSearch(resetPage = true, debounceMs = if (query.isBlank()) 0L else 260L)
     }
 
     fun updateFilterState(newState: DiscoverFilterState) {
@@ -1618,9 +1618,12 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
         performSearch(resetPage = true)
     }
 
-    fun performSearch(resetPage: Boolean = true) {
+    fun performSearch(resetPage: Boolean = true, debounceMs: Long = 0L) {
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
+            if (debounceMs > 0L) {
+                delay(debounceMs)
+            }
             if (resetPage) {
                 currentDiscoverPage = 1
                 hasNextDiscoverPage = true

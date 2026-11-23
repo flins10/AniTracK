@@ -16,6 +16,9 @@ import com.example.util.EnglishTitleMapper
 import com.example.util.EpisodeDataParser
 import com.example.util.ErrorSanitizer
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.time.Instant
@@ -48,37 +51,90 @@ class AniListMetadataProvider(
             val cleanFormat = format?.takeIf { it.isNotBlank() && it != "ALL" }
             val cleanCountry = countryOfOrigin?.takeIf { it.isNotBlank() && it != "ALL" }
 
-            val gqlQuery = AniListQueries.buildMediaQuery(
-                hasSearch = cleanQuery != null,
-                hasGenre = cleanGenre != null,
-                hasSeason = cleanSeason != null,
-                hasSeasonYear = seasonYear != null,
-                hasStatus = cleanStatus != null,
-                hasFormat = cleanFormat != null,
-                hasCountryOfOrigin = cleanCountry != null
-            )
-
-            val variables = mutableMapOf<String, Any?>(
-                "page" to page,
-                "perPage" to perPage,
-                "sort" to listOf(sort)
-            )
-            if (cleanQuery != null) variables["search"] = cleanQuery
-            if (cleanGenre != null) variables["genre"] = cleanGenre
-            if (cleanSeason != null) variables["season"] = cleanSeason
-            if (seasonYear != null) variables["seasonYear"] = seasonYear
-            if (cleanStatus != null) variables["status"] = cleanStatus
-            if (cleanFormat != null) variables["format"] = cleanFormat
-            if (cleanCountry != null) variables["countryOfOrigin"] = cleanCountry
-
-            val response = apiService.queryMedia(AniListRequest(query = gqlQuery, variables = variables))
-            if (!response.isSuccessful) {
-                return@withContext Result.failure(Exception("Unable to load catalog right now. Please try again."))
+            val effectiveSort = if (cleanQuery != null) {
+                listOf("SEARCH_MATCH", sort, "POPULARITY_DESC").distinct()
+            } else {
+                listOf(sort)
             }
-            val pageData = response.body()?.data?.Page
-            val media = pageData?.media.orEmpty()
-            val hasNext = pageData?.pageInfo?.hasNextPage ?: false
-            Result.success(media to hasNext)
+
+            suspend fun runQuery(searchTerm: String?, targetPage: Int, targetPerPage: Int): Pair<List<AniListMedia>, Boolean>? {
+                val gqlQuery = AniListQueries.buildMediaQuery(
+                    hasSearch = searchTerm != null,
+                    hasGenre = cleanGenre != null,
+                    hasSeason = cleanSeason != null,
+                    hasSeasonYear = seasonYear != null,
+                    hasStatus = cleanStatus != null,
+                    hasFormat = cleanFormat != null,
+                    hasCountryOfOrigin = cleanCountry != null
+                )
+                val variables = mutableMapOf<String, Any?>(
+                    "page" to targetPage,
+                    "perPage" to targetPerPage,
+                    "sort" to effectiveSort
+                )
+                if (searchTerm != null) variables["search"] = searchTerm
+                if (cleanGenre != null) variables["genre"] = cleanGenre
+                if (cleanSeason != null) variables["season"] = cleanSeason
+                if (seasonYear != null) variables["seasonYear"] = seasonYear
+                if (cleanStatus != null) variables["status"] = cleanStatus
+                if (cleanFormat != null) variables["format"] = cleanFormat
+                if (cleanCountry != null) variables["countryOfOrigin"] = cleanCountry
+
+                val response = apiService.queryMedia(AniListRequest(query = gqlQuery, variables = variables))
+                if (!response.isSuccessful) return null
+                val pageData = response.body()?.data?.Page
+                return pageData?.media.orEmpty() to (pageData?.pageInfo?.hasNextPage ?: false)
+            }
+
+            val primaryResult = runQuery(cleanQuery, page, perPage)
+                ?: return@withContext Result.failure(Exception("Unable to load catalog right now. Please try again."))
+
+            var mergedMedia = primaryResult.first
+            val hasNext = primaryResult.second
+
+            // On page 1 of a keyword search, also query matched Donghua/Anime Pinyin/Romaji aliases
+            // in parallel so English keywords always surface Donghua even if AniList only indexed Pinyin.
+            if (cleanQuery != null && page == 1 && cleanQuery.length >= 2) {
+                val extraTerms = EnglishTitleMapper.expandSearchQueries(
+                    rawQuery = cleanQuery,
+                    donghuaOnly = cleanCountry.equals("CN", ignoreCase = true),
+                    maxExtra = 2
+                )
+                if (extraTerms.isNotEmpty()) {
+                    val extras = coroutineScope {
+                        extraTerms.map { term ->
+                            async {
+                                runCatching { runQuery(term, 1, 10)?.first.orEmpty() }.getOrDefault(emptyList())
+                            }
+                        }.awaitAll().flatten()
+                    }
+                    if (extras.isNotEmpty()) {
+                        mergedMedia = (mergedMedia + extras).distinctBy { it.id }
+                    }
+                }
+                // Rank results by multi-keyword relevance across resolved English, Romaji/Pinyin, and synonyms
+                mergedMedia = mergedMedia.sortedWith(
+                    compareByDescending<AniListMedia> { media ->
+                        val isDonghua = media.countryOfOrigin.equals("CN", ignoreCase = true) ||
+                            media.genres.orEmpty().any { it.contains("Donghua", ignoreCase = true) }
+                        val resolved = EnglishTitleMapper.resolve(
+                            titleEnglish = media.title?.english,
+                            titleRomaji = media.title?.romaji,
+                            synonyms = media.synonyms,
+                            isDonghua = isDonghua
+                        )
+                        EnglishTitleMapper.scoreKeywordMatch(
+                            rawQuery = cleanQuery,
+                            resolvedEnglish = resolved,
+                            officialEnglish = media.title?.english,
+                            romaji = media.title?.romaji,
+                            synonyms = media.synonyms
+                        )
+                    }.thenByDescending { it.popularity ?: 0 }
+                )
+            }
+
+            Result.success(mergedMedia to hasNext)
         } catch (e: Exception) {
             Result.failure(Exception(ErrorSanitizer.sanitize(e, "Unable to reach catalog right now.")))
         }
@@ -241,7 +297,15 @@ class AniListMetadataProvider(
 
         private fun toRelationItem(node: AniListMedia, rawRelationType: String?): AnimeRelationItem? {
             if (!isAnimeMediaType(node.type)) return null
-            val title = node.title?.english?.takeIf { it.isNotBlank() }
+            val isDonghua = node.countryOfOrigin.equals("CN", ignoreCase = true) ||
+                node.genres.orEmpty().any { it.contains("Donghua", ignoreCase = true) }
+            val title = EnglishTitleMapper.resolve(
+                titleEnglish = node.title?.english,
+                titleRomaji = node.title?.romaji,
+                synonyms = node.synonyms,
+                isDonghua = isDonghua
+            )?.takeIf { it.isNotBlank() }
+                ?: node.title?.english?.takeIf { it.isNotBlank() }
                 ?: node.title?.userPreferred?.takeIf { it.isNotBlank() }
                 ?: node.title?.romaji?.takeIf { it.isNotBlank() }
                 ?: return null
@@ -277,8 +341,12 @@ class AniListMetadataProvider(
             val isDonghua = media.countryOfOrigin.equals("CN", ignoreCase = true) ||
                 genresList.any { it.contains("Donghua", ignoreCase = true) }
 
-            val resolvedEnglish = media.title?.english?.trim()?.takeIf { it.isNotBlank() }
-                ?: EnglishTitleMapper.resolve(null, media.title?.romaji, media.synonyms)
+            val resolvedEnglish = EnglishTitleMapper.resolve(
+                titleEnglish = media.title?.english,
+                titleRomaji = media.title?.romaji,
+                synonyms = media.synonyms,
+                isDonghua = isDonghua
+            ) ?: media.title?.english?.trim()?.takeIf { it.isNotBlank() }
                 ?: existing?.titleEnglish
 
             val parsedEp = EpisodeDataParser.parseAniListEpisodes(
@@ -363,7 +431,15 @@ class AniListMetadataProvider(
             }.distinctBy { it.id }
             val recs = media.recommendations?.nodes.orEmpty().mapNotNull { node ->
                 val rec = node.mediaRecommendation ?: return@mapNotNull null
-                val title = rec.title?.english?.takeIf { it.isNotBlank() }
+                val recIsDonghua = rec.countryOfOrigin.equals("CN", ignoreCase = true) ||
+                    rec.genres.orEmpty().any { it.contains("Donghua", ignoreCase = true) }
+                val title = EnglishTitleMapper.resolve(
+                    titleEnglish = rec.title?.english,
+                    titleRomaji = rec.title?.romaji,
+                    synonyms = rec.synonyms,
+                    isDonghua = recIsDonghua
+                )?.takeIf { it.isNotBlank() }
+                    ?: rec.title?.english?.takeIf { it.isNotBlank() }
                     ?: rec.title?.romaji?.takeIf { it.isNotBlank() }
                     ?: return@mapNotNull null
                 AnimeRecommendationItem(

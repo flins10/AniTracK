@@ -57,7 +57,15 @@ object SeasonChainResolver {
     }
 
     fun displayTitleOf(media: AniListMedia, fallback: String): String {
-        return media.title?.english?.takeIf { it.isNotBlank() }
+        val isDonghua = media.countryOfOrigin.equals("CN", ignoreCase = true) ||
+            media.genres.orEmpty().any { it.contains("Donghua", ignoreCase = true) }
+        return com.example.util.EnglishTitleMapper.resolve(
+            titleEnglish = media.title?.english,
+            titleRomaji = media.title?.romaji,
+            synonyms = media.synonyms,
+            isDonghua = isDonghua
+        )?.takeIf { it.isNotBlank() }
+            ?: media.title?.english?.takeIf { it.isNotBlank() }
             ?: media.title?.userPreferred?.takeIf { it.isNotBlank() }
             ?: media.title?.romaji?.takeIf { it.isNotBlank() }
             ?: fallback
