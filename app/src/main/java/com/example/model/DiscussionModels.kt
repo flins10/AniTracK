@@ -43,6 +43,13 @@ data class CommentReplyThread(
     val replies: List<CommentReplyItem> = emptyList()
 )
 
+data class FlatReplyTo(
+    val messageId: String,
+    val senderName: String,
+    val previewText: String = "",
+    val stickerCode: String? = null
+)
+
 data class AnimeCommentItem(
     val id: String,
     val animeId: Int,
@@ -54,7 +61,10 @@ data class AnimeCommentItem(
     val createdAt: String,
     val updatedAt: String,
     val mentions: List<ContentMention> = emptyList(),
-    val threads: List<CommentReplyThread> = emptyList()
+    val threads: List<CommentReplyThread> = emptyList(),
+    val replyTo: FlatReplyTo? = null,
+    val sourceType: String = "comment",
+    val threadId: String? = null
 ) {
     val totalReplyCount: Int
         get() = threads.sumOf { it.replies.size }

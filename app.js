@@ -437,7 +437,7 @@ const state = {
   detailNoteDraft: '',
   lastRenderedTab: null,
 
-  // Anime Discussion (LivTrAk Live Chat, Custom Emojis, @Tagging & Target-User Reply Threads)
+  // Anime Discussion (Flat Live Chat, Custom Stickers, Inline Quotes & True Realtime)
   discussion: {
     animeId: null,
     comments: [],
@@ -450,22 +450,21 @@ const state = {
     error: '',
     draft: '',
     commentTags: [], // [{ id, username, avatar_key }]
-    activeReplyTarget: null, // { commentId, targetUserId, targetUsername }
+    activeReplyTarget: null, // { messageId, senderName, previewText, stickerCode, targetUserId, sourceType, rootCommentId }
     replyDraft: '',
-    replyTags: [], // [{ id, username, avatar_key }]
+    replyTags: [],
     editingCommentId: null,
     editingCommentDraft: '',
     editingReplyId: null,
     editingReplyCommentId: null,
     editingReplyThreadId: null,
     editingReplyDraft: '',
-    expandedThreads: {},
     mentionSuggestions: [],
-    mentionActiveScope: null, // 'comment' | 'reply' | 'edit_comment' | 'edit_reply'
+    mentionActiveScope: null, // 'comment' | 'edit_comment'
     mentionActiveStart: -1,
     mentionActiveEnd: -1,
     highlightTarget: null, // { commentId, threadId, replyId }
-    contextMenu: null, // { x, y, type: 'comment'|'reply', commentId, threadId?, replyId?, userId, username, isOwner }
+    contextMenu: null, // { x, y, type: 'comment'|'reply'|'comm_note', commentId, sourceType, userId, username, previewText, stickerCode, isOwner }
     emojiTrayOpen: false
   },
 
@@ -3193,46 +3192,128 @@ function isSoloUnicodeEmoji(text) {
   return /^(?:\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic})*){1,3}$/u.test(cleaned);
 }
 
+function extractFirstStickerCode(text) {
+  const raw = String(text || '');
+  const m1 = /\[emoji:([a-zA-Z0-9_-]{1,64})\]/i.exec(raw);
+  if (m1 && m1[1]) return m1[1].trim().toLowerCase();
+  const m2 = /(?:^|[\s(]):([a-zA-Z0-9][a-zA-Z0-9_-]{0,63}):(?=$|[\s).,!?])/i.exec(raw);
+  if (m2 && m2[1]) return m2[1].trim().toLowerCase();
+  return null;
+}
+
 function formatPlainPreviewWithEmojis(text) {
   return String(text || '').replace(EMOJI_TOKEN_REGEX, (_, id) => `:${id}:`);
 }
 
-function resolveReplyQuotedContext(parentComment, reply) {
-  const refReplyId =
-    reply?.quoted_reply_id ||
-    (reply?.parent_comment_id && reply.parent_comment_id !== parentComment?.id
-      ? reply.parent_comment_id
-      : null);
-  if (refReplyId) {
-    let matchedReply = null;
-    for (const th of parentComment?.threads || []) {
-      const hit = (th.replies || []).find((item) => item.id === refReplyId);
-      if (hit) {
-        matchedReply = hit;
-        break;
+function renderQuotedPreviewContentHtml(previewText, stickerCode = null) {
+  const raw = String(previewText || '').trim();
+  const cleanSticker = stickerCode ? String(stickerCode).trim().toLowerCase() : null;
+  const tokenRegex = /\[emoji:([a-zA-Z0-9_-]{1,64})\]|:([a-zA-Z0-9][a-zA-Z0-9_-]{0,63}):/gi;
+  let out = '';
+  let last = 0;
+  let renderedSticker = false;
+  let match;
+  while ((match = tokenRegex.exec(raw)) !== null) {
+    if (match.index > last) {
+      out += escapeHtml(raw.slice(last, match.index));
+    }
+    const sid = (match[1] || match[2] || '').trim().toLowerCase();
+    if (sid) {
+      out += renderCustomEmojiSlotHtml(sid, { lazy: false, sizeClass: 'size-quote' });
+      renderedSticker = true;
+    }
+    last = match.index + match[0].length;
+  }
+  if (last < raw.length) {
+    out += escapeHtml(raw.slice(last));
+  }
+  if (cleanSticker && !renderedSticker) {
+    const stickerBadge = renderCustomEmojiSlotHtml(cleanSticker, { lazy: false, sizeClass: 'size-quote' });
+    return out.trim() ? `${stickerBadge}<span>${out}</span>` : stickerBadge;
+  }
+  return out || (cleanSticker ? renderCustomEmojiSlotHtml(cleanSticker, { lazy: false, sizeClass: 'size-quote' }) : 'Original message');
+}
+
+function normalizeFlatReplyTo(rawReplyTo, fallbackParentComment = null, fallbackRepliesMap = null) {
+  if (rawReplyTo && typeof rawReplyTo === 'object') {
+    const mid = String(rawReplyTo.messageId || rawReplyTo.message_id || '').trim();
+    const sName = String(rawReplyTo.senderName || rawReplyTo.sender_name || '').trim() || 'Member';
+    const pText = String(rawReplyTo.previewText || rawReplyTo.preview_text || '').trim();
+    const sCode =
+      String(rawReplyTo.stickerCode || rawReplyTo.sticker_code || '').trim().toLowerCase() ||
+      extractFirstStickerCode(pText) ||
+      null;
+    if (mid || pText || sCode) {
+      return { messageId: mid, senderName: sName, previewText: pText, stickerCode: sCode };
+    }
+  }
+  return null;
+}
+
+function flattenDiscussionMessages(rawList) {
+  const flatMap = new Map();
+  const list = Array.isArray(rawList) ? rawList : [];
+  for (const item of list) {
+    if (!item || !item.id) continue;
+    const directReplyTo = normalizeFlatReplyTo(item.reply_to || item.replyTo);
+    const body = item.content ?? item.body ?? '';
+    flatMap.set(item.id, {
+      ...item,
+      content: body,
+      source_type: item.source_type || 'comment',
+      replyTo: directReplyTo,
+      threads: []
+    });
+    // Backward-compatible flattening if backend still returns nested threads
+    const threads = Array.isArray(item.threads) ? item.threads : [];
+    const replyLookup = new Map();
+    for (const th of threads) {
+      for (const r of th.replies || []) {
+        if (r && r.id) replyLookup.set(r.id, r);
       }
     }
-    const author = matchedReply?.username || reply?.quoted_username || 'Member';
-    const rawPreview =
-      reply?.quoted_preview ||
-      matchedReply?.content ||
-      matchedReply?.body ||
-      'Original reply unavailable';
-    return {
-      author,
-      preview: formatPlainPreviewWithEmojis(rawPreview),
-      jumpCommentId: reply?.quoted_comment_id || parentComment?.id || '',
-      jumpReplyId: refReplyId
-    };
+    for (const th of threads) {
+      for (const r of th.replies || []) {
+        if (!r || !r.id || flatMap.has(r.id)) continue;
+        const rBody = r.content ?? r.body ?? '';
+        const refReplyId =
+          r.quoted_reply_id ||
+          (r.parent_comment_id && r.parent_comment_id !== item.id ? r.parent_comment_id : null);
+        const refReply = refReplyId ? replyLookup.get(refReplyId) : null;
+        const rawQuotePreview = refReplyId
+          ? r.quoted_preview || refReply?.content || refReply?.body || ''
+          : r.quoted_preview || body;
+        const quoteAuthor = refReplyId
+          ? refReply?.username || r.quoted_username || 'Member'
+          : r.quoted_username || item.username || 'Member';
+        flatMap.set(r.id, {
+          id: r.id,
+          anime_id: item.anime_id,
+          user_id: r.user_id,
+          username: r.username || 'Member',
+          avatar_key: r.avatar_key || 'avatar_1',
+          avatar_url: r.avatar_url || null,
+          content: rBody,
+          created_at: r.created_at,
+          updated_at: r.updated_at,
+          mentions: Array.isArray(r.mentions) ? r.mentions : [],
+          source_type: 'reply',
+          thread_id: th.id,
+          _rootCommentId: item.id,
+          replyTo: {
+            messageId: refReplyId || r.quoted_comment_id || item.id,
+            senderName: quoteAuthor,
+            previewText: String(rawQuotePreview || '').slice(0, 180),
+            stickerCode: extractFirstStickerCode(rawQuotePreview)
+          },
+          threads: []
+        });
+      }
+    }
   }
-  return {
-    author: reply?.quoted_username || parentComment?.username || 'Member',
-    preview: formatPlainPreviewWithEmojis(
-      reply?.quoted_preview || parentComment?.content || parentComment?.body || ''
-    ),
-    jumpCommentId: reply?.quoted_comment_id || parentComment?.id || '',
-    jumpReplyId: ''
-  };
+  return Array.from(flatMap.values()).sort(
+    (a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+  );
 }
 
 function renderMentionSegmentHtml(segmentText) {
@@ -3276,8 +3357,8 @@ function formatDiscussionTimestamp(isoStr) {
   try {
     const d = new Date(isoStr);
     if (isNaN(d.getTime())) return String(isoStr).slice(0, 10);
-    const diffSec = Math.floor((Date.now() - d.getTime()) / 1000);
-    if (diffSec < 45) return 'Just now';
+    const diffSec = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+    if (diffSec < 60) return 'Just now';
     if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
     if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
     if (diffSec < 86400 * 7) return `${Math.floor(diffSec / 86400)}d ago`;
@@ -3287,57 +3368,207 @@ function formatDiscussionTimestamp(isoStr) {
   }
 }
 
-function mergeReplyIntoDiscussionComments(comments, commentId, threadDto, replyDto) {
-  return comments.map((c) => {
-    if (c.id !== commentId) return c;
-    const threads = Array.isArray(c.threads) ? [...c.threads] : [];
-    const idx = threads.findIndex(
-      (th) => th.id === threadDto.id || th.target_user_id === threadDto.target_user_id
-    );
-    if (idx >= 0) {
-      const existing = threads[idx];
-      const existingReplies = Array.isArray(existing.replies) ? existing.replies : [];
-      const mergedReplies = existingReplies.some((r) => r.id === replyDto.id)
-        ? existingReplies.map((r) => (r.id === replyDto.id ? replyDto : r))
-        : [...existingReplies, replyDto];
-      threads[idx] = {
-        ...existing,
-        ...threadDto,
-        reply_count: mergedReplies.length,
-        replies: mergedReplies
-      };
-    } else {
-      threads.push({
-        ...threadDto,
-        reply_count: 1,
-        replies: [replyDto]
-      });
+function scrollChatFeedSmoothly(force = false) {
+  setTimeout(() => {
+    const stream = document.getElementById('livtrak-chat-messages');
+    if (!stream) return;
+    const distanceFromBottom = stream.scrollHeight - stream.scrollTop - stream.clientHeight;
+    if (force || distanceFromBottom < 220) {
+      stream.scrollTo({ top: stream.scrollHeight, behavior: 'smooth' });
     }
-    return { ...c, threads };
-  });
+  }, 50);
 }
+
+const DiscussionRealtimeManager = {
+  ws: null,
+  heartbeatId: null,
+  reconnectId: null,
+  subscribedAnimeId: null,
+  refCounter: 1,
+  profileCache: new Map(),
+
+  cacheProfilesFromMessages(list) {
+    for (const m of list || []) {
+      if (m?.user_id && m?.username) {
+        this.profileCache.set(m.user_id, {
+          username: m.username,
+          avatar_key: m.avatar_key || 'avatar_1',
+          avatar_url: m.avatar_url || null
+        });
+      }
+    }
+  },
+
+  async resolveSenderProfile(userId) {
+    if (!userId) return { username: 'Member', avatar_key: 'avatar_1', avatar_url: null };
+    if (this.profileCache.has(userId)) return this.profileCache.get(userId);
+    if (state.session?.userId === userId) {
+      const own = {
+        username: state.profile?.username || state.session.username || 'Member',
+        avatar_key: state.profile?.avatarKey || 'avatar_1',
+        avatar_url: null
+      };
+      this.profileCache.set(userId, own);
+      return own;
+    }
+    try {
+      const rows = await supabaseRequest(
+        `/rest/v1/profiles?id=eq.${encodeURIComponent(userId)}&select=id,username,avatar_key,avatar_url&limit=1`,
+        'GET'
+      );
+      const p = Array.isArray(rows) ? rows[0] : null;
+      if (p) {
+        const resolved = {
+          username: p.username || 'Member',
+          avatar_key: p.avatar_key || 'avatar_1',
+          avatar_url: p.avatar_url || null
+        };
+        this.profileCache.set(userId, resolved);
+        return resolved;
+      }
+    } catch (_) {}
+    return { username: 'Member', avatar_key: 'avatar_1', avatar_url: null };
+  },
+
+  ensureSubscribed(animeId) {
+    const aid = Number(animeId);
+    const token = state.session?.accessToken;
+    if (!aid || !token) {
+      this.disconnect();
+      return;
+    }
+    if (this.subscribedAnimeId === aid && this.ws && this.ws.readyState <= 1) return;
+    this.disconnect();
+    const baseUrl = getVaultBaseUrl();
+    const pubKey = getVaultPublicKey();
+    if (!baseUrl.startsWith('http')) return;
+    const wsUrl = `${baseUrl.replace(/^http/, 'ws')}/realtime/v1/websocket?apikey=${encodeURIComponent(pubKey)}&vsn=1.0.0`;
+    try {
+      const ws = new WebSocket(wsUrl);
+      this.ws = ws;
+      this.subscribedAnimeId = aid;
+      const topic = `realtime:public:anime_comments:${aid}`;
+      ws.onopen = () => {
+        ws.send(JSON.stringify({
+          topic,
+          event: 'phx_join',
+          payload: {
+            config: {
+              broadcast: { self: false },
+              presence: { key: '' },
+              postgres_changes: [
+                { event: '*', schema: 'public', table: 'anime_comments', filter: `anime_id=eq.${aid}` },
+                { event: 'UPDATE', schema: 'public', table: 'comment_replies' },
+                { event: 'DELETE', schema: 'public', table: 'comment_replies' }
+              ]
+            },
+            access_token: token
+          },
+          ref: String(this.refCounter++)
+        }));
+        ws.send(JSON.stringify({ topic, event: 'access_token', payload: { access_token: token }, ref: String(this.refCounter++) }));
+        this.heartbeatId = setInterval(() => {
+          if (ws.readyState === 1) {
+            ws.send(JSON.stringify({ topic: 'phoenix', event: 'heartbeat', payload: {}, ref: String(this.refCounter++) }));
+          }
+        }, 25000);
+      };
+      ws.onmessage = async (evt) => {
+        try {
+          if (Number(state.discussion.animeId) !== aid) return;
+          const msg = JSON.parse(evt.data);
+          if (msg?.event !== 'postgres_changes' || !msg?.payload?.data) return;
+          const data = msg.payload.data;
+          const evType = String(data.type || '').toUpperCase();
+          const table = String(data.table || '');
+          const rec = data.record || null;
+          const oldRec = data.old_record || null;
+
+          if (evType === 'INSERT' && table === 'anime_comments' && rec && rec.id) {
+            if (Number(rec.anime_id) !== aid) return;
+            if (state.discussion.comments.some((m) => m.id === rec.id)) return;
+            const sender = await this.resolveSenderProfile(rec.user_id);
+            if (Number(state.discussion.animeId) !== aid) return;
+            const flatMsg = flattenDiscussionMessages([
+              {
+                ...rec,
+                username: sender.username,
+                avatar_key: sender.avatar_key,
+                avatar_url: sender.avatar_url,
+                source_type: 'comment',
+                mentions: []
+              }
+            ])[0];
+            if (flatMsg && !state.discussion.comments.some((m) => m.id === flatMsg.id)) {
+              state.discussion.comments = [flatMsg, ...state.discussion.comments];
+              state.discussion.totalComments = Math.max(state.discussion.comments.length, state.discussion.totalComments + 1);
+              renderApp();
+              scrollChatFeedSmoothly(rec.user_id === state.session?.userId);
+            }
+          } else if (evType === 'UPDATE' && rec && rec.id) {
+            const existing = state.discussion.comments.find((m) => m.id === rec.id);
+            if (!existing) return;
+            const nextReplyTo = rec.reply_to ? normalizeFlatReplyTo(rec.reply_to) : existing.replyTo;
+            state.discussion.comments = state.discussion.comments.map((m) =>
+              m.id === rec.id
+                ? {
+                    ...m,
+                    content: rec.content ?? m.content,
+                    updated_at: rec.updated_at || m.updated_at,
+                    replyTo: nextReplyTo
+                  }
+                : m
+            );
+            renderApp();
+          } else if (evType === 'DELETE') {
+            const delId = oldRec?.id || rec?.id;
+            if (!delId) return;
+            const beforeLen = state.discussion.comments.length;
+            state.discussion.comments = state.discussion.comments.filter((m) => m.id !== delId);
+            if (state.discussion.comments.length !== beforeLen) {
+              state.discussion.totalComments = Math.max(0, state.discussion.totalComments - 1);
+              renderApp();
+            }
+          }
+        } catch (_) {}
+      };
+      ws.onclose = () => {
+        if (this.heartbeatId) clearInterval(this.heartbeatId);
+        this.heartbeatId = null;
+        if (this.subscribedAnimeId === aid && Number(state.discussion.animeId) === aid && getActiveDiscussionAnime()) {
+          this.reconnectId = setTimeout(() => this.ensureSubscribed(aid), 5000);
+        }
+      };
+      ws.onerror = () => {};
+    } catch (_) {}
+  },
+
+  disconnect() {
+    if (this.heartbeatId) clearInterval(this.heartbeatId);
+    if (this.reconnectId) clearTimeout(this.reconnectId);
+    this.heartbeatId = null;
+    this.reconnectId = null;
+    this.subscribedAnimeId = null;
+    if (this.ws) {
+      try { this.ws.close(); } catch (_) {}
+      this.ws = null;
+    }
+  }
+};
 
 function applyPendingDiscussionHighlight(animeId) {
   const jump = state.pendingNotificationJump;
   if (!jump || Number(jump.animeId) !== Number(animeId)) return;
-  if (jump.threadId) {
-    state.discussion.expandedThreads[jump.threadId] = true;
-  }
+  const targetMessageId = jump.replyId || jump.commentId || null;
   state.discussion.highlightTarget = {
-    commentId: jump.commentId || null,
-    threadId: jump.threadId || null,
-    replyId: jump.replyId || null
+    commentId: targetMessageId,
+    threadId: null,
+    replyId: null
   };
   state.pendingNotificationJump = null;
   renderApp();
   setTimeout(() => {
-    const targetId = jump.replyId
-      ? `discussion-reply-${jump.replyId}`
-      : jump.threadId
-      ? `discussion-thread-${jump.threadId}`
-      : jump.commentId
-      ? `discussion-comment-${jump.commentId}`
-      : 'anime-discussion-section';
+    const targetId = targetMessageId ? `discussion-comment-${targetMessageId}` : 'anime-discussion-section';
     const el = document.getElementById(targetId);
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -3361,7 +3592,6 @@ async function loadAnimeDiscussion(animeId, reset = true) {
       state.discussion.replyDraft = '';
       state.discussion.replyTags = [];
       state.discussion.editingCommentId = null;
-      state.discussion.editingReplyId = null;
       state.discussion.contextMenu = null;
       state.discussion.success = '';
     }
@@ -3375,30 +3605,25 @@ async function loadAnimeDiscussion(animeId, reset = true) {
   try {
     const data = await supabaseRequest('/rest/v1/rpc/get_anime_discussion_page', 'POST', {
       p_anime_id: aid,
-      p_limit: 15,
+      p_limit: 25,
       p_offset: offset
     });
     if (Number(state.discussion.animeId) !== aid) return;
-    const incoming = Array.isArray(data?.comments) ? data.comments : [];
+    const rawIncoming = Array.isArray(data?.comments) ? data.comments : [];
+    const incomingFlat = flattenDiscussionMessages(rawIncoming);
+    DiscussionRealtimeManager.cacheProfilesFromMessages(incomingFlat);
     const merged = reset
-      ? incoming
-      : [
+      ? incomingFlat
+      : flattenDiscussionMessages([
           ...state.discussion.comments,
-          ...incoming.filter((inc) => !state.discussion.comments.some((old) => old.id === inc.id))
-        ];
+          ...incomingFlat.filter((inc) => !state.discussion.comments.some((old) => old.id === inc.id))
+        ]);
     state.discussion.comments = merged;
     state.discussion.totalComments = Number(data?.total_comments ?? merged.length);
     state.discussion.hasMore = Boolean(data?.has_more);
     state.discussion.loading = false;
     state.discussion.loadingMore = false;
-    // Default-expand threads that have <= 3 replies or match a jump target
-    for (const c of incoming) {
-      for (const th of c.threads || []) {
-        if (state.discussion.expandedThreads[th.id] === undefined && (th.replies?.length || 0) <= 2) {
-          state.discussion.expandedThreads[th.id] = true;
-        }
-      }
-    }
+    DiscussionRealtimeManager.ensureSubscribed(aid);
     if (state.pendingNotificationJump && Number(state.pendingNotificationJump.animeId) === aid) {
       applyPendingDiscussionHighlight(aid);
     } else {
@@ -3411,7 +3636,7 @@ async function loadAnimeDiscussion(animeId, reset = true) {
     if (Number(state.discussion.animeId) !== aid) return;
     state.discussion.loading = false;
     state.discussion.loadingMore = false;
-    state.discussion.error = err?.message || 'Unable to load discussion right now.';
+    state.discussion.error = err?.message || 'Unable to load live chat right now.';
     renderApp();
   }
 }
@@ -3718,24 +3943,19 @@ function applyPendingCommunityReplyTarget() {
   state.pendingCommunityReplyUser = null;
 
   if (existingComment) {
-    const existingThread = (existingComment.threads || []).find((th) => th.target_user_id === existingComment.user_id);
-    if (existingThread) {
-      state.discussion.expandedThreads[existingThread.id] = true;
-    }
+    const existingBody = existingComment.content ?? existingComment.body ?? '';
     state.discussion.activeReplyTarget = {
-      commentId: existingComment.id,
+      messageId: existingComment.id,
+      senderName: existingComment.username || pending.username || 'Member',
+      previewText: existingBody.slice(0, 180),
+      stickerCode: extractFirstStickerCode(existingBody),
       targetUserId: existingComment.user_id,
-      targetUsername: existingComment.username || pending.username || 'Member',
-      quotedCommentId: existingComment.id,
-      quotedReplyId: null,
-      quotedUsername: existingComment.username || pending.username || 'Member',
-      quotedPreview: formatPlainPreviewWithEmojis(existingComment.content ?? existingComment.body ?? '').slice(0, 180)
+      sourceType: existingComment.source_type || 'comment',
+      rootCommentId: existingComment._rootCommentId || existingComment.id
     };
-    state.discussion.replyDraft = '';
-    state.discussion.replyTags = [];
     state.discussion.error = '';
     renderApp();
-    setTimeout(() => document.getElementById('inp-discussion-reply')?.focus(), 40);
+    setTimeout(() => document.getElementById('inp-discussion-comment')?.focus(), 40);
   } else if (pending.id) {
     const currentTags = state.discussion.commentTags || [];
     const check = validateContentMentions(state.discussion.draft || '', currentTags.length);
@@ -3758,8 +3978,9 @@ async function postAnimeComment() {
   if (!state.session || !activeAnime || state.discussion.submitting) return;
   const body = (document.getElementById('inp-discussion-comment')?.value ?? state.discussion.draft ?? '').trim();
   const taggedIds = (state.discussion.commentTags || []).map((t) => t.id).filter(Boolean);
+  const replyTarget = state.discussion.activeReplyTarget;
   if (!body) {
-    state.discussion.error = 'Please write a comment before posting.';
+    state.discussion.error = 'Please write a message before sending.';
     state.discussion.success = '';
     renderApp();
     return;
@@ -3777,38 +3998,88 @@ async function postAnimeComment() {
   renderApp();
   try {
     const a = activeAnime;
-    const res = await supabaseRequest('/rest/v1/rpc/create_anime_comment', 'POST', {
-      p_anime_id: Number(a.animeId),
-      p_content: body,
-      p_anime_title: a.titleEnglish || a.title || 'Anime',
-      p_anime_cover: a.coverImage || '',
-      p_tagged_user_ids: taggedIds
-    });
+    const flatReplyTo = replyTarget
+      ? {
+          messageId: replyTarget.messageId,
+          senderName: replyTarget.senderName,
+          previewText: replyTarget.previewText || '',
+          stickerCode: replyTarget.stickerCode || extractFirstStickerCode(replyTarget.previewText || '')
+        }
+      : null;
+    let res = null;
+    try {
+      res = await supabaseRequest('/rest/v1/rpc/create_anime_comment', 'POST', {
+        p_anime_id: Number(a.animeId),
+        p_content: body,
+        p_anime_title: a.titleEnglish || a.title || 'Anime',
+        p_anime_cover: a.coverImage || '',
+        p_tagged_user_ids: taggedIds,
+        p_reply_to: flatReplyTo
+      });
+    } catch (rpcErr) {
+      const msg = String(rpcErr?.message || '');
+      if (flatReplyTo && /could not find the function|p_reply_to|PGRST202/i.test(msg)) {
+        const legacyRes = await supabaseRequest('/rest/v1/rpc/create_thread_reply', 'POST', {
+          p_comment_id: replyTarget.rootCommentId || replyTarget.messageId,
+          p_target_user_id: replyTarget.targetUserId,
+          p_content: body,
+          p_tagged_user_ids: taggedIds,
+          p_quoted_reply_id: replyTarget.sourceType === 'reply' ? replyTarget.messageId : null,
+          p_quoted_username: replyTarget.senderName || null,
+          p_quoted_preview: replyTarget.previewText || null
+        });
+        if (legacyRes?.reply) {
+          const legFlat = {
+            ...legacyRes.reply,
+            anime_id: Number(a.animeId),
+            source_type: 'reply',
+            replyTo: flatReplyTo,
+            threads: []
+          };
+          state.discussion.comments = flattenDiscussionMessages([legFlat, ...state.discussion.comments]);
+          state.discussion.totalComments = Math.max(state.discussion.comments.length, state.discussion.totalComments + 1);
+        }
+        res = null;
+      } else {
+        throw rpcErr;
+      }
+    }
     const created = res?.comment || res;
     if (created && created.id) {
-      state.discussion.comments = [
-        { ...created, threads: Array.isArray(created.threads) ? created.threads : [] },
-        ...state.discussion.comments.filter((c) => c.id !== created.id)
-      ];
-      state.discussion.totalComments = Number(res?.total_comments ?? Math.max(state.discussion.comments.length, state.discussion.totalComments + 1));
+      const normalized = flattenDiscussionMessages([
+        {
+          ...created,
+          reply_to: created.reply_to || flatReplyTo,
+          threads: []
+        }
+      ])[0];
+      if (normalized) {
+        state.discussion.comments = [
+          normalized,
+          ...state.discussion.comments.filter((c) => c.id !== normalized.id)
+        ];
+      }
+      state.discussion.totalComments = Number(
+        res?.total_comments ?? Math.max(state.discussion.comments.length, state.discussion.totalComments + 1)
+      );
     }
     state.discussion.draft = '';
     state.discussion.commentTags = [];
+    state.discussion.activeReplyTarget = null;
+    state.discussion.replyDraft = '';
+    state.discussion.replyTags = [];
     state.discussion.mentionSuggestions = [];
     state.discussion.mentionActiveScope = null;
     state.discussion.emojiTrayOpen = false;
     state.discussion.success = '';
     EmojiCacheManager.recordUsage(extractEmojiIdsFromText(body));
   } catch (err) {
-    state.discussion.error = err?.message || 'Failed to post message. Please try again.';
+    state.discussion.error = err?.message || 'Failed to send message. Please try again.';
     showToast(state.discussion.error, true);
   } finally {
     state.discussion.submitting = false;
     renderApp();
-    setTimeout(() => {
-      const stream = document.getElementById('livtrak-chat-messages');
-      if (stream) stream.scrollTop = stream.scrollHeight;
-    }, 40);
+    scrollChatFeedSmoothly(true);
   }
 }
 
@@ -3816,7 +4087,7 @@ async function saveEditedAnimeComment(commentId) {
   if (!state.session || state.discussion.submitting) return;
   const body = (document.getElementById('inp-discussion-edit-comment')?.value ?? state.discussion.editingCommentDraft ?? '').trim();
   if (!body) {
-    state.discussion.error = 'Comment cannot be empty.';
+    state.discussion.error = 'Message cannot be empty.';
     renderApp();
     return;
   }
@@ -3826,15 +4097,22 @@ async function saveEditedAnimeComment(commentId) {
     renderApp();
     return;
   }
+  const targetMsg = state.discussion.comments.find((c) => c.id === commentId);
+  const isLegacyReply = targetMsg?.source_type === 'reply';
   state.discussion.submitting = true;
   state.discussion.error = '';
   state.discussion.success = '';
   renderApp();
   try {
-    const updated = await supabaseRequest('/rest/v1/rpc/update_anime_comment', 'POST', {
-      p_comment_id: commentId,
-      p_content: body
-    });
+    const updated = isLegacyReply
+      ? await supabaseRequest('/rest/v1/rpc/update_thread_reply', 'POST', {
+          p_reply_id: commentId,
+          p_content: body
+        })
+      : await supabaseRequest('/rest/v1/rpc/update_anime_comment', 'POST', {
+          p_comment_id: commentId,
+          p_content: body
+        });
     state.discussion.comments = state.discussion.comments.map((c) =>
       c.id === commentId
         ? { ...c, content: updated?.content || body, updated_at: updated?.updated_at || new Date().toISOString() }
@@ -3842,10 +4120,10 @@ async function saveEditedAnimeComment(commentId) {
     );
     state.discussion.editingCommentId = null;
     state.discussion.editingCommentDraft = '';
-    state.discussion.success = 'Comment updated successfully';
-    showToast('Comment updated');
+    state.discussion.success = 'Message updated';
+    showToast('Message updated');
   } catch (err) {
-    state.discussion.error = err?.message || 'Failed to update comment.';
+    state.discussion.error = err?.message || 'Failed to update message.';
   } finally {
     state.discussion.submitting = false;
     renderApp();
@@ -3854,22 +4132,27 @@ async function saveEditedAnimeComment(commentId) {
 
 async function deleteAnimeComment(commentId) {
   if (!state.session || state.discussion.submitting) return;
+  const targetMsg = state.discussion.comments.find((c) => c.id === commentId);
+  const isLegacyReply = targetMsg?.source_type === 'reply';
   state.discussion.submitting = true;
   state.discussion.error = '';
   state.discussion.success = '';
   renderApp();
   try {
-    await supabaseRequest('/rest/v1/rpc/delete_anime_comment', 'POST', { p_comment_id: commentId });
+    if (isLegacyReply) {
+      await supabaseRequest('/rest/v1/rpc/delete_thread_reply', 'POST', { p_reply_id: commentId });
+    } else {
+      await supabaseRequest('/rest/v1/rpc/delete_anime_comment', 'POST', { p_comment_id: commentId });
+    }
     state.discussion.comments = state.discussion.comments.filter((c) => c.id !== commentId);
     state.discussion.totalComments = Math.max(0, state.discussion.totalComments - 1);
-    if (state.discussion.activeReplyTarget?.commentId === commentId) {
+    if (state.discussion.activeReplyTarget?.messageId === commentId) {
       state.discussion.activeReplyTarget = null;
-      state.discussion.replyDraft = '';
     }
-    state.discussion.success = 'Comment deleted';
-    showToast('Comment deleted');
+    state.discussion.success = 'Message deleted';
+    showToast('Message deleted');
   } catch (err) {
-    state.discussion.error = err?.message || 'Failed to delete comment.';
+    state.discussion.error = err?.message || 'Failed to delete message.';
   } finally {
     state.discussion.submitting = false;
     renderApp();
@@ -3877,157 +4160,7 @@ async function deleteAnimeComment(commentId) {
 }
 
 async function postThreadReply() {
-  const target = state.discussion.activeReplyTarget;
-  if (!state.session || !target || state.discussion.submitting) return;
-  const body = (document.getElementById('inp-discussion-reply')?.value ?? state.discussion.replyDraft ?? '').trim();
-  const taggedIds = (state.discussion.replyTags || []).map((t) => t.id).filter(Boolean);
-  if (!body) {
-    state.discussion.error = 'Please write a reply before posting.';
-    state.discussion.success = '';
-    renderApp();
-    return;
-  }
-  const check = validateContentMentions(body, taggedIds.length);
-  if (!check.ok) {
-    state.discussion.error = check.error;
-    state.discussion.success = '';
-    renderApp();
-    return;
-  }
-  state.discussion.submitting = true;
-  state.discussion.error = '';
-  state.discussion.success = '';
-  renderApp();
-  try {
-    const res = await supabaseRequest('/rest/v1/rpc/create_thread_reply', 'POST', {
-      p_comment_id: target.commentId,
-      p_target_user_id: target.targetUserId,
-      p_content: body,
-      p_tagged_user_ids: taggedIds,
-      p_quoted_reply_id: target.quotedReplyId || null,
-      p_quoted_username: target.quotedUsername || target.targetUsername || null,
-      p_quoted_preview: target.quotedPreview || null
-    });
-    if (res && res.thread && res.reply) {
-      const mergedReply = {
-        ...res.reply,
-        parent_comment_id:
-          res.reply.parent_comment_id ||
-          res.reply.quoted_reply_id ||
-          target.parentCommentId ||
-          target.quotedReplyId ||
-          target.commentId,
-        quoted_comment_id: res.reply.quoted_comment_id || target.commentId,
-        quoted_reply_id: res.reply.quoted_reply_id || target.quotedReplyId || null,
-        quoted_username: res.reply.quoted_username || target.quotedUsername || target.targetUsername || null,
-        quoted_preview: res.reply.quoted_preview || target.quotedPreview || null
-      };
-      state.discussion.comments = mergeReplyIntoDiscussionComments(
-        state.discussion.comments,
-        target.commentId,
-        res.thread,
-        mergedReply
-      );
-      state.discussion.expandedThreads[res.thread.id] = true;
-    }
-    state.discussion.replyDraft = '';
-    state.discussion.replyTags = [];
-    state.discussion.activeReplyTarget = null;
-    state.discussion.mentionSuggestions = [];
-    state.discussion.mentionActiveScope = null;
-    state.discussion.emojiTrayOpen = false;
-    state.discussion.success = '';
-    EmojiCacheManager.recordUsage(extractEmojiIdsFromText(body));
-  } catch (err) {
-    state.discussion.error = err?.message || 'Failed to post reply.';
-    showToast(state.discussion.error, true);
-  } finally {
-    state.discussion.submitting = false;
-    renderApp();
-  }
-}
-
-async function saveEditedThreadReply(commentId, threadId, replyId) {
-  if (!state.session || state.discussion.submitting) return;
-  const body = (document.getElementById('inp-discussion-edit-reply')?.value ?? state.discussion.editingReplyDraft ?? '').trim();
-  if (!body) {
-    state.discussion.error = 'Reply cannot be empty.';
-    renderApp();
-    return;
-  }
-  const check = validateContentMentions(body);
-  if (!check.ok) {
-    state.discussion.error = check.error;
-    renderApp();
-    return;
-  }
-  state.discussion.submitting = true;
-  state.discussion.error = '';
-  state.discussion.success = '';
-  renderApp();
-  try {
-    const updated = await supabaseRequest('/rest/v1/rpc/update_thread_reply', 'POST', {
-      p_reply_id: replyId,
-      p_content: body
-    });
-    state.discussion.comments = state.discussion.comments.map((c) => {
-      if (c.id !== commentId) return c;
-      return {
-        ...c,
-        threads: (c.threads || []).map((th) => {
-          if (th.id !== threadId) return th;
-          return {
-            ...th,
-            replies: (th.replies || []).map((r) =>
-              r.id === replyId
-                ? { ...r, content: updated?.content || body, updated_at: updated?.updated_at || new Date().toISOString() }
-                : r
-            )
-          };
-        })
-      };
-    });
-    state.discussion.editingReplyId = null;
-    state.discussion.editingReplyCommentId = null;
-    state.discussion.editingReplyThreadId = null;
-    state.discussion.editingReplyDraft = '';
-    state.discussion.success = 'Reply updated successfully';
-    showToast('Reply updated');
-  } catch (err) {
-    state.discussion.error = err?.message || 'Failed to update reply.';
-  } finally {
-    state.discussion.submitting = false;
-    renderApp();
-  }
-}
-
-async function deleteThreadReply(commentId, threadId, replyId) {
-  if (!state.session || state.discussion.submitting) return;
-  state.discussion.submitting = true;
-  state.discussion.error = '';
-  state.discussion.success = '';
-  renderApp();
-  try {
-    await supabaseRequest('/rest/v1/rpc/delete_thread_reply', 'POST', { p_reply_id: replyId });
-    state.discussion.comments = state.discussion.comments.map((c) => {
-      if (c.id !== commentId) return c;
-      const nextThreads = (c.threads || [])
-        .map((th) => {
-          if (th.id !== threadId) return th;
-          const nextReplies = (th.replies || []).filter((r) => r.id !== replyId);
-          return { ...th, replies: nextReplies, reply_count: nextReplies.length };
-        })
-        .filter((th) => (th.replies || []).length > 0);
-      return { ...c, threads: nextThreads };
-    });
-    state.discussion.success = 'Reply deleted';
-    showToast('Reply deleted');
-  } catch (err) {
-    state.discussion.error = err?.message || 'Failed to delete reply.';
-  } finally {
-    state.discussion.submitting = false;
-    renderApp();
-  }
+  return postAnimeComment();
 }
 
 async function refreshUnreadNotificationCount() {
@@ -5589,19 +5722,20 @@ function renderAnimeDiscussionSection(anime, options = {}) {
   const d = state.discussion;
   const currentUserId = state.session?.userId || null;
   const hl = d.highlightTarget || {};
-  const isReplyingMode = Boolean(d.activeReplyTarget);
-  const activeScope = isReplyingMode ? 'reply' : 'comment';
-  const activeDraft = isReplyingMode ? (d.replyDraft || '') : (d.draft || '');
-  const activeTags = isReplyingMode ? (d.replyTags || []) : (d.commentTags || []);
+  const activeScope = 'comment';
+  const activeDraft = d.draft || '';
+  const activeTags = d.commentTags || [];
 
-  // Live Chat chronological order (oldest -> newest at bottom)
-  const chronological = [...(d.comments || [])].reverse();
+  // Single flat chronological stream (oldest -> newest at bottom)
+  const chronological = [...(d.comments || [])].sort(
+    (a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime()
+  );
 
   return `
     <div class="livtrak-chat-shell ${inModal ? '' : 'inline-detail-chat'}" id="anime-discussion-section">
       ${
         !inModal
-          ? `<div style="padding:14px 18px 10px;border-bottom:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:space-between;">
+          ? `<div style="padding:12px 18px;border-bottom:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:space-between;">
                <span style="font-size:13px;font-weight:700;color:#E8C88F;letter-spacing:0.4px;">Live Chat</span>
                <span class="tabular-num" style="font-size:11.5px;color:#9A9AA8;">${d.totalComments} ${d.totalComments === 1 ? 'message' : 'messages'}</span>
              </div>`
@@ -5613,7 +5747,7 @@ function renderAnimeDiscussionSection(anime, options = {}) {
       <div class="chat-messages" id="livtrak-chat-messages">
         ${
           d.hasMore
-            ? `<button type="button" class="c-thread-toggle" id="btn-discussion-load-more" style="align-self:center;" ${d.loadingMore ? 'disabled' : ''}>
+            ? `<button type="button" class="c-micro-action" id="btn-discussion-load-more" style="align-self:center;padding:5px 12px;border-radius:999px;background:rgba(232,200,143,0.08);border:1px solid rgba(232,200,143,0.22);color:#E8C88F;" ${d.loadingMore ? 'disabled' : ''}>
                  ${d.loadingMore ? 'Loading earlier messages...' : 'Load earlier messages'}
                </button>`
             : ''
@@ -5630,14 +5764,30 @@ function renderAnimeDiscussionSection(anime, options = {}) {
                 .map((c) => {
                   const isMine = Boolean(currentUserId && c.user_id === currentUserId);
                   const isEditingThis = d.editingCommentId === c.id;
-                  const isCommentHighlighted = hl.commentId === c.id && !hl.replyId && !hl.threadId;
-                  const threads = Array.isArray(c.threads) ? c.threads : [];
+                  const isCommentHighlighted = hl.commentId === c.id || hl.replyId === c.id;
+                  const rawBody = c.content ?? c.body ?? '';
+                  const soloEid = extractSoloEmojiId(rawBody);
+                  const isUnicodeSolo = !soloEid && isSoloUnicodeEmoji(rawBody);
+                  const replyTo = c.replyTo || null;
+                  const quoteButtonHtml = (standalone = false) =>
+                    replyTo && (replyTo.previewText || replyTo.stickerCode)
+                      ? `<button
+                           type="button"
+                           class="c-quote-preview ${standalone ? 'standalone-quote' : ''}"
+                           data-jump-comment="${escapeHtml(replyTo.messageId || '')}"
+                           title="Jump to quoted message"
+                         >
+                           <span class="c-quote-author">@${escapeHtml(replyTo.senderName || 'Member')}</span>
+                           <span class="c-quote-text">${renderQuotedPreviewContentHtml(replyTo.previewText, replyTo.stickerCode)}</span>
+                         </button>`
+                      : '';
 
                   return `
                     <div class="c-msg-group ${isCommentHighlighted ? 'highlight-pulse' : ''}" id="discussion-comment-${escapeHtml(c.id)}">
                       <div
                         class="c-msg ${isMine ? 'mine' : ''}"
                         data-ctx-comment="${escapeHtml(c.id)}"
+                        data-ctx-source="${escapeHtml(c.source_type || 'comment')}"
                         data-ctx-uid="${escapeHtml(c.user_id)}"
                         data-ctx-name="${escapeHtml(c.username || 'Member')}"
                         data-ctx-owner="${isMine ? '1' : '0'}"
@@ -5657,7 +5807,7 @@ function renderAnimeDiscussionSection(anime, options = {}) {
                             isEditingThis
                               ? `
                                 <div class="c-bubble" style="min-width:220px;">
-                                  <textarea id="inp-discussion-edit-comment" class="auth-input" style="height:66px;padding:8px;resize:vertical;width:100%;">${escapeHtml(
+                                  <textarea id="inp-discussion-edit-comment" class="auth-input" style="height:64px;padding:8px;resize:vertical;width:100%;">${escapeHtml(
                                     d.editingCommentDraft
                                   )}</textarea>
                                   <div id="mention-dropdown-edit_comment" class="mention-dropdown"></div>
@@ -5669,188 +5819,28 @@ function renderAnimeDiscussionSection(anime, options = {}) {
                                   </div>
                                 </div>
                               `
-                              : (() => {
-                                  const rawBody = c.content ?? c.body ?? '';
-                                  const soloEid = extractSoloEmojiId(rawBody);
-                                  if (soloEid) {
-                                    return `
-                                      <div class="c-solo-emoji ${isCommentHighlighted ? 'highlight-pulse' : ''}">${renderCustomEmojiSlotHtml(soloEid, { lazy: false, sizeClass: 'size-solo' })}</div>
-                                      ${renderMentionsDisplayHtml(c.mentions)}
-                                    `;
-                                  }
-                                  if (isSoloUnicodeEmoji(rawBody)) {
-                                    return `
-                                      <div class="c-solo-unicode-emoji ${isCommentHighlighted ? 'highlight-pulse' : ''}">${escapeHtml(rawBody.trim())}</div>
-                                      ${renderMentionsDisplayHtml(c.mentions)}
-                                    `;
-                                  }
-                                  return `
-                                    <div class="c-bubble ${isCommentHighlighted ? 'highlight-pulse' : ''}">${renderMentionHighlightedHtml(rawBody)}</div>
-                                    ${renderMentionsDisplayHtml(c.mentions)}
-                                  `;
-                                })()
+                              : soloEid
+                              ? `
+                                ${quoteButtonHtml(true)}
+                                <div class="c-solo-emoji ${isCommentHighlighted ? 'highlight-pulse' : ''}">${renderCustomEmojiSlotHtml(soloEid, { lazy: false, sizeClass: 'size-solo' })}</div>
+                                ${renderMentionsDisplayHtml(c.mentions)}
+                              `
+                              : isUnicodeSolo
+                              ? `
+                                ${quoteButtonHtml(true)}
+                                <div class="c-solo-unicode-emoji ${isCommentHighlighted ? 'highlight-pulse' : ''}">${escapeHtml(rawBody.trim())}</div>
+                                ${renderMentionsDisplayHtml(c.mentions)}
+                              `
+                              : `
+                                <div class="c-bubble ${isCommentHighlighted ? 'highlight-pulse' : ''}">
+                                  ${quoteButtonHtml(false)}
+                                  <div class="c-bubble-body-text">${renderMentionHighlightedHtml(rawBody)}</div>
+                                </div>
+                                ${renderMentionsDisplayHtml(c.mentions)}
+                              `
                           }
-
-                          <div class="c-bubble-footer">
-                            ${
-                              state.session
-                                ? `<button
-                                     type="button"
-                                     class="c-micro-action"
-                                     data-start-reply-comment="${escapeHtml(c.id)}"
-                                     data-reply-target-uid="${escapeHtml(c.user_id)}"
-                                     data-reply-target-name="${escapeHtml(c.username || 'Member')}"
-                                     data-reply-quoted-id=""
-                                     data-reply-quoted-author="${escapeHtml(c.username || 'Member')}"
-                                     data-reply-quoted-preview="${escapeHtml(formatPlainPreviewWithEmojis(c.content ?? c.body ?? '').slice(0, 180))}"
-                                   >Reply</button>`
-                                : ''
-                            }
-                            ${
-                              isMine && !isEditingThis
-                                ? `
-                                  <button type="button" class="c-micro-action" data-edit-comment="${escapeHtml(c.id)}">Edit</button>
-                                  <button type="button" class="c-micro-action danger" data-delete-comment="${escapeHtml(c.id)}">Delete</button>
-                                `
-                                : ''
-                            }
-                          </div>
                         </div>
                       </div>
-
-                      ${
-                        threads.length > 0
-                          ? `
-                            <div class="c-thread-wrap">
-                              ${threads
-                                .map((th) => {
-                                  const isExpanded = Boolean(d.expandedThreads[th.id]);
-                                  const replies = Array.isArray(th.replies) ? th.replies : [];
-                                  const isThreadHighlighted = hl.threadId === th.id && !hl.replyId;
-                                  return `
-                                    <div id="discussion-thread-${escapeHtml(th.id)}" class="${isThreadHighlighted ? 'highlight-pulse' : ''}" style="display:flex;flex-direction:column;gap:8px;">
-                                      <button type="button" class="c-thread-toggle" data-toggle-thread="${escapeHtml(th.id)}">
-                                        @${escapeHtml(th.target_username || 'Member')} • ${replies.length} ${replies.length === 1 ? 'reply' : 'replies'} ${isExpanded ? '▲' : '▼'}
-                                      </button>
-                                      ${
-                                        isExpanded
-                                          ? replies
-                                              .map((r) => {
-                                                const isOwnReply = Boolean(currentUserId && r.user_id === currentUserId);
-                                                const isEditingReply = d.editingReplyId === r.id;
-                                                const isReplyHighlighted = hl.replyId === r.id;
-                                                const rBody = r.content ?? r.body ?? '';
-                                                const rSoloEid = extractSoloEmojiId(rBody);
-                                                const quoteCtx = resolveReplyQuotedContext(c, r);
-                                                const quoteButtonHtml = quoteCtx.preview
-                                                  ? `<button
-                                                       type="button"
-                                                       class="c-quote-preview"
-                                                       data-jump-comment="${escapeHtml(quoteCtx.jumpCommentId)}"
-                                                       data-jump-reply="${escapeHtml(quoteCtx.jumpReplyId)}"
-                                                       title="Jump to original message"
-                                                     >
-                                                       <span class="c-quote-author">@${escapeHtml(quoteCtx.author)}</span>
-                                                       <span class="c-quote-text">${escapeHtml(quoteCtx.preview)}</span>
-                                                     </button>`
-                                                  : '';
-                                                return `
-                                                  <div
-                                                    class="c-msg ${isOwnReply ? 'mine' : ''}"
-                                                    id="discussion-reply-${escapeHtml(r.id)}"
-                                                    data-ctx-reply="${escapeHtml(r.id)}"
-                                                    data-ctx-reply-cid="${escapeHtml(c.id)}"
-                                                    data-ctx-reply-tid="${escapeHtml(th.id)}"
-                                                    data-ctx-uid="${escapeHtml(r.user_id)}"
-                                                    data-ctx-name="${escapeHtml(r.username || 'Member')}"
-                                                    data-ctx-quoted-preview="${escapeHtml(formatPlainPreviewWithEmojis(rBody).slice(0, 180))}"
-                                                    data-ctx-owner="${isOwnReply ? '1' : '0'}"
-                                                  >
-                                                    ${!isOwnReply ? `<div class="c-msg-avatar-wrap">${renderAvatarCircle(r.avatar_key || 'avatar_1', r.username, 26)}</div>` : ''}
-                                                    <div class="c-bubble-wrap">
-                                                      ${
-                                                        !isOwnReply
-                                                          ? `<div class="c-user">
-                                                               <span>${escapeHtml(r.username || 'Member')}</span>
-                                                               <span class="c-time">${escapeHtml(formatDiscussionTimestamp(r.created_at))}</span>
-                                                             </div>`
-                                                          : `<div class="c-time" style="margin-right:4px;">${escapeHtml(formatDiscussionTimestamp(r.created_at))}</div>`
-                                                      }
-                                                      ${
-                                                        isEditingReply
-                                                          ? `
-                                                            <div class="c-bubble" style="min-width:200px;">
-                                                              <textarea id="inp-discussion-edit-reply" class="auth-input" style="height:56px;padding:8px;resize:vertical;width:100%;">${escapeHtml(
-                                                                d.editingReplyDraft
-                                                              )}</textarea>
-                                                              <div id="mention-dropdown-edit_reply" class="mention-dropdown"></div>
-                                                              <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:6px;">
-                                                                <button type="button" class="c-micro-action" data-cancel-edit-reply>Cancel</button>
-                                                                <button type="button" class="btn-primary" data-save-edit-reply="${escapeHtml(r.id)}" data-edit-reply-cid="${escapeHtml(c.id)}" data-edit-reply-tid="${escapeHtml(th.id)}" style="height:28px;padding:0 11px;font-size:11px;" ${
-                                                                  d.submitting ? 'disabled' : ''
-                                                                }>Save</button>
-                                                              </div>
-                                                            </div>
-                                                          `
-                                                          : rSoloEid
-                                                          ? `
-                                                            ${quoteButtonHtml}
-                                                            <div class="c-solo-emoji ${isReplyHighlighted ? 'highlight-pulse' : ''}">${renderCustomEmojiSlotHtml(rSoloEid, { lazy: false, sizeClass: 'size-solo' })}</div>
-                                                            ${renderMentionsDisplayHtml(r.mentions)}
-                                                          `
-                                                          : isSoloUnicodeEmoji(rBody)
-                                                          ? `
-                                                            ${quoteButtonHtml}
-                                                            <div class="c-solo-unicode-emoji ${isReplyHighlighted ? 'highlight-pulse' : ''}">${escapeHtml(rBody.trim())}</div>
-                                                            ${renderMentionsDisplayHtml(r.mentions)}
-                                                          `
-                                                          : `
-                                                            <div class="c-bubble ${isReplyHighlighted ? 'highlight-pulse' : ''}">
-                                                              ${quoteButtonHtml}
-                                                              <div>${renderMentionHighlightedHtml(rBody)}</div>
-                                                            </div>
-                                                            ${renderMentionsDisplayHtml(r.mentions)}
-                                                          `
-                                                      }
-                                                      <div class="c-bubble-footer">
-                                                        ${
-                                                          state.session
-                                                            ? `<button
-                                                                 type="button"
-                                                                 class="c-micro-action"
-                                                                 data-start-reply-comment="${escapeHtml(c.id)}"
-                                                                 data-reply-target-uid="${escapeHtml(r.user_id)}"
-                                                                 data-reply-target-name="${escapeHtml(r.username || 'Member')}"
-                                                                 data-reply-quoted-id="${escapeHtml(r.id)}"
-                                                                 data-reply-quoted-author="${escapeHtml(r.username || 'Member')}"
-                                                                 data-reply-quoted-preview="${escapeHtml(formatPlainPreviewWithEmojis(rBody).slice(0, 180))}"
-                                                               >Reply</button>`
-                                                            : ''
-                                                        }
-                                                        ${
-                                                          isOwnReply && !isEditingReply
-                                                            ? `
-                                                              <button type="button" class="c-micro-action" data-edit-reply="${escapeHtml(r.id)}" data-edit-reply-cid="${escapeHtml(c.id)}" data-edit-reply-tid="${escapeHtml(th.id)}">Edit</button>
-                                                              <button type="button" class="c-micro-action danger" data-delete-reply="${escapeHtml(r.id)}" data-delete-reply-cid="${escapeHtml(c.id)}" data-delete-reply-tid="${escapeHtml(th.id)}">Delete</button>
-                                                            `
-                                                            : ''
-                                                        }
-                                                      </div>
-                                                    </div>
-                                                  </div>
-                                                `;
-                                              })
-                                              .join('')
-                                          : ''
-                                      }
-                                    </div>
-                                  `;
-                                })
-                                .join('')}
-                            </div>
-                          `
-                          : ''
-                      }
                     </div>
                   `;
                 })
@@ -5865,14 +5855,14 @@ function renderAnimeDiscussionSection(anime, options = {}) {
               <div id="mention-dropdown-${activeScope}" class="mention-dropdown"></div>
 
               ${
-                isReplyingMode
+                d.activeReplyTarget
                   ? `
                     <div class="chat-reply-banner">
                       <div class="chat-reply-banner-quote">
-                        <span>Replying to <strong>@${escapeHtml(d.activeReplyTarget.quotedUsername || d.activeReplyTarget.targetUsername)}</strong></span>
+                        <span>Replying to <strong>@${escapeHtml(d.activeReplyTarget.senderName)}</strong></span>
                         ${
-                          d.activeReplyTarget.quotedPreview
-                            ? `<span class="chat-reply-banner-snippet">${escapeHtml(d.activeReplyTarget.quotedPreview)}</span>`
+                          d.activeReplyTarget.previewText || d.activeReplyTarget.stickerCode
+                            ? `<span class="chat-reply-banner-snippet">${renderQuotedPreviewContentHtml(d.activeReplyTarget.previewText, d.activeReplyTarget.stickerCode)}</span>`
                             : ''
                         }
                       </div>
@@ -5903,17 +5893,17 @@ function renderAnimeDiscussionSection(anime, options = {}) {
                     </svg>
                   </button>
                   <textarea
-                    id="${isReplyingMode ? 'inp-discussion-reply' : 'inp-discussion-comment'}"
+                    id="inp-discussion-comment"
                     class="chat-input"
                     rows="1"
-                    placeholder="${isReplyingMode ? `Reply to @${escapeHtml(d.activeReplyTarget.targetUsername)}...` : 'Message...'}"
+                    placeholder="${d.activeReplyTarget ? `Reply to @${escapeHtml(d.activeReplyTarget.senderName)}...` : 'Message...'}"
                     ${d.submitting ? 'disabled' : ''}
                   >${escapeHtml(activeDraft)}</textarea>
                 </div>
                 <button
                   type="button"
                   class="chat-send"
-                  id="${isReplyingMode ? 'btn-post-thread-reply' : 'btn-post-discussion-comment'}"
+                  id="btn-post-discussion-comment"
                   aria-label="Send message"
                   ${d.submitting ? 'disabled' : ''}
                 >
@@ -7155,8 +7145,11 @@ function renderModals() {
 
   if (state.discussion.contextMenu && state.session) {
     const cm = state.discussion.contextMenu;
-    const clampedX = Math.max(12, Math.min(window.innerWidth - 230, cm.x));
-    const clampedY = Math.max(12, Math.min(window.innerHeight - 190, cm.y));
+    const menuH = cm.isOwner ? 148 : 56;
+    const dockEl = document.querySelector('#anime-discussion-section .chat-composer-dock');
+    const bottomSafeLimit = dockEl ? dockEl.getBoundingClientRect().top - 8 : window.innerHeight - 14;
+    const clampedX = Math.max(12, Math.min(window.innerWidth - 216, cm.x));
+    const clampedY = Math.max(12, Math.min(Math.max(12, bottomSafeLimit - menuH), cm.y));
     overlays += `
       <div class="discussion-ctx-backdrop" id="discussion-ctx-backdrop"></div>
       <div class="discussion-context-menu" style="left:${clampedX}px;top:${clampedY}px;">
@@ -7167,10 +7160,10 @@ function renderModals() {
           cm.isOwner
             ? `
               <button type="button" class="discussion-ctx-item" id="ctx-btn-edit">
-                <span>✎ Edit ${cm.type === 'reply' ? 'Reply' : 'Comment'}</span>
+                <span>✎ Edit Message</span>
               </button>
               <button type="button" class="discussion-ctx-item danger" id="ctx-btn-delete">
-                <span>🗑 Delete ${cm.type === 'reply' ? 'Reply' : 'Comment'}</span>
+                <span>🗑 Delete Message</span>
               </button>
             `
             : ''
@@ -7853,6 +7846,9 @@ function bindAppEvents() {
       const target = el.getAttribute('data-nav');
       state.settingsCategory = null;
       state.tab = target;
+      if (target !== 'detail' && !state.communityCommentsAnimeId) {
+        DiscussionRealtimeManager.disconnect();
+      }
       window.scrollTo({ top: 0, behavior: 'smooth' });
       renderApp();
       if (target === 'community') {
@@ -8781,74 +8777,41 @@ function bindAppEvents() {
     };
   });
 
-  // Helper to open reply thread & inline reply box for a target user with quoted context
-  const openReplyForTarget = (commentId, targetUserId, targetUsername, quotedReplyId = null, quotedPreview = '', quotedAuthor = '') => {
-    const comment = state.discussion.comments.find((c) => c.id === commentId);
-    const existingThread = comment?.threads?.find((th) => th.target_user_id === targetUserId);
-    if (existingThread) {
-      state.discussion.expandedThreads[existingThread.id] = true;
-    }
-    let resolvedAuthor = String(quotedAuthor || targetUsername || 'Member').trim();
-    let resolvedPreview = String(quotedPreview || '').trim();
-    if (!resolvedPreview && comment) {
-      if (quotedReplyId) {
-        for (const th of comment.threads || []) {
-          const hit = (th.replies || []).find((r) => r.id === quotedReplyId);
-          if (hit) {
-            resolvedAuthor = hit.username || resolvedAuthor;
-            resolvedPreview = formatPlainPreviewWithEmojis(hit.content ?? hit.body ?? '').slice(0, 180);
-            break;
-          }
-        }
-      } else {
-        resolvedAuthor = comment.username || resolvedAuthor;
-        resolvedPreview = formatPlainPreviewWithEmojis(comment.content ?? comment.body ?? '').slice(0, 180);
-      }
-    }
+  // Helper to set flat reply target with { messageId, senderName, previewText, stickerCode }
+  const openReplyForTarget = (messageId, targetUserId, targetUsername) => {
+    const msg = state.discussion.comments.find((c) => c.id === messageId);
+    const rawBody = msg ? (msg.content ?? msg.body ?? '') : '';
+    const sCode = extractFirstStickerCode(rawBody);
     state.discussion.activeReplyTarget = {
-      commentId,
-      parentCommentId: quotedReplyId || commentId,
-      targetUserId,
-      targetUsername: targetUsername || 'Member',
-      quotedCommentId: commentId,
-      quotedReplyId: quotedReplyId || null,
-      quotedUsername: resolvedAuthor,
-      quotedPreview: resolvedPreview
+      messageId,
+      senderName: msg?.username || targetUsername || 'Member',
+      previewText: rawBody.slice(0, 180),
+      stickerCode: sCode,
+      targetUserId: msg?.user_id || targetUserId,
+      sourceType: msg?.source_type || 'comment',
+      rootCommentId: msg?._rootCommentId || messageId
     };
-    state.discussion.replyDraft = '';
-    state.discussion.replyTags = [];
     state.discussion.error = '';
     state.discussion.contextMenu = null;
     renderApp();
-    setTimeout(() => document.getElementById('inp-discussion-reply')?.focus(), 40);
+    setTimeout(() => document.getElementById('inp-discussion-comment')?.focus(), 40);
   };
 
-  // Clickable quoted preview inside replies -> jump to original comment or reply and highlight it
+  // Clickable quoted preview inside flat messages -> jump to referenced message and pulse
   document.querySelectorAll('[data-jump-comment]').forEach((btn) => {
     btn.onclick = (e) => {
       e.stopPropagation();
-      const cid = btn.getAttribute('data-jump-comment');
-      const rid = btn.getAttribute('data-jump-reply') || null;
-      if (!cid) return;
-      let targetThreadId = null;
-      if (rid) {
-        const parentComment = state.discussion.comments.find((c) => c.id === cid);
-        const ownerThread = (parentComment?.threads || []).find((th) => (th.replies || []).some((r) => r.id === rid));
-        if (ownerThread) {
-          targetThreadId = ownerThread.id;
-          state.discussion.expandedThreads[ownerThread.id] = true;
-        }
-      }
-      state.discussion.highlightTarget = { commentId: cid, threadId: targetThreadId, replyId: rid };
+      const targetId = btn.getAttribute('data-jump-comment');
+      if (!targetId) return;
+      state.discussion.highlightTarget = { commentId: targetId, threadId: null, replyId: null };
       renderApp();
       setTimeout(() => {
-        const domId = rid ? `discussion-reply-${rid}` : `discussion-comment-${cid}`;
-        document.getElementById(domId)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        document.getElementById(`discussion-comment-${targetId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }, 60);
     };
   });
 
-  // Clickable @mention username badges -> tag or reply directly to that user
+  // Clickable @mention username badges -> tag user directly in active composer
   document.querySelectorAll('[data-mention-click-name]').forEach((btn) => {
     btn.onclick = (e) => {
       e.stopPropagation();
@@ -8858,7 +8821,6 @@ function bindAppEvents() {
         showToast('Sign in to tag or reply to members');
         return;
       }
-      const scope = state.discussion.activeReplyTarget ? 'reply' : 'comment';
       const uid = btn.getAttribute('data-mention-click-uid') || '';
       const addMentionToComposer = async () => {
         let resolvedUser = uid ? { id: uid, username: uname, avatar_key: 'avatar_1' } : null;
@@ -8869,82 +8831,92 @@ function bindAppEvents() {
           } catch (_) {}
         }
         if (resolvedUser?.id) {
-          const listKey = scope === 'reply' ? 'replyTags' : 'commentTags';
-          const cur = state.discussion[listKey] || [];
-          const draft = scope === 'reply' ? state.discussion.replyDraft : state.discussion.draft;
-          const check = validateContentMentions(draft || '', cur.length);
+          const cur = state.discussion.commentTags || [];
+          const check = validateContentMentions(state.discussion.draft || '', cur.length);
           if (check.totalMentions < MAX_MENTIONS_PER_CONTENT && !cur.some((t) => t.id === resolvedUser.id)) {
-            state.discussion[listKey] = [...cur, resolvedUser];
+            state.discussion.commentTags = [...cur, resolvedUser];
             renderApp();
           }
           showToast(`Tagged @${resolvedUser.username}`);
         } else {
-          const inputId = scope === 'reply' ? 'inp-discussion-reply' : 'inp-discussion-comment';
-          const current = (scope === 'reply' ? state.discussion.replyDraft : state.discussion.draft) || '';
+          const current = state.discussion.draft || '';
           const addition = current && !/\s$/.test(current) ? ` @${uname} ` : `@${uname} `;
-          if (scope === 'reply') state.discussion.replyDraft = current + addition;
-          else state.discussion.draft = current + addition;
+          state.discussion.draft = current + addition;
           renderApp();
-          setTimeout(() => document.getElementById(inputId)?.focus(), 40);
+          setTimeout(() => document.getElementById('inp-discussion-comment')?.focus(), 40);
         }
       };
       addMentionToComposer();
     };
   });
 
-  // Right-click (Desktop) + Long-press (Phone) on Comment Cards & Reply Items -> Context Reply Menu
+  // Right-click (Desktop) + Long-press (450ms Mobile) with scroll cancel & scale feedback
   const bindContextTriggers = (el, payloadFactory) => {
     if (!state.session) return;
     el.oncontextmenu = (e) => {
       if (e.target.closest('textarea, input, button')) return;
       e.preventDefault();
       e.stopPropagation();
+      el.classList.remove('is-pressing');
       state.discussion.contextMenu = { ...payloadFactory(), x: e.clientX, y: e.clientY };
       renderApp();
     };
     let lpTimer = null;
-    el.ontouchstart = (e) => {
-      if (e.target.closest('textarea, input, button')) return;
-      const touch = e.touches && e.touches[0];
-      if (!touch) return;
-      const tx = touch.clientX;
-      const ty = touch.clientY;
-      lpTimer = setTimeout(() => {
-        state.discussion.contextMenu = { ...payloadFactory(), x: tx, y: ty };
-        renderApp();
-      }, 450);
-    };
+    let startX = 0;
+    let startY = 0;
     const clearLp = () => {
       if (lpTimer) {
         clearTimeout(lpTimer);
         lpTimer = null;
       }
+      el.classList.remove('is-pressing');
     };
-    el.ontouchend = clearLp;
-    el.ontouchmove = clearLp;
-    el.ontouchcancel = clearLp;
+    el.addEventListener(
+      'touchstart',
+      (e) => {
+        if (e.target.closest('textarea, input, button')) return;
+        const touch = e.touches && e.touches[0];
+        if (!touch) return;
+        startX = touch.clientX;
+        startY = touch.clientY;
+        el.classList.add('is-pressing');
+        lpTimer = setTimeout(() => {
+          lpTimer = null;
+          el.classList.remove('is-pressing');
+          try { window.getSelection()?.removeAllRanges(); } catch (_) {}
+          try { navigator.vibrate?.(12); } catch (_) {}
+          state.discussion.contextMenu = { ...payloadFactory(), x: startX, y: startY };
+          renderApp();
+        }, 450);
+      },
+      { passive: true }
+    );
+    el.addEventListener(
+      'touchmove',
+      (e) => {
+        const touch = e.touches && e.touches[0];
+        if (!touch) {
+          clearLp();
+          return;
+        }
+        if (Math.hypot(touch.clientX - startX, touch.clientY - startY) > 8) {
+          clearLp();
+        }
+      },
+      { passive: true }
+    );
+    el.addEventListener('touchend', clearLp, { passive: true });
+    el.addEventListener('touchcancel', clearLp, { passive: true });
   };
 
   document.querySelectorAll('[data-ctx-comment]').forEach((card) => {
     bindContextTriggers(card, () => ({
       type: 'comment',
       commentId: card.getAttribute('data-ctx-comment'),
+      sourceType: card.getAttribute('data-ctx-source') || 'comment',
       userId: card.getAttribute('data-ctx-uid'),
       username: card.getAttribute('data-ctx-name') || 'Member',
       isOwner: card.getAttribute('data-ctx-owner') === '1'
-    }));
-  });
-
-  document.querySelectorAll('[data-ctx-reply]').forEach((item) => {
-    bindContextTriggers(item, () => ({
-      type: 'reply',
-      replyId: item.getAttribute('data-ctx-reply'),
-      commentId: item.getAttribute('data-ctx-reply-cid'),
-      threadId: item.getAttribute('data-ctx-reply-tid'),
-      userId: item.getAttribute('data-ctx-uid'),
-      username: item.getAttribute('data-ctx-name') || 'Member',
-      quotedPreview: item.getAttribute('data-ctx-quoted-preview') || '',
-      isOwner: item.getAttribute('data-ctx-owner') === '1'
     }));
   });
 
@@ -8972,13 +8944,7 @@ function bindAppEvents() {
       if (cm.type === 'comm_note') {
         startReplyToCommunityMember(cm.userId, cm.username, cm.avatarKey);
       } else {
-        openReplyForTarget(
-          cm.commentId,
-          cm.userId,
-          cm.username,
-          cm.type === 'reply' ? cm.replyId : null,
-          cm.quotedPreview || ''
-        );
+        openReplyForTarget(cm.commentId, cm.userId, cm.username);
       }
     };
   }
@@ -8987,22 +8953,10 @@ function bindAppEvents() {
     ctxBtnEdit.onclick = () => {
       const cm = state.discussion.contextMenu;
       state.discussion.contextMenu = null;
-      if (cm.type === 'comment') {
-        const target = state.discussion.comments.find((c) => c.id === cm.commentId);
-        if (target) {
-          state.discussion.editingCommentId = cm.commentId;
-          state.discussion.editingCommentDraft = target.content ?? target.body ?? '';
-        }
-      } else {
-        const comment = state.discussion.comments.find((c) => c.id === cm.commentId);
-        const thread = comment?.threads?.find((th) => th.id === cm.threadId);
-        const reply = thread?.replies?.find((r) => r.id === cm.replyId);
-        if (reply) {
-          state.discussion.editingReplyId = cm.replyId;
-          state.discussion.editingReplyCommentId = cm.commentId;
-          state.discussion.editingReplyThreadId = cm.threadId;
-          state.discussion.editingReplyDraft = reply.content ?? reply.body ?? '';
-        }
+      const target = state.discussion.comments.find((c) => c.id === cm.commentId);
+      if (target) {
+        state.discussion.editingCommentId = cm.commentId;
+        state.discussion.editingCommentDraft = target.content ?? target.body ?? '';
       }
       renderApp();
     };
@@ -9012,55 +8966,18 @@ function bindAppEvents() {
     ctxBtnDelete.onclick = () => {
       const cm = state.discussion.contextMenu;
       state.discussion.contextMenu = null;
-      if (cm.type === 'comment') {
-        deleteAnimeComment(cm.commentId);
-      } else {
-        deleteThreadReply(cm.commentId, cm.threadId, cm.replyId);
-      }
+      deleteAnimeComment(cm.commentId);
     };
   }
 
-  document.querySelectorAll('[data-start-reply-comment]').forEach((btn) => {
-    btn.onclick = () => {
-      openReplyForTarget(
-        btn.getAttribute('data-start-reply-comment'),
-        btn.getAttribute('data-reply-target-uid'),
-        btn.getAttribute('data-reply-target-name') || 'Member',
-        btn.getAttribute('data-reply-quoted-id') || null,
-        btn.getAttribute('data-reply-quoted-preview') || '',
-        btn.getAttribute('data-reply-quoted-author') || ''
-      );
-    };
-  });
   const btnCancelReply = document.getElementById('btn-cancel-reply-composer');
   if (btnCancelReply) {
     btnCancelReply.onclick = () => {
       state.discussion.activeReplyTarget = null;
-      state.discussion.replyDraft = '';
-      state.discussion.replyTags = [];
       renderApp();
     };
   }
-  const btnPostReply = document.getElementById('btn-post-thread-reply');
-  if (btnPostReply) btnPostReply.onclick = () => postThreadReply();
 
-  document.querySelectorAll('[data-toggle-thread]').forEach((btn) => {
-    btn.onclick = () => {
-      const tid = btn.getAttribute('data-toggle-thread');
-      state.discussion.expandedThreads[tid] = !state.discussion.expandedThreads[tid];
-      renderApp();
-    };
-  });
-  document.querySelectorAll('[data-edit-comment]').forEach((btn) => {
-    btn.onclick = () => {
-      const cid = btn.getAttribute('data-edit-comment');
-      const target = state.discussion.comments.find((c) => c.id === cid);
-      if (!target) return;
-      state.discussion.editingCommentId = cid;
-      state.discussion.editingCommentDraft = target.content ?? target.body ?? '';
-      renderApp();
-    };
-  });
   document.querySelectorAll('[data-cancel-edit-comment]').forEach((btn) => {
     btn.onclick = () => {
       state.discussion.editingCommentId = null;
@@ -9070,50 +8987,6 @@ function bindAppEvents() {
   });
   document.querySelectorAll('[data-save-edit-comment]').forEach((btn) => {
     btn.onclick = () => saveEditedAnimeComment(btn.getAttribute('data-save-edit-comment'));
-  });
-  document.querySelectorAll('[data-delete-comment]').forEach((btn) => {
-    btn.onclick = () => deleteAnimeComment(btn.getAttribute('data-delete-comment'));
-  });
-  document.querySelectorAll('[data-edit-reply]').forEach((btn) => {
-    btn.onclick = () => {
-      const rid = btn.getAttribute('data-edit-reply');
-      const cid = btn.getAttribute('data-edit-reply-cid');
-      const tid = btn.getAttribute('data-edit-reply-tid');
-      const comment = state.discussion.comments.find((c) => c.id === cid);
-      const thread = comment?.threads?.find((th) => th.id === tid);
-      const reply = thread?.replies?.find((r) => r.id === rid);
-      if (!reply) return;
-      state.discussion.editingReplyId = rid;
-      state.discussion.editingReplyCommentId = cid;
-      state.discussion.editingReplyThreadId = tid;
-      state.discussion.editingReplyDraft = reply.content ?? reply.body ?? '';
-      renderApp();
-    };
-  });
-  document.querySelectorAll('[data-cancel-edit-reply]').forEach((btn) => {
-    btn.onclick = () => {
-      state.discussion.editingReplyId = null;
-      state.discussion.editingReplyCommentId = null;
-      state.discussion.editingReplyThreadId = null;
-      state.discussion.editingReplyDraft = '';
-      renderApp();
-    };
-  });
-  document.querySelectorAll('[data-save-edit-reply]').forEach((btn) => {
-    btn.onclick = () =>
-      saveEditedThreadReply(
-        btn.getAttribute('data-edit-reply-cid'),
-        btn.getAttribute('data-edit-reply-tid'),
-        btn.getAttribute('data-save-edit-reply')
-      );
-  });
-  document.querySelectorAll('[data-delete-reply]').forEach((btn) => {
-    btn.onclick = () =>
-      deleteThreadReply(
-        btn.getAttribute('data-delete-reply-cid'),
-        btn.getAttribute('data-delete-reply-tid'),
-        btn.getAttribute('data-delete-reply')
-      );
   });
 
   // Notifications Screen events
@@ -9155,6 +9028,9 @@ function bindAppEvents() {
     state.contextMenu = null;
     state.discussion.contextMenu = null;
     state.discussion.emojiTrayOpen = false;
+    if (!getActiveDiscussionAnime()) {
+      DiscussionRealtimeManager.disconnect();
+    }
     renderApp();
   };
   if (backdrop) backdrop.onclick = closeModals;

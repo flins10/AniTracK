@@ -26,6 +26,7 @@ import com.example.model.CommunityEmoji
 import com.example.model.CommunityMember
 import com.example.model.CommunityReview
 import com.example.model.DatabaseStorageStats
+import com.example.model.FlatReplyTo
 import com.example.model.InvitationCode
 import com.example.model.MemberStatus
 import com.example.model.MentionableUser
@@ -42,10 +43,12 @@ import com.example.model.WatchlistLayoutMode
 import com.example.service.AniListMetadataProvider
 import com.example.service.AppUpdateInfo
 import com.example.service.CommunityEmojiCacheService
+import com.example.service.DiscussionRealtimeEvent
 import com.example.service.SupabaseDatabaseService
 import com.example.service.SupabaseDiscussionService
 import com.example.util.DiscussionRules
 import com.example.util.ErrorSanitizer
+import okhttp3.WebSocket
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -165,6 +168,9 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     private val _mentionSuggestions = MutableStateFlow<List<MentionableUser>>(emptyList())
     val mentionSuggestions = _mentionSuggestions.asStateFlow()
     private var mentionSearchJob: Job? = null
+    private var activeChatRealtimeSocket: WebSocket? = null
+    private var activeRealtimeAnimeId: Int? = null
+    private val chatProfileCache = LinkedHashMap<String, MentionableUser>()
 
     // Custom Community Emojis (Supabase Storage multi-layer cache)
     private val communityEmojiCache = CommunityEmojiCacheService(application)
@@ -2609,16 +2615,27 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _isDiscussionLoading.value = true
             val offset = if (reset) 0 else _discussionComments.value.size
-            supabaseDiscussion.fetchAnimeDiscussionPage(session, animeId, limit = 15, offset = offset)
+            supabaseDiscussion.fetchAnimeDiscussionPage(session, animeId, limit = 25, offset = offset)
                 .onSuccess { page ->
                     if (activeDiscussionAnimeId == animeId) {
+                        page.comments.forEach { c ->
+                            if (c.userId.isNotBlank() && c.username.isNotBlank()) {
+                                chatProfileCache[c.userId] = MentionableUser(
+                                    id = c.userId,
+                                    username = c.username,
+                                    avatarKey = c.avatarKey,
+                                    avatarUrl = c.avatarUrl
+                                )
+                            }
+                        }
                         _discussionTotalCount.value = page.totalComments
                         _discussionHasMore.value = page.hasMore
                         _discussionComments.value = if (reset) {
                             page.comments
                         } else {
                             val existingIds = _discussionComments.value.map { it.id }.toSet()
-                            _discussionComments.value + page.comments.filterNot { it.id in existingIds }
+                            (_discussionComments.value + page.comments.filterNot { it.id in existingIds })
+                                .sortedByDescending { it.createdAt }
                         }
                     }
                     if (reset) {
@@ -2632,6 +2649,76 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                 }
             _isDiscussionLoading.value = false
         }
+    }
+
+    fun startAnimeChatRealtime(animeId: Int) {
+        val session = _authSession.value
+        if (session == null || animeId <= 0 || !AppConfig.isSupabaseConfigured) {
+            stopAnimeChatRealtime()
+            return
+        }
+        if (activeRealtimeAnimeId == animeId && activeChatRealtimeSocket != null) return
+        stopAnimeChatRealtime()
+        activeDiscussionAnimeId = animeId
+        activeRealtimeAnimeId = animeId
+        activeChatRealtimeSocket = supabaseDiscussion.subscribeToAnimeChatRealtime(session, animeId) { ev ->
+            viewModelScope.launch {
+                if (activeDiscussionAnimeId != animeId) return@launch
+                when (ev) {
+                    is DiscussionRealtimeEvent.InsertComment -> {
+                        val raw = ev.row
+                        if (_discussionComments.value.any { it.id == raw.id }) return@launch
+                        val selfProfile = _userProfile.value
+                        val resolvedProfile = when {
+                            raw.userId == session.userId && selfProfile != null -> MentionableUser(
+                                id = selfProfile.id,
+                                username = selfProfile.username,
+                                avatarKey = selfProfile.avatarKey,
+                                avatarUrl = selfProfile.avatarUrl
+                            )
+                            chatProfileCache.containsKey(raw.userId) -> chatProfileCache[raw.userId]
+                            else -> supabaseDiscussion.fetchUserProfileSnippet(session, raw.userId)?.also {
+                                chatProfileCache[raw.userId] = it
+                            }
+                        }
+                        if (activeDiscussionAnimeId != animeId) return@launch
+                        if (_discussionComments.value.any { it.id == raw.id }) return@launch
+                        val enriched = raw.copy(
+                            username = resolvedProfile?.username ?: raw.username,
+                            avatarKey = resolvedProfile?.avatarKey ?: raw.avatarKey,
+                            avatarUrl = resolvedProfile?.avatarUrl ?: raw.avatarUrl
+                        )
+                        _discussionComments.value = listOf(enriched) + _discussionComments.value
+                        _discussionTotalCount.value = maxOf(_discussionComments.value.size, _discussionTotalCount.value + 1)
+                    }
+                    is DiscussionRealtimeEvent.UpdateMessage -> {
+                        _discussionComments.value = _discussionComments.value.map { c ->
+                            if (c.id == ev.id) {
+                                c.copy(
+                                    content = ev.content.ifBlank { c.content },
+                                    updatedAt = ev.updatedAt.ifBlank { c.updatedAt },
+                                    replyTo = ev.replyTo ?: c.replyTo
+                                )
+                            } else c
+                        }
+                    }
+                    is DiscussionRealtimeEvent.DeleteMessage -> {
+                        val before = _discussionComments.value.size
+                        val next = _discussionComments.value.filterNot { it.id == ev.id }
+                        if (next.size != before) {
+                            _discussionComments.value = next
+                            _discussionTotalCount.value = (before - 1).coerceAtLeast(0)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fun stopAnimeChatRealtime() {
+        runCatching { activeChatRealtimeSocket?.close(1000, "closed") }
+        activeChatRealtimeSocket = null
+        activeRealtimeAnimeId = null
     }
 
     fun refreshUnseenDiscussionAnime() {
@@ -2762,28 +2849,38 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
         animeCover: String,
         content: String,
         taggedUserIds: List<String> = emptyList(),
+        replyTo: FlatReplyTo? = null,
         onSuccess: () -> Unit = {}
     ) {
         if (_isDiscussionSubmitting.value) return
         val session = _authSession.value
         if (session == null) {
-            _discussionErrorMessage.value = "Sign in to post a comment."
+            _discussionErrorMessage.value = "Sign in to post a message."
             return
         }
         val check = DiscussionRules.validateContentMentions(content, explicitTagCount = taggedUserIds.size)
         if (!check.isValid) {
-            _discussionErrorMessage.value = check.errorMessage ?: "Invalid comment."
+            _discussionErrorMessage.value = check.errorMessage ?: "Invalid message."
             return
         }
         viewModelScope.launch {
             _isDiscussionSubmitting.value = true
             _discussionErrorMessage.value = null
             _discussionSuccessMessage.value = null
-            supabaseDiscussion.createAnimeComment(session, animeId, content, animeTitle, animeCover, taggedUserIds)
+            supabaseDiscussion.createAnimeComment(
+                session = session,
+                animeId = animeId,
+                content = content,
+                animeTitle = animeTitle,
+                animeCover = animeCover,
+                taggedUserIds = taggedUserIds,
+                replyTo = replyTo
+            )
                 .onSuccess { (created, total) ->
-                    _discussionComments.value = listOf(created) + _discussionComments.value.filterNot { it.id == created.id }
-                    _discussionTotalCount.value = total
-                    _discussionSuccessMessage.value = "Message sent"
+                    val hydrated = if (created.replyTo == null && replyTo != null) created.copy(replyTo = replyTo) else created
+                    _discussionComments.value = listOf(hydrated) + _discussionComments.value.filterNot { it.id == hydrated.id }
+                    _discussionTotalCount.value = maxOf(_discussionComments.value.size, total)
+                    _discussionSuccessMessage.value = if (replyTo != null) "Reply sent" else "Message sent"
                     recordCustomEmojiUsage(content)
                     onSuccess()
                 }
@@ -2804,22 +2901,28 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
         val session = _authSession.value ?: return
         val check = DiscussionRules.validateContentMentions(newContent, explicitTagCount = taggedUserIds.size)
         if (!check.isValid) {
-            _discussionErrorMessage.value = check.errorMessage ?: "Invalid comment."
+            _discussionErrorMessage.value = check.errorMessage ?: "Invalid message."
             return
         }
+        val target = _discussionComments.value.firstOrNull { it.id == commentId }
         viewModelScope.launch {
             _isDiscussionSubmitting.value = true
             _discussionErrorMessage.value = null
-            supabaseDiscussion.updateAnimeComment(session, commentId, newContent, taggedUserIds)
+            val res = if (target?.sourceType == "reply") {
+                supabaseDiscussion.updateThreadReply(session, commentId, newContent, taggedUserIds)
+            } else {
+                supabaseDiscussion.updateAnimeComment(session, commentId, newContent, taggedUserIds)
+            }
+            res
                 .onSuccess { (updatedText, updatedAt, mentions) ->
                     _discussionComments.value = _discussionComments.value.map { c ->
                         if (c.id == commentId) c.copy(content = updatedText, updatedAt = updatedAt, mentions = mentions) else c
                     }
-                    _discussionSuccessMessage.value = "Comment updated successfully"
+                    _discussionSuccessMessage.value = "Message updated"
                     onSuccess()
                 }
                 .onFailure { err ->
-                    _discussionErrorMessage.value = err.message ?: "Unable to update comment."
+                    _discussionErrorMessage.value = err.message ?: "Unable to update message."
                 }
             _isDiscussionSubmitting.value = false
         }
@@ -2828,18 +2931,31 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     fun deleteAnimeComment(commentId: String) {
         if (_isDiscussionSubmitting.value) return
         val session = _authSession.value ?: return
+        val target = _discussionComments.value.firstOrNull { it.id == commentId }
         viewModelScope.launch {
             _isDiscussionSubmitting.value = true
             _discussionErrorMessage.value = null
-            supabaseDiscussion.deleteAnimeComment(session, commentId)
-                .onSuccess { total ->
-                    _discussionComments.value = _discussionComments.value.filterNot { it.id == commentId }
-                    _discussionTotalCount.value = total
-                    _discussionSuccessMessage.value = "Comment deleted"
-                }
-                .onFailure { err ->
-                    _discussionErrorMessage.value = err.message ?: "Unable to delete comment."
-                }
+            if (target?.sourceType == "reply") {
+                supabaseDiscussion.deleteThreadReply(session, commentId)
+                    .onSuccess {
+                        _discussionComments.value = _discussionComments.value.filterNot { it.id == commentId }
+                        _discussionTotalCount.value = (_discussionTotalCount.value - 1).coerceAtLeast(0)
+                        _discussionSuccessMessage.value = "Message deleted"
+                    }
+                    .onFailure { err ->
+                        _discussionErrorMessage.value = err.message ?: "Unable to delete message."
+                    }
+            } else {
+                supabaseDiscussion.deleteAnimeComment(session, commentId)
+                    .onSuccess { total ->
+                        _discussionComments.value = _discussionComments.value.filterNot { it.id == commentId }
+                        _discussionTotalCount.value = total
+                        _discussionSuccessMessage.value = "Message deleted"
+                    }
+                    .onFailure { err ->
+                        _discussionErrorMessage.value = err.message ?: "Unable to delete message."
+                    }
+            }
             _isDiscussionSubmitting.value = false
         }
     }
@@ -3079,5 +3195,10 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                 _userMessage.value = "Import failed: ${ErrorSanitizer.sanitize(e, "Unable to read backup file.")}"
             }
         }
+    }
+
+    override fun onCleared() {
+        stopAnimeChatRealtime()
+        super.onCleared()
     }
 }

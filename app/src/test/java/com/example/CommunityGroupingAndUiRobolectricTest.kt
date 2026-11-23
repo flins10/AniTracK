@@ -140,6 +140,9 @@ class CommunityGroupingAndUiRobolectricTest {
         )
         val group = groupCommunityReviewsByAnime(reviews).first()
 
+        val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
+        val testViewModel = com.example.viewmodel.AnimeViewModel(app)
+
         composeTestRule.setContent {
             var showDialog by mutableStateOf(false)
             AnimeUniverseTheme {
@@ -152,6 +155,8 @@ class CommunityGroupingAndUiRobolectricTest {
                 if (showDialog) {
                     CommunityCommentsDialog(
                         group = group,
+                        viewModel = testViewModel,
+                        openLiveChatInitially = false,
                         initialMyRatingStars = 0f,
                         initialMyNote = "",
                         onDismiss = { showDialog = false },

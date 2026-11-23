@@ -60,11 +60,29 @@ import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import java.net.URLEncoder
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import java.util.Timer
+import java.util.TimerTask
+import java.util.concurrent.atomic.AtomicInteger
+
+internal sealed interface DesktopRealtimeEvent {
+    data class InsertComment(val row: DesktopAnimeComment) : DesktopRealtimeEvent
+    data class UpdateMessage(
+        val id: String,
+        val body: String,
+        val updatedAt: String,
+        val replyTo: DesktopFlatReplyTo?
+    ) : DesktopRealtimeEvent
+    data class DeleteMessage(val id: String) : DesktopRealtimeEvent
+}
 
 data class DesktopMentionUser(
     val userId: String,
@@ -127,6 +145,13 @@ data class DesktopReplyThread(
     val replies: List<DesktopThreadReply> = emptyList()
 )
 
+data class DesktopFlatReplyTo(
+    val messageId: String,
+    val senderName: String,
+    val previewText: String = "",
+    val stickerCode: String? = null
+)
+
 data class DesktopAnimeComment(
     val id: String,
     val animeId: Int,
@@ -137,7 +162,10 @@ data class DesktopAnimeComment(
     val createdAt: String = "",
     val updatedAt: String = "",
     val mentions: List<DesktopMentionOccurrence> = emptyList(),
-    val threads: List<DesktopReplyThread> = emptyList()
+    val threads: List<DesktopReplyThread> = emptyList(),
+    val replyTo: DesktopFlatReplyTo? = null,
+    val sourceType: String = "comment",
+    val threadId: String? = null
 )
 
 data class DesktopDiscussionPage(
@@ -284,9 +312,9 @@ object DesktopDiscussionRules {
         if (iso.isBlank()) return ""
         return runCatching {
             val instant = Instant.parse(iso)
-            val secs = Duration.between(instant, Instant.now()).seconds
+            val secs = Duration.between(instant, Instant.now()).seconds.coerceAtLeast(0L)
             when {
-                secs < 45 -> "Just now"
+                secs < 60 -> "Just now"
                 secs < 3600 -> "${secs / 60}m ago"
                 secs < 86400 -> "${secs / 3600}h ago"
                 secs < 86400 * 7 -> "${secs / 86400}d ago"
@@ -431,6 +459,38 @@ internal object DesktopDiscussionService {
         )
     }
 
+    private fun extractFirstStickerCode(text: String?): String? {
+        if (text.isNullOrBlank()) return null
+        val bracket = Regex("""\[emoji:([a-zA-Z0-9_-]{1,64})]""", RegexOption.IGNORE_CASE).find(text)
+        if (bracket != null) return bracket.groupValues[1].lowercase()
+        val colon = Regex(""":([a-zA-Z0-9][a-zA-Z0-9_-]{0,63}):""").find(text)
+        return colon?.groupValues?.getOrNull(1)?.lowercase()
+    }
+
+    private fun parseReplyTo(el: JsonElement?): DesktopFlatReplyTo? {
+        if (el == null || el.isJsonNull) return null
+        val obj = when {
+            el.isJsonObject -> el.asJsonObject
+            el.isJsonPrimitive && el.asString.trim().startsWith("{") ->
+                runCatching { JsonParser.parseString(el.asString).asJsonObject }.getOrNull()
+            else -> null
+        } ?: return null
+        val messageId = obj.str("messageId").ifBlank { obj.str("message_id") }
+        val senderName = obj.str("senderName").ifBlank { obj.str("sender_name") }
+        val previewText = obj.str("previewText").ifBlank { obj.str("preview_text") }
+        val explicitSticker = obj.str("stickerCode").ifBlank { obj.str("sticker_code") }
+            .takeIf { it.isNotBlank() && it != "null" }
+            ?.lowercase()
+        val sticker = explicitSticker ?: extractFirstStickerCode(previewText)
+        if (messageId.isBlank() && senderName.isBlank() && previewText.isBlank() && sticker.isNullOrBlank()) return null
+        return DesktopFlatReplyTo(
+            messageId = messageId,
+            senderName = senderName.ifBlank { "Member" },
+            previewText = previewText,
+            stickerCode = sticker
+        )
+    }
+
     private fun parseComment(obj: JsonObject): DesktopAnimeComment {
         val threadsArr = obj.get("threads")?.takeIf { it.isJsonArray }?.asJsonArray ?: JsonArray()
         val threads = threadsArr.mapNotNull { it.takeIf { el -> el.isJsonObject }?.asJsonObject?.let(::parseThread) }
@@ -444,14 +504,73 @@ internal object DesktopDiscussionService {
             createdAt = obj.str("created_at"),
             updatedAt = obj.str("updated_at"),
             mentions = parseMentions(obj),
-            threads = threads
+            threads = threads,
+            replyTo = parseReplyTo(obj.get("reply_to")),
+            sourceType = obj.str("source_type", "comment").ifBlank { "comment" },
+            threadId = obj.str("thread_id").takeIf { it.isNotBlank() }
         )
+    }
+
+    private fun flattenCommentsList(raw: List<DesktopAnimeComment>): List<DesktopAnimeComment> {
+        if (raw.isEmpty()) return emptyList()
+        val byId = LinkedHashMap<String, DesktopAnimeComment>()
+        val repliesById = HashMap<String, DesktopThreadReply>()
+        raw.forEach { c ->
+            c.threads.forEach { th -> th.replies.forEach { r -> repliesById[r.id] = r } }
+        }
+        raw.forEach { c ->
+            val topLevel = if (c.threads.isEmpty()) c else c.copy(threads = emptyList())
+            byId[topLevel.id] = topLevel
+            c.threads.forEach { th ->
+                th.replies.forEach { r ->
+                    val refReplyId = r.quotedReplyId?.takeIf { it.isNotBlank() }
+                        ?: r.parentCommentId?.takeIf { it.isNotBlank() && it != c.id }
+                    val matched = refReplyId?.let { repliesById[it] }
+                    val targetId = refReplyId ?: (r.quotedCommentId?.takeIf { it.isNotBlank() } ?: c.id)
+                    val targetSender = if (refReplyId != null) {
+                        matched?.username?.takeIf { it.isNotBlank() }
+                            ?: r.quotedUsername?.takeIf { it.isNotBlank() }
+                            ?: "Member"
+                    } else {
+                        r.quotedUsername?.takeIf { it.isNotBlank() } ?: c.username
+                    }
+                    val rawPrev = if (refReplyId != null) {
+                        r.quotedPreview?.takeIf { it.isNotBlank() }
+                            ?: matched?.body?.takeIf { it.isNotBlank() }
+                            ?: ""
+                    } else {
+                        r.quotedPreview?.takeIf { it.isNotBlank() } ?: c.body
+                    }
+                    byId[r.id] = DesktopAnimeComment(
+                        id = r.id,
+                        animeId = c.animeId,
+                        userId = r.userId,
+                        username = r.username,
+                        avatarKey = r.avatarKey,
+                        body = r.body,
+                        createdAt = r.createdAt,
+                        updatedAt = r.updatedAt,
+                        mentions = r.mentions,
+                        threads = emptyList(),
+                        replyTo = DesktopFlatReplyTo(
+                            messageId = targetId,
+                            senderName = targetSender,
+                            previewText = rawPrev.take(180),
+                            stickerCode = extractFirstStickerCode(rawPrev)
+                        ),
+                        sourceType = "reply",
+                        threadId = r.threadId.ifBlank { th.id }
+                    )
+                }
+            }
+        }
+        return byId.values.sortedByDescending { it.createdAt }
     }
 
     suspend fun fetchDiscussionPage(
         session: DesktopPersistedState,
         animeId: Int,
-        limit: Int = 15,
+        limit: Int = 25,
         offset: Int = 0
     ): Result<Pair<DesktopDiscussionPage, DesktopPersistedState>> {
         val payload = JsonObject().apply {
@@ -462,13 +581,180 @@ internal object DesktopDiscussionService {
         return callRpc(session, "get_anime_discussion_page", payload, requireAuth = false).map { (el, active) ->
             val obj = el?.takeIf { it.isJsonObject }?.asJsonObject ?: JsonObject()
             val arr = obj.get("comments")?.takeIf { it.isJsonArray }?.asJsonArray ?: JsonArray()
-            val comments = arr.mapNotNull { it.takeIf { c -> c.isJsonObject }?.asJsonObject?.let(::parseComment) }
+            val rawComments = arr.mapNotNull { it.takeIf { c -> c.isJsonObject }?.asJsonObject?.let(::parseComment) }
+            val flatComments = flattenCommentsList(rawComments)
             DesktopDiscussionPage(
-                comments = comments,
-                totalComments = obj.intVal("total_comments", comments.size),
+                comments = flatComments,
+                totalComments = obj.intVal("total_comments", flatComments.size),
                 hasMore = obj.boolVal("has_more", false)
             ) to active
         }
+    }
+
+    suspend fun fetchSenderProfile(session: DesktopPersistedState, userId: String): DesktopMentionUser? = withContext(Dispatchers.IO) {
+        if (userId.isBlank() || session.accessToken.isBlank()) return@withContext null
+        runCatching {
+            val encodedId = URLEncoder.encode(userId, "UTF-8")
+            val req = Request.Builder()
+                .url("$SUPABASE_URL/rest/v1/profiles?id=eq.$encodedId&select=id,username,avatar_key&limit=1")
+                .addHeader("apikey", SUPABASE_ANON_KEY)
+                .addHeader("Authorization", "Bearer ${session.accessToken}")
+                .get()
+                .build()
+            httpClient.newCall(req).execute().use { resp ->
+                val raw = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful || !raw.trim().startsWith("[")) return@use null
+                val arr = JsonParser.parseString(raw).asJsonArray
+                if (arr.size() == 0) return@use null
+                val o = arr[0].asJsonObject
+                DesktopMentionUser(
+                    userId = o.str("id", userId),
+                    username = o.str("username", "Member").ifBlank { "Member" },
+                    avatarKey = o.str("avatar_key", "avatar_1").ifBlank { "avatar_1" }
+                )
+            }
+        }.getOrNull()
+    }
+
+    fun subscribeToAnimeChatRealtime(
+        session: DesktopPersistedState,
+        animeId: Int,
+        onEvent: (DesktopRealtimeEvent) -> Unit
+    ): WebSocket? {
+        if (session.isGuest || session.accessToken.isBlank() || animeId <= 0) return null
+        val wsBase = SUPABASE_URL
+            .replaceFirst("https://", "wss://")
+            .replaceFirst("http://", "ws://")
+        val encodedKey = URLEncoder.encode(SUPABASE_ANON_KEY, "UTF-8")
+        val wsUrl = "$wsBase/realtime/v1/websocket?apikey=$encodedKey&vsn=1.0.0"
+        val req = Request.Builder().url(wsUrl).build()
+        val refCounter = AtomicInteger(1)
+        val topic = "realtime:public:anime_comments:$animeId"
+        var heartbeatTimer: Timer? = null
+
+        return httpClient.newWebSocket(req, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                val joinMsg = JsonObject().apply {
+                    addProperty("topic", topic)
+                    addProperty("event", "phx_join")
+                    add("payload", JsonObject().apply {
+                        add("config", JsonObject().apply {
+                            add("broadcast", JsonObject().apply { addProperty("self", false) })
+                            add("presence", JsonObject().apply { addProperty("key", "") })
+                            add("postgres_changes", JsonArray().apply {
+                                add(JsonObject().apply {
+                                    addProperty("event", "*")
+                                    addProperty("schema", "public")
+                                    addProperty("table", "anime_comments")
+                                    addProperty("filter", "anime_id=eq.$animeId")
+                                })
+                                add(JsonObject().apply {
+                                    addProperty("event", "UPDATE")
+                                    addProperty("schema", "public")
+                                    addProperty("table", "comment_replies")
+                                })
+                                add(JsonObject().apply {
+                                    addProperty("event", "DELETE")
+                                    addProperty("schema", "public")
+                                    addProperty("table", "comment_replies")
+                                })
+                            })
+                        })
+                        addProperty("access_token", session.accessToken)
+                    })
+                    addProperty("ref", refCounter.getAndIncrement().toString())
+                }
+                webSocket.send(gson.toJson(joinMsg))
+
+                val tokenMsg = JsonObject().apply {
+                    addProperty("topic", topic)
+                    addProperty("event", "access_token")
+                    add("payload", JsonObject().apply { addProperty("access_token", session.accessToken) })
+                    addProperty("ref", refCounter.getAndIncrement().toString())
+                }
+                webSocket.send(gson.toJson(tokenMsg))
+
+                heartbeatTimer = Timer("desktop-chat-hb-$animeId", true).apply {
+                    scheduleAtFixedRate(object : TimerTask() {
+                        override fun run() {
+                            val hb = JsonObject().apply {
+                                addProperty("topic", "phoenix")
+                                addProperty("event", "heartbeat")
+                                add("payload", JsonObject())
+                                addProperty("ref", refCounter.getAndIncrement().toString())
+                            }
+                            runCatching { webSocket.send(gson.toJson(hb)) }
+                        }
+                    }, 25_000L, 25_000L)
+                }
+            }
+
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                runCatching {
+                    val root = JsonParser.parseString(text).takeIf { it.isJsonObject }?.asJsonObject ?: return
+                    if (root.str("event") != "postgres_changes") return
+                    val data = root.get("payload")?.takeIf { it.isJsonObject }?.asJsonObject
+                        ?.get("data")?.takeIf { it.isJsonObject }?.asJsonObject ?: return
+                    val evType = data.str("type").uppercase()
+                    val table = data.str("table")
+                    val rec = data.get("record")?.takeIf { it.isJsonObject }?.asJsonObject
+                    val oldRec = data.get("old_record")?.takeIf { it.isJsonObject }?.asJsonObject
+
+                    when {
+                        evType == "INSERT" && table == "anime_comments" && rec != null -> {
+                            val recId = rec.str("id")
+                            val recAid = rec.intVal("anime_id", 0)
+                            if (recId.isNotBlank() && recAid == animeId) {
+                                onEvent(
+                                    DesktopRealtimeEvent.InsertComment(
+                                        DesktopAnimeComment(
+                                            id = recId,
+                                            animeId = recAid,
+                                            userId = rec.str("user_id"),
+                                            username = "Member",
+                                            avatarKey = "avatar_1",
+                                            body = rec.str("content"),
+                                            createdAt = rec.str("created_at"),
+                                            updatedAt = rec.str("updated_at"),
+                                            replyTo = parseReplyTo(rec.get("reply_to")),
+                                            sourceType = "comment"
+                                        )
+                                    )
+                                )
+                            }
+                        }
+                        evType == "UPDATE" && rec != null -> {
+                            val recId = rec.str("id")
+                            if (recId.isNotBlank()) {
+                                onEvent(
+                                    DesktopRealtimeEvent.UpdateMessage(
+                                        id = recId,
+                                        body = rec.str("content"),
+                                        updatedAt = rec.str("updated_at"),
+                                        replyTo = parseReplyTo(rec.get("reply_to"))
+                                    )
+                                )
+                            }
+                        }
+                        evType == "DELETE" -> {
+                            val delId = oldRec?.str("id")?.takeIf { it.isNotBlank() }
+                                ?: rec?.str("id")?.takeIf { it.isNotBlank() }
+                            if (!delId.isNullOrBlank()) {
+                                onEvent(DesktopRealtimeEvent.DeleteMessage(delId))
+                            }
+                        }
+                    }
+                }
+            }
+
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                heartbeatTimer?.cancel()
+            }
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                heartbeatTimer?.cancel()
+            }
+        })
     }
 
     suspend fun searchMentionableUsers(
@@ -501,7 +787,8 @@ internal object DesktopDiscussionService {
         body: String,
         animeTitle: String,
         animeCover: String,
-        taggedUserIds: List<String> = emptyList()
+        taggedUserIds: List<String> = emptyList(),
+        replyTo: DesktopFlatReplyTo? = null
     ): Result<Pair<DesktopAnimeComment, DesktopPersistedState>> {
         val payload = JsonObject().apply {
             addProperty("p_anime_id", animeId)
@@ -513,10 +800,22 @@ internal object DesktopDiscussionService {
                 taggedUserIds.forEach { if (it.isNotBlank()) arr.add(it) }
                 if (arr.size() > 0) add("p_tagged_user_ids", arr)
             }
+            if (replyTo != null) {
+                add("p_reply_to", JsonObject().apply {
+                    addProperty("messageId", replyTo.messageId)
+                    addProperty("senderName", replyTo.senderName)
+                    addProperty("previewText", replyTo.previewText.take(180))
+                    if (!replyTo.stickerCode.isNullOrBlank()) {
+                        addProperty("stickerCode", replyTo.stickerCode)
+                    } else {
+                        add("stickerCode", com.google.gson.JsonNull.INSTANCE)
+                    }
+                })
+            }
         }
         return callRpc(session, "create_anime_comment", payload, requireAuth = true).map { (el, active) ->
             val obj = el?.takeIf { it.isJsonObject }?.asJsonObject
-                ?: throw IllegalStateException("Unexpected response when posting comment.")
+                ?: throw IllegalStateException("Unexpected response when posting message.")
             val commentObj = obj.get("comment")?.takeIf { it.isJsonObject }?.asJsonObject ?: obj
             parseComment(commentObj) to active
         }

@@ -127,7 +127,14 @@ internal fun formatCommunityTimestamp(raw: String): String {
     if (raw.isBlank()) return ""
     return runCatching {
         val instant = runCatching { Instant.parse(raw) }.getOrElse { OffsetDateTime.parse(raw).toInstant() }
-        REVIEW_DATE_FORMATTER.format(instant.atZone(ZoneId.systemDefault()))
+        val secs = java.time.Duration.between(instant, Instant.now()).seconds.coerceAtLeast(0L)
+        when {
+            secs < 60L -> "Just now"
+            secs < 3600L -> "${secs / 60L}m ago"
+            secs < 86400L -> "${secs / 3600L}h ago"
+            secs < 86400L * 7L -> "${secs / 86400L}d ago"
+            else -> REVIEW_DATE_FORMATTER.format(instant.atZone(ZoneId.systemDefault()))
+        }
     }.getOrElse {
         raw.take(10)
     }

@@ -7,6 +7,7 @@ import com.example.model.AuthSession
 import com.example.model.CommentReplyItem
 import com.example.model.CommentReplyThread
 import com.example.model.ContentMention
+import com.example.model.FlatReplyTo
 import com.example.model.MentionableUser
 import com.example.model.NotificationsPage
 import com.example.model.ThreadReplyCreationResult
@@ -20,9 +21,27 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.URLEncoder
+import java.util.Timer
+import java.util.TimerTask
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+
+sealed interface DiscussionRealtimeEvent {
+    data class InsertComment(val row: AnimeCommentItem) : DiscussionRealtimeEvent
+    data class UpdateMessage(
+        val id: String,
+        val content: String,
+        val updatedAt: String,
+        val replyTo: FlatReplyTo?
+    ) : DiscussionRealtimeEvent
+    data class DeleteMessage(val id: String) : DiscussionRealtimeEvent
+}
 
 class SupabaseDiscussionService {
     private val client = OkHttpClient.Builder()
@@ -62,17 +81,18 @@ class SupabaseDiscussionService {
                 }
                 val obj = JSONObject(body)
                 val commentsArr = obj.optJSONArray("comments") ?: JSONArray()
-                val comments = buildList {
+                val rawComments = buildList {
                     for (i in 0 until commentsArr.length()) {
                         add(parseComment(commentsArr.getJSONObject(i)))
                     }
                 }
+                val flatComments = flattenMessagesList(rawComments)
                 Result.success(
                     AnimeDiscussionPage(
                         animeId = obj.optInt("anime_id", animeId),
-                        totalComments = obj.optInt("total_comments", comments.size),
+                        totalComments = obj.optInt("total_comments", flatComments.size),
                         hasMore = obj.optBoolean("has_more", false),
-                        comments = comments
+                        comments = flatComments
                     )
                 )
             }
@@ -123,7 +143,8 @@ class SupabaseDiscussionService {
         content: String,
         animeTitle: String,
         animeCover: String,
-        taggedUserIds: List<String> = emptyList()
+        taggedUserIds: List<String> = emptyList(),
+        replyTo: FlatReplyTo? = null
     ): Result<Pair<AnimeCommentItem, Int>> = withContext(Dispatchers.IO) {
         if (!AppConfig.isSupabaseConfigured) {
             return@withContext Result.failure(Exception("Cloud discussion service is not configured."))
@@ -135,10 +156,20 @@ class SupabaseDiscussionService {
                 .put("p_anime_title", animeTitle.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
                 .put("p_anime_cover", animeCover.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
                 .put("p_tagged_user_ids", JSONArray(taggedUserIds))
+            if (replyTo != null) {
+                payload.put(
+                    "p_reply_to",
+                    JSONObject()
+                        .put("messageId", replyTo.messageId)
+                        .put("senderName", replyTo.senderName)
+                        .put("previewText", replyTo.previewText.take(180))
+                        .put("stickerCode", replyTo.stickerCode ?: JSONObject.NULL)
+                )
+            }
             client.newCall(rpcRequest("create_anime_comment", session.accessToken, payload)).execute().use { resp ->
                 val body = resp.body?.string().orEmpty().trim()
                 if (!resp.isSuccessful) {
-                    return@withContext Result.failure(Exception(parseError(body, "Unable to post comment right now.")))
+                    return@withContext Result.failure(Exception(parseError(body, "Unable to post message right now.")))
                 }
                 val obj = JSONObject(body)
                 val comment = parseComment(obj.getJSONObject("comment"))
@@ -146,7 +177,7 @@ class SupabaseDiscussionService {
                 Result.success(comment to total)
             }
         } catch (e: Exception) {
-            Result.failure(Exception(ErrorSanitizer.sanitize(e, "Unable to post comment right now.")))
+            Result.failure(Exception(ErrorSanitizer.sanitize(e, "Unable to post message right now.")))
         }
     }
 
@@ -474,6 +505,270 @@ class SupabaseDiscussionService {
         }
     }
 
+    suspend fun fetchUserProfileSnippet(session: AuthSession, userId: String): MentionableUser? = withContext(Dispatchers.IO) {
+        if (!AppConfig.isSupabaseConfigured || userId.isBlank()) return@withContext null
+        try {
+            val encodedId = URLEncoder.encode(userId, "UTF-8")
+            val req = Request.Builder()
+                .url("${AppConfig.supabaseUrl}/rest/v1/profiles?id=eq.$encodedId&select=id,username,avatar_key,avatar_url&limit=1")
+                .addHeader("apikey", AppConfig.supabaseAnonKey)
+                .addHeader("Authorization", "Bearer ${session.accessToken}")
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                val body = resp.body?.string().orEmpty().trim()
+                if (!resp.isSuccessful || !body.startsWith("[")) return@withContext null
+                val arr = JSONArray(body)
+                if (arr.length() == 0) return@withContext null
+                val u = arr.getJSONObject(0)
+                MentionableUser(
+                    id = u.optString("id", userId),
+                    username = u.optString("username", "Member").ifBlank { "Member" },
+                    avatarKey = u.optString("avatar_key", "avatar_1").ifBlank { "avatar_1" },
+                    avatarUrl = u.optString("avatar_url").takeIf { it.isNotBlank() && it != "null" }
+                )
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun subscribeToAnimeChatRealtime(
+        session: AuthSession,
+        animeId: Int,
+        onEvent: (DiscussionRealtimeEvent) -> Unit
+    ): WebSocket? {
+        if (!AppConfig.isSupabaseConfigured || animeId <= 0 || session.accessToken.isBlank()) return null
+        val wsBase = AppConfig.supabaseUrl
+            .replaceFirst("https://", "wss://")
+            .replaceFirst("http://", "ws://")
+        val encodedKey = URLEncoder.encode(AppConfig.supabaseAnonKey, "UTF-8")
+        val wsUrl = "$wsBase/realtime/v1/websocket?apikey=$encodedKey&vsn=1.0.0"
+        val req = Request.Builder().url(wsUrl).build()
+        val refCounter = AtomicInteger(1)
+        val topic = "realtime:public:anime_comments:$animeId"
+        var heartbeatTimer: Timer? = null
+
+        return client.newWebSocket(req, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                val joinMsg = JSONObject()
+                    .put("topic", topic)
+                    .put("event", "phx_join")
+                    .put(
+                        "payload",
+                        JSONObject()
+                            .put(
+                                "config",
+                                JSONObject()
+                                    .put("broadcast", JSONObject().put("self", false))
+                                    .put("presence", JSONObject().put("key", ""))
+                                    .put(
+                                        "postgres_changes",
+                                        JSONArray()
+                                            .put(
+                                                JSONObject()
+                                                    .put("event", "*")
+                                                    .put("schema", "public")
+                                                    .put("table", "anime_comments")
+                                                    .put("filter", "anime_id=eq.$animeId")
+                                            )
+                                            .put(
+                                                JSONObject()
+                                                    .put("event", "UPDATE")
+                                                    .put("schema", "public")
+                                                    .put("table", "comment_replies")
+                                            )
+                                            .put(
+                                                JSONObject()
+                                                    .put("event", "DELETE")
+                                                    .put("schema", "public")
+                                                    .put("table", "comment_replies")
+                                            )
+                                    )
+                            )
+                            .put("access_token", session.accessToken)
+                    )
+                    .put("ref", refCounter.getAndIncrement().toString())
+                webSocket.send(joinMsg.toString())
+
+                val tokenMsg = JSONObject()
+                    .put("topic", topic)
+                    .put("event", "access_token")
+                    .put("payload", JSONObject().put("access_token", session.accessToken))
+                    .put("ref", refCounter.getAndIncrement().toString())
+                webSocket.send(tokenMsg.toString())
+
+                heartbeatTimer = Timer("supabase-chat-hb-$animeId", true).apply {
+                    scheduleAtFixedRate(object : TimerTask() {
+                        override fun run() {
+                            val hb = JSONObject()
+                                .put("topic", "phoenix")
+                                .put("event", "heartbeat")
+                                .put("payload", JSONObject())
+                                .put("ref", refCounter.getAndIncrement().toString())
+                            runCatching { webSocket.send(hb.toString()) }
+                        }
+                    }, 25_000L, 25_000L)
+                }
+            }
+
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                runCatching {
+                    val msg = JSONObject(text)
+                    if (msg.optString("event") != "postgres_changes") return
+                    val data = msg.optJSONObject("payload")?.optJSONObject("data") ?: return
+                    val evType = data.optString("type").uppercase()
+                    val table = data.optString("table")
+                    val rec = data.optJSONObject("record")
+                    val oldRec = data.optJSONObject("old_record")
+
+                    when {
+                        evType == "INSERT" && table == "anime_comments" && rec != null -> {
+                            val recId = rec.optString("id")
+                            val recAnimeId = rec.optInt("anime_id", 0)
+                            if (recId.isNotBlank() && recAnimeId == animeId) {
+                                val item = AnimeCommentItem(
+                                    id = recId,
+                                    animeId = recAnimeId,
+                                    userId = rec.optString("user_id"),
+                                    username = "Member",
+                                    avatarKey = "avatar_1",
+                                    avatarUrl = null,
+                                    content = rec.optString("content", ""),
+                                    createdAt = rec.optString("created_at", ""),
+                                    updatedAt = rec.optString("updated_at", ""),
+                                    replyTo = parseReplyTo(rec.opt("reply_to")),
+                                    sourceType = "comment"
+                                )
+                                onEvent(DiscussionRealtimeEvent.InsertComment(item))
+                            }
+                        }
+                        evType == "UPDATE" && rec != null -> {
+                            val recId = rec.optString("id")
+                            if (recId.isNotBlank()) {
+                                onEvent(
+                                    DiscussionRealtimeEvent.UpdateMessage(
+                                        id = recId,
+                                        content = rec.optString("content", ""),
+                                        updatedAt = rec.optString("updated_at", ""),
+                                        replyTo = parseReplyTo(rec.opt("reply_to"))
+                                    )
+                                )
+                            }
+                        }
+                        evType == "DELETE" -> {
+                            val delId = oldRec?.optString("id")?.takeIf { it.isNotBlank() }
+                                ?: rec?.optString("id")?.takeIf { it.isNotBlank() }
+                            if (!delId.isNullOrBlank()) {
+                                onEvent(DiscussionRealtimeEvent.DeleteMessage(delId))
+                            }
+                        }
+                    }
+                }
+            }
+
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                heartbeatTimer?.cancel()
+            }
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                heartbeatTimer?.cancel()
+            }
+        })
+    }
+
+    private fun extractFirstStickerCode(text: String?): String? {
+        if (text.isNullOrBlank()) return null
+        val bracket = Regex("""\[emoji:([a-zA-Z0-9_-]{1,64})]""", RegexOption.IGNORE_CASE).find(text)
+        if (bracket != null) return bracket.groupValues[1].lowercase()
+        val colon = Regex(""":([a-zA-Z0-9][a-zA-Z0-9_-]{0,63}):""").find(text)
+        return colon?.groupValues?.getOrNull(1)?.lowercase()
+    }
+
+    private fun parseReplyTo(raw: Any?): FlatReplyTo? {
+        val obj = when (raw) {
+            is JSONObject -> raw
+            is String -> if (raw.trim().startsWith("{")) runCatching { JSONObject(raw) }.getOrNull() else null
+            else -> null
+        } ?: return null
+        val msgId = obj.optString("messageId").ifBlank { obj.optString("message_id") }
+        val senderName = obj.optString("senderName").ifBlank { obj.optString("sender_name") }
+        val previewText = obj.optString("previewText").ifBlank { obj.optString("preview_text") }
+        val explicitSticker = obj.optString("stickerCode")
+            .ifBlank { obj.optString("sticker_code") }
+            .takeIf { it.isNotBlank() && it != "null" }
+            ?.lowercase()
+        val sticker = explicitSticker ?: extractFirstStickerCode(previewText)
+        if (msgId.isBlank() && senderName.isBlank() && previewText.isBlank() && sticker.isNullOrBlank()) {
+            return null
+        }
+        return FlatReplyTo(
+            messageId = msgId,
+            senderName = senderName.ifBlank { "Member" },
+            previewText = previewText,
+            stickerCode = sticker
+        )
+    }
+
+    private fun flattenMessagesList(raw: List<AnimeCommentItem>): List<AnimeCommentItem> {
+        if (raw.isEmpty()) return emptyList()
+        val byId = LinkedHashMap<String, AnimeCommentItem>()
+        val repliesById = HashMap<String, CommentReplyItem>()
+        raw.forEach { c ->
+            c.threads.forEach { th ->
+                th.replies.forEach { r -> repliesById[r.id] = r }
+            }
+        }
+        raw.forEach { c ->
+            val topLevel = if (c.threads.isEmpty()) c else c.copy(threads = emptyList())
+            byId[topLevel.id] = topLevel
+            c.threads.forEach { th ->
+                th.replies.forEach { r ->
+                    val refReplyId = r.quotedReplyId?.takeIf { it.isNotBlank() }
+                        ?: r.parentCommentId?.takeIf { it.isNotBlank() && it != c.id }
+                    val matchedReply = refReplyId?.let { repliesById[it] }
+                    val targetId = refReplyId ?: (r.quotedCommentId?.takeIf { it.isNotBlank() } ?: c.id)
+                    val targetSender = if (refReplyId != null) {
+                        matchedReply?.username?.takeIf { it.isNotBlank() }
+                            ?: r.quotedUsername?.takeIf { it.isNotBlank() }
+                            ?: "Member"
+                    } else {
+                        r.quotedUsername?.takeIf { it.isNotBlank() } ?: c.username
+                    }
+                    val rawPreview = if (refReplyId != null) {
+                        r.quotedPreview?.takeIf { it.isNotBlank() }
+                            ?: matchedReply?.content?.takeIf { it.isNotBlank() }
+                            ?: ""
+                    } else {
+                        r.quotedPreview?.takeIf { it.isNotBlank() } ?: c.content
+                    }
+                    byId[r.id] = AnimeCommentItem(
+                        id = r.id,
+                        animeId = c.animeId,
+                        userId = r.userId,
+                        username = r.username,
+                        avatarKey = r.avatarKey,
+                        avatarUrl = r.avatarUrl,
+                        content = r.content,
+                        createdAt = r.createdAt,
+                        updatedAt = r.updatedAt,
+                        mentions = r.mentions,
+                        threads = emptyList(),
+                        replyTo = FlatReplyTo(
+                            messageId = targetId,
+                            senderName = targetSender,
+                            previewText = rawPreview.take(180),
+                            stickerCode = extractFirstStickerCode(rawPreview)
+                        ),
+                        sourceType = "reply",
+                        threadId = r.threadId.ifBlank { th.id }
+                    )
+                }
+            }
+        }
+        return byId.values.sortedByDescending { it.createdAt }
+    }
+
     private fun parseComment(obj: JSONObject): AnimeCommentItem {
         val threadsArr = obj.optJSONArray("threads") ?: JSONArray()
         val threads = buildList {
@@ -510,7 +805,10 @@ class SupabaseDiscussionService {
             createdAt = obj.optString("created_at", ""),
             updatedAt = obj.optString("updated_at", ""),
             mentions = parseMentions(obj.optJSONArray("mentions")),
-            threads = threads
+            threads = threads,
+            replyTo = parseReplyTo(obj.opt("reply_to")),
+            sourceType = obj.optString("source_type", "comment").ifBlank { "comment" },
+            threadId = obj.optString("thread_id").takeIf { it.isNotBlank() && it != "null" }
         )
     }
 
@@ -559,7 +857,7 @@ class SupabaseDiscussionService {
                 ?: fallback
         }.getOrDefault(fallback)
         if (raw.contains("PGRST202", ignoreCase = true) || raw.contains("Could not find the function", ignoreCase = true)) {
-            return "Discussion SQL migration is pending in Supabase. Please run the 20261121 migration in SQL Editor."
+            return "Live chat SQL update is pending in Supabase. Please run the 20261124 migration in SQL Editor."
         }
         return ErrorSanitizer.sanitize(raw, fallback)
     }
