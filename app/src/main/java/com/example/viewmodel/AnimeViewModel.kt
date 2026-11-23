@@ -44,6 +44,7 @@ import com.example.service.AniListMetadataProvider
 import com.example.service.AppUpdateInfo
 import com.example.service.CommunityEmojiCacheService
 import com.example.service.DiscussionRealtimeEvent
+import com.example.service.NotificationRealtimeEvent
 import com.example.service.SupabaseDatabaseService
 import com.example.service.SupabaseDiscussionService
 import com.example.util.DiscussionRules
@@ -423,9 +424,15 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     val isStorageStatsLoading = _isStorageStatsLoading.asStateFlow()
 
     private var hasTriggeredInitialAuthRestore = false
+    private val notificationSyncReducer = NotificationSyncReducer()
+    private var notificationRealtimeSocket: WebSocket? = null
+    private var notificationRealtimeUserId: String? = null
+    private var notificationRealtimeToken: String? = null
+    private var notificationReconnectJob: Job? = null
 
     init {
         restoreSessionAndInitialData()
+        observeAuthSessionForNotifications()
         startAutoCloudSyncLoop()
         startRealtimeNotificationPolling()
     }
@@ -666,10 +673,213 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             }
-            supabaseDiscussion.fetchUnseenDiscussionAnime(activeSession).onSuccess { summary ->
-                if (_authSession.value?.userId == capturedUserId) {
-                    _unseenDiscussionAnime.value = summary.anime
-                    _unreadNotificationCount.value = summary.totalUnseen
+            ensureNotificationRealtimeConnected(activeSession)
+            reconcileUnreadNotificationCount(activeSession)
+        }
+    }
+
+    fun onAppForegrounded() {
+        val current = _authSession.value
+        if (current != null && AppConfig.isSupabaseConfigured) {
+            ensureNotificationRealtimeConnected(current)
+            reconcileUnreadNotificationCount(current)
+        }
+        triggerSilentCloudSync()
+    }
+
+    private fun observeAuthSessionForNotifications() {
+        viewModelScope.launch {
+            _authSession.collect { session ->
+                if (session == null || session.userId.isBlank() || session.accessToken.isBlank()) {
+                    stopNotificationRealtime()
+                    notificationSyncReducer.reset()
+                    _unreadNotificationCount.value = 0
+                    _unseenDiscussionAnime.value = emptyList()
+                    _notifications.value = emptyList()
+                } else if (AppConfig.isSupabaseConfigured) {
+                    if (notificationRealtimeUserId != session.userId) {
+                        notificationSyncReducer.reset()
+                    }
+                    ensureNotificationRealtimeConnected(session)
+                    reconcileUnreadNotificationCount(session)
+                }
+            }
+        }
+    }
+
+    private fun ensureNotificationRealtimeConnected(session: AuthSession) {
+        if (!AppConfig.isSupabaseConfigured || session.userId.isBlank() || session.accessToken.isBlank()) {
+            stopNotificationRealtime()
+            return
+        }
+        if (notificationRealtimeSocket != null &&
+            notificationRealtimeUserId == session.userId &&
+            notificationRealtimeToken == session.accessToken
+        ) {
+            return
+        }
+        stopNotificationRealtime()
+        val capturedUserId = session.userId
+        val capturedToken = session.accessToken
+        notificationRealtimeUserId = capturedUserId
+        notificationRealtimeToken = capturedToken
+        notificationRealtimeSocket = supabaseDiscussion.subscribeToUserNotificationsRealtime(
+            session = session,
+            onEvent = { ev ->
+                viewModelScope.launch {
+                    handleNotificationRealtimeEvent(ev, capturedUserId)
+                }
+            },
+            onConnected = {
+                viewModelScope.launch {
+                    val active = _authSession.value
+                    if (active != null && active.userId == capturedUserId) {
+                        reconcileUnreadNotificationCount(active)
+                    }
+                }
+            },
+            onDisconnected = {
+                viewModelScope.launch {
+                    if (notificationRealtimeUserId == capturedUserId) {
+                        notificationRealtimeSocket = null
+                    }
+                    notificationReconnectJob?.cancel()
+                    notificationReconnectJob = viewModelScope.launch {
+                        delay(5_000L)
+                        val latest = _authSession.value
+                        if (latest != null && latest.userId == capturedUserId && AppConfig.isSupabaseConfigured) {
+                            val refreshed = supabaseAuth.refreshSessionIfNeeded(latest).getOrDefault(latest)
+                            if (refreshed.accessToken != latest.accessToken && _authSession.value?.userId == capturedUserId) {
+                                _authSession.value = refreshed
+                            }
+                            ensureNotificationRealtimeConnected(refreshed)
+                        }
+                    }
+                }
+            }
+        )
+    }
+
+    private fun stopNotificationRealtime() {
+        notificationReconnectJob?.cancel()
+        notificationReconnectJob = null
+        runCatching { notificationRealtimeSocket?.close(1000, "closed") }
+        notificationRealtimeSocket = null
+        notificationRealtimeUserId = null
+        notificationRealtimeToken = null
+    }
+
+    private fun handleNotificationRealtimeEvent(
+        ev: NotificationRealtimeEvent,
+        expectedUserId: String
+    ) {
+        val currentSession = _authSession.value ?: return
+        if (currentSession.userId != expectedUserId) return
+
+        when (ev) {
+            is NotificationRealtimeEvent.Insert -> {
+                val outcome = notificationSyncReducer.onRealtimeInsert(
+                    notificationId = ev.id,
+                    recipientUserId = ev.recipientUserId,
+                    currentUserId = currentSession.userId,
+                    isRead = ev.isRead
+                )
+                if (outcome.delta != 0) {
+                    _unreadNotificationCount.value = outcome.unreadCount
+                    reconcileUnseenAnimeMetadataOnly(currentSession)
+                }
+            }
+            is NotificationRealtimeEvent.Update -> {
+                val outcome = notificationSyncReducer.onRealtimeUpdate(
+                    notificationId = ev.id,
+                    recipientUserId = ev.recipientUserId,
+                    currentUserId = currentSession.userId,
+                    oldIsRead = ev.oldIsRead,
+                    newIsRead = ev.newIsRead,
+                    readAt = ev.readAt
+                )
+                _notifications.value = _notifications.value.map { item ->
+                    if (item.id == ev.id) {
+                        item.copy(
+                            isRead = ev.newIsRead,
+                            readAt = ev.readAt ?: item.readAt
+                        )
+                    } else item
+                }
+                _unreadNotificationCount.value = outcome.unreadCount
+                if (outcome.unreadCount == 0) {
+                    _unseenDiscussionAnime.value = emptyList()
+                } else if (ev.newIsRead && ev.animeId > 0) {
+                    val stillUnreadForAnime = _notifications.value.any { it.animeId == ev.animeId && !it.isRead }
+                    if (!stillUnreadForAnime && _notifications.value.any { it.id == ev.id }) {
+                        _unseenDiscussionAnime.value = _unseenDiscussionAnime.value.filterNot { it.animeId == ev.animeId }
+                    }
+                }
+                if (outcome.needsReconcile) {
+                    reconcileUnreadNotificationCount(currentSession)
+                }
+            }
+        }
+    }
+
+    private fun reconcileUnseenAnimeMetadataOnly(session: AuthSession) {
+        val capturedUserId = session.userId
+        val startGen = notificationSyncReducer.currentGeneration()
+        viewModelScope.launch {
+            supabaseDiscussion.fetchUnseenDiscussionAnime(session).onSuccess { summary ->
+                if (_authSession.value?.userId != capturedUserId) return@onSuccess
+                if (startGen < notificationSyncReducer.currentGeneration()) return@onSuccess
+                _unseenDiscussionAnime.value = if (_unreadNotificationCount.value == 0) emptyList() else summary.anime
+            }
+        }
+    }
+
+    fun reconcileUnreadNotificationCount(explicitSession: AuthSession? = null) {
+        val session = explicitSession ?: _authSession.value ?: return
+        if (!AppConfig.isSupabaseConfigured || session.userId.isBlank()) return
+        val capturedUserId = session.userId
+        val startGen = notificationSyncReducer.currentGeneration()
+        viewModelScope.launch {
+            val activeSession = supabaseAuth.refreshSessionIfNeeded(session).getOrDefault(session)
+            if (_authSession.value?.userId != capturedUserId) return@launch
+            if (activeSession.accessToken != session.accessToken) {
+                _authSession.value = activeSession
+            }
+            val snapRes = supabaseDiscussion.fetchAuthoritativeUnreadSnapshot(activeSession)
+            val summaryRes = supabaseDiscussion.fetchUnseenDiscussionAnime(activeSession)
+            if (_authSession.value?.userId != capturedUserId) return@launch
+
+            val snap = snapRes.getOrNull()
+            if (snap != null) {
+                val applied = notificationSyncReducer.applyAuthoritativeUnreadIds(
+                    fetchedUnreadIds = snap.unreadIds,
+                    fetchStartedGeneration = startGen
+                )
+                if (applied) {
+                    val exactCount = notificationSyncReducer.unreadCount
+                    _unreadNotificationCount.value = exactCount
+                    val unreadSet = snap.unreadIds
+                    if (_notifications.value.isNotEmpty()) {
+                        _notifications.value = _notifications.value.map { item ->
+                            val shouldBeUnread = item.id in unreadSet
+                            if (item.isRead == shouldBeUnread) {
+                                item.copy(isRead = !shouldBeUnread)
+                            } else item
+                        }
+                    }
+                    _unseenDiscussionAnime.value = if (exactCount == 0) {
+                        emptyList()
+                    } else {
+                        summaryRes.getOrNull()?.anime?.filter { (snap.unreadCountByAnime[it.animeId] ?: 0) > 0 }
+                            ?: _unseenDiscussionAnime.value.filter { (snap.unreadCountByAnime[it.animeId] ?: 0) > 0 }
+                    }
+                }
+            } else {
+                summaryRes.onSuccess { summary ->
+                    if (notificationSyncReducer.confirmServerUnreadCount(summary.totalUnseen, startGen)) {
+                        _unreadNotificationCount.value = notificationSyncReducer.unreadCount
+                        _unseenDiscussionAnime.value = if (notificationSyncReducer.unreadCount == 0) emptyList() else summary.anime
+                    }
                 }
             }
         }
@@ -2725,13 +2935,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun refreshUnseenDiscussionAnime() {
-        val session = _authSession.value ?: return
-        viewModelScope.launch {
-            supabaseDiscussion.fetchUnseenDiscussionAnime(session).onSuccess { summary ->
-                _unseenDiscussionAnime.value = summary.anime
-                _unreadNotificationCount.value = summary.totalUnseen
-            }
-        }
+        reconcileUnreadNotificationCount()
     }
 
     fun loadCommunityEmojis(forceRefresh: Boolean = false) {
@@ -2762,28 +2966,55 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun markAnimeDiscussionSeen(animeId: Int) {
         val session = _authSession.value ?: return
+        if (animeId <= 0) return
+        val readAtIso = Instant.now().toString()
+        val unreadIdsForAnime = _notifications.value
+            .filter { it.animeId == animeId && !it.isRead }
+            .map { it.id }
         val hadUnseen = _unseenDiscussionAnime.value.any { it.animeId == animeId }
-        val hadUnreadInList = _notifications.value.any { it.animeId == animeId && !it.isRead }
-        if (hadUnreadInList) {
+        val mutGen = if (unreadIdsForAnime.isNotEmpty()) {
+            notificationSyncReducer.markLocalReadMany(unreadIdsForAnime)
+            notificationSyncReducer.currentGeneration()
+        } else {
+            notificationSyncReducer.beginLocalMutation()
+        }
+        if (unreadIdsForAnime.isNotEmpty()) {
             _notifications.value = _notifications.value.map {
-                if (it.animeId == animeId) it.copy(isRead = true) else it
+                if (it.animeId == animeId && !it.isRead) it.copy(isRead = true, readAt = readAtIso) else it
             }
         }
         if (hadUnseen) {
             val remainingList = _unseenDiscussionAnime.value.filterNot { it.animeId == animeId }
             _unseenDiscussionAnime.value = remainingList
-            _unreadNotificationCount.value = remainingList.sumOf { it.unseenCount }
+            val optimisticCount = if (unreadIdsForAnime.isNotEmpty()) {
+                notificationSyncReducer.unreadCount
+            } else {
+                remainingList.sumOf { it.unseenCount }
+            }
+            _unreadNotificationCount.value = optimisticCount
+        } else if (unreadIdsForAnime.isNotEmpty()) {
+            _unreadNotificationCount.value = notificationSyncReducer.unreadCount
         }
         viewModelScope.launch {
-            supabaseDiscussion.markAnimeNotificationsRead(session, animeId).onSuccess { remaining ->
-                _unreadNotificationCount.value = remaining
-                if (remaining == 0) {
-                    _unseenDiscussionAnime.value = emptyList()
-                    _notifications.value = _notifications.value.map { it.copy(isRead = true) }
-                } else {
-                    _unseenDiscussionAnime.value = _unseenDiscussionAnime.value.filterNot { it.animeId == animeId }
+            val activeSession = supabaseAuth.refreshSessionIfNeeded(session).getOrDefault(session)
+            supabaseDiscussion.markAnimeNotificationsRead(activeSession, animeId, readAtIso)
+                .onSuccess { remaining ->
+                    if (notificationSyncReducer.confirmServerUnreadCount(remaining, mutGen)) {
+                        _unreadNotificationCount.value = notificationSyncReducer.unreadCount
+                        if (remaining == 0) {
+                            _unseenDiscussionAnime.value = emptyList()
+                            _notifications.value = _notifications.value.map {
+                                if (!it.isRead) it.copy(isRead = true, readAt = it.readAt ?: readAtIso) else it
+                            }
+                        } else {
+                            _unseenDiscussionAnime.value = _unseenDiscussionAnime.value.filterNot { it.animeId == animeId }
+                        }
+                    }
+                    reconcileUnreadNotificationCount(activeSession)
                 }
-            }
+                .onFailure {
+                    reconcileUnreadNotificationCount(activeSession)
+                }
         }
     }
 
@@ -2970,10 +3201,8 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                 delay(20_000L)
                 val session = _authSession.value
                 if (session != null && AppConfig.isSupabaseConfigured) {
-                    supabaseDiscussion.fetchUnseenDiscussionAnime(session).onSuccess { summary ->
-                        _unseenDiscussionAnime.value = summary.anime
-                        _unreadNotificationCount.value = summary.totalUnseen
-                    }
+                    ensureNotificationRealtimeConnected(session)
+                    reconcileUnreadNotificationCount(session)
                 }
             }
         }
@@ -3118,19 +3347,32 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshNotifications(reset: Boolean = true) {
         val session = _authSession.value ?: return
+        val startGen = notificationSyncReducer.currentGeneration()
         viewModelScope.launch {
             _isNotificationsLoading.value = true
             _notificationsError.value = null
+            val activeSession = supabaseAuth.refreshSessionIfNeeded(session).getOrDefault(session)
             val offset = if (reset) 0 else _notifications.value.size
-            supabaseDiscussion.fetchNotifications(session, limit = 30, offset = offset)
+            supabaseDiscussion.fetchNotifications(activeSession, limit = 30, offset = offset)
                 .onSuccess { page ->
-                    _unreadNotificationCount.value = page.unreadCount
                     _hasMoreNotifications.value = page.hasMore
-                    _notifications.value = if (reset) {
+                    val merged = if (reset) {
                         page.notifications
                     } else {
                         val existing = _notifications.value.map { it.id }.toSet()
                         _notifications.value + page.notifications.filterNot { it.id in existing }
+                    }
+                    _notifications.value = merged
+                    if (notificationSyncReducer.applyFetchedPage(
+                            items = page.notifications.map { it.id to it.isRead },
+                            authoritativeUnreadCount = page.unreadCount,
+                            fetchStartedGeneration = startGen
+                        )
+                    ) {
+                        _unreadNotificationCount.value = notificationSyncReducer.unreadCount
+                        if (notificationSyncReducer.unreadCount == 0) {
+                            _unseenDiscussionAnime.value = emptyList()
+                        }
                     }
                 }
                 .onFailure { err ->
@@ -3147,42 +3389,69 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun markNotificationRead(notificationId: String) {
         val session = _authSession.value ?: return
+        if (notificationId.isBlank()) return
+        val readAtIso = Instant.now().toString()
         val target = _notifications.value.firstOrNull { it.id == notificationId }
-        val wasUnread = target != null && !target.isRead
-        if (wasUnread) {
-            val nextNotifications = _notifications.value.map {
-                if (it.id == notificationId) it.copy(isRead = true) else it
-            }
-            _notifications.value = nextNotifications
-            val nextUnread = (_unreadNotificationCount.value - 1).coerceAtLeast(0)
-            _unreadNotificationCount.value = nextUnread
-            if (target != null && nextNotifications.none { it.animeId == target.animeId && !it.isRead }) {
-                _unseenDiscussionAnime.value = _unseenDiscussionAnime.value.filterNot { it.animeId == target.animeId }
-            }
+        val nextCount = notificationSyncReducer.markLocalRead(notificationId)
+        val mutGen = notificationSyncReducer.currentGeneration()
+
+        val nextNotifications = _notifications.value.map {
+            if (it.id == notificationId && !it.isRead) it.copy(isRead = true, readAt = readAtIso) else it
         }
+        _notifications.value = nextNotifications
+        _unreadNotificationCount.value = nextCount
+        if (nextCount == 0) {
+            _unseenDiscussionAnime.value = emptyList()
+        } else if (target != null && nextNotifications.none { it.animeId == target.animeId && !it.isRead }) {
+            _unseenDiscussionAnime.value = _unseenDiscussionAnime.value.filterNot { it.animeId == target.animeId }
+        }
+
         viewModelScope.launch {
-            supabaseDiscussion.markNotificationRead(session, notificationId).onSuccess { unread ->
-                _unreadNotificationCount.value = unread
-                if (unread == 0) {
-                    _unseenDiscussionAnime.value = emptyList()
-                    _notifications.value = _notifications.value.map { it.copy(isRead = true) }
-                } else {
-                    refreshUnseenDiscussionAnime()
+            val activeSession = supabaseAuth.refreshSessionIfNeeded(session).getOrDefault(session)
+            supabaseDiscussion.markNotificationRead(activeSession, notificationId, readAtIso)
+                .onSuccess { unread ->
+                    if (notificationSyncReducer.confirmServerUnreadCount(unread, mutGen)) {
+                        _unreadNotificationCount.value = notificationSyncReducer.unreadCount
+                        if (unread == 0) {
+                            _unseenDiscussionAnime.value = emptyList()
+                            _notifications.value = _notifications.value.map {
+                                if (!it.isRead) it.copy(isRead = true, readAt = it.readAt ?: readAtIso) else it
+                            }
+                        } else {
+                            reconcileUnreadNotificationCount(activeSession)
+                        }
+                    }
                 }
-            }
+                .onFailure {
+                    reconcileUnreadNotificationCount(activeSession)
+                }
         }
     }
 
     fun markAllNotificationsRead() {
         val session = _authSession.value ?: return
-        _notifications.value = _notifications.value.map { it.copy(isRead = true) }
+        val readAtIso = Instant.now().toString()
+        notificationSyncReducer.markAllLocalRead()
+        val mutGen = notificationSyncReducer.currentGeneration()
+        _notifications.value = _notifications.value.map {
+            if (!it.isRead) it.copy(isRead = true, readAt = readAtIso) else it
+        }
         _unseenDiscussionAnime.value = emptyList()
         _unreadNotificationCount.value = 0
         viewModelScope.launch {
-            supabaseDiscussion.markAllNotificationsRead(session).onSuccess {
-                _unreadNotificationCount.value = 0
-                _unseenDiscussionAnime.value = emptyList()
-            }
+            val activeSession = supabaseAuth.refreshSessionIfNeeded(session).getOrDefault(session)
+            supabaseDiscussion.markAllNotificationsRead(activeSession, readAtIso)
+                .onSuccess { unread ->
+                    if (notificationSyncReducer.confirmServerUnreadCount(unread, mutGen)) {
+                        _unreadNotificationCount.value = notificationSyncReducer.unreadCount
+                        if (notificationSyncReducer.unreadCount == 0) {
+                            _unseenDiscussionAnime.value = emptyList()
+                        }
+                    }
+                }
+                .onFailure {
+                    reconcileUnreadNotificationCount(activeSession)
+                }
         }
     }
 
@@ -3202,6 +3471,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         stopAnimeChatRealtime()
+        stopNotificationRealtime()
         super.onCleared()
     }
 }

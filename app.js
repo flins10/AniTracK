@@ -779,6 +779,8 @@ function saveSession(session) {
     localStorage.removeItem('anime_universe_session');
     localStorage.removeItem('auralog_session');
     localStorage.removeItem('anime_universe_guest');
+    if (typeof NotificationRealtimeManager !== 'undefined') NotificationRealtimeManager.disconnect();
+    if (typeof NotificationSyncState !== 'undefined') NotificationSyncState.reset();
     clearActiveUserMemoryState();
   }
 }
@@ -787,6 +789,8 @@ function enterGuestSession(forceNewGuestId = false) {
   state.session = null;
   localStorage.removeItem('anime_universe_session');
   localStorage.removeItem('auralog_session');
+  if (typeof NotificationRealtimeManager !== 'undefined') NotificationRealtimeManager.disconnect();
+  if (typeof NotificationSyncState !== 'undefined') NotificationSyncState.reset();
   state.guestId = forceNewGuestId ? rotateGuestId() : getOrCreateGuestId();
   state.isGuestMode = true;
   localStorage.setItem('anime_universe_guest', 'true');
@@ -1802,7 +1806,11 @@ function normalizeAnimeGenresWithAdult(genres, isAdult = false) {
 }
 
 function updateCommunityRedDotsInPlace() {
-  const hasUnseen = state.notifications.unreadCount > 0 || (state.notifications.unseenAnime || []).length > 0;
+  const exactUnread = Math.max(0, Number(state.notifications.unreadCount || 0));
+  if (exactUnread === 0 && (state.notifications.unseenAnime || []).length > 0) {
+    state.notifications.unseenAnime = [];
+  }
+  const hasUnseen = exactUnread > 0;
   document.querySelectorAll('[data-nav="community"]').forEach((btn) => {
     const existingDot = btn.querySelector('.nav-red-dot');
     if (hasUnseen && !existingDot) {
@@ -1813,6 +1821,22 @@ function updateCommunityRedDotsInPlace() {
       (iconWrap || btn).appendChild(dot);
     } else if (!hasUnseen && existingDot) {
       existingDot.remove();
+    }
+  });
+  document.querySelectorAll('[data-comm-view-tab="tagged"]').forEach((tabBtn) => {
+    const existingBadge = tabBtn.querySelector('.tagged-count-badge');
+    if (exactUnread > 0) {
+      const text = exactUnread > 99 ? '99+' : String(exactUnread);
+      if (existingBadge) {
+        existingBadge.textContent = text;
+      } else {
+        const badge = document.createElement('span');
+        badge.className = 'tagged-count-badge';
+        badge.textContent = text;
+        tabBtn.appendChild(badge);
+      }
+    } else if (existingBadge) {
+      existingBadge.remove();
     }
   });
 }
@@ -4895,59 +4919,364 @@ async function postThreadReply() {
   return postAnimeComment();
 }
 
+// Deterministic, deduplicated unread count & Realtime synchronization tracker
+const NotificationSyncState = {
+  knownReadState: new Map(), // notificationId -> boolean (is_read)
+  unreadIds: new Set(),
+  processedEventKeys: new Set(),
+  mutationGeneration: 0,
+  unreadCount: 0,
+  reset() {
+    this.knownReadState.clear();
+    this.unreadIds.clear();
+    this.processedEventKeys.clear();
+    this.mutationGeneration = 0;
+    this.unreadCount = 0;
+  },
+  currentGeneration() {
+    return this.mutationGeneration;
+  },
+  beginLocalMutation() {
+    this.mutationGeneration += 1;
+    return this.mutationGeneration;
+  },
+  _recordEventKey(key) {
+    if (this.processedEventKeys.has(key)) return false;
+    this.processedEventKeys.add(key);
+    if (this.processedEventKeys.size > 500) {
+      const oldest = this.processedEventKeys.values().next().value;
+      if (oldest !== undefined) this.processedEventKeys.delete(oldest);
+    }
+    return true;
+  },
+  applyAuthoritativeUnreadIds(idIterable, fetchStartedGen) {
+    if (fetchStartedGen < this.mutationGeneration) return false;
+    const cleanIds = new Set();
+    for (const raw of idIterable || []) {
+      const id = String(raw || '').trim();
+      if (id) cleanIds.add(id);
+    }
+    for (const prevId of this.unreadIds) {
+      if (!cleanIds.has(prevId)) {
+        this.knownReadState.set(prevId, true);
+      }
+    }
+    this.unreadIds.clear();
+    for (const id of cleanIds) {
+      this.unreadIds.add(id);
+      this.knownReadState.set(id, false);
+    }
+    this.unreadCount = this.unreadIds.size;
+    return true;
+  },
+  applyFetchedPage(items, authoritativeUnreadCount, fetchStartedGen) {
+    if (fetchStartedGen < this.mutationGeneration) return false;
+    for (const item of items || []) {
+      const id = String(item?.id || '').trim();
+      if (!id) continue;
+      const isRead = Boolean(item.is_read);
+      this.knownReadState.set(id, isRead);
+      if (isRead) {
+        this.unreadIds.delete(id);
+      } else {
+        this.unreadIds.add(id);
+      }
+    }
+    if (typeof authoritativeUnreadCount === 'number' && !Number.isNaN(authoritativeUnreadCount)) {
+      this.unreadCount = Math.max(0, authoritativeUnreadCount);
+      if (this.unreadCount === 0) {
+        for (const id of this.unreadIds) this.knownReadState.set(id, true);
+        this.unreadIds.clear();
+      }
+    }
+    return true;
+  },
+  markLocalRead(notificationId) {
+    const id = String(notificationId || '').trim();
+    if (!id) return this.unreadCount;
+    this.mutationGeneration += 1;
+    const prev = this.knownReadState.get(id);
+    const wasInSet = this.unreadIds.delete(id);
+    this.knownReadState.set(id, true);
+    if (wasInSet || prev === false) {
+      this.unreadCount = Math.max(0, this.unreadCount - 1);
+    }
+    return this.unreadCount;
+  },
+  markLocalReadMany(notificationIds) {
+    if (!notificationIds || notificationIds.length === 0) return this.unreadCount;
+    this.mutationGeneration += 1;
+    let decremented = 0;
+    for (const raw of notificationIds) {
+      const id = String(raw || '').trim();
+      if (!id) continue;
+      const prev = this.knownReadState.get(id);
+      const wasInSet = this.unreadIds.delete(id);
+      this.knownReadState.set(id, true);
+      if (wasInSet || prev === false) decremented += 1;
+    }
+    if (decremented > 0) {
+      this.unreadCount = Math.max(0, this.unreadCount - decremented);
+    }
+    return this.unreadCount;
+  },
+  markAllLocalRead() {
+    this.mutationGeneration += 1;
+    for (const key of this.knownReadState.keys()) {
+      this.knownReadState.set(key, true);
+    }
+    this.unreadIds.clear();
+    this.unreadCount = 0;
+    return 0;
+  },
+  confirmServerUnreadCount(serverCount, mutationGen) {
+    if (mutationGen < this.mutationGeneration) return false;
+    const safe = Math.max(0, Number(serverCount || 0));
+    if (Number.isNaN(safe)) return false;
+    this.unreadCount = safe;
+    if (safe === 0) {
+      for (const id of this.unreadIds) this.knownReadState.set(id, true);
+      this.unreadIds.clear();
+    }
+    return true;
+  },
+  onRealtimeInsert(record, currentUid) {
+    const id = String(record?.id || '').trim();
+    const recipientId = String(record?.recipient_user_id || '').trim();
+    if (!id || !currentUid || recipientId !== currentUid) {
+      return { unreadCount: this.unreadCount, delta: 0, needsReconcile: false };
+    }
+    const isRead = Boolean(record?.is_read);
+    if (!this._recordEventKey(`INSERT:${id}:${isRead}`)) {
+      return { unreadCount: this.unreadCount, delta: 0, needsReconcile: false };
+    }
+    if (this.knownReadState.has(id)) {
+      return { unreadCount: this.unreadCount, delta: 0, needsReconcile: false };
+    }
+    this.knownReadState.set(id, isRead);
+    if (!isRead) {
+      this.unreadIds.add(id);
+      this.unreadCount += 1;
+      return { unreadCount: this.unreadCount, delta: 1, needsReconcile: false };
+    }
+    return { unreadCount: this.unreadCount, delta: 0, needsReconcile: false };
+  },
+  onRealtimeUpdate(oldRecord, record, currentUid) {
+    const id = String(record?.id || '').trim();
+    const recipientId = String(record?.recipient_user_id || '').trim();
+    if (!id || !currentUid || recipientId !== currentUid) {
+      return { unreadCount: this.unreadCount, delta: 0, needsReconcile: false };
+    }
+    const newIsRead = Boolean(record?.is_read);
+    const oldIsRead = oldRecord && typeof oldRecord.is_read === 'boolean' ? oldRecord.is_read : null;
+    const readAtKey = String(record?.read_at || '');
+    if (!this._recordEventKey(`UPDATE:${id}:${newIsRead}:${readAtKey}`)) {
+      return { unreadCount: this.unreadCount, delta: 0, needsReconcile: false };
+    }
+    const known = this.knownReadState.get(id);
+    if (newIsRead) {
+      if (known === true) {
+        this.unreadIds.delete(id);
+        return { unreadCount: this.unreadCount, delta: 0, needsReconcile: false };
+      }
+      const wasInSet = this.unreadIds.delete(id);
+      this.knownReadState.set(id, true);
+      if (oldIsRead === false || known === false || wasInSet) {
+        this.unreadCount = Math.max(0, this.unreadCount - 1);
+        return { unreadCount: this.unreadCount, delta: -1, needsReconcile: false };
+      }
+      return { unreadCount: this.unreadCount, delta: 0, needsReconcile: true };
+    } else {
+      if (known === false || this.unreadIds.has(id)) {
+        return { unreadCount: this.unreadCount, delta: 0, needsReconcile: false };
+      }
+      this.knownReadState.set(id, false);
+      this.unreadIds.add(id);
+      if (oldIsRead === true || known === true) {
+        this.unreadCount += 1;
+        return { unreadCount: this.unreadCount, delta: 1, needsReconcile: false };
+      }
+      return { unreadCount: this.unreadCount, delta: 0, needsReconcile: true };
+    }
+  }
+};
+
+function isMissingReadAtColumnError(err) {
+  const msg = String(err?.message || err || '').toLowerCase();
+  return msg.includes('read_at') && (
+    msg.includes('pgrst204') ||
+    msg.includes('42703') ||
+    msg.includes('column') ||
+    msg.includes('schema cache')
+  );
+}
+
+// RLS-scoped direct UPDATE on public.user_notifications setting is_read = true and read_at = now
+async function patchUserNotificationsRead(queryFilter, readAtIso) {
+  const path = `/rest/v1/user_notifications?${queryFilter}`;
+  try {
+    await supabaseRequest(path, 'PATCH', { is_read: true, read_at: readAtIso }, 'return=representation');
+    return true;
+  } catch (err) {
+    if (isMissingReadAtColumnError(err)) {
+      await supabaseRequest(path, 'PATCH', { is_read: true }, 'return=representation');
+      return true;
+    }
+    throw err;
+  }
+}
+
+// Authoritative unread query: recipient_user_id = authenticated user ID AND is_read = false
+async function fetchAuthoritativeUnreadSnapshot() {
+  const uid = state.session?.userId;
+  if (!uid) {
+    return { unreadIds: new Set(), unreadCount: 0, unreadCountByAnime: new Map() };
+  }
+  const rows = await supabaseRequest(
+    `/rest/v1/user_notifications?select=id,anime_id&recipient_user_id=eq.${encodeURIComponent(uid)}&is_read=eq.false&limit=1000`,
+    'GET'
+  );
+  const unreadIds = new Set();
+  const unreadCountByAnime = new Map();
+  if (Array.isArray(rows)) {
+    rows.forEach((row) => {
+      const id = String(row?.id || '').trim();
+      if (!id) return;
+      unreadIds.add(id);
+      const aid = Number(row?.anime_id || 0);
+      if (aid > 0) {
+        unreadCountByAnime.set(aid, (unreadCountByAnime.get(aid) || 0) + 1);
+      }
+    });
+  }
+  return { unreadIds, unreadCount: unreadIds.size, unreadCountByAnime };
+}
+
 async function refreshUnreadNotificationCount() {
-  if (!state.session) {
+  const uid = state.session?.userId;
+  if (!uid) {
+    NotificationSyncState.reset();
     state.notifications.unreadCount = 0;
     state.notifications.unseenAnime = [];
     return;
   }
+  const startGen = NotificationSyncState.currentGeneration();
   try {
-    const summary = await supabaseRequest('/rest/v1/rpc/get_unseen_discussion_anime', 'POST', {});
-    const list = Array.isArray(summary?.anime) ? summary.anime : [];
-    state.notifications.unseenAnime = list;
-    state.notifications.unreadCount = Math.max(0, Number(summary?.total_unseen ?? list.reduce((acc, a) => acc + Number(a.unseen_count || 1), 0)));
+    const [snap, summary] = await Promise.all([
+      fetchAuthoritativeUnreadSnapshot(),
+      supabaseRequest('/rest/v1/rpc/get_unseen_discussion_anime', 'POST', {}).catch(() => null)
+    ]);
+    if (state.session?.userId !== uid) return;
+    if (!NotificationSyncState.applyAuthoritativeUnreadIds(snap.unreadIds, startGen)) {
+      return;
+    }
+    state.notifications.unreadCount = NotificationSyncState.unreadCount;
+    if (state.notifications.items.length > 0) {
+      state.notifications.items = state.notifications.items.map((n) => {
+        const shouldBeUnread = snap.unreadIds.has(n.id);
+        return Boolean(n.is_read) === shouldBeUnread ? { ...n, is_read: !shouldBeUnread } : n;
+      });
+    }
+    if (state.notifications.unreadCount === 0) {
+      state.notifications.unseenAnime = [];
+    } else {
+      const rawList = Array.isArray(summary?.anime) ? summary.anime : [];
+      state.notifications.unseenAnime = rawList
+        .filter((a) => (snap.unreadCountByAnime.get(Number(a.anime_id)) || 0) > 0)
+        .map((a) => ({
+          ...a,
+          unseen_count: snap.unreadCountByAnime.get(Number(a.anime_id)) || Number(a.unseen_count || 1)
+        }));
+    }
   } catch (_) {
     try {
-      const count = await supabaseRequest('/rest/v1/rpc/get_unread_notification_count', 'POST', {});
-      const numeric = Number(count || 0);
-      if (!Number.isNaN(numeric)) {
-        state.notifications.unreadCount = Math.max(0, numeric);
+      const summary = await supabaseRequest('/rest/v1/rpc/get_unseen_discussion_anime', 'POST', {});
+      if (state.session?.userId !== uid) return;
+      const list = Array.isArray(summary?.anime) ? summary.anime : [];
+      const count = Math.max(0, Number(summary?.total_unseen ?? list.reduce((acc, a) => acc + Number(a.unseen_count || 1), 0)));
+      if (NotificationSyncState.confirmServerUnreadCount(count, startGen)) {
+        state.notifications.unreadCount = NotificationSyncState.unreadCount;
+        state.notifications.unseenAnime = NotificationSyncState.unreadCount === 0 ? [] : list;
       }
-    } catch (_2) {}
+    } catch (_2) {
+      try {
+        const count = await supabaseRequest('/rest/v1/rpc/get_unread_notification_count', 'POST', {});
+        const numeric = Number(count || 0);
+        if (!Number.isNaN(numeric) && NotificationSyncState.confirmServerUnreadCount(numeric, startGen)) {
+          state.notifications.unreadCount = NotificationSyncState.unreadCount;
+          if (state.notifications.unreadCount === 0) state.notifications.unseenAnime = [];
+        }
+      } catch (_3) {}
+    }
   }
 }
 
 async function markAnimeDiscussionSeen(animeId) {
   const aid = Number(animeId);
-  if (!state.session || !aid) return;
+  const uid = state.session?.userId;
+  if (!uid || !aid) return;
+  const readAtIso = new Date().toISOString();
+  const unreadIdsForAnime = (state.notifications.items || [])
+    .filter((n) => Number(n.anime_id) === aid && !n.is_read)
+    .map((n) => n.id);
   const hadUnseen = (state.notifications.unseenAnime || []).some((u) => Number(u.anime_id) === aid);
-  if (!hadUnseen && state.notifications.unreadCount <= 0) return;
+  if (!hadUnseen && unreadIdsForAnime.length === 0 && state.notifications.unreadCount <= 0) return;
+
+  const mutGen = unreadIdsForAnime.length > 0
+    ? (NotificationSyncState.markLocalReadMany(unreadIdsForAnime), NotificationSyncState.currentGeneration())
+    : NotificationSyncState.beginLocalMutation();
+
+  if (unreadIdsForAnime.length > 0) {
+    state.notifications.items = state.notifications.items.map((n) =>
+      Number(n.anime_id) === aid && !n.is_read ? { ...n, is_read: true, read_at: readAtIso } : n
+    );
+  }
   state.notifications.unseenAnime = (state.notifications.unseenAnime || []).filter((u) => Number(u.anime_id) !== aid);
-  state.notifications.unreadCount = state.notifications.unseenAnime.reduce(
-    (acc, u) => acc + Math.max(1, Number(u.unseen_count || 1)),
-    0
-  );
+  state.notifications.unreadCount = unreadIdsForAnime.length > 0
+    ? NotificationSyncState.unreadCount
+    : state.notifications.unseenAnime.reduce((acc, u) => acc + Math.max(1, Number(u.unseen_count || 1)), 0);
+  updateCommunityRedDotsInPlace();
   renderApp();
+
   try {
-    const res = await supabaseRequest('/rest/v1/rpc/mark_anime_notifications_read', 'POST', {
-      p_anime_id: aid
-    });
-    const numeric = Number(typeof res === 'object' && res !== null ? res.unread_count : res);
-    if (!Number.isNaN(numeric)) {
-      state.notifications.unreadCount = Math.max(0, numeric);
+    let persisted = false;
+    try {
+      await patchUserNotificationsRead(
+        `recipient_user_id=eq.${encodeURIComponent(uid)}&anime_id=eq.${aid}&is_read=eq.false`,
+        readAtIso
+      );
+      persisted = true;
+    } catch (_) {}
+    if (!persisted) {
+      await supabaseRequest('/rest/v1/rpc/mark_anime_notifications_read', 'POST', { p_anime_id: aid });
     }
-  } catch (_) {}
+    const snap = await fetchAuthoritativeUnreadSnapshot();
+    if (state.session?.userId === uid && NotificationSyncState.applyAuthoritativeUnreadIds(snap.unreadIds, mutGen)) {
+      state.notifications.unreadCount = NotificationSyncState.unreadCount;
+      if (state.notifications.unreadCount === 0) {
+        state.notifications.unseenAnime = [];
+      }
+      updateCommunityRedDotsInPlace();
+    }
+  } catch (_) {
+    await refreshUnreadNotificationCount();
+    updateCommunityRedDotsInPlace();
+  }
 }
 
 async function loadUserNotifications(reset = true) {
-  if (!state.session) {
+  const uid = state.session?.userId;
+  if (!uid) {
+    NotificationSyncState.reset();
     state.notifications.items = [];
     state.notifications.unreadCount = 0;
+    state.notifications.unseenAnime = [];
     state.notifications.loading = false;
     renderApp();
     return;
   }
   const offset = reset ? 0 : state.notifications.items.length;
+  const startGen = NotificationSyncState.currentGeneration();
   if (reset) {
     state.notifications.loading = true;
     state.notifications.error = '';
@@ -4956,10 +5285,14 @@ async function loadUserNotifications(reset = true) {
   }
   renderApp();
   try {
-    const data = await supabaseRequest('/rest/v1/rpc/get_user_notifications', 'POST', {
-      p_limit: 25,
-      p_offset: offset
-    });
+    const [data, snap] = await Promise.all([
+      supabaseRequest('/rest/v1/rpc/get_user_notifications', 'POST', {
+        p_limit: 25,
+        p_offset: offset
+      }),
+      fetchAuthoritativeUnreadSnapshot().catch(() => null)
+    ]);
+    if (state.session?.userId !== uid) return;
     const incoming = Array.isArray(data?.notifications) ? data.notifications : [];
     state.notifications.items = reset
       ? incoming
@@ -4967,11 +5300,20 @@ async function loadUserNotifications(reset = true) {
           ...state.notifications.items,
           ...incoming.filter((n) => !state.notifications.items.some((old) => old.id === n.id))
         ];
-    state.notifications.unreadCount = Number(data?.unread_count ?? 0);
+    if (snap) {
+      if (NotificationSyncState.applyAuthoritativeUnreadIds(snap.unreadIds, startGen)) {
+        state.notifications.unreadCount = NotificationSyncState.unreadCount;
+        if (state.notifications.unreadCount === 0) state.notifications.unseenAnime = [];
+      }
+    } else if (NotificationSyncState.applyFetchedPage(incoming, Number(data?.unread_count ?? 0), startGen)) {
+      state.notifications.unreadCount = NotificationSyncState.unreadCount;
+      if (state.notifications.unreadCount === 0) state.notifications.unseenAnime = [];
+    }
     state.notifications.totalCount = Number(data?.total_count ?? state.notifications.items.length);
     state.notifications.hasMore = Boolean(data?.has_more);
     state.notifications.loading = false;
     state.notifications.loadingMore = false;
+    updateCommunityRedDotsInPlace();
     renderApp();
   } catch (err) {
     state.notifications.loading = false;
@@ -4982,59 +5324,101 @@ async function loadUserNotifications(reset = true) {
 }
 
 async function markNotificationRead(notificationId) {
-  if (!state.session || !notificationId) return;
-  let wasUnread = false;
+  const uid = state.session?.userId;
+  if (!uid || !notificationId) return;
+  const readAtIso = new Date().toISOString();
   let targetAnimeId = 0;
   state.notifications.items = state.notifications.items.map((n) => {
     if (n.id === notificationId) {
       targetAnimeId = Number(n.anime_id || 0);
       if (!n.is_read) {
-        wasUnread = true;
-        return { ...n, is_read: true };
+        return { ...n, is_read: true, read_at: readAtIso };
       }
     }
     return n;
   });
-  if (wasUnread) {
-    state.notifications.unreadCount = Math.max(0, state.notifications.unreadCount - 1);
-    if (targetAnimeId > 0) {
-      const stillUnreadForAnime = state.notifications.items.some(
-        (n) => Number(n.anime_id) === targetAnimeId && !n.is_read
+
+  const nextUnread = NotificationSyncState.markLocalRead(notificationId);
+  const mutGen = NotificationSyncState.currentGeneration();
+  state.notifications.unreadCount = nextUnread;
+  if (nextUnread === 0) {
+    state.notifications.unseenAnime = [];
+  } else if (targetAnimeId > 0) {
+    const stillUnreadForAnime = state.notifications.items.some(
+      (n) => Number(n.anime_id) === targetAnimeId && !n.is_read
+    );
+    if (!stillUnreadForAnime) {
+      state.notifications.unseenAnime = (state.notifications.unseenAnime || []).filter(
+        (u) => Number(u.anime_id) !== targetAnimeId
       );
-      if (!stillUnreadForAnime) {
-        state.notifications.unseenAnime = (state.notifications.unseenAnime || []).filter(
-          (u) => Number(u.anime_id) !== targetAnimeId
-        );
-      }
     }
-    updateCommunityRedDotsInPlace();
   }
+  updateCommunityRedDotsInPlace();
+
   try {
-    const res = await supabaseRequest('/rest/v1/rpc/mark_notification_read', 'POST', {
-      p_notification_id: notificationId
-    });
-    const numeric = Number(typeof res === 'object' && res !== null ? res.unread_count : res);
-    if (!Number.isNaN(numeric)) {
-      state.notifications.unreadCount = Math.max(0, numeric);
+    let persisted = false;
+    try {
+      await patchUserNotificationsRead(
+        `id=eq.${encodeURIComponent(notificationId)}&recipient_user_id=eq.${encodeURIComponent(uid)}&is_read=eq.false`,
+        readAtIso
+      );
+      persisted = true;
+    } catch (_) {}
+    if (!persisted) {
+      await supabaseRequest('/rest/v1/rpc/mark_notification_read', 'POST', {
+        p_notification_id: notificationId
+      });
+    }
+    const snap = await fetchAuthoritativeUnreadSnapshot();
+    if (state.session?.userId === uid && NotificationSyncState.applyAuthoritativeUnreadIds(snap.unreadIds, mutGen)) {
+      state.notifications.unreadCount = NotificationSyncState.unreadCount;
       if (state.notifications.unreadCount === 0) {
         state.notifications.unseenAnime = [];
       }
       updateCommunityRedDotsInPlace();
     }
-  } catch (_) {}
+  } catch (_) {
+    await refreshUnreadNotificationCount();
+    updateCommunityRedDotsInPlace();
+  }
 }
 
 async function markAllNotificationsRead() {
-  if (!state.session || state.notifications.unreadCount <= 0) return;
-  state.notifications.items = state.notifications.items.map((n) => ({ ...n, is_read: true }));
+  const uid = state.session?.userId;
+  if (!uid) return;
+  const readAtIso = new Date().toISOString();
+  NotificationSyncState.markAllLocalRead();
+  const mutGen = NotificationSyncState.currentGeneration();
+  state.notifications.items = state.notifications.items.map((n) =>
+    n.is_read ? n : { ...n, is_read: true, read_at: readAtIso }
+  );
   state.notifications.unseenAnime = [];
   state.notifications.unreadCount = 0;
   updateCommunityRedDotsInPlace();
   renderApp();
   try {
-    await supabaseRequest('/rest/v1/rpc/mark_all_notifications_read', 'POST', {});
+    let persisted = false;
+    try {
+      await patchUserNotificationsRead(
+        `recipient_user_id=eq.${encodeURIComponent(uid)}&is_read=eq.false`,
+        readAtIso
+      );
+      persisted = true;
+    } catch (_) {}
+    if (!persisted) {
+      await supabaseRequest('/rest/v1/rpc/mark_all_notifications_read', 'POST', {});
+    }
+    const snap = await fetchAuthoritativeUnreadSnapshot();
+    if (state.session?.userId === uid && NotificationSyncState.applyAuthoritativeUnreadIds(snap.unreadIds, mutGen)) {
+      state.notifications.unreadCount = NotificationSyncState.unreadCount;
+      if (state.notifications.unreadCount === 0) state.notifications.unseenAnime = [];
+      updateCommunityRedDotsInPlace();
+    }
     showToast('All tagged notifications marked as read');
-  } catch (_) {}
+  } catch (_) {
+    await refreshUnreadNotificationCount();
+    updateCommunityRedDotsInPlace();
+  }
 }
 
 // Part 2 & Part 5: Atomic Episode Progress Update with strict auto-completion & rollback on cloud failure
@@ -10020,12 +10404,13 @@ setInterval(async () => {
   }
 }, 4000);
 
-// Real-time Supabase Notification Socket + Lightweight Polling Fallback
+// Real-time Supabase Notification Socket (INSERT + UPDATE) + Reconnect/Resume Reconciliation
 const NotificationRealtimeManager = {
   ws: null,
   heartbeatId: null,
   reconnectId: null,
   connectedUserId: null,
+  connectedToken: null,
   refCounter: 1,
   ensureConnected() {
     const uid = state.session?.userId;
@@ -10034,54 +10419,110 @@ const NotificationRealtimeManager = {
       this.disconnect();
       return;
     }
-    if (this.connectedUserId === uid && this.ws && this.ws.readyState <= 1) return;
+    if (
+      this.connectedUserId === uid &&
+      this.connectedToken === token &&
+      this.ws &&
+      this.ws.readyState <= 1
+    ) {
+      return;
+    }
     this.disconnect();
     const baseUrl = getVaultBaseUrl();
     const pubKey = getVaultPublicKey();
     if (!baseUrl.startsWith('http')) return;
     const wsUrl = `${baseUrl.replace(/^http/, 'ws')}/realtime/v1/websocket?apikey=${encodeURIComponent(pubKey)}&vsn=1.0.0`;
+    const topic = `realtime:public:user_notifications:${uid}`;
+    const filter = `recipient_user_id=eq.${uid}`;
     try {
       const ws = new WebSocket(wsUrl);
       this.ws = ws;
       this.connectedUserId = uid;
+      this.connectedToken = token;
       ws.onopen = () => {
         const joinRef = String(this.refCounter++);
         ws.send(JSON.stringify({
-          topic: 'realtime:public:user_notifications',
+          topic,
           event: 'phx_join',
           payload: {
             config: {
               broadcast: { self: false },
               presence: { key: '' },
               postgres_changes: [
-                { event: 'INSERT', schema: 'public', table: 'user_notifications', filter: `recipient_user_id=eq.${uid}` }
+                { event: 'INSERT', schema: 'public', table: 'user_notifications', filter },
+                { event: 'UPDATE', schema: 'public', table: 'user_notifications', filter }
               ]
             },
             access_token: token
           },
           ref: joinRef
         }));
-        ws.send(JSON.stringify({ topic: 'realtime:public:user_notifications', event: 'access_token', payload: { access_token: token }, ref: String(this.refCounter++) }));
+        ws.send(JSON.stringify({ topic, event: 'access_token', payload: { access_token: token }, ref: String(this.refCounter++) }));
         this.heartbeatId = setInterval(() => {
           if (ws.readyState === 1) {
             ws.send(JSON.stringify({ topic: 'phoenix', event: 'heartbeat', payload: {}, ref: String(this.refCounter++) }));
           }
         }, 25000);
+        // Reconcile exact unread count on initial connect & every reconnect
+        refreshUnreadNotificationCount().then(() => updateCommunityRedDotsInPlace());
       };
       ws.onmessage = (evt) => {
         try {
           const msg = JSON.parse(evt.data);
-          if (msg?.event === 'postgres_changes' && msg?.payload?.data?.type === 'INSERT') {
-            refreshUnreadNotificationCount().then(() => {
+          if (msg?.event !== 'postgres_changes') return;
+          const data = msg?.payload?.data;
+          if (!data || data.table !== 'user_notifications') return;
+          const evType = String(data.type || '').toUpperCase();
+          const rec = data.record;
+          const oldRec = data.old_record;
+          if (!rec || rec.recipient_user_id !== uid) return;
+
+          if (evType === 'INSERT') {
+            const outcome = NotificationSyncState.onRealtimeInsert(rec, uid);
+            if (outcome.delta !== 0) {
+              state.notifications.unreadCount = outcome.unreadCount;
               updateCommunityRedDotsInPlace();
               if (state.tab === 'notifications' || (state.tab === 'community' && state.communityViewTab === 'tagged')) {
                 loadUserNotifications(true);
+              } else {
+                refreshUnreadNotificationCount().then(() => updateCommunityRedDotsInPlace());
               }
-            });
-            const rec = msg?.payload?.data?.record;
-            if (rec && rec.sender_user_id !== uid) {
-              const preview = formatPlainPreviewWithEmojis(rec.preview_text || '').slice(0, 60);
-              showToast(preview ? `New reply/mention: ${preview}` : 'You have a new reply or @mention!');
+              if (rec.sender_user_id && rec.sender_user_id !== uid) {
+                const preview = formatPlainPreviewWithEmojis(rec.preview_text || '').slice(0, 60);
+                showToast(preview ? `New reply/mention: ${preview}` : 'You have a new reply or @mention!');
+              }
+            }
+          } else if (evType === 'UPDATE') {
+            const outcome = NotificationSyncState.onRealtimeUpdate(oldRec, rec, uid);
+            const updatedId = String(rec.id || '').trim();
+            const newIsRead = Boolean(rec.is_read);
+            const newReadAt = rec.read_at || null;
+            if (updatedId && state.notifications.items.length > 0) {
+              let changedItem = false;
+              state.notifications.items = state.notifications.items.map((n) => {
+                if (n.id === updatedId) {
+                  changedItem = true;
+                  return { ...n, is_read: newIsRead, read_at: newReadAt || n.read_at || null };
+                }
+                return n;
+              });
+              if (changedItem && (state.tab === 'notifications' || (state.tab === 'community' && state.communityViewTab === 'tagged'))) {
+                renderApp();
+              }
+            }
+            state.notifications.unreadCount = outcome.unreadCount;
+            if (outcome.unreadCount === 0) {
+              state.notifications.unseenAnime = [];
+            } else if (newIsRead && rec.anime_id) {
+              const aid = Number(rec.anime_id);
+              const stillUnreadForAnime = state.notifications.items.some((n) => Number(n.anime_id) === aid && !n.is_read);
+              if (!stillUnreadForAnime && state.notifications.items.some((n) => n.id === updatedId)) {
+                state.notifications.unseenAnime = (state.notifications.unseenAnime || []).filter((u) => Number(u.anime_id) !== aid);
+              }
+            }
+            updateCommunityRedDotsInPlace();
+            if (outcome.needsReconcile) {
+              refreshUnreadNotificationCount().then(() => updateCommunityRedDotsInPlace());
             }
           }
         } catch (_) {}
@@ -10089,8 +10530,9 @@ const NotificationRealtimeManager = {
       ws.onclose = () => {
         if (this.heartbeatId) clearInterval(this.heartbeatId);
         this.heartbeatId = null;
+        this.ws = null;
         if (state.session?.userId === uid) {
-          this.reconnectId = setTimeout(() => this.ensureConnected(), 8000);
+          this.reconnectId = setTimeout(() => this.ensureConnected(), 5000);
         }
       };
       ws.onerror = () => {};
@@ -10102,6 +10544,7 @@ const NotificationRealtimeManager = {
     this.heartbeatId = null;
     this.reconnectId = null;
     this.connectedUserId = null;
+    this.connectedToken = null;
     if (this.ws) {
       try { this.ws.close(); } catch (_) {}
       this.ws = null;
@@ -10109,13 +10552,25 @@ const NotificationRealtimeManager = {
   }
 };
 
-// Gentle background sync every 30s + fast notification unread check every 15s
+// Reconcile notifications immediately on return to app / reconnect (unthrottled)
+let lastNotifReconcileAt = 0;
+function reconcileNotificationsOnReturn(force = false) {
+  if (!state.session) return;
+  const now = Date.now();
+  if (!force && now - lastNotifReconcileAt < 2500) return;
+  lastNotifReconcileAt = now;
+  NotificationRealtimeManager.ensureConnected();
+  refreshUnreadNotificationCount().then(() => updateCommunityRedDotsInPlace());
+}
+
+// Gentle background sync every 30s + fast notification unread reconcile every 15s
 let lastSilentSyncAt = 0;
 function triggerThrottledSilentSync() {
   const now = Date.now();
-  if (!state.session || document.hidden || now - lastSilentSyncAt < 15000) return;
+  if (!state.session || document.hidden) return;
+  reconcileNotificationsOnReturn(false);
+  if (now - lastSilentSyncAt < 15000) return;
   lastSilentSyncAt = now;
-  NotificationRealtimeManager.ensureConnected();
   loadCloudData(true);
 }
 
@@ -10135,6 +10590,7 @@ setInterval(() => {
 
 if (state.session) {
   NotificationRealtimeManager.ensureConnected();
+  refreshUnreadNotificationCount().then(() => updateCommunityRedDotsInPlace());
 }
 
 window.addEventListener('focus', () => {
@@ -10143,4 +10599,8 @@ window.addEventListener('focus', () => {
 
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) triggerThrottledSilentSync();
+});
+
+window.addEventListener('online', () => {
+  reconcileNotificationsOnReturn(true);
 });

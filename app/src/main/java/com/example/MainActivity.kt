@@ -366,7 +366,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        viewModel.triggerSilentCloudSync()
+        viewModel.onAppForegrounded()
     }
 
     override fun onNewIntent(intent: Intent) {

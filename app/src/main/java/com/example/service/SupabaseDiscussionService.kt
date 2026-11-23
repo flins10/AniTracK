@@ -27,6 +27,7 @@ import okhttp3.WebSocketListener
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
+import java.time.Instant
 import java.util.Timer
 import java.util.TimerTask
 import java.util.concurrent.TimeUnit
@@ -41,6 +42,34 @@ sealed interface DiscussionRealtimeEvent {
         val replyTo: FlatReplyTo?
     ) : DiscussionRealtimeEvent
     data class DeleteMessage(val id: String) : DiscussionRealtimeEvent
+}
+
+data class UnreadNotificationSnapshot(
+    val unreadIds: Set<String> = emptySet(),
+    val unreadCountByAnime: Map<Int, Int> = emptyMap()
+) {
+    val unreadCount: Int get() = unreadIds.size
+}
+
+sealed interface NotificationRealtimeEvent {
+    data class Insert(
+        val id: String,
+        val recipientUserId: String,
+        val senderUserId: String,
+        val animeId: Int,
+        val isRead: Boolean,
+        val readAt: String?,
+        val previewText: String
+    ) : NotificationRealtimeEvent
+
+    data class Update(
+        val id: String,
+        val recipientUserId: String,
+        val animeId: Int,
+        val oldIsRead: Boolean?,
+        val newIsRead: Boolean,
+        val readAt: String?
+    ) : NotificationRealtimeEvent
 }
 
 class SupabaseDiscussionService {
@@ -339,16 +368,117 @@ class SupabaseDiscussionService {
         }
     }
 
+    private fun isMissingReadAtColumnError(code: Int, body: String): Boolean {
+        if (code != 400 && code != 404) return false
+        val lower = body.lowercase()
+        return lower.contains("read_at") && (
+            lower.contains("pgrst204") ||
+                lower.contains("42703") ||
+                lower.contains("column") ||
+                lower.contains("schema cache")
+            )
+    }
+
+    private fun executeNotificationPatch(
+        session: AuthSession,
+        queryFilter: String,
+        readAtIso: String
+    ): Pair<Boolean, String> {
+        val url = "${AppConfig.supabaseUrl}/rest/v1/user_notifications?$queryFilter"
+        val withReadAt = JSONObject()
+            .put("is_read", true)
+            .put("read_at", readAtIso)
+        val req1 = Request.Builder()
+            .url(url)
+            .addHeader("apikey", AppConfig.supabaseAnonKey)
+            .addHeader("Authorization", "Bearer ${session.accessToken}")
+            .addHeader("Content-Type", "application/json")
+            .addHeader("Accept", "application/json")
+            .addHeader("Prefer", "return=representation")
+            .patch(withReadAt.toString().toRequestBody("application/json".toMediaType()))
+            .build()
+        client.newCall(req1).execute().use { resp ->
+            val body = resp.body?.string().orEmpty().trim()
+            if (resp.isSuccessful) return true to body
+            if (!isMissingReadAtColumnError(resp.code, body)) {
+                return false to body
+            }
+        }
+        // Live DB fallback when read_at migration has not been applied yet: still persist is_read = true
+        val fallbackBody = JSONObject().put("is_read", true)
+        val req2 = Request.Builder()
+            .url(url)
+            .addHeader("apikey", AppConfig.supabaseAnonKey)
+            .addHeader("Authorization", "Bearer ${session.accessToken}")
+            .addHeader("Content-Type", "application/json")
+            .addHeader("Accept", "application/json")
+            .addHeader("Prefer", "return=representation")
+            .patch(fallbackBody.toString().toRequestBody("application/json".toMediaType()))
+            .build()
+        client.newCall(req2).execute().use { resp ->
+            val body = resp.body?.string().orEmpty().trim()
+            return resp.isSuccessful to body
+        }
+    }
+
+    /**
+     * Authoritative unread calculation strictly scoped to
+     * `recipient_user_id = authenticated user ID AND is_read = false` under existing RLS.
+     */
+    suspend fun fetchAuthoritativeUnreadSnapshot(
+        session: AuthSession
+    ): Result<UnreadNotificationSnapshot> = withContext(Dispatchers.IO) {
+        if (!AppConfig.isSupabaseConfigured || session.userId.isBlank() || session.accessToken.isBlank()) {
+            return@withContext Result.success(UnreadNotificationSnapshot())
+        }
+        try {
+            val encodedUid = URLEncoder.encode(session.userId, "UTF-8")
+            val req = Request.Builder()
+                .url("${AppConfig.supabaseUrl}/rest/v1/user_notifications?select=id,anime_id&recipient_user_id=eq.$encodedUid&is_read=eq.false&limit=1000")
+                .addHeader("apikey", AppConfig.supabaseAnonKey)
+                .addHeader("Authorization", "Bearer ${session.accessToken}")
+                .addHeader("Accept", "application/json")
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                val body = resp.body?.string().orEmpty().trim()
+                if (!resp.isSuccessful || !body.startsWith("[")) {
+                    return@withContext Result.failure(Exception(parseError(body, "Unable to fetch unread notification count.")))
+                }
+                val arr = JSONArray(body)
+                val ids = LinkedHashSet<String>(arr.length())
+                val byAnime = HashMap<Int, Int>()
+                for (i in 0 until arr.length()) {
+                    val row = arr.optJSONObject(i) ?: continue
+                    val id = row.optString("id").trim()
+                    if (id.isNotBlank()) {
+                        ids.add(id)
+                        val aid = row.optInt("anime_id", 0)
+                        if (aid > 0) {
+                            byAnime[aid] = (byAnime[aid] ?: 0) + 1
+                        }
+                    }
+                }
+                Result.success(UnreadNotificationSnapshot(unreadIds = ids, unreadCountByAnime = byAnime))
+            }
+        } catch (e: Exception) {
+            Result.failure(Exception(ErrorSanitizer.sanitize(e, "Unable to fetch unread notification count.")))
+        }
+    }
+
     suspend fun fetchUnreadNotificationCount(session: AuthSession): Result<Int> = withContext(Dispatchers.IO) {
-        if (!AppConfig.isSupabaseConfigured) return@withContext Result.success(0)
+        if (!AppConfig.isSupabaseConfigured || session.userId.isBlank()) return@withContext Result.success(0)
+        fetchAuthoritativeUnreadSnapshot(session).onSuccess { snap ->
+            return@withContext Result.success(snap.unreadCount)
+        }
         try {
             client.newCall(rpcRequest("get_unread_notification_count", session.accessToken, JSONObject())).execute().use { resp ->
                 val body = resp.body?.string().orEmpty().trim()
-                if (!resp.isSuccessful) return@withContext Result.success(0)
-                Result.success(body.toIntOrNull() ?: 0)
+                if (!resp.isSuccessful) return@withContext Result.failure(Exception(parseError(body, "Unable to load unread count.")))
+                Result.success((body.toIntOrNull() ?: 0).coerceAtLeast(0))
             }
-        } catch (_: Exception) {
-            Result.success(0)
+        } catch (e: Exception) {
+            Result.failure(Exception(ErrorSanitizer.sanitize(e, "Unable to load unread count.")))
         }
     }
 
@@ -393,14 +523,16 @@ class SupabaseDiscussionService {
                                 replyId = n.optString("reply_id").takeIf { it.isNotBlank() && it != "null" },
                                 previewText = n.optString("preview_text", ""),
                                 isRead = n.optBoolean("is_read", false),
+                                readAt = n.optString("read_at").takeIf { it.isNotBlank() && it != "null" },
                                 createdAt = n.optString("created_at", "")
                             )
                         )
                     }
                 }
+                val exactSnap = fetchAuthoritativeUnreadSnapshot(session).getOrNull()
                 Result.success(
                     NotificationsPage(
-                        unreadCount = obj.optInt("unread_count", items.count { !it.isRead }),
+                        unreadCount = exactSnap?.unreadCount ?: obj.optInt("unread_count", items.count { !it.isRead }).coerceAtLeast(0),
                         totalCount = obj.optInt("total_count", items.size),
                         hasMore = obj.optBoolean("has_more", false),
                         notifications = items
@@ -412,30 +544,67 @@ class SupabaseDiscussionService {
         }
     }
 
-    suspend fun markNotificationRead(session: AuthSession, notificationId: String): Result<Int> = withContext(Dispatchers.IO) {
-        if (!AppConfig.isSupabaseConfigured) return@withContext Result.success(0)
+    suspend fun markNotificationRead(
+        session: AuthSession,
+        notificationId: String,
+        readAtIso: String = Instant.now().toString()
+    ): Result<Int> = withContext(Dispatchers.IO) {
+        if (!AppConfig.isSupabaseConfigured || session.userId.isBlank() || notificationId.isBlank()) {
+            return@withContext Result.success(0)
+        }
         try {
+            val encodedId = URLEncoder.encode(notificationId, "UTF-8")
+            val encodedUid = URLEncoder.encode(session.userId, "UTF-8")
+            val (patchOk, patchBody) = executeNotificationPatch(
+                session = session,
+                queryFilter = "id=eq.$encodedId&recipient_user_id=eq.$encodedUid&is_read=eq.false",
+                readAtIso = readAtIso
+            )
+            if (patchOk) {
+                val exactCount = fetchAuthoritativeUnreadSnapshot(session).getOrNull()?.unreadCount
+                if (exactCount != null) {
+                    return@withContext Result.success(exactCount)
+                }
+            }
+            // Fallback to RPC if direct PATCH failed or exact count query failed
             val payload = JSONObject().put("p_notification_id", notificationId)
             client.newCall(rpcRequest("mark_notification_read", session.accessToken, payload)).execute().use { resp ->
                 val body = resp.body?.string().orEmpty().trim()
                 if (!resp.isSuccessful) {
-                    return@withContext Result.failure(Exception(parseError(body, "Unable to mark notification as read.")))
+                    return@withContext Result.failure(
+                        Exception(parseError(if (patchBody.isNotBlank()) patchBody else body, "Unable to mark notification as read."))
+                    )
                 }
                 val obj = JSONObject(body)
-                Result.success(obj.optInt("unread_count", 0))
+                Result.success(obj.optInt("unread_count", 0).coerceAtLeast(0))
             }
         } catch (e: Exception) {
             Result.failure(Exception(ErrorSanitizer.sanitize(e, "Unable to mark notification as read.")))
         }
     }
 
-    suspend fun markAllNotificationsRead(session: AuthSession): Result<Int> = withContext(Dispatchers.IO) {
-        if (!AppConfig.isSupabaseConfigured) return@withContext Result.success(0)
+    suspend fun markAllNotificationsRead(
+        session: AuthSession,
+        readAtIso: String = Instant.now().toString()
+    ): Result<Int> = withContext(Dispatchers.IO) {
+        if (!AppConfig.isSupabaseConfigured || session.userId.isBlank()) return@withContext Result.success(0)
         try {
+            val encodedUid = URLEncoder.encode(session.userId, "UTF-8")
+            val (patchOk, patchBody) = executeNotificationPatch(
+                session = session,
+                queryFilter = "recipient_user_id=eq.$encodedUid&is_read=eq.false",
+                readAtIso = readAtIso
+            )
+            if (patchOk) {
+                val exactCount = fetchAuthoritativeUnreadSnapshot(session).getOrNull()?.unreadCount ?: 0
+                return@withContext Result.success(exactCount)
+            }
             client.newCall(rpcRequest("mark_all_notifications_read", session.accessToken, JSONObject())).execute().use { resp ->
                 val body = resp.body?.string().orEmpty().trim()
                 if (!resp.isSuccessful) {
-                    return@withContext Result.failure(Exception(parseError(body, "Unable to mark notifications as read.")))
+                    return@withContext Result.failure(
+                        Exception(parseError(if (patchBody.isNotBlank()) patchBody else body, "Unable to mark notifications as read."))
+                    )
                 }
                 Result.success(0)
             }
@@ -445,26 +614,40 @@ class SupabaseDiscussionService {
     }
 
     suspend fun fetchUnseenDiscussionAnime(session: AuthSession): Result<UnseenDiscussionSummary> = withContext(Dispatchers.IO) {
-        if (!AppConfig.isSupabaseConfigured) return@withContext Result.success(UnseenDiscussionSummary())
+        if (!AppConfig.isSupabaseConfigured || session.userId.isBlank()) return@withContext Result.success(UnseenDiscussionSummary())
         try {
+            val exactSnap = fetchAuthoritativeUnreadSnapshot(session).getOrNull()
+            if (exactSnap != null && exactSnap.unreadCount == 0) {
+                return@withContext Result.success(UnseenDiscussionSummary(totalUnseen = 0, anime = emptyList()))
+            }
             client.newCall(rpcRequest("get_unseen_discussion_anime", session.accessToken, JSONObject())).execute().use { resp ->
                 val body = resp.body?.string().orEmpty().trim()
                 if (!resp.isSuccessful || !body.startsWith("{")) {
-                    return@withContext Result.success(UnseenDiscussionSummary())
+                    return@withContext Result.success(
+                        UnseenDiscussionSummary(
+                            totalUnseen = exactSnap?.unreadCount ?: 0,
+                            anime = emptyList()
+                        )
+                    )
                 }
                 val obj = JSONObject(body)
                 val arr = obj.optJSONArray("anime") ?: JSONArray()
                 val items = buildList {
                     for (i in 0 until arr.length()) {
                         val item = arr.getJSONObject(i)
+                        val aid = item.optInt("anime_id", 0)
+                        val exactForAnime = exactSnap?.unreadCountByAnime?.get(aid)
+                        if (exactSnap != null && (exactForAnime == null || exactForAnime <= 0)) {
+                            continue
+                        }
                         add(
                             UnseenDiscussionAnime(
-                                animeId = item.optInt("anime_id", 0),
+                                animeId = aid,
                                 animeTitle = item.optString("anime_title", "Anime"),
                                 animeCoverImage = item.optString("anime_cover_image", ""),
                                 communityId = item.optString("community_id", "anime_community").ifBlank { "anime_community" },
                                 communityName = item.optString("community_name", "Community").let { if (it.isBlank() || it.equals("LivTrAk Community", ignoreCase = true)) "Community" else it },
-                                unseenCount = item.optInt("unseen_count", 1),
+                                unseenCount = exactForAnime ?: item.optInt("unseen_count", 1),
                                 latestCommentId = item.optString("latest_comment_id", ""),
                                 latestThreadId = item.optString("latest_thread_id").takeIf { it.isNotBlank() && it != "null" },
                                 latestReplyId = item.optString("latest_reply_id").takeIf { it.isNotBlank() && it != "null" },
@@ -476,10 +659,11 @@ class SupabaseDiscussionService {
                         )
                     }
                 }
+                val authoritativeTotal = exactSnap?.unreadCount ?: obj.optInt("total_unseen", items.sumOf { it.unseenCount }).coerceAtLeast(0)
                 Result.success(
                     UnseenDiscussionSummary(
-                        totalUnseen = obj.optInt("total_unseen", items.sumOf { it.unseenCount }),
-                        anime = items
+                        totalUnseen = authoritativeTotal,
+                        anime = if (authoritativeTotal == 0) emptyList() else items
                     )
                 )
             }
@@ -488,17 +672,35 @@ class SupabaseDiscussionService {
         }
     }
 
-    suspend fun markAnimeNotificationsRead(session: AuthSession, animeId: Int): Result<Int> = withContext(Dispatchers.IO) {
-        if (!AppConfig.isSupabaseConfigured) return@withContext Result.success(0)
+    suspend fun markAnimeNotificationsRead(
+        session: AuthSession,
+        animeId: Int,
+        readAtIso: String = Instant.now().toString()
+    ): Result<Int> = withContext(Dispatchers.IO) {
+        if (!AppConfig.isSupabaseConfigured || session.userId.isBlank() || animeId <= 0) return@withContext Result.success(0)
         try {
+            val encodedUid = URLEncoder.encode(session.userId, "UTF-8")
+            val (patchOk, patchBody) = executeNotificationPatch(
+                session = session,
+                queryFilter = "recipient_user_id=eq.$encodedUid&anime_id=eq.$animeId&is_read=eq.false",
+                readAtIso = readAtIso
+            )
+            if (patchOk) {
+                val exactCount = fetchAuthoritativeUnreadSnapshot(session).getOrNull()?.unreadCount
+                if (exactCount != null) {
+                    return@withContext Result.success(exactCount)
+                }
+            }
             val payload = JSONObject().put("p_anime_id", animeId)
             client.newCall(rpcRequest("mark_anime_notifications_read", session.accessToken, payload)).execute().use { resp ->
                 val body = resp.body?.string().orEmpty().trim()
                 if (!resp.isSuccessful) {
-                    return@withContext Result.failure(Exception(parseError(body, "Unable to update read status.")))
+                    return@withContext Result.failure(
+                        Exception(parseError(if (patchBody.isNotBlank()) patchBody else body, "Unable to update read status."))
+                    )
                 }
                 val obj = JSONObject(body)
-                Result.success(obj.optInt("unread_count", 0))
+                Result.success(obj.optInt("unread_count", 0).coerceAtLeast(0))
             }
         } catch (e: Exception) {
             Result.failure(Exception(ErrorSanitizer.sanitize(e, "Unable to update read status.")))
@@ -673,6 +875,150 @@ class SupabaseDiscussionService {
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 heartbeatTimer?.cancel()
+            }
+        })
+    }
+
+    /**
+     * Subscribes to Supabase Realtime INSERT and UPDATE events on `public.user_notifications`
+     * strictly filtered to `recipient_user_id=eq.${session.userId}` with the user's JWT.
+     */
+    fun subscribeToUserNotificationsRealtime(
+        session: AuthSession,
+        onEvent: (NotificationRealtimeEvent) -> Unit,
+        onConnected: () -> Unit = {},
+        onDisconnected: () -> Unit = {}
+    ): WebSocket? {
+        if (!AppConfig.isSupabaseConfigured || session.userId.isBlank() || session.accessToken.isBlank()) return null
+        val wsBase = AppConfig.supabaseUrl
+            .replaceFirst("https://", "wss://")
+            .replaceFirst("http://", "ws://")
+        val encodedKey = URLEncoder.encode(AppConfig.supabaseAnonKey, "UTF-8")
+        val wsUrl = "$wsBase/realtime/v1/websocket?apikey=$encodedKey&vsn=1.0.0"
+        val req = Request.Builder().url(wsUrl).build()
+        val refCounter = AtomicInteger(1)
+        val topic = "realtime:public:user_notifications:${session.userId}"
+        val filter = "recipient_user_id=eq.${session.userId}"
+        var heartbeatTimer: Timer? = null
+
+        return client.newWebSocket(req, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                val joinMsg = JSONObject()
+                    .put("topic", topic)
+                    .put("event", "phx_join")
+                    .put(
+                        "payload",
+                        JSONObject()
+                            .put(
+                                "config",
+                                JSONObject()
+                                    .put("broadcast", JSONObject().put("self", false))
+                                    .put("presence", JSONObject().put("key", ""))
+                                    .put(
+                                        "postgres_changes",
+                                        JSONArray()
+                                            .put(
+                                                JSONObject()
+                                                    .put("event", "INSERT")
+                                                    .put("schema", "public")
+                                                    .put("table", "user_notifications")
+                                                    .put("filter", filter)
+                                            )
+                                            .put(
+                                                JSONObject()
+                                                    .put("event", "UPDATE")
+                                                    .put("schema", "public")
+                                                    .put("table", "user_notifications")
+                                                    .put("filter", filter)
+                                            )
+                                    )
+                            )
+                            .put("access_token", session.accessToken)
+                    )
+                    .put("ref", refCounter.getAndIncrement().toString())
+                webSocket.send(joinMsg.toString())
+
+                val tokenMsg = JSONObject()
+                    .put("topic", topic)
+                    .put("event", "access_token")
+                    .put("payload", JSONObject().put("access_token", session.accessToken))
+                    .put("ref", refCounter.getAndIncrement().toString())
+                webSocket.send(tokenMsg.toString())
+
+                heartbeatTimer = Timer("supabase-notif-hb", true).apply {
+                    scheduleAtFixedRate(object : TimerTask() {
+                        override fun run() {
+                            val hb = JSONObject()
+                                .put("topic", "phoenix")
+                                .put("event", "heartbeat")
+                                .put("payload", JSONObject())
+                                .put("ref", refCounter.getAndIncrement().toString())
+                            runCatching { webSocket.send(hb.toString()) }
+                        }
+                    }, 25_000L, 25_000L)
+                }
+                onConnected()
+            }
+
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                runCatching {
+                    val msg = JSONObject(text)
+                    if (msg.optString("event") != "postgres_changes") return
+                    val data = msg.optJSONObject("payload")?.optJSONObject("data") ?: return
+                    val table = data.optString("table")
+                    if (table != "user_notifications") return
+                    val evType = data.optString("type").uppercase()
+                    val rec = data.optJSONObject("record") ?: return
+                    val oldRec = data.optJSONObject("old_record")
+                    val id = rec.optString("id").trim()
+                    if (id.isBlank()) return
+                    val recipientId = rec.optString("recipient_user_id").trim()
+                    if (recipientId != session.userId) return
+                    val readAt = rec.optString("read_at").takeIf { it.isNotBlank() && it != "null" }
+
+                    when (evType) {
+                        "INSERT" -> {
+                            onEvent(
+                                NotificationRealtimeEvent.Insert(
+                                    id = id,
+                                    recipientUserId = recipientId,
+                                    senderUserId = rec.optString("sender_user_id"),
+                                    animeId = rec.optInt("anime_id", 0),
+                                    isRead = rec.optBoolean("is_read", false),
+                                    readAt = readAt,
+                                    previewText = rec.optString("preview_text", "")
+                                )
+                            )
+                        }
+                        "UPDATE" -> {
+                            val oldIsRead: Boolean? = if (oldRec != null && oldRec.has("is_read") && !oldRec.isNull("is_read")) {
+                                oldRec.optBoolean("is_read")
+                            } else {
+                                null
+                            }
+                            onEvent(
+                                NotificationRealtimeEvent.Update(
+                                    id = id,
+                                    recipientUserId = recipientId,
+                                    animeId = rec.optInt("anime_id", 0),
+                                    oldIsRead = oldIsRead,
+                                    newIsRead = rec.optBoolean("is_read", false),
+                                    readAt = readAt
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                heartbeatTimer?.cancel()
+                onDisconnected()
+            }
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                heartbeatTimer?.cancel()
+                onDisconnected()
             }
         })
     }

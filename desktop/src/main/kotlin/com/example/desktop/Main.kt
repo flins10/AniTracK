@@ -2652,29 +2652,132 @@ fun AnimeUniverseDesktopRoot() {
     var commRatingFilter by remember { mutableStateOf("all") }
     var commSortMode by remember { mutableStateOf("newest") }
 
-    // Unseen Community Tags & Deep-link Jump State (Red Dot clears only when opening that anime)
+    // Unseen Community Tags & Deep-link Jump State (Synchronized via Supabase DB + Realtime INSERT/UPDATE)
+    val notificationSyncReducer = remember { DesktopNotificationSyncReducer() }
     var unseenDiscussionAnime by remember { mutableStateOf<List<DesktopUnseenDiscussionAnime>>(emptyList()) }
     var unreadNotificationCount by remember { mutableStateOf(0) }
+    var notificationRealtimeEpoch by remember { mutableStateOf(0) }
     var pendingNotificationJump by remember { mutableStateOf<DesktopNotificationJumpTarget?>(null) }
 
-    fun refreshUnseenDiscussionAnime() {
-        if (!isAuthenticated || sessionState.isGuest) {
+    fun reconcileNotificationsFromCloud(explicitSession: DesktopPersistedState = sessionState) {
+        if (!isAuthenticated || explicitSession.isGuest || explicitSession.userId.isBlank()) {
+            notificationSyncReducer.reset()
             unseenDiscussionAnime = emptyList()
             unreadNotificationCount = 0
             return
         }
+        val capturedUid = explicitSession.userId
+        val startGen = notificationSyncReducer.currentGeneration()
         scope.launch {
-            DesktopDiscussionService.fetchUnseenDiscussionAnime(sessionState)
-                .onSuccess { (summary, active) ->
-                    sessionState = sessionState.copy(
-                        accessToken = active.accessToken,
-                        refreshToken = active.refreshToken,
-                        expiresAt = active.expiresAt
-                    )
-                    DesktopStorage.saveActive(sessionState)
-                    unseenDiscussionAnime = summary.unseenAnime
-                    unreadNotificationCount = summary.totalUnreadCount
+            val snapPair = DesktopDiscussionService.fetchAuthoritativeUnreadSnapshot(explicitSession).getOrNull()
+            val activeSession = snapPair?.second ?: explicitSession
+            if (sessionState.userId != capturedUid) return@launch
+            if (activeSession.accessToken != sessionState.accessToken && activeSession.accessToken.isNotBlank()) {
+                sessionState = sessionState.copy(
+                    accessToken = activeSession.accessToken,
+                    refreshToken = activeSession.refreshToken,
+                    expiresAt = activeSession.expiresAt
+                )
+                DesktopStorage.saveActive(sessionState)
+            }
+            val summaryRes = DesktopDiscussionService.fetchUnseenDiscussionAnime(activeSession)
+            if (sessionState.userId != capturedUid) return@launch
+            val snap = snapPair?.first
+            if (snap != null) {
+                if (notificationSyncReducer.applyAuthoritativeUnreadIds(snap.unreadIds, startGen)) {
+                    val exactCount = notificationSyncReducer.unreadCount
+                    unreadNotificationCount = exactCount
+                    unseenDiscussionAnime = if (exactCount == 0) {
+                        emptyList()
+                    } else {
+                        summaryRes.getOrNull()?.first?.unseenAnime
+                            ?.filter { (snap.unreadCountByAnime[it.animeId] ?: 0) > 0 }
+                            ?: unseenDiscussionAnime.filter { (snap.unreadCountByAnime[it.animeId] ?: 0) > 0 }
+                    }
                 }
+            } else {
+                summaryRes.onSuccess { (summary, _) ->
+                    if (notificationSyncReducer.confirmServerUnreadCount(summary.totalUnreadCount, startGen)) {
+                        unreadNotificationCount = notificationSyncReducer.unreadCount
+                        unseenDiscussionAnime = if (notificationSyncReducer.unreadCount == 0) emptyList() else summary.unseenAnime
+                    }
+                }
+            }
+        }
+    }
+
+    fun refreshUnseenDiscussionAnime() {
+        reconcileNotificationsFromCloud(sessionState)
+    }
+
+    // Supabase Realtime INSERT + UPDATE listener on public.user_notifications with reconnect reconciliation
+    DisposableEffect(isAuthenticated, sessionState.isGuest, sessionState.userId, sessionState.accessToken, notificationRealtimeEpoch) {
+        if (!isAuthenticated || sessionState.isGuest || sessionState.userId.isBlank() || sessionState.accessToken.isBlank()) {
+            notificationSyncReducer.reset()
+            unreadNotificationCount = 0
+            unseenDiscussionAnime = emptyList()
+            onDispose { }
+        } else {
+            val capturedUid = sessionState.userId
+            var disposed = false
+            val ws = DesktopDiscussionService.subscribeToUserNotificationsRealtime(
+                session = sessionState,
+                onEvent = { ev ->
+                    scope.launch {
+                        if (disposed || sessionState.userId != capturedUid) return@launch
+                        when (ev) {
+                            is DesktopNotificationRealtimeEvent.Insert -> {
+                                val out = notificationSyncReducer.onRealtimeInsert(
+                                    id = ev.id,
+                                    recipientId = ev.recipientUserId,
+                                    currentUid = capturedUid,
+                                    isRead = ev.isRead
+                                )
+                                if (out.delta != 0) {
+                                    unreadNotificationCount = out.unreadCount
+                                    reconcileNotificationsFromCloud(sessionState)
+                                }
+                            }
+                            is DesktopNotificationRealtimeEvent.Update -> {
+                                val out = notificationSyncReducer.onRealtimeUpdate(
+                                    id = ev.id,
+                                    recipientId = ev.recipientUserId,
+                                    currentUid = capturedUid,
+                                    oldIsRead = ev.oldIsRead,
+                                    newIsRead = ev.newIsRead,
+                                    readAt = ev.readAt
+                                )
+                                unreadNotificationCount = out.unreadCount
+                                if (out.unreadCount == 0) {
+                                    unseenDiscussionAnime = emptyList()
+                                }
+                                if (out.needsReconcile) {
+                                    reconcileNotificationsFromCloud(sessionState)
+                                }
+                            }
+                        }
+                    }
+                },
+                onConnected = {
+                    if (!disposed) {
+                        scope.launch { reconcileNotificationsFromCloud(sessionState) }
+                    }
+                },
+                onDisconnected = {
+                    if (!disposed) {
+                        scope.launch {
+                            delay(5_000L)
+                            if (!disposed && isAuthenticated && !sessionState.isGuest && sessionState.userId == capturedUid) {
+                                notificationRealtimeEpoch += 1
+                            }
+                        }
+                    }
+                }
+            )
+            onDispose {
+                disposed = true
+                runCatching { ws?.close(1000, "closed") }
+            }
         }
     }
 
@@ -2787,11 +2890,7 @@ fun AnimeUniverseDesktopRoot() {
             }
             sessionState = nextState
             DesktopStorage.saveActive(nextState)
-            DesktopDiscussionService.fetchUnseenDiscussionAnime(nextState)
-                .onSuccess { (summary, _) ->
-                    unseenDiscussionAnime = summary.unseenAnime
-                    unreadNotificationCount = summary.totalUnreadCount
-                }
+            reconcileNotificationsFromCloud(nextState)
         }
         if (snap.communityReviews.isNotEmpty()) {
             communityReviews = snap.communityReviews
@@ -3431,6 +3530,7 @@ fun AnimeUniverseDesktopRoot() {
                             DesktopCommunityScreen(
                                 reviews = combinedReviews,
                                 unseenDiscussionAnime = unseenDiscussionAnime,
+                                unreadNotificationCount = unreadNotificationCount,
                                 session = sessionState,
                                 isAuthenticated = isAuthenticated,
                                 currentUserId = sessionState.userId,
@@ -3450,10 +3550,64 @@ fun AnimeUniverseDesktopRoot() {
                                     DesktopStorage.saveActive(sessionState)
                                 },
                                 onShowToast = { msg, isErr -> showToast(msg, isError = isErr) },
+                                onNotificationMarkedRead = { notifId ->
+                                    val readAtIso = Instant.now().toString()
+                                    val nextCount = notificationSyncReducer.markLocalRead(notifId)
+                                    val mutGen = notificationSyncReducer.currentGeneration()
+                                    unreadNotificationCount = nextCount
+                                    if (nextCount == 0) unseenDiscussionAnime = emptyList()
+                                    scope.launch {
+                                        DesktopDiscussionService.markNotificationRead(sessionState, notifId, readAtIso)
+                                            .onSuccess { exact ->
+                                                if (notificationSyncReducer.confirmServerUnreadCount(exact, mutGen)) {
+                                                    unreadNotificationCount = notificationSyncReducer.unreadCount
+                                                    if (notificationSyncReducer.unreadCount == 0) unseenDiscussionAnime = emptyList()
+                                                }
+                                                reconcileNotificationsFromCloud(sessionState)
+                                            }
+                                            .onFailure {
+                                                reconcileNotificationsFromCloud(sessionState)
+                                            }
+                                    }
+                                },
+                                onAllNotificationsMarkedRead = {
+                                    val readAtIso = Instant.now().toString()
+                                    notificationSyncReducer.markAllLocalRead()
+                                    val mutGen = notificationSyncReducer.currentGeneration()
+                                    unreadNotificationCount = 0
+                                    unseenDiscussionAnime = emptyList()
+                                    scope.launch {
+                                        DesktopDiscussionService.markAllNotificationsRead(sessionState, readAtIso)
+                                            .onSuccess { exact ->
+                                                if (notificationSyncReducer.confirmServerUnreadCount(exact, mutGen)) {
+                                                    unreadNotificationCount = notificationSyncReducer.unreadCount
+                                                    if (notificationSyncReducer.unreadCount == 0) unseenDiscussionAnime = emptyList()
+                                                }
+                                            }
+                                            .onFailure {
+                                                reconcileNotificationsFromCloud(sessionState)
+                                            }
+                                    }
+                                },
                                 onMarkedAnimeSeen = { seenAnimeId ->
+                                    val readAtIso = Instant.now().toString()
+                                    val mutGen = notificationSyncReducer.beginLocalMutation()
                                     val remaining = unseenDiscussionAnime.filterNot { it.animeId == seenAnimeId }
                                     unseenDiscussionAnime = remaining
                                     unreadNotificationCount = remaining.sumOf { it.unseenCount.coerceAtLeast(1) }
+                                    scope.launch {
+                                        DesktopDiscussionService.markAnimeNotificationsRead(sessionState, seenAnimeId, readAtIso)
+                                            .onSuccess { exact ->
+                                                if (notificationSyncReducer.confirmServerUnreadCount(exact, mutGen)) {
+                                                    unreadNotificationCount = notificationSyncReducer.unreadCount
+                                                    if (notificationSyncReducer.unreadCount == 0) unseenDiscussionAnime = emptyList()
+                                                }
+                                                reconcileNotificationsFromCloud(sessionState)
+                                            }
+                                            .onFailure {
+                                                reconcileNotificationsFromCloud(sessionState)
+                                            }
+                                    }
                                 },
                                 onOpenAnime = { animeId, fallbackTitle, fallbackCover ->
                                     val unseenEntry = unseenDiscussionAnime.firstOrNull { it.animeId == animeId }
@@ -3611,9 +3765,24 @@ fun AnimeUniverseDesktopRoot() {
                                     notificationJumpTarget = pendingNotificationJump,
                                     onNotificationJumpConsumed = { pendingNotificationJump = null },
                                     onMarkedAnimeSeen = { seenAnimeId ->
+                                        val readAtIso = Instant.now().toString()
+                                        val mutGen = notificationSyncReducer.beginLocalMutation()
                                         val remaining = unseenDiscussionAnime.filterNot { it.animeId == seenAnimeId }
                                         unseenDiscussionAnime = remaining
                                         unreadNotificationCount = remaining.sumOf { it.unseenCount.coerceAtLeast(1) }
+                                        scope.launch {
+                                            DesktopDiscussionService.markAnimeNotificationsRead(sessionState, seenAnimeId, readAtIso)
+                                                .onSuccess { exact ->
+                                                    if (notificationSyncReducer.confirmServerUnreadCount(exact, mutGen)) {
+                                                        unreadNotificationCount = notificationSyncReducer.unreadCount
+                                                        if (notificationSyncReducer.unreadCount == 0) unseenDiscussionAnime = emptyList()
+                                                    }
+                                                    reconcileNotificationsFromCloud(sessionState)
+                                                }
+                                                .onFailure {
+                                                    reconcileNotificationsFromCloud(sessionState)
+                                                }
+                                        }
                                     },
                                     onSessionUpdated = { active ->
                                         sessionState = sessionState.copy(
@@ -5402,6 +5571,7 @@ private fun DesktopLibraryScreen(
 private fun DesktopCommunityScreen(
     reviews: List<DesktopCommunityReview>,
     unseenDiscussionAnime: List<DesktopUnseenDiscussionAnime>,
+    unreadNotificationCount: Int,
     session: DesktopPersistedState,
     isAuthenticated: Boolean,
     currentUserId: String,
@@ -5414,6 +5584,8 @@ private fun DesktopCommunityScreen(
     onOpenProfile: () -> Unit,
     onSessionUpdated: (DesktopPersistedState) -> Unit,
     onShowToast: (String, Boolean) -> Unit,
+    onNotificationMarkedRead: (String) -> Unit,
+    onAllNotificationsMarkedRead: () -> Unit,
     onMarkedAnimeSeen: (Int) -> Unit,
     onOpenAnime: (animeId: Int, fallbackTitle: String, fallbackCover: String) -> Unit,
     onSubmitCommentNote: (animeId: Int, animeTitle: String, animeCover: String, stars: Float, note: String) -> Unit
@@ -5428,7 +5600,6 @@ private fun DesktopCommunityScreen(
     var externalModalJumpTarget by remember { mutableStateOf<DesktopNotificationJumpTarget?>(null) }
 
     var taggedNotifications by remember { mutableStateOf<List<DesktopUserNotification>>(emptyList()) }
-    var taggedUnreadCount by remember { mutableStateOf(0) }
     var taggedHasMore by remember { mutableStateOf(false) }
     var taggedLoading by remember { mutableStateOf(false) }
 
@@ -5440,7 +5611,6 @@ private fun DesktopCommunityScreen(
             DesktopDiscussionService.fetchNotifications(session, limit = 30, offset = offset)
                 .onSuccess { (page, active) ->
                     onSessionUpdated(active)
-                    taggedUnreadCount = page.unreadCount
                     taggedHasMore = page.hasMore
                     taggedNotifications = if (reset) {
                         page.notifications
@@ -5475,13 +5645,15 @@ private fun DesktopCommunityScreen(
         jumpTarget: DesktopNotificationJumpTarget,
         notificationId: String? = null
     ) {
+        val readAtIso = Instant.now().toString()
         if (!notificationId.isNullOrBlank()) {
-            val wasUnread = taggedNotifications.any { it.id == notificationId && !it.isRead }
-            taggedNotifications = taggedNotifications.map { if (it.id == notificationId) it.copy(isRead = true) else it }
-            if (wasUnread) taggedUnreadCount = (taggedUnreadCount - 1).coerceAtLeast(0)
-            scope.launch {
-                DesktopDiscussionService.markNotificationRead(session, notificationId)
+            taggedNotifications = taggedNotifications.map {
+                if (it.id == notificationId && !it.isRead) it.copy(isRead = true, readAt = readAtIso) else it
             }
+            onNotificationMarkedRead(notificationId)
+        }
+        taggedNotifications = taggedNotifications.map {
+            if (it.animeId == animeId && !it.isRead) it.copy(isRead = true, readAt = readAtIso) else it
         }
         onMarkedAnimeSeen(animeId)
         val existing = animeGroups.firstOrNull { it.animeId == animeId }
@@ -5540,7 +5712,7 @@ private fun DesktopCommunityScreen(
     Spacer(modifier = Modifier.height(14.dp))
 
     // Dedicated Community Feed vs "Tagged You" Switcher
-    val totalUnreadTags = maxOf(taggedUnreadCount, unseenDiscussionAnime.sumOf { it.unseenCount })
+    val totalUnreadTags = unreadNotificationCount.coerceAtLeast(0)
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -5620,10 +5792,11 @@ private fun DesktopCommunityScreen(
             hasMore = taggedHasMore,
             onRefresh = { loadTaggedNotifications(reset = true) },
             onMarkAllRead = {
-                taggedNotifications = taggedNotifications.map { it.copy(isRead = true) }
-                taggedUnreadCount = 0
-                unseenDiscussionAnime.forEach { onMarkedAnimeSeen(it.animeId) }
-                scope.launch { DesktopDiscussionService.markAllNotificationsRead(session) }
+                val readAtIso = Instant.now().toString()
+                taggedNotifications = taggedNotifications.map {
+                    if (!it.isRead) it.copy(isRead = true, readAt = readAtIso) else it
+                }
+                onAllNotificationsMarkedRead()
             },
             onLoadMore = { loadTaggedNotifications(reset = false) },
             onOpenNotification = { n ->

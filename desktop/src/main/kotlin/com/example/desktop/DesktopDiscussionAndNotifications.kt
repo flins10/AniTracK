@@ -84,6 +84,187 @@ internal sealed interface DesktopRealtimeEvent {
     data class DeleteMessage(val id: String) : DesktopRealtimeEvent
 }
 
+internal data class DesktopUnreadNotificationSnapshot(
+    val unreadIds: Set<String> = emptySet(),
+    val unreadCountByAnime: Map<Int, Int> = emptyMap()
+) {
+    val unreadCount: Int get() = unreadIds.size
+}
+
+internal sealed interface DesktopNotificationRealtimeEvent {
+    data class Insert(
+        val id: String,
+        val recipientUserId: String,
+        val senderUserId: String,
+        val animeId: Int,
+        val isRead: Boolean,
+        val readAt: String?,
+        val previewText: String
+    ) : DesktopNotificationRealtimeEvent
+
+    data class Update(
+        val id: String,
+        val recipientUserId: String,
+        val animeId: Int,
+        val oldIsRead: Boolean?,
+        val newIsRead: Boolean,
+        val readAt: String?
+    ) : DesktopNotificationRealtimeEvent
+}
+
+internal class DesktopNotificationSyncReducer {
+    private val knownReadState = HashMap<String, Boolean>()
+    private val unreadIds = LinkedHashSet<String>()
+    private val processedEventKeys = LinkedHashSet<String>()
+    private var mutationGeneration: Long = 0L
+
+    var unreadCount: Int = 0
+        private set
+
+    data class Outcome(
+        val unreadCount: Int,
+        val delta: Int,
+        val needsReconcile: Boolean = false
+    )
+
+    @Synchronized
+    fun reset() {
+        knownReadState.clear()
+        unreadIds.clear()
+        processedEventKeys.clear()
+        mutationGeneration = 0L
+        unreadCount = 0
+    }
+
+    @Synchronized
+    fun currentGeneration(): Long = mutationGeneration
+
+    @Synchronized
+    fun beginLocalMutation(): Long {
+        mutationGeneration += 1L
+        return mutationGeneration
+    }
+
+    @Synchronized
+    fun applyAuthoritativeUnreadIds(fetchedUnreadIds: Set<String>, fetchStartedGen: Long): Boolean {
+        if (fetchStartedGen < mutationGeneration) return false
+        val cleanIds = fetchedUnreadIds.filter { it.isNotBlank() }.toSet()
+        for (prevId in unreadIds) {
+            if (prevId !in cleanIds) knownReadState[prevId] = true
+        }
+        unreadIds.clear()
+        for (id in cleanIds) {
+            unreadIds.add(id)
+            knownReadState[id] = false
+        }
+        unreadCount = unreadIds.size
+        return true
+    }
+
+    @Synchronized
+    fun markLocalRead(notificationId: String): Int {
+        if (notificationId.isBlank()) return unreadCount
+        mutationGeneration += 1L
+        val prev = knownReadState[notificationId]
+        val wasInSet = unreadIds.remove(notificationId)
+        knownReadState[notificationId] = true
+        if (wasInSet || prev == false) {
+            unreadCount = (unreadCount - 1).coerceAtLeast(0)
+        }
+        return unreadCount
+    }
+
+    @Synchronized
+    fun markAllLocalRead(): Int {
+        mutationGeneration += 1L
+        for (id in knownReadState.keys.toList()) knownReadState[id] = true
+        unreadIds.clear()
+        unreadCount = 0
+        return 0
+    }
+
+    @Synchronized
+    fun confirmServerUnreadCount(serverCount: Int, mutationGen: Long): Boolean {
+        if (mutationGen < mutationGeneration) return false
+        val safe = serverCount.coerceAtLeast(0)
+        unreadCount = safe
+        if (safe == 0) {
+            for (id in unreadIds) knownReadState[id] = true
+            unreadIds.clear()
+        }
+        return true
+    }
+
+    @Synchronized
+    fun onRealtimeInsert(id: String, recipientId: String, currentUid: String, isRead: Boolean): Outcome {
+        if (id.isBlank() || currentUid.isBlank() || recipientId != currentUid) {
+            return Outcome(unreadCount, 0)
+        }
+        if (!recordKey("INSERT:$id:$isRead")) return Outcome(unreadCount, 0)
+        if (knownReadState.containsKey(id)) return Outcome(unreadCount, 0)
+        knownReadState[id] = isRead
+        if (!isRead) {
+            unreadIds.add(id)
+            unreadCount += 1
+            return Outcome(unreadCount, 1)
+        }
+        return Outcome(unreadCount, 0)
+    }
+
+    @Synchronized
+    fun onRealtimeUpdate(
+        id: String,
+        recipientId: String,
+        currentUid: String,
+        oldIsRead: Boolean?,
+        newIsRead: Boolean,
+        readAt: String?
+    ): Outcome {
+        if (id.isBlank() || currentUid.isBlank() || recipientId != currentUid) {
+            return Outcome(unreadCount, 0)
+        }
+        if (!recordKey("UPDATE:$id:$newIsRead:${readAt.orEmpty()}")) return Outcome(unreadCount, 0)
+        val known = knownReadState[id]
+        if (newIsRead) {
+            if (known == true) {
+                unreadIds.remove(id)
+                return Outcome(unreadCount, 0)
+            }
+            val wasInSet = unreadIds.remove(id)
+            knownReadState[id] = true
+            return if (oldIsRead == false || known == false || wasInSet) {
+                unreadCount = (unreadCount - 1).coerceAtLeast(0)
+                Outcome(unreadCount, -1)
+            } else {
+                Outcome(unreadCount, 0, needsReconcile = true)
+            }
+        } else {
+            if (known == false || id in unreadIds) return Outcome(unreadCount, 0)
+            knownReadState[id] = false
+            unreadIds.add(id)
+            return if (oldIsRead == true || known == true) {
+                unreadCount += 1
+                Outcome(unreadCount, 1)
+            } else {
+                Outcome(unreadCount, 0, needsReconcile = true)
+            }
+        }
+    }
+
+    private fun recordKey(key: String): Boolean {
+        if (key in processedEventKeys) return false
+        processedEventKeys.add(key)
+        if (processedEventKeys.size > 500) {
+            val it = processedEventKeys.iterator()
+            if (it.hasNext()) {
+                it.next()
+                it.remove()
+            }
+        }
+        return true
+    }
+}
+
 data class DesktopMentionUser(
     val userId: String,
     val username: String,
@@ -190,6 +371,7 @@ data class DesktopUserNotification(
     val senderAvatarKey: String = "avatar_1",
     val contentPreview: String = "",
     val isRead: Boolean = false,
+    val readAt: String? = null,
     val createdAt: String = ""
 )
 
@@ -924,25 +1106,122 @@ internal object DesktopDiscussionService {
         }
     }
 
+    private fun isMissingReadAtColumnError(code: Int, body: String): Boolean {
+        if (code != 400 && code != 404) return false
+        val lower = body.lowercase()
+        return lower.contains("read_at") && (
+            lower.contains("pgrst204") ||
+                lower.contains("42703") ||
+                lower.contains("column") ||
+                lower.contains("schema cache")
+            )
+    }
+
+    private fun executeNotificationPatch(
+        active: DesktopPersistedState,
+        queryFilter: String,
+        readAtIso: String
+    ): Pair<Boolean, String> {
+        val url = "$SUPABASE_URL/rest/v1/user_notifications?$queryFilter"
+        val bodyWithReadAt = JsonObject().apply {
+            addProperty("is_read", true)
+            addProperty("read_at", readAtIso)
+        }
+        val req1 = Request.Builder()
+            .url(url)
+            .addHeader("apikey", SUPABASE_ANON_KEY)
+            .addHeader("Authorization", "Bearer ${active.accessToken}")
+            .addHeader("Content-Type", "application/json")
+            .addHeader("Accept", "application/json")
+            .addHeader("Prefer", "return=representation")
+            .patch(gson.toJson(bodyWithReadAt).toRequestBody(jsonMedia))
+            .build()
+        httpClient.newCall(req1).execute().use { resp ->
+            val raw = resp.body?.string().orEmpty()
+            if (resp.isSuccessful) return true to raw
+            if (!isMissingReadAtColumnError(resp.code, raw)) return false to raw
+        }
+        val fallbackBody = JsonObject().apply { addProperty("is_read", true) }
+        val req2 = Request.Builder()
+            .url(url)
+            .addHeader("apikey", SUPABASE_ANON_KEY)
+            .addHeader("Authorization", "Bearer ${active.accessToken}")
+            .addHeader("Content-Type", "application/json")
+            .addHeader("Accept", "application/json")
+            .addHeader("Prefer", "return=representation")
+            .patch(gson.toJson(fallbackBody).toRequestBody(jsonMedia))
+            .build()
+        httpClient.newCall(req2).execute().use { resp ->
+            val raw = resp.body?.string().orEmpty()
+            return resp.isSuccessful to raw
+        }
+    }
+
+    suspend fun fetchAuthoritativeUnreadSnapshot(
+        session: DesktopPersistedState
+    ): Result<Pair<DesktopUnreadNotificationSnapshot, DesktopPersistedState>> = withContext(Dispatchers.IO) {
+        if (session.isGuest || session.accessToken.isBlank() || session.userId.isBlank()) {
+            return@withContext Result.success(DesktopUnreadNotificationSnapshot() to session)
+        }
+        runCatching {
+            val active = refreshTokenIfNeeded(session)
+            val encodedUid = URLEncoder.encode(active.userId, "UTF-8")
+            val req = Request.Builder()
+                .url("$SUPABASE_URL/rest/v1/user_notifications?select=id,anime_id&recipient_user_id=eq.$encodedUid&is_read=eq.false&limit=1000")
+                .addHeader("apikey", SUPABASE_ANON_KEY)
+                .addHeader("Authorization", "Bearer ${active.accessToken}")
+                .addHeader("Accept", "application/json")
+                .get()
+                .build()
+            httpClient.newCall(req).execute().use { resp ->
+                val raw = resp.body?.string().orEmpty().trim()
+                if (!resp.isSuccessful || !raw.startsWith("[")) {
+                    throw IllegalStateException(parsePostgrestError(raw, "Unable to fetch unread notification count."))
+                }
+                val arr = JsonParser.parseString(raw).asJsonArray
+                val ids = LinkedHashSet<String>(arr.size())
+                val byAnime = HashMap<Int, Int>()
+                for (el in arr) {
+                    val obj = el.takeIf { it.isJsonObject }?.asJsonObject ?: continue
+                    val id = obj.str("id").trim()
+                    if (id.isNotBlank()) {
+                        ids.add(id)
+                        val aid = obj.intVal("anime_id", 0)
+                        if (aid > 0) byAnime[aid] = (byAnime[aid] ?: 0) + 1
+                    }
+                }
+                DesktopUnreadNotificationSnapshot(unreadIds = ids, unreadCountByAnime = byAnime) to active
+            }
+        }
+    }
+
     suspend fun fetchUnseenDiscussionAnime(
         session: DesktopPersistedState
     ): Result<Pair<DesktopUnseenDiscussionSummary, DesktopPersistedState>> {
         if (session.isGuest || session.accessToken.isBlank()) {
             return Result.success(DesktopUnseenDiscussionSummary() to session)
         }
-        return callRpc(session, "get_unseen_discussion_anime", JsonObject(), requireAuth = true).map { (el, active) ->
+        val exactPair = fetchAuthoritativeUnreadSnapshot(session).getOrNull()
+        val workingSession = exactPair?.second ?: session
+        val exactSnap = exactPair?.first
+        if (exactSnap != null && exactSnap.unreadCount == 0) {
+            return Result.success(DesktopUnseenDiscussionSummary(totalUnreadCount = 0, unseenAnime = emptyList()) to workingSession)
+        }
+        return callRpc(workingSession, "get_unseen_discussion_anime", JsonObject(), requireAuth = true).map { (el, active) ->
             val obj = el?.takeIf { it.isJsonObject }?.asJsonObject ?: JsonObject()
             val arr = (obj.get("anime") ?: obj.get("unseen_anime"))?.takeIf { it.isJsonArray }?.asJsonArray ?: JsonArray()
             val items = arr.mapNotNull { item ->
                 item.takeIf { it.isJsonObject }?.asJsonObject?.let { u ->
                     val aid = u.intVal("anime_id", 0)
-                    if (aid <= 0) null else DesktopUnseenDiscussionAnime(
+                    val exactForAnime = exactSnap?.unreadCountByAnime?.get(aid)
+                    if (aid <= 0 || (exactSnap != null && (exactForAnime == null || exactForAnime <= 0))) null
+                    else DesktopUnseenDiscussionAnime(
                         animeId = aid,
                         animeTitle = u.str("anime_title"),
                         animeCover = u.str("anime_cover_image").ifBlank { u.str("anime_cover") },
                         communityId = u.str("community_id", "anime_community").ifBlank { "anime_community" },
                         communityName = u.str("community_name", "Community").let { if (it.isBlank() || it.equals("LivTrAk Community", ignoreCase = true)) "Community" else it },
-                        unseenCount = u.intVal("unseen_count", 1).coerceAtLeast(1),
+                        unseenCount = (exactForAnime ?: u.intVal("unseen_count", 1)).coerceAtLeast(1),
                         latestType = u.str("latest_notification_type").ifBlank { u.str("latest_type", "mention_comment") },
                         latestSenderUsername = u.str("latest_sender_username", "Member"),
                         latestCommentId = u.str("latest_comment_id").takeIf { it.isNotBlank() },
@@ -954,17 +1233,36 @@ internal object DesktopDiscussionService {
             }
             val totalFromRpc = if (obj.has("total_unseen")) obj.intVal("total_unseen", 0)
             else obj.intVal("total_unread_count", items.sumOf { it.unseenCount })
+            val authoritativeTotal = (exactSnap?.unreadCount ?: totalFromRpc).coerceAtLeast(0)
             DesktopUnseenDiscussionSummary(
-                totalUnreadCount = totalFromRpc.coerceAtLeast(items.sumOf { it.unseenCount }),
-                unseenAnime = items
+                totalUnreadCount = authoritativeTotal,
+                unseenAnime = if (authoritativeTotal == 0) emptyList() else items
             ) to active
         }
     }
 
-    suspend fun markAnimeNotificationsRead(session: DesktopPersistedState, animeId: Int): Result<Int> {
-        if (session.isGuest || session.accessToken.isBlank()) return Result.success(0)
-        val payload = JsonObject().apply { addProperty("p_anime_id", animeId) }
-        return callRpc(session, "mark_anime_notifications_read", payload, requireAuth = true).map { (el, _) ->
+    suspend fun markAnimeNotificationsRead(
+        session: DesktopPersistedState,
+        animeId: Int,
+        readAtIso: String = Instant.now().toString()
+    ): Result<Int> = withContext(Dispatchers.IO) {
+        if (session.isGuest || session.accessToken.isBlank() || session.userId.isBlank() || animeId <= 0) {
+            return@withContext Result.success(0)
+        }
+        runCatching {
+            val active = refreshTokenIfNeeded(session)
+            val encodedUid = URLEncoder.encode(active.userId, "UTF-8")
+            val (patchOk, _) = executeNotificationPatch(
+                active = active,
+                queryFilter = "recipient_user_id=eq.$encodedUid&anime_id=eq.$animeId&is_read=eq.false",
+                readAtIso = readAtIso
+            )
+            if (patchOk) {
+                val exactCount = fetchAuthoritativeUnreadSnapshot(active).getOrNull()?.first?.unreadCount
+                if (exactCount != null) return@runCatching exactCount
+            }
+            val payload = JsonObject().apply { addProperty("p_anime_id", animeId) }
+            val (el, _) = callRpc(active, "mark_anime_notifications_read", payload, requireAuth = true).getOrThrow()
             when {
                 el == null || el.isJsonNull -> 0
                 el.isJsonObject -> el.asJsonObject.intVal("unread_count", 0)
@@ -1003,26 +1301,204 @@ internal object DesktopDiscussionService {
                         senderAvatarKey = n.str("sender_avatar_key", "avatar_1"),
                         contentPreview = n.str("preview_text").ifBlank { n.str("content_preview") },
                         isRead = n.boolVal("is_read", false),
+                        readAt = n.str("read_at").takeIf { it.isNotBlank() },
                         createdAt = n.str("created_at")
                     )
                 }
             }
+            val exactSnap = fetchAuthoritativeUnreadSnapshot(active).getOrNull()?.first
             DesktopNotificationsPage(
                 notifications = list,
-                unreadCount = obj.intVal("unread_count", list.count { !it.isRead }),
+                unreadCount = exactSnap?.unreadCount ?: obj.intVal("unread_count", list.count { !it.isRead }).coerceAtLeast(0),
                 totalCount = obj.intVal("total_count", list.size),
                 hasMore = obj.boolVal("has_more", false)
             ) to active
         }
     }
 
-    suspend fun markNotificationRead(session: DesktopPersistedState, notificationId: String): Result<Unit> {
-        val payload = JsonObject().apply { addProperty("p_notification_id", notificationId) }
-        return callRpc(session, "mark_notification_read", payload, requireAuth = true).map { Unit }
+    suspend fun markNotificationRead(
+        session: DesktopPersistedState,
+        notificationId: String,
+        readAtIso: String = Instant.now().toString()
+    ): Result<Int> = withContext(Dispatchers.IO) {
+        if (session.isGuest || session.accessToken.isBlank() || session.userId.isBlank() || notificationId.isBlank()) {
+            return@withContext Result.success(0)
+        }
+        runCatching {
+            val active = refreshTokenIfNeeded(session)
+            val encodedId = URLEncoder.encode(notificationId, "UTF-8")
+            val encodedUid = URLEncoder.encode(active.userId, "UTF-8")
+            val (patchOk, _) = executeNotificationPatch(
+                active = active,
+                queryFilter = "id=eq.$encodedId&recipient_user_id=eq.$encodedUid&is_read=eq.false",
+                readAtIso = readAtIso
+            )
+            if (patchOk) {
+                val exactCount = fetchAuthoritativeUnreadSnapshot(active).getOrNull()?.first?.unreadCount
+                if (exactCount != null) return@runCatching exactCount
+            }
+            val payload = JsonObject().apply { addProperty("p_notification_id", notificationId) }
+            val (el, _) = callRpc(active, "mark_notification_read", payload, requireAuth = true).getOrThrow()
+            when {
+                el == null || el.isJsonNull -> 0
+                el.isJsonObject -> el.asJsonObject.intVal("unread_count", 0)
+                else -> runCatching { el.asInt }.getOrElse { 0 }
+            }.coerceAtLeast(0)
+        }
     }
 
-    suspend fun markAllNotificationsRead(session: DesktopPersistedState): Result<Unit> {
-        return callRpc(session, "mark_all_notifications_read", JsonObject(), requireAuth = true).map { Unit }
+    suspend fun markAllNotificationsRead(
+        session: DesktopPersistedState,
+        readAtIso: String = Instant.now().toString()
+    ): Result<Int> = withContext(Dispatchers.IO) {
+        if (session.isGuest || session.accessToken.isBlank() || session.userId.isBlank()) {
+            return@withContext Result.success(0)
+        }
+        runCatching {
+            val active = refreshTokenIfNeeded(session)
+            val encodedUid = URLEncoder.encode(active.userId, "UTF-8")
+            val (patchOk, _) = executeNotificationPatch(
+                active = active,
+                queryFilter = "recipient_user_id=eq.$encodedUid&is_read=eq.false",
+                readAtIso = readAtIso
+            )
+            if (patchOk) {
+                return@runCatching fetchAuthoritativeUnreadSnapshot(active).getOrNull()?.first?.unreadCount ?: 0
+            }
+            callRpc(active, "mark_all_notifications_read", JsonObject(), requireAuth = true).getOrThrow()
+            0
+        }
+    }
+
+    fun subscribeToUserNotificationsRealtime(
+        session: DesktopPersistedState,
+        onEvent: (DesktopNotificationRealtimeEvent) -> Unit,
+        onConnected: () -> Unit = {},
+        onDisconnected: () -> Unit = {}
+    ): WebSocket? {
+        if (session.isGuest || session.userId.isBlank() || session.accessToken.isBlank()) return null
+        val wsBase = SUPABASE_URL
+            .replaceFirst("https://", "wss://")
+            .replaceFirst("http://", "ws://")
+        val encodedKey = URLEncoder.encode(SUPABASE_ANON_KEY, "UTF-8")
+        val wsUrl = "$wsBase/realtime/v1/websocket?apikey=$encodedKey&vsn=1.0.0"
+        val req = Request.Builder().url(wsUrl).build()
+        val refCounter = AtomicInteger(1)
+        val topic = "realtime:public:user_notifications:${session.userId}"
+        val filter = "recipient_user_id=eq.${session.userId}"
+        var heartbeatTimer: Timer? = null
+
+        return httpClient.newWebSocket(req, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                val changes = JsonArray().apply {
+                    add(JsonObject().apply {
+                        addProperty("event", "INSERT")
+                        addProperty("schema", "public")
+                        addProperty("table", "user_notifications")
+                        addProperty("filter", filter)
+                    })
+                    add(JsonObject().apply {
+                        addProperty("event", "UPDATE")
+                        addProperty("schema", "public")
+                        addProperty("table", "user_notifications")
+                        addProperty("filter", filter)
+                    })
+                }
+                val config = JsonObject().apply {
+                    add("broadcast", JsonObject().apply { addProperty("self", false) })
+                    add("presence", JsonObject().apply { addProperty("key", "") })
+                    add("postgres_changes", changes)
+                }
+                val joinMsg = JsonObject().apply {
+                    addProperty("topic", topic)
+                    addProperty("event", "phx_join")
+                    add("payload", JsonObject().apply {
+                        add("config", config)
+                        addProperty("access_token", session.accessToken)
+                    })
+                    addProperty("ref", refCounter.getAndIncrement().toString())
+                }
+                webSocket.send(gson.toJson(joinMsg))
+
+                val tokenMsg = JsonObject().apply {
+                    addProperty("topic", topic)
+                    addProperty("event", "access_token")
+                    add("payload", JsonObject().apply { addProperty("access_token", session.accessToken) })
+                    addProperty("ref", refCounter.getAndIncrement().toString())
+                }
+                webSocket.send(gson.toJson(tokenMsg))
+
+                heartbeatTimer = Timer("desktop-notif-hb", true).apply {
+                    scheduleAtFixedRate(object : TimerTask() {
+                        override fun run() {
+                            val hb = JsonObject().apply {
+                                addProperty("topic", "phoenix")
+                                addProperty("event", "heartbeat")
+                                add("payload", JsonObject())
+                                addProperty("ref", refCounter.getAndIncrement().toString())
+                            }
+                            runCatching { webSocket.send(gson.toJson(hb)) }
+                        }
+                    }, 25_000L, 25_000L)
+                }
+                onConnected()
+            }
+
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                runCatching {
+                    val msg = JsonParser.parseString(text).takeIf { it.isJsonObject }?.asJsonObject ?: return
+                    if (msg.str("event") != "postgres_changes") return
+                    val data = msg.getAsJsonObject("payload")?.getAsJsonObject("data") ?: return
+                    if (data.str("table") != "user_notifications") return
+                    val evType = data.str("type").uppercase()
+                    val rec = data.get("record")?.takeIf { it.isJsonObject }?.asJsonObject ?: return
+                    val oldRec = data.get("old_record")?.takeIf { it.isJsonObject }?.asJsonObject
+                    val id = rec.str("id").trim()
+                    val recipientId = rec.str("recipient_user_id").trim()
+                    if (id.isBlank() || recipientId != session.userId) return
+                    val readAt = rec.str("read_at").takeIf { it.isNotBlank() }
+
+                    when (evType) {
+                        "INSERT" -> onEvent(
+                            DesktopNotificationRealtimeEvent.Insert(
+                                id = id,
+                                recipientUserId = recipientId,
+                                senderUserId = rec.str("sender_user_id"),
+                                animeId = rec.intVal("anime_id", 0),
+                                isRead = rec.boolVal("is_read", false),
+                                readAt = readAt,
+                                previewText = rec.str("preview_text")
+                            )
+                        )
+                        "UPDATE" -> {
+                            val oldIsRead: Boolean? = if (oldRec != null && oldRec.has("is_read") && !oldRec.get("is_read").isJsonNull) {
+                                runCatching { oldRec.get("is_read").asBoolean }.getOrNull()
+                            } else null
+                            onEvent(
+                                DesktopNotificationRealtimeEvent.Update(
+                                    id = id,
+                                    recipientUserId = recipientId,
+                                    animeId = rec.intVal("anime_id", 0),
+                                    oldIsRead = oldIsRead,
+                                    newIsRead = rec.boolVal("is_read", false),
+                                    readAt = readAt
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                heartbeatTimer?.cancel()
+                onDisconnected()
+            }
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                heartbeatTimer?.cancel()
+                onDisconnected()
+            }
+        })
     }
 }
 

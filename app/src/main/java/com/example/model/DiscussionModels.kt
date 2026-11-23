@@ -111,6 +111,7 @@ data class UserNotificationItem(
     val replyId: String? = null,
     val previewText: String = "",
     val isRead: Boolean = false,
+    val readAt: String? = null,
     val createdAt: String = ""
 ) {
     val actionSummary: String
