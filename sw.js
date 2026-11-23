@@ -1,4 +1,4 @@
-const CACHE_NAME = 'anime-universe-pwa-v2.18.0';
+const CACHE_NAME = 'anime-universe-pwa-v2.19.1';
 const EMOJI_CACHE_NAME = 'community-emoji-cache-v1';
 const STATIC_ASSETS = [
   '/',
@@ -64,7 +64,8 @@ self.addEventListener('fetch', (event) => {
     url.pathname.startsWith('/api/') ||
     url.pathname.startsWith('/downloads/') ||
     url.hostname.includes('supabase.co') ||
-    url.hostname.includes('anilist.co')
+    url.hostname.includes('anilist.co') ||
+    url.hostname.includes('jikan.moe')
   ) {
     return;
   }

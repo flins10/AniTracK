@@ -378,7 +378,14 @@ data class AnimeSeasonEntry(
     val status: String?,
     val episodes: Int?,
     val seasonYear: Int?,
-    val isCurrent: Boolean
+    val isCurrent: Boolean,
+    val partNumber: Int? = null,
+    val shortLabel: String = seasonNumber.toString(),
+    val displayLabel: String = if (partNumber != null && partNumber > 1) {
+        "Season $seasonNumber • Part $partNumber"
+    } else {
+        "Season $seasonNumber"
+    }
 )
 
 data class AnimeRecommendationItem(
@@ -520,47 +527,91 @@ object ProgressRules {
 }
 
 object SeasonRules {
+    private val NON_SERIES_FORMATS = setOf("MOVIE", "OVA", "SPECIAL", "MUSIC")
     private val EXPLICIT_SEASON_REGEX = Regex(
-        pattern = """(?i)(?:\bseason\s*(\d{1,2})\b|\b(\d{1,2})(?:st|nd|rd|th)\s+season\b|\bs(\d{1,2})\b)"""
+        pattern = """(?i)(?:\bseason\s*(\d{1,2})\b|\b(\d{1,2})(?:st|nd|rd|th)\s+season\b|\bs(\d{1,2})\b|\bdi\s*(\d{1,2})\s*ji\b|\bdai\s*(\d{1,2})\s*ki\b)"""
     )
-    private val TRAILING_SEASON_NUM_REGEX = Regex("""\s+(\d{1,2})$""")
-    private val TRAILING_ROMAN_REGEX = Regex("""(?i)\s+(II|III|IV|V|VI|VII|VIII|IX|X)(?:$|[:\-])""")
+    private val PINYIN_SEASON_REGEX = Regex(
+        pattern = """(?i)\bdi\s*(yi|er|san|si|wu|liu|qi|ba|jiu|shi)\s*ji\b"""
+    )
+    private val NON_SEASON_NUM_CONTEXT_REGEX = Regex(
+        pattern = """(?i)\b(part|cour|movie|film|special|ova|oad|episode|ep|chapter|vol|volume|no\.|number|stage|act|movie\s*#?)\s*([0-9ivx]+)?$"""
+    )
+    private val TRAILING_ROMAN_REGEX = Regex("""\s+(II|III|IV|V|VI)(?:$|[:\-])""")
+    private val TRAILING_SINGLE_DIGIT_SEASON_REGEX = Regex("""(?<!No\.\s)(?<!No\s)(?<!#)\s+([2-9])$""")
+    private val NON_SEASON_TITLE_WORDS = Regex(
+        pattern = """(?i)\b(movie|film|ova|oad|special|recap|prologue|teaser|pv|mini\s*theater|xiao\s*juchang|chibi|q[- ]?ban|fanwai|tebie\s*pian)\b"""
+    )
 
     fun clampSeason(requested: Int): Int = requested.coerceIn(1, 99)
 
-    fun inferSeasonFromTitle(title: String?): Int {
+    fun isNonSeriesFormat(format: String?): Boolean {
+        val norm = format?.trim()?.uppercase().orEmpty()
+        return norm in NON_SERIES_FORMATS
+    }
+
+    fun inferSeasonFromTitle(title: String?, format: String? = null): Int {
         if (title.isNullOrBlank()) return 1
+        if (isNonSeriesFormat(format)) return 1
         val cleaned = title.trim()
 
+        // 1. Explicit "Season N", "2nd Season", "S2", "Di 2 Ji", "Dai 2 Ki"
         EXPLICIT_SEASON_REGEX.find(cleaned)?.let { match ->
             val raw = match.groupValues.drop(1).firstOrNull { it.isNotBlank() }?.toIntOrNull()
-            if (raw != null && raw in 1..99) return raw
+            if (raw != null && raw in 1..20) return raw
         }
 
-        TRAILING_SEASON_NUM_REGEX.find(cleaned)?.let { match ->
-            val raw = match.groupValues[1].toIntOrNull()
-            if (raw != null && raw in 2..20) return raw
-        }
-
-        TRAILING_ROMAN_REGEX.find(cleaned)?.let { match ->
-            return when (match.groupValues[1].uppercase()) {
-                "II" -> 2
-                "III" -> 3
-                "IV" -> 4
-                "V" -> 5
-                "VI" -> 6
-                "VII" -> 7
-                "VIII" -> 8
-                "IX" -> 9
-                "X" -> 10
+        // 2. Explicit Chinese Pinyin season markers ("Di Er Ji" = Season 2, etc.)
+        PINYIN_SEASON_REGEX.find(cleaned)?.let { match ->
+            return when (match.groupValues[1].lowercase()) {
+                "yi" -> 1
+                "er" -> 2
+                "san" -> 3
+                "si" -> 4
+                "wu" -> 5
+                "liu" -> 6
+                "qi" -> 7
+                "ba" -> 8
+                "jiu" -> 9
+                "shi" -> 10
                 else -> 1
+            }
+        }
+
+        // Do not guess season numbers from Movies/Specials/OVAs/Parts/numbered titles (e.g. "Kaiju No. 8", "Mob Psycho 100", "Part 2")
+        if (NON_SEASON_TITLE_WORDS.containsMatchIn(cleaned)) return 1
+        if (NON_SEASON_NUM_CONTEXT_REGEX.containsMatchIn(cleaned)) return 1
+
+        // 3. Case-sensitive uppercase Roman numerals ("Soul Land II", "Title III") when not preceded by Part/Movie/etc.
+        TRAILING_ROMAN_REGEX.find(cleaned)?.let { match ->
+            val before = cleaned.substring(0, match.range.first).trim()
+            if (!NON_SEASON_NUM_CONTEXT_REGEX.containsMatchIn(before)) {
+                return when (match.groupValues[1]) {
+                    "II" -> 2
+                    "III" -> 3
+                    "IV" -> 4
+                    "V" -> 5
+                    "VI" -> 6
+                    else -> 1
+                }
+            }
+        }
+
+        // 4. Safe trailing single digit 2..9 ("A Will Eternal 3", "Kingdom 3") after non-season prefixes are excluded
+        TRAILING_SINGLE_DIGIT_SEASON_REGEX.find(cleaned)?.let { match ->
+            val before = cleaned.substring(0, match.range.first).trim()
+            if (!NON_SEASON_NUM_CONTEXT_REGEX.containsMatchIn(before) &&
+                !Regex("""(?i)\b(?:no\.?|#|grade|class|unit|type|level|room|floor|zero|one)$""").containsMatchIn(before)
+            ) {
+                match.groupValues[1].toIntOrNull()?.let { if (it in 2..9) return it }
             }
         }
         return 1
     }
 
-    fun resolveInitialSeason(storedSeason: Int, title: String?): Int {
-        return if (storedSeason > 1) clampSeason(storedSeason) else inferSeasonFromTitle(title)
+    fun resolveInitialSeason(storedSeason: Int, title: String?, format: String? = null): Int {
+        if (isNonSeriesFormat(format)) return 1
+        return if (storedSeason > 1) clampSeason(storedSeason) else inferSeasonFromTitle(title, format)
     }
 }
 

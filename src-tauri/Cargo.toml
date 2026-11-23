@@ -1,0 +1,18 @@
+[package]
+name = "anime-universe"
+version = "2.19.1"
+description = "ANIME UNIVERSE — Native Tauri v2 wrapper for https://animeuniverse.pages.dev"
+authors = ["Anime Universe"]
+edition = "2021"
+
+[lib]
+name = "anime_universe_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

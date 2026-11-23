@@ -1814,7 +1814,7 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updateSearchQuery(query: String) {
         _searchQuery.value = query
-        performSearch(resetPage = true, debounceMs = if (query.isBlank()) 0L else 260L)
+        performSearch(resetPage = true, debounceMs = if (query.isBlank()) 0L else 380L)
     }
 
     fun updateFilterState(newState: DiscoverFilterState) {

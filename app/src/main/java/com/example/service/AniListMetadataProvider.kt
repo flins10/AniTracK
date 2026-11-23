@@ -15,21 +15,179 @@ import com.example.model.AnimeSeasonEntry
 import com.example.util.EnglishTitleMapper
 import com.example.util.EpisodeDataParser
 import com.example.util.ErrorSanitizer
+import com.example.data.remote.AniListCoverImage
+import com.example.data.remote.AniListFuzzyDate
+import com.example.data.remote.AniListTitle
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONObject
+import retrofit2.Response
+import java.net.URLEncoder
 import java.time.Instant
 import java.time.ZoneId
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 
 class AniListMetadataProvider(
     private val apiService: AniListApiService = AniListApiService.create()
 ) : AnimeMetadataProvider {
 
+    private data class CachedSearchPage(
+        val timestampMs: Long,
+        val media: List<AniListMedia>,
+        val hasNext: Boolean
+    )
+
     private val seasonNodeCache = ConcurrentHashMap<Int, AniListMedia>()
+    private val searchCache = ConcurrentHashMap<String, CachedSearchPage>()
+    private val fallbackHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(12, TimeUnit.SECONDS)
+            .readTimeout(12, TimeUnit.SECONDS)
+            .build()
+    }
+
+    private suspend fun <T> executeWithRetry(
+        maxAttempts: Int = 3,
+        call: suspend () -> Response<T>
+    ): Response<T>? {
+        var lastResponse: Response<T>? = null
+        for (attempt in 0 until maxAttempts) {
+            try {
+                val resp = call()
+                lastResponse = resp
+                if (resp.isSuccessful) return resp
+                if (resp.code() == 429 || resp.code() in 500..599) {
+                    if (attempt < maxAttempts - 1) {
+                        val retryAfterSec = resp.headers()["Retry-After"]?.toLongOrNull()
+                        val waitMs = if (retryAfterSec != null && retryAfterSec in 1..4) {
+                            retryAfterSec * 1000L
+                        } else {
+                            800L * (attempt + 1)
+                        }
+                        delay(waitMs)
+                        continue
+                    }
+                }
+                return resp
+            } catch (_: Exception) {
+                if (attempt < maxAttempts - 1) {
+                    delay(650L * (attempt + 1))
+                }
+            }
+        }
+        return lastResponse
+    }
+
+    private fun fetchJikanFallback(
+        query: String,
+        format: String?,
+        status: String?,
+        page: Int,
+        perPage: Int
+    ): Pair<List<AniListMedia>, Boolean>? {
+        return runCatching {
+            val encodedQ = URLEncoder.encode(query, "UTF-8")
+            val limit = perPage.coerceIn(1, 25)
+            val sb = StringBuilder("https://api.jikan.moe/v4/anime?q=$encodedQ&page=$page&limit=$limit&sfw=true")
+            when (format?.uppercase()) {
+                "TV" -> sb.append("&type=tv")
+                "MOVIE" -> sb.append("&type=movie")
+                "OVA" -> sb.append("&type=ova")
+                "ONA" -> sb.append("&type=ona")
+                "SPECIAL" -> sb.append("&type=special")
+            }
+            when (status?.uppercase()) {
+                "RELEASING" -> sb.append("&status=airing")
+                "FINISHED" -> sb.append("&status=complete")
+                "NOT_YET_RELEASED" -> sb.append("&status=upcoming")
+            }
+            val req = Request.Builder()
+                .url(sb.toString())
+                .header("Accept", "application/json")
+                .build()
+            fallbackHttpClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@runCatching null
+                val body = resp.body?.string().orEmpty()
+                val root = JSONObject(body)
+                val dataArr = root.optJSONArray("data") ?: return@runCatching null
+                val hasNext = root.optJSONObject("pagination")?.optBoolean("has_next_page", false) ?: false
+                val items = ArrayList<AniListMedia>(dataArr.length())
+                for (i in 0 until dataArr.length()) {
+                    val obj = dataArr.optJSONObject(i) ?: continue
+                    val malId = obj.optInt("mal_id", 0)
+                    if (malId <= 0) continue
+                    val titleDefault = obj.optString("title").takeIf { it.isNotBlank() }
+                    val titleEng = obj.optString("title_english").takeIf { it.isNotBlank() }
+                    val titleJp = obj.optString("title_japanese").takeIf { it.isNotBlank() }
+                    val synArr = obj.optJSONArray("title_synonyms")
+                    val synonyms = mutableListOf<String>()
+                    if (synArr != null) {
+                        for (j in 0 until synArr.length()) {
+                            synArr.optString(j).takeIf { it.isNotBlank() }?.let { synonyms.add(it) }
+                        }
+                    }
+                    val imgJpg = obj.optJSONObject("images")?.optJSONObject("jpg")
+                    val cover = imgJpg?.optString("large_image_url")?.takeIf { it.isNotBlank() }
+                        ?: imgJpg?.optString("image_url").orEmpty()
+                    val jikanType = obj.optString("type").uppercase()
+                    val mappedFormat = when (jikanType) {
+                        "TV" -> "TV"
+                        "MOVIE" -> "MOVIE"
+                        "OVA" -> "OVA"
+                        "ONA" -> "ONA"
+                        "SPECIAL", "TV SPECIAL" -> "SPECIAL"
+                        else -> "TV"
+                    }
+                    val jikanStatus = obj.optString("status").lowercase()
+                    val mappedStatus = when {
+                        jikanStatus.contains("currently airing") -> "RELEASING"
+                        jikanStatus.contains("not yet") -> "NOT_YET_RELEASED"
+                        else -> "FINISHED"
+                    }
+                    val eps = obj.optInt("episodes", -1).takeIf { it > 0 }
+                    val year = obj.optInt("year", -1).takeIf { it > 0 }
+                    val scoreFloat = obj.optDouble("score", -1.0)
+                    val score100 = if (scoreFloat > 0.0) (scoreFloat * 10.0).toInt().coerceIn(1, 100) else null
+                    val genresArr = obj.optJSONArray("genres")
+                    val genres = mutableListOf<String>()
+                    if (genresArr != null) {
+                        for (g in 0 until genresArr.length()) {
+                            genresArr.optJSONObject(g)?.optString("name")?.takeIf { it.isNotBlank() }?.let { genres.add(it) }
+                        }
+                    }
+                    items.add(
+                        AniListMedia(
+                            id = malId,
+                            type = "ANIME",
+                            title = AniListTitle(
+                                romaji = titleDefault,
+                                english = titleEng,
+                                native = titleJp,
+                                userPreferred = titleEng ?: titleDefault
+                            ),
+                            coverImage = AniListCoverImage(large = cover, extraLarge = cover),
+                            format = mappedFormat,
+                            status = mappedStatus,
+                            episodes = eps,
+                            genres = genres,
+                            averageScore = score100,
+                            popularity = obj.optInt("members", 0),
+                            seasonYear = year,
+                            description = obj.optString("synopsis").takeIf { it.isNotBlank() },
+                            countryOfOrigin = if (mappedFormat == "ONA" && EnglishTitleMapper.isLikelyPinyin(titleDefault.orEmpty())) "CN" else "JP",
+                            synonyms = synonyms,
+                            startDate = year?.let { AniListFuzzyDate(year = it) }
+                        )
+                    )
+                }
+                items to hasNext
+            }
+        }.getOrNull()
+    }
 
     override suspend fun searchCatalog(
         query: String?,
@@ -51,15 +209,47 @@ class AniListMetadataProvider(
             val cleanFormat = format?.takeIf { it.isNotBlank() && it != "ALL" }
             val cleanCountry = countryOfOrigin?.takeIf { it.isNotBlank() && it != "ALL" }
 
+            val cacheKey = listOf(
+                cleanQuery?.lowercase().orEmpty(),
+                cleanGenre.orEmpty(),
+                cleanSeason.orEmpty(),
+                seasonYear?.toString().orEmpty(),
+                cleanStatus.orEmpty(),
+                cleanFormat.orEmpty(),
+                cleanCountry.orEmpty(),
+                sort,
+                page.toString(),
+                perPage.toString()
+            ).joinToString("|")
+
+            val cached = searchCache[cacheKey]
+            if (cached != null && (System.currentTimeMillis() - cached.timestampMs) < 60_000L) {
+                return@withContext Result.success(cached.media to cached.hasNext)
+            }
+
             val effectiveSort = if (cleanQuery != null) {
                 listOf("SEARCH_MATCH", sort, "POPULARITY_DESC").distinct()
             } else {
                 listOf(sort)
             }
 
-            suspend fun runQuery(searchTerm: String?, targetPage: Int, targetPerPage: Int): Pair<List<AniListMedia>, Boolean>? {
-                val gqlQuery = AniListQueries.buildMediaQuery(
-                    hasSearch = searchTerm != null,
+            val extraTerms = if (cleanQuery != null && page == 1 && cleanQuery.length >= 2) {
+                EnglishTitleMapper.expandSearchQueries(
+                    rawQuery = cleanQuery,
+                    donghuaOnly = cleanCountry.equals("CN", ignoreCase = true),
+                    maxExtra = 2
+                )
+            } else {
+                emptyList()
+            }
+
+            var mergedMedia: List<AniListMedia>? = null
+            var hasNext = false
+
+            if (cleanQuery != null && extraTerms.isNotEmpty()) {
+                // Execute primary + dictionary aliases in ONE single AniList HTTP request!
+                val batchedQuery = AniListQueries.buildBatchedSearchQuery(
+                    aliasCount = extraTerms.size,
                     hasGenre = cleanGenre != null,
                     hasSeason = cleanSeason != null,
                     hasSeasonYear = seasonYear != null,
@@ -68,11 +258,46 @@ class AniListMetadataProvider(
                     hasCountryOfOrigin = cleanCountry != null
                 )
                 val variables = mutableMapOf<String, Any?>(
-                    "page" to targetPage,
-                    "perPage" to targetPerPage,
+                    "page" to page,
+                    "perPage" to perPage,
+                    "sort" to effectiveSort,
+                    "search" to cleanQuery
+                )
+                if (cleanGenre != null) variables["genre"] = cleanGenre
+                if (cleanSeason != null) variables["season"] = cleanSeason
+                if (seasonYear != null) variables["seasonYear"] = seasonYear
+                if (cleanStatus != null) variables["status"] = cleanStatus
+                if (cleanFormat != null) variables["format"] = cleanFormat
+                if (cleanCountry != null) variables["countryOfOrigin"] = cleanCountry
+                extraTerms.forEachIndexed { idx, term -> variables["alias$idx"] = term }
+
+                val response = executeWithRetry {
+                    apiService.queryMultiPageMedia(AniListRequest(query = batchedQuery, variables = variables))
+                }
+                if (response?.isSuccessful == true) {
+                    val data = response.body()?.data
+                    val primaryList = data?.primary?.media.orEmpty()
+                    val alias0List = data?.alias0?.media.orEmpty()
+                    val alias1List = data?.alias1?.media.orEmpty()
+                    hasNext = (data?.primary?.pageInfo?.hasNextPage ?: false) && primaryList.isNotEmpty()
+                    mergedMedia = (primaryList + alias0List + alias1List).distinctBy { it.id }
+                }
+            } else {
+                val gqlQuery = AniListQueries.buildMediaQuery(
+                    hasSearch = cleanQuery != null,
+                    hasGenre = cleanGenre != null,
+                    hasSeason = cleanSeason != null,
+                    hasSeasonYear = seasonYear != null,
+                    hasStatus = cleanStatus != null,
+                    hasFormat = cleanFormat != null,
+                    hasCountryOfOrigin = cleanCountry != null
+                )
+                val variables = mutableMapOf<String, Any?>(
+                    "page" to page,
+                    "perPage" to perPage,
                     "sort" to effectiveSort
                 )
-                if (searchTerm != null) variables["search"] = searchTerm
+                if (cleanQuery != null) variables["search"] = cleanQuery
                 if (cleanGenre != null) variables["genre"] = cleanGenre
                 if (cleanSeason != null) variables["season"] = cleanSeason
                 if (seasonYear != null) variables["seasonYear"] = seasonYear
@@ -80,40 +305,32 @@ class AniListMetadataProvider(
                 if (cleanFormat != null) variables["format"] = cleanFormat
                 if (cleanCountry != null) variables["countryOfOrigin"] = cleanCountry
 
-                val response = apiService.queryMedia(AniListRequest(query = gqlQuery, variables = variables))
-                if (!response.isSuccessful) return null
-                val pageData = response.body()?.data?.Page
-                return pageData?.media.orEmpty() to (pageData?.pageInfo?.hasNextPage ?: false)
+                val response = executeWithRetry {
+                    apiService.queryMedia(AniListRequest(query = gqlQuery, variables = variables))
+                }
+                if (response?.isSuccessful == true) {
+                    val pageData = response.body()?.data?.Page
+                    mergedMedia = pageData?.media.orEmpty()
+                    hasNext = (pageData?.pageInfo?.hasNextPage ?: false) && mergedMedia.isNotEmpty()
+                }
             }
 
-            val primaryResult = runQuery(cleanQuery, page, perPage)
-                ?: return@withContext Result.failure(Exception("Unable to load catalog right now. Please try again."))
-
-            var mergedMedia = primaryResult.first
-            val hasNext = primaryResult.second
-
-            // On page 1 of a keyword search, also query matched Donghua/Anime Pinyin/Romaji aliases
-            // in parallel so English keywords always surface Donghua even if AniList only indexed Pinyin.
-            if (cleanQuery != null && page == 1 && cleanQuery.length >= 2) {
-                val extraTerms = EnglishTitleMapper.expandSearchQueries(
-                    rawQuery = cleanQuery,
-                    donghuaOnly = cleanCountry.equals("CN", ignoreCase = true),
-                    maxExtra = 2
-                )
-                if (extraTerms.isNotEmpty()) {
-                    val extras = coroutineScope {
-                        extraTerms.map { term ->
-                            async {
-                                runCatching { runQuery(term, 1, 10)?.first.orEmpty() }.getOrDefault(emptyList())
-                            }
-                        }.awaitAll().flatten()
-                    }
-                    if (extras.isNotEmpty()) {
-                        mergedMedia = (mergedMedia + extras).distinctBy { it.id }
-                    }
+            // Automatic Jikan v4 fallback if AniList rate-limited (429) or failed during a search
+            if (mergedMedia == null && cleanQuery != null) {
+                val jikan = fetchJikanFallback(cleanQuery, cleanFormat, cleanStatus, page, perPage)
+                if (jikan != null) {
+                    mergedMedia = jikan.first
+                    hasNext = jikan.second
                 }
-                // Rank results by multi-keyword relevance across resolved English, Romaji/Pinyin, and synonyms
-                mergedMedia = mergedMedia.sortedWith(
+            }
+
+            if (mergedMedia == null) {
+                return@withContext Result.failure(Exception("Catalog is temporarily rate-limited. Tap Retry to search again."))
+            }
+
+            var finalList = mergedMedia
+            if (cleanQuery != null && page == 1) {
+                finalList = finalList.sortedWith(
                     compareByDescending<AniListMedia> { media ->
                         val isDonghua = media.countryOfOrigin.equals("CN", ignoreCase = true) ||
                             media.genres.orEmpty().any { it.contains("Donghua", ignoreCase = true) }
@@ -134,7 +351,10 @@ class AniListMetadataProvider(
                 )
             }
 
-            Result.success(mergedMedia to hasNext)
+            if (searchCache.size > 80) searchCache.clear()
+            searchCache[cacheKey] = CachedSearchPage(System.currentTimeMillis(), finalList, hasNext)
+
+            Result.success(finalList to hasNext)
         } catch (e: Exception) {
             Result.failure(Exception(ErrorSanitizer.sanitize(e, "Unable to reach catalog right now.")))
         }
@@ -201,13 +421,15 @@ class AniListMetadataProvider(
 
     override suspend fun getMediaDetails(anilistId: Int): Result<AniListMedia?> = withContext(Dispatchers.IO) {
         try {
-            val response = apiService.querySingleMedia(
-                AniListRequest(
-                    query = AniListQueries.MEDIA_DETAILS_QUERY,
-                    variables = mapOf("id" to anilistId)
+            val response = executeWithRetry {
+                apiService.querySingleMedia(
+                    AniListRequest(
+                        query = AniListQueries.MEDIA_DETAILS_QUERY,
+                        variables = mapOf("id" to anilistId)
+                    )
                 )
-            )
-            if (!response.isSuccessful) {
+            }
+            if (response?.isSuccessful != true) {
                 return@withContext Result.failure(Exception("Unable to load series details right now."))
             }
             val media = response.body()?.data?.Media
@@ -255,6 +477,25 @@ class AniListMetadataProvider(
                 }
             } catch (_: Exception) {
                 if (attempt < 2) delay(450L)
+            }
+        }
+        // Fallback to single-media lookup if the batch endpoint failed or threw
+        if (fetched.isEmpty() && missing.size <= 10) {
+            for (id in missing) {
+                try {
+                    val singleResp = apiService.querySingleMedia(
+                        AniListRequest(
+                            query = AniListQueries.MEDIA_DETAILS_QUERY,
+                            variables = mapOf("id" to id)
+                        )
+                    )
+                    val node = singleResp.body()?.data?.Media
+                    if (node != null && node.id > 0) {
+                        seasonNodeCache[node.id] = node
+                        fetched.add(node)
+                    }
+                } catch (_: Exception) {
+                }
             }
         }
         return cached + fetched
@@ -360,7 +601,8 @@ class AniListMetadataProvider(
                 isDonghua = isDonghua,
                 startYear = media.startDate?.year,
                 startMonth = media.startDate?.month,
-                startDay = media.startDate?.day
+                startDay = media.startDate?.day,
+                format = media.format
             )
 
             val airingTime = media.nextAiringEpisode?.airingAt ?: existing?.airingTimeUnix
@@ -384,7 +626,7 @@ class AniListMetadataProvider(
                 bannerImage = media.bannerImage ?: existing?.bannerImage,
                 format = media.format ?: existing?.format ?: "TV",
                 status = media.status ?: existing?.status ?: "RELEASING",
-                totalEpisodes = parsedEp.totalEpisodes ?: existing?.totalEpisodes,
+                totalEpisodes = parsedEp.totalEpisodes,
                 currentEpisode = parsedEp.airedEpisodeCount,
                 watchedEpisodeCount = existing?.watchedEpisodeCount ?: 0,
                 userStatus = existing?.userStatus,

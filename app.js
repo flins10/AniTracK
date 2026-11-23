@@ -413,6 +413,7 @@ const state = {
   discoverHasNextPage: true,
   discoverLoadingMore: false,
   discoverLastPageStartIndex: 0,
+  discoverError: '',
   isSearching: false,
 
   // Community State
@@ -1487,11 +1488,17 @@ function scoreSingleTextMatch(normQuery, queryTokens, rawText) {
   return exactWord * 28 + prefixWord * 20 + substrWord * 10;
 }
 
+const SEARCH_STOP_WORDS = new Set([
+  'of', 'the', 'a', 'an', 'in', 'to', 'and', 'or', 'for', 'on', 'at', 'by', 'as', 'is', 'it', 'my'
+]);
+
 function expandSearchQueries(rawQuery, donghuaOnly = false, maxExtra = 2) {
   const normQuery = normalizeTitleKey(rawQuery);
   if (normQuery.length < 2) return [];
-  const queryTokens = normQuery.split(' ').filter((t) => t.length >= 2);
-  if (!queryTokens.length) return [];
+  const rawTokens = normQuery.split(' ').filter((t) => t.length >= 2);
+  if (!rawTokens.length) return [];
+  const contentTokens = rawTokens.filter((t) => !SEARCH_STOP_WORDS.has(t));
+  const effectiveTokens = contentTokens.length ? contentTokens : rawTokens;
 
   const scored = [];
   const seen = new Set();
@@ -1504,7 +1511,9 @@ function expandSearchQueries(rawQuery, donghuaOnly = false, maxExtra = 2) {
     const candidates = [englishTitle, ...(alts || [])];
     let best = 0;
     for (const c of candidates) {
-      const sc = scoreSingleTextMatch(normQuery, queryTokens, c);
+      const cNorm = normalizeTitleKey(c);
+      if (contentTokens.length && !contentTokens.some((tok) => cNorm.includes(tok))) continue;
+      const sc = scoreSingleTextMatch(normQuery, effectiveTokens, c);
       if (sc > best) best = sc;
     }
     if (best >= 40) {
@@ -2113,6 +2122,7 @@ let discoverSearchDebounceTimer = null;
 
 function mapDiscoverMediaItem(m) {
   const airingAt = m.nextAiringEpisode?.airingAt || null;
+  const nextEpNum = m.nextAiringEpisode?.episode || null;
   const dow = airingAt ? (((new Date(airingAt * 1000).getDay() + 6) % 7) + 1) : ((m.id % 7) + 1);
   const genres = normalizeAnimeGenresWithAdult(m.genres || [], Boolean(m.isAdult));
   const synonyms = Array.isArray(m.synonyms) ? m.synonyms.filter(Boolean) : [];
@@ -2121,6 +2131,16 @@ function mapDiscoverMediaItem(m) {
   const officialEnglish = m.title?.english || '';
   const romaji = m.title?.romaji || '';
   const resolvedEnglish = resolveEnglishTitle(officialEnglish, romaji, synonyms, isDonghua) || officialEnglish || romaji || 'Anime';
+  const fmt = String(m.format || 'TV').toUpperCase();
+  const medStatus = String(m.status || 'RELEASING').toUpperCase();
+  const rawEps = m.episodes && Number(m.episodes) > 0 ? Number(m.episodes) : null;
+  // Normalize totalEpisodes: Movies default to 1; ongoing Donghua with stale lower episode cap become ongoing (null)
+  const effectiveTotalEpisodes =
+    fmt === 'MOVIE'
+      ? (rawEps || 1)
+      : medStatus === 'RELEASING' && isDonghua && rawEps && nextEpNum && nextEpNum > rawEps
+      ? null
+      : rawEps;
   return {
     animeId: m.id,
     title: resolvedEnglish,
@@ -2132,18 +2152,19 @@ function mapDiscoverMediaItem(m) {
     popularity: m.popularity || 0,
     coverImage: m.coverImage?.extraLarge || m.coverImage?.large || '',
     bannerImage: m.bannerImage || '',
-    format: m.format || 'TV',
-    mediaStatus: m.status || 'RELEASING',
+    format: fmt,
+    mediaStatus: medStatus,
+    duration: m.duration || null,
     seasonYear: m.seasonYear || null,
     countryOfOrigin: country,
-    totalEpisodes: m.episodes || null,
+    totalEpisodes: effectiveTotalEpisodes,
     averageScore: m.averageScore || null,
     genres,
     isAdult: isHentaiOrAdultAnime(genres, Boolean(m.isAdult)),
     synopsis: (m.description || '').replace(/<[^>]+>/g, ''),
     airingDayOfWeek: dow,
     airingTimeUnix: airingAt,
-    nextEpisodeNumber: m.nextAiringEpisode?.episode || null,
+    nextEpisodeNumber: nextEpNum,
     status: 'watching',
     season: 1,
     watchedEpisodes: 0,
@@ -2157,6 +2178,13 @@ function mapDiscoverMediaItem(m) {
 function renderDiscoverResultsShellHtml() {
   if (state.isSearching) {
     return `<div class="app-card" style="text-align:center;padding:48px;"><p style="color:var(--accent-primary);">Searching Anime &amp; Donghua catalog...</p></div>`;
+  }
+  if (!state.discover.length && state.discoverError) {
+    return `<div class="app-card" style="text-align:center;padding:44px 20px;">
+      <p style="color:var(--text-primary);font-size:16px;font-weight:700;margin:0 0 8px;">Catalog temporarily busy</p>
+      <p style="color:var(--text-muted);font-size:13px;margin:0 0 18px;">${escapeHtml(state.discoverError)}</p>
+      <button type="button" class="capsule-pill active" id="btn-discover-retry" style="height:44px;padding:0 22px;">Retry Search</button>
+    </div>`;
   }
   if (!state.discover.length) {
     const q = state.searchQuery.trim();
@@ -2187,6 +2215,10 @@ function updateDiscoverResultsShellDom() {
     const btnMore = document.getElementById('btn-discover-load-more');
     if (btnMore) {
       btnMore.onclick = () => fetchDiscoverCatalog(true);
+    }
+    const btnRetry = document.getElementById('btn-discover-retry');
+    if (btnRetry) {
+      btnRetry.onclick = () => fetchDiscoverCatalog(false, { inPlace: true, forceRefresh: true });
     }
     return true;
   }
@@ -2378,14 +2410,91 @@ window.addEventListener(
   { passive: true }
 );
 
+const discoverSearchCache = new Map();
+
+async function fetchJikanSearchFallback(query, format, status, page, perPage, showAdult) {
+  try {
+    const params = new URLSearchParams({
+      q: query,
+      page: String(page),
+      limit: String(Math.min(25, Math.max(1, perPage)))
+    });
+    if (!showAdult) params.set('sfw', 'true');
+    const fmtMap = { TV: 'tv', MOVIE: 'movie', OVA: 'ova', ONA: 'ona', SPECIAL: 'special' };
+    if (format && fmtMap[format]) params.set('type', fmtMap[format]);
+    const stMap = { RELEASING: 'airing', FINISHED: 'complete', NOT_YET_RELEASED: 'upcoming' };
+    if (status && stMap[status]) params.set('status', stMap[status]);
+
+    const resp = await fetch(`https://api.jikan.moe/v4/anime?${params.toString()}`);
+    if (!resp.ok) return null;
+    const json = await resp.json();
+    const list = Array.isArray(json?.data) ? json.data : [];
+    const hasNext = Boolean(json?.pagination?.has_next_page) && list.length > 0;
+    const mapped = list
+      .map((item) => {
+        const malId = Number(item?.mal_id || 0);
+        if (!malId) return null;
+        const jType = String(item?.type || 'TV').toUpperCase();
+        const mappedFmt =
+          jType === 'MOVIE'
+            ? 'MOVIE'
+            : jType === 'OVA'
+            ? 'OVA'
+            : jType === 'ONA'
+            ? 'ONA'
+            : jType === 'SPECIAL' || jType === 'TV SPECIAL'
+            ? 'SPECIAL'
+            : 'TV';
+        const jStatus = String(item?.status || '').toLowerCase();
+        const mappedStatus = jStatus.includes('currently airing')
+          ? 'RELEASING'
+          : jStatus.includes('not yet')
+          ? 'NOT_YET_RELEASED'
+          : 'FINISHED';
+        const romaji = item?.title || '';
+        const isDonghua = mappedFmt === 'ONA' && isLikelyPinyin(romaji);
+        return mapDiscoverMediaItem({
+          id: malId,
+          title: {
+            english: item?.title_english || '',
+            romaji,
+            native: item?.title_japanese || ''
+          },
+          synonyms: Array.isArray(item?.title_synonyms) ? item.title_synonyms : [],
+          popularity: Number(item?.members || 0),
+          coverImage: {
+            extraLarge: item?.images?.jpg?.large_image_url || item?.images?.jpg?.image_url || '',
+            large: item?.images?.jpg?.image_url || ''
+          },
+          bannerImage: '',
+          format: mappedFmt,
+          status: mappedStatus,
+          seasonYear: item?.year || null,
+          episodes: item?.episodes || (mappedFmt === 'MOVIE' ? 1 : null),
+          averageScore: item?.score ? Math.round(Number(item.score) * 10) : null,
+          countryOfOrigin: isDonghua ? 'CN' : 'JP',
+          genres: Array.isArray(item?.genres) ? item.genres.map((g) => g?.name).filter(Boolean) : [],
+          isAdult: false,
+          description: item?.synopsis || ''
+        });
+      })
+      .filter(Boolean);
+    return { items: mapped, hasNext };
+  } catch (_) {
+    return null;
+  }
+}
+
 async function fetchDiscoverCatalog(loadMore = false, options = {}) {
   const inPlace = Boolean(options?.inPlace);
+  const forceRefresh = Boolean(options?.forceRefresh);
   if (loadMore) {
     if (state.isSearching || state.discoverLoadingMore || !state.discoverHasNextPage) return;
     state.discoverLoadingMore = true;
     updateDiscoverFooterDom();
   } else {
     state.isSearching = true;
+    state.discoverError = '';
     state.discoverPage = 1;
     state.discoverHasNextPage = true;
     state.discoverLoadingMore = false;
@@ -2403,12 +2512,61 @@ async function fetchDiscoverCatalog(loadMore = false, options = {}) {
     ? ['SEARCH_MATCH', ...(baseSort !== 'SEARCH_MATCH' ? [baseSort] : [])]
     : [baseSort];
 
+  const cacheKey = JSON.stringify({
+    q: trimmedSearch.toLowerCase(),
+    mode: state.discoverMode,
+    sort: baseSort,
+    fmt: state.discoverFormat,
+    st: state.discoverStatus,
+    genre: state.discoverGenre || '',
+    adult: Boolean(state.prefs.showAdultContent),
+    page: targetPage
+  });
+
+  if (!forceRefresh) {
+    const cached = discoverSearchCache.get(cacheKey);
+    if (cached && Date.now() - cached.ts < 60_000) {
+      if (myToken !== discoverFetchToken) return;
+      if (loadMore) {
+        const existingIds = new Set(state.discover.map((d) => Number(d.animeId)));
+        const uniqueNew = cached.items.filter((item) => !existingIds.has(Number(item.animeId)));
+        const prevCount = state.discover.length;
+        state.discoverPage = targetPage;
+        state.discoverHasNextPage = cached.hasNext;
+        state.discoverLoadingMore = false;
+        if (uniqueNew.length > 0) {
+          state.discoverLastPageStartIndex = prevCount;
+          state.discover = [...state.discover, ...uniqueNew];
+        }
+        if (state.tab === 'discover' && updateDiscoverResultsShellDom()) {
+          updateDiscoverFooterDom();
+        } else {
+          renderApp();
+        }
+      } else {
+        state.discover = cached.items;
+        state.discoverError = '';
+        state.discoverPage = 1;
+        state.discoverHasNextPage = cached.hasNext;
+        state.discoverLastPageStartIndex = 0;
+        state.isSearching = false;
+        if (!(inPlace && state.tab === 'discover' && updateDiscoverResultsShellDom())) {
+          renderApp();
+        }
+        requestAnimationFrame(() => checkDiscoverInfiniteScroll());
+      }
+      return;
+    }
+  }
+
   const baseVariables = {
     page: targetPage,
     perPage: 30,
-    isAdult: Boolean(state.prefs.showAdultContent),
     sort: effectiveSort
   };
+  // CRITICAL: Only pass isAdult: false when Safe Mode is ON; OMIT isAdult when adult content is enabled
+  // (Passing isAdult: true tells AniList to return ONLY adult/hentai entries and hides all normal anime/donghua!)
+  if (!state.prefs.showAdultContent) baseVariables.isAdult = false;
   if (trimmedSearch) baseVariables.search = trimmedSearch;
   if (state.discoverFormat !== 'ALL') baseVariables.format = state.discoverFormat;
   if (state.discoverStatus !== 'ALL') baseVariables.status = state.discoverStatus;
@@ -2419,21 +2577,73 @@ async function fetchDiscoverCatalog(loadMore = false, options = {}) {
     baseVariables.seasonYear = new Date().getFullYear();
   }
 
-  const gql = `
-    query(
-      $page: Int,
-      $perPage: Int,
-      $search: String,
-      $sort: [MediaSort],
-      $format: MediaFormat,
-      $status: MediaStatus,
-      $genre: String,
-      $countryOfOrigin: CountryCode,
-      $season: MediaSeason,
-      $seasonYear: Int,
-      $isAdult: Boolean
-    ) {
-      Page(page: $page, perPage: $perPage) {
+  const extraQueries =
+    !loadMore && trimmedSearch.length >= 2
+      ? expandSearchQueries(trimmedSearch, state.discoverMode === 'donghua', 2)
+      : [];
+
+  const mediaFields = `
+    id
+    title { english romaji native }
+    synonyms
+    popularity
+    coverImage { extraLarge large }
+    bannerImage
+    format
+    status
+    seasonYear
+    episodes
+    duration
+    averageScore
+    countryOfOrigin
+    genres
+    isAdult
+    description(asHtml: false)
+    nextAiringEpisode { airingAt episode }
+  `;
+
+  const varDecls = [
+    '$page: Int',
+    '$perPage: Int',
+    '$search: String',
+    '$sort: [MediaSort]',
+    '$format: MediaFormat',
+    '$status: MediaStatus',
+    '$genre: String',
+    '$countryOfOrigin: CountryCode',
+    '$season: MediaSeason',
+    '$seasonYear: Int',
+    '$isAdult: Boolean'
+  ];
+  const aliasBlocks = extraQueries
+    .map((alias, idx) => {
+      varDecls.push(`$alias${idx}: String`);
+      baseVariables[`alias${idx}`] = alias;
+      return `
+        alias${idx}: Page(page: 1, perPage: 12) {
+          media(
+            type: ANIME,
+            search: $alias${idx},
+            sort: [SEARCH_MATCH, POPULARITY_DESC],
+            format: $format,
+            status: $status,
+            genre: $genre,
+            countryOfOrigin: $countryOfOrigin,
+            season: $season,
+            seasonYear: $seasonYear,
+            isAdult: $isAdult
+          ) {
+            ${mediaFields}
+          }
+        }
+      `;
+    })
+    .join('\n');
+
+  // Execute primary + dictionary aliases in ONE single batched GraphQL HTTP request (prevents AniList 429 bursts!)
+  const batchedGql = `
+    query(${varDecls.join(', ')}) {
+      primary: Page(page: $page, perPage: $perPage) {
         pageInfo {
           hasNextPage
           currentPage
@@ -2450,89 +2660,92 @@ async function fetchDiscoverCatalog(loadMore = false, options = {}) {
           seasonYear: $seasonYear,
           isAdult: $isAdult
         ) {
-          id
-          title { english romaji native }
-          synonyms
-          popularity
-          coverImage { extraLarge large }
-          bannerImage
-          format
-          status
-          seasonYear
-          episodes
-          averageScore
-          countryOfOrigin
-          genres
-          isAdult
-          description(asHtml: false)
-          nextAiringEpisode { airingAt episode }
+          ${mediaFields}
         }
       }
+      ${aliasBlocks}
     }
   `;
 
-  const runAniListQuery = async (vars) => {
-    for (let attempt = 0; attempt < 2; attempt++) {
+  const runBatchedAniListQuery = async () => {
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const resp = await fetch('https://graphql.anilist.co', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: gql, variables: vars })
+          body: JSON.stringify({ query: batchedGql, variables: baseVariables })
         });
-        if (resp.status === 429 && attempt === 0) {
-          await new Promise((r) => setTimeout(r, 700));
-          continue;
+        if (resp.status === 429 || (resp.status >= 500 && resp.status < 600)) {
+          if (attempt < 2) {
+            const retryAfter = Number(resp.headers.get('Retry-After') || 0);
+            const waitMs = retryAfter >= 1 && retryAfter <= 4 ? retryAfter * 1000 : 850 * (attempt + 1);
+            await new Promise((r) => setTimeout(r, waitMs));
+            continue;
+          }
+          return null;
         }
         if (!resp.ok) return null;
         return await resp.json();
       } catch (_) {
-        if (attempt === 0) await new Promise((r) => setTimeout(r, 400));
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 650 * (attempt + 1)));
       }
     }
     return null;
   };
 
   try {
-    const extraQueries =
-      !loadMore && trimmedSearch.length >= 2
-        ? expandSearchQueries(trimmedSearch, state.discoverMode === 'donghua', 2)
-        : [];
-
-    const queryPayloads = [
-      baseVariables,
-      ...extraQueries.map((alias) => ({
-        ...baseVariables,
-        page: 1,
-        perPage: 12,
-        search: alias,
-        sort: ['SEARCH_MATCH', 'POPULARITY_DESC']
-      }))
-    ];
-
-    const responses = await Promise.all(queryPayloads.map((v) => runAniListQuery(v)));
+    const json = await runBatchedAniListQuery();
     if (myToken !== discoverFetchToken) return;
 
-    const primaryPage = responses[0]?.data?.Page;
-    const hasNext = Boolean(primaryPage?.pageInfo?.hasNextPage) && (primaryPage?.media?.length || 0) > 0;
+    let mapped = [];
+    let hasNext = false;
+    let sourceSucceeded = false;
 
-    const mergedById = new Map();
-    for (const resp of responses) {
-      const list = resp?.data?.Page?.media || [];
-      for (const m of list) {
-        if (m?.id && !mergedById.has(Number(m.id))) {
-          mergedById.set(Number(m.id), mapDiscoverMediaItem(m));
+    if (json?.data?.primary) {
+      sourceSucceeded = true;
+      const primaryPage = json.data.primary;
+      hasNext = Boolean(primaryPage?.pageInfo?.hasNextPage) && (primaryPage?.media?.length || 0) > 0;
+      const mergedById = new Map();
+      const pages = [primaryPage, ...extraQueries.map((_, idx) => json.data[`alias${idx}`])];
+      for (const p of pages) {
+        const list = p?.media || [];
+        for (const m of list) {
+          if (m?.id && !mergedById.has(Number(m.id))) {
+            mergedById.set(Number(m.id), mapDiscoverMediaItem(m));
+          }
         }
+      }
+      mapped = Array.from(mergedById.values());
+    } else if (trimmedSearch) {
+      // Automatic Jikan v4 fallback whenever AniList rate-limits (429) or is temporarily unreachable
+      const jikan = await fetchJikanSearchFallback(
+        trimmedSearch,
+        state.discoverFormat !== 'ALL' ? state.discoverFormat : null,
+        state.discoverStatus !== 'ALL' ? state.discoverStatus : null,
+        targetPage,
+        24,
+        Boolean(state.prefs.showAdultContent)
+      );
+      if (myToken !== discoverFetchToken) return;
+      if (jikan) {
+        sourceSucceeded = true;
+        mapped = jikan.items;
+        hasNext = jikan.hasNext;
       }
     }
 
-    let mapped = Array.from(mergedById.values());
-    if (!loadMore && trimmedSearch) {
+    if (!loadMore && trimmedSearch && mapped.length > 0) {
       mapped.sort((a, b) => {
         const scoreA = scoreKeywordMatch(trimmedSearch, a.title, a.officialTitleEnglish, a.titleRomaji, a.synonyms);
         const scoreB = scoreKeywordMatch(trimmedSearch, b.title, b.officialTitleEnglish, b.titleRomaji, b.synonyms);
         if (scoreB !== scoreA) return scoreB - scoreA;
         return (b.popularity || 0) - (a.popularity || 0);
       });
+    }
+
+    if (sourceSucceeded) {
+      if (discoverSearchCache.size > 60) discoverSearchCache.clear();
+      discoverSearchCache.set(cacheKey, { ts: Date.now(), items: mapped, hasNext });
     }
 
     if (loadMore) {
@@ -2565,6 +2778,9 @@ async function fetchDiscoverCatalog(loadMore = false, options = {}) {
       }
     } else {
       state.discover = mapped;
+      state.discoverError = sourceSucceeded
+        ? ''
+        : 'AniList rate-limited or could not be reached right now. Tap Retry to search again.';
       state.discoverPage = 1;
       state.discoverHasNextPage = hasNext;
       state.discoverLastPageStartIndex = 0;
@@ -2572,7 +2788,9 @@ async function fetchDiscoverCatalog(loadMore = false, options = {}) {
       if (!(inPlace && state.tab === 'discover' && updateDiscoverResultsShellDom())) {
         renderApp();
       }
-      requestAnimationFrame(() => checkDiscoverInfiniteScroll());
+      if (sourceSucceeded) {
+        requestAnimationFrame(() => checkDiscoverInfiniteScroll());
+      }
     }
   } catch (_) {
     if (myToken !== discoverFetchToken) return;
@@ -2580,6 +2798,7 @@ async function fetchDiscoverCatalog(loadMore = false, options = {}) {
       state.discoverLoadingMore = false;
       updateDiscoverFooterDom();
     } else {
+      state.discoverError = 'Unable to reach the anime catalog right now. Tap Retry to try again.';
       state.isSearching = false;
       if (!(inPlace && state.tab === 'discover' && updateDiscoverResultsShellDom())) {
         renderApp();
@@ -2604,6 +2823,7 @@ const ANILIST_SEASON_BATCH_QUERY = `
         format
         status
         episodes
+        duration
         seasonYear
         startDate { year month day }
         averageScore
@@ -2620,6 +2840,7 @@ const ANILIST_SEASON_BATCH_QUERY = `
               format
               status
               episodes
+              duration
               seasonYear
               startDate { year month day }
               averageScore
@@ -2631,24 +2852,108 @@ const ANILIST_SEASON_BATCH_QUERY = `
   }
 `;
 
-function isSeasonCandidateMedia(node) {
+const WEB_NON_SEASON_FORMATS = new Set(['MOVIE', 'OVA', 'MUSIC', 'MANGA', 'NOVEL', 'ONE_SHOT']);
+const WEB_MAIN_EPISODIC_FORMATS = new Set(['TV', 'ONA', 'TV_SHORT']);
+const WEB_EXPLICIT_SEASON_TITLE_RE = /(?:\bseason\s*(\d{1,2})\b|\b(\d{1,2})(?:st|nd|rd|th)\s+season\b|\bs(\d{1,2})\b|\bdi\s*(\d{1,2})\s*ji\b|\bdai\s*(\d{1,2})\s*ki\b|\bfinal\s+season\b|\bfinal\s+chapters?\b)/i;
+const WEB_EXPLICIT_SEASON_NUM_RE = /(?:\bseason\s*(\d{1,2})\b|\b(\d{1,2})(?:st|nd|rd|th)\s+season\b|\bs(\d{1,2})\b|\bdi\s*(\d{1,2})\s*ji\b|\bdai\s*(\d{1,2})\s*ki\b)/i;
+const WEB_PINYIN_SEASON_NUM_RE = /\bdi\s*(yi|er|san|si|wu|liu|qi|ba|jiu|shi)\s*ji\b/i;
+const WEB_EXPLICIT_PART_RE = /(?:\bpart\s*(\d{1,2})\b|\bcour\s*(\d{1,2})\b|\b(\d{1,2})(?:st|nd|rd|th)\s+cour\b)/i;
+const WEB_SECOND_HALF_RE = /\b(?:second\s+half|2nd\s+half|xia\s*ji|xia\s*pian)\b/i;
+const WEB_ANNUAL_RE = /\b(?:nian\s*fan|annual\s+(?:edition|season))\b/i;
+const WEB_TRAILING_ROMAN_RE = /(?:^|\s)(II|III|IV|V|VI)(?:$|[:\-])/;
+const WEB_NON_SEASON_BEFORE_ROMAN_RE = /\b(?:part|cour|movie|film|special|ova|oad|episode|ep|chapter|act|vol|volume)\s*$/i;
+const WEB_NON_SEASON_SIDE_RE = /(?:\bmini\s*theater\b|\bxiao\s*juchang\b|\bchibi\b|\bq[- ]?ban\b|\bpetite\b|\bmini\s*anime\b|\bshort\s*theater\b|\bgekijou\b|\blittle\s*theater\b|\brecap\b|\bsummary\b|\bdigest\b|\bpreview\b|\bteaser\b|\btrailer\b|\bpv\b|\bcm\b|\bcommercial\b|\bpromotional\b|\bspecial\s+program\b|\bmusic\s+video\b|\btebie\s*pian\b|\bfanwai\b|\bomake\b|\bpicture\s*drama\b|\bprologue\b|\bepisode\s*0\b|\bep\.?\s*0\b|\bova\b|\boad\b|\bmovie\b|\bjuchang\s*ban\b|\bgekijouban\b|\bspecials?\b|\bspecial\s*\d+\b|\bsan\s*nian\s*zhi\s*yue\b|\bthree[- ]year\s+agreement\b|\byuan\s*qi\b|\borigin\s*(?::|$))/i;
+
+function extractWebSeasonAndPart(node) {
+  const primaryList = [node?.title?.english, node?.title?.userPreferred, node?.title?.romaji].filter(Boolean);
+  const primary = primaryList.join(' | ');
+  const combined = [...primaryList, ...(Array.isArray(node?.synonyms) ? node.synonyms : [])].filter(Boolean).join(' | ');
+  const isAnnualEdition = WEB_ANNUAL_RE.test(combined);
+
+  let seasonNumber = null;
+  const pinyinMap = { yi: 1, er: 2, san: 3, si: 4, wu: 5, liu: 6, qi: 7, ba: 8, jiu: 9, shi: 10 };
+  for (const src of [primary, combined]) {
+    if (seasonNumber !== null) break;
+    const m = WEB_EXPLICIT_SEASON_NUM_RE.exec(src);
+    if (m) {
+      const raw = m.slice(1).find(Boolean);
+      const n = raw ? Number.parseInt(raw, 10) : NaN;
+      if (Number.isFinite(n) && n >= 1 && n <= 20) seasonNumber = n;
+    }
+    if (seasonNumber === null) {
+      const pm = WEB_PINYIN_SEASON_NUM_RE.exec(src);
+      if (pm && pinyinMap[pm[1].toLowerCase()]) seasonNumber = pinyinMap[pm[1].toLowerCase()];
+    }
+  }
+
+  if (seasonNumber === null && !WEB_NON_SEASON_SIDE_RE.test(primary)) {
+    const romanMap = { II: 2, III: 3, IV: 4, V: 5, VI: 6 };
+    for (const t of primaryList) {
+      const rm = WEB_TRAILING_ROMAN_RE.exec(t);
+      if (rm) {
+        const before = t.slice(0, rm.index).trim();
+        if (!WEB_NON_SEASON_BEFORE_ROMAN_RE.test(before) && romanMap[rm[1]]) {
+          seasonNumber = romanMap[rm[1]];
+          break;
+        }
+      }
+    }
+  }
+
+  let partNumber = null;
+  for (const src of [primary, combined]) {
+    if (partNumber !== null) break;
+    const pm = WEB_EXPLICIT_PART_RE.exec(src);
+    if (pm) {
+      const raw = pm.slice(1).find(Boolean);
+      const p = raw ? Number.parseInt(raw, 10) : NaN;
+      if (Number.isFinite(p) && p >= 1 && p <= 6) partNumber = p;
+    }
+    if (partNumber === null && WEB_SECOND_HALF_RE.test(src)) partNumber = 2;
+  }
+
+  return { seasonNumber, partNumber, isAnnualEdition };
+}
+
+function isSeasonCandidateMedia(node, franchiseHasFullSeries = false) {
   if (!node) return false;
   if (node.type && String(node.type).toUpperCase() !== 'ANIME') return false;
   if (String(node.status || '').toUpperCase() === 'CANCELLED') return false;
   const fmt = String(node.format || '').toUpperCase().trim();
-  if (!fmt || fmt === 'TV' || fmt === 'TV_SHORT' || fmt === 'ONA') return true;
+  if (WEB_NON_SEASON_FORMATS.has(fmt)) return false;
+
+  const primary = [node.title?.english, node.title?.userPreferred, node.title?.romaji].filter(Boolean).join(' | ');
+  const hasExplicitSeason = WEB_EXPLICIT_SEASON_TITLE_RE.test(primary);
+  const hasSideMarker = WEB_NON_SEASON_SIDE_RE.test(primary);
+
   if (fmt === 'SPECIAL') {
-    const combined = [node.title?.english, node.title?.userPreferred, node.title?.romaji]
-      .filter(Boolean)
-      .join(' ');
+    return (
+      /(?:\bfinal\s+season\b|\bfinal\s+chapters?\b|\bseason\s+\d+\b)/i.test(primary) &&
+      !/(?:\brecap\b|\bsummary\b|\bdigest\b|\bpreview\b|\bpv\b|\bspecial\s+program\b|\bchibi\b|\bmini\b|\bxiao\s*juchang\b)/i.test(primary)
+    );
+  }
+  if (fmt && !WEB_MAIN_EPISODIC_FORMATS.has(fmt)) return false;
+  if (hasSideMarker && !hasExplicitSeason) return false;
+
+  if (franchiseHasFullSeries) {
+    if (fmt === 'TV_SHORT' && !hasExplicitSeason) return false;
+    const dur = Number(node.duration || 0);
+    if (dur > 0 && dur <= 6 && !hasExplicitSeason) return false;
+    const eps = Number(node.episodes || 0);
+    const parsed = extractWebSeasonAndPart(node);
     if (
-      /(final\s+season|final\s+chapters?|season\s+\d+|\bpart\s+\d+)/i.test(combined) &&
-      !/(recap|summary|digest|preview|special\s+program|pv)/i.test(combined)
+      fmt === 'ONA' &&
+      String(node.status || '').toUpperCase() === 'FINISHED' &&
+      eps >= 1 &&
+      eps <= 3 &&
+      parsed.seasonNumber === null &&
+      parsed.partNumber === null &&
+      !parsed.isAnnualEdition
     ) {
-      return true;
+      return false;
     }
   }
-  return false;
+  return true;
 }
 
 function compareSeasonNodesChronologically(a, b, aId, bId) {
@@ -2679,15 +2984,16 @@ async function fetchAniListSeasonBatch(ids) {
   if (!missing.length) return cached;
 
   let fetched = [];
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const resp = await fetch('https://graphql.anilist.co', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: ANILIST_SEASON_BATCH_QUERY, variables: { ids: missing } })
       });
-      if (resp.status === 429 && attempt === 0) {
-        await new Promise((r) => setTimeout(r, 700));
+      if (resp.status === 429 && attempt < 2) {
+        const retryAfter = Number(resp.headers.get('Retry-After') || 0);
+        await new Promise((r) => setTimeout(r, retryAfter >= 1 && retryAfter <= 4 ? retryAfter * 1000 : 900 * (attempt + 1)));
         continue;
       }
       if (!resp.ok) break;
@@ -2701,15 +3007,43 @@ async function fetchAniListSeasonBatch(ids) {
       }
       break;
     } catch (_) {
-      if (attempt === 0) await new Promise((r) => setTimeout(r, 450));
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
     }
   }
   return [...cached, ...fetched];
 }
 
 async function resolveFullSeasonChain(rootMedia) {
-  if (!rootMedia?.id) return [];
+  if (!rootMedia?.id) return { seasons: [], relatedMedia: [] };
   anilistSeasonNodeCache.set(Number(rootMedia.id), rootMedia);
+
+  const rootId = Number(rootMedia.id);
+  const rootIsDonghua = String(rootMedia.countryOfOrigin || '').toUpperCase() === 'CN';
+
+  const toRelatedEntry = (node, relLabel = '') => {
+    const snIsDonghua = rootIsDonghua || String(node?.countryOfOrigin || '').toUpperCase() === 'CN';
+    const title =
+      resolveEnglishTitle(
+        node?.title?.english || '',
+        node?.title?.romaji || node?.title?.userPreferred || '',
+        node?.synonyms || [],
+        snIsDonghua
+      ) ||
+      node?.title?.english ||
+      node?.title?.userPreferred ||
+      node?.title?.romaji ||
+      `Anime #${node.id}`;
+    return {
+      id: Number(node.id),
+      title,
+      coverImage: node?.coverImage?.extraLarge || node?.coverImage?.large || node?.coverImage?.medium || '',
+      format: String(node?.format || 'TV').toUpperCase(),
+      relationType: relLabel || String(node?.format || 'RELATED').replace(/_/g, ' '),
+      status: node?.status || null,
+      episodes: node?.episodes ?? (String(node?.format || '').toUpperCase() === 'MOVIE' ? 1 : null),
+      seasonYear: node?.seasonYear ?? node?.startDate?.year ?? null
+    };
+  };
 
   const hasImmediateLink = (rootMedia.relations?.edges || []).some(
     (e) =>
@@ -2717,14 +3051,19 @@ async function resolveFullSeasonChain(rootMedia) {
       (!e.node.type || String(e.node.type).toUpperCase() === 'ANIME') &&
       (e.relationType === 'PREQUEL' || e.relationType === 'SEQUEL')
   );
-  if (!hasImmediateLink) return [];
+  if (!hasImmediateLink) {
+    const directRelated = (rootMedia.relations?.edges || [])
+      .filter((e) => e?.node?.id && (!e.node.type || String(e.node.type).toUpperCase() === 'ANIME') && Number(e.node.id) !== rootId)
+      .map((e) => toRelatedEntry(e.node, String(e.relationType || '').replace(/_/g, ' ')));
+    return { seasons: [], relatedMedia: directRelated.slice(0, 12) };
+  }
 
   const MAX_WAVES = 25;
   const MAX_NODES = 60;
   const BATCH_SIZE = 25;
 
   const nodesById = new Map();
-  const outgoing = new Map(); // predecessorId -> Set(successorId)
+  const outgoing = new Map();
   const expandedIds = new Set();
   const queuedIds = new Set();
   const frontier = [];
@@ -2744,7 +3083,8 @@ async function resolveFullSeasonChain(rootMedia) {
         ...candidate,
         startDate: candidate.startDate || existing.startDate,
         seasonYear: candidate.seasonYear ?? existing.seasonYear,
-        episodes: candidate.episodes ?? existing.episodes
+        episodes: candidate.episodes ?? existing.episodes,
+        duration: candidate.duration ?? existing.duration
       });
     } else {
       nodesById.set(id, {
@@ -2753,6 +3093,7 @@ async function resolveFullSeasonChain(rootMedia) {
         startDate: existing.startDate || candidate.startDate,
         seasonYear: existing.seasonYear ?? candidate.seasonYear,
         episodes: existing.episodes ?? candidate.episodes,
+        duration: existing.duration ?? candidate.duration,
         relations: existingHasRels ? existing.relations : candidate.relations
       });
     }
@@ -2812,13 +3153,44 @@ async function resolveFullSeasonChain(rootMedia) {
     }
   }
 
+  const franchiseHasFullSeries = Array.from(nodesById.values()).some((n) => {
+    const fmt = String(n?.format || '').toUpperCase().trim();
+    const dur = Number(n?.duration || 0);
+    const eps = Number(n?.episodes || 0);
+    return (
+      (fmt === 'TV' || fmt === 'ONA') &&
+      (dur >= 12 || eps >= 10 || (String(n?.status || '').toUpperCase() === 'RELEASING' && (!dur || dur >= 10)))
+    );
+  });
+
   const seasonIds = new Set();
   for (const [id, node] of nodesById.entries()) {
-    if (isSeasonCandidateMedia(node)) seasonIds.add(id);
+    if (isSeasonCandidateMedia(node, franchiseHasFullSeries)) seasonIds.add(id);
   }
-  if (seasonIds.size <= 1) return [];
 
-  // Project transitive reachability across Movie / OVA / Special bridges onto the season DAG
+  const relatedById = new Map();
+  for (const [id, node] of nodesById.entries()) {
+    if (id === rootId || String(node?.status || '').toUpperCase() === 'CANCELLED') continue;
+    if (!seasonIds.has(id) || !seasonIds.has(rootId)) {
+      relatedById.set(id, toRelatedEntry(node));
+    }
+  }
+  for (const edge of rootMedia.relations?.edges || []) {
+    const node = edge?.node;
+    if (!node?.id || Number(node.id) === rootId) continue;
+    if (node.type && String(node.type).toUpperCase() !== 'ANIME') continue;
+    const nid = Number(node.id);
+    if (!seasonIds.has(nid) && !relatedById.has(nid)) {
+      relatedById.set(nid, toRelatedEntry(node, String(edge.relationType || '').replace(/_/g, ' ')));
+    }
+  }
+  const relatedMedia = Array.from(relatedById.values()).slice(0, 14);
+
+  // If the opened item is a Movie / OVA / Special / Chibi Short, or only 1 main season exists, do NOT show Season 1..N tabs
+  if (!seasonIds.has(rootId) || seasonIds.size <= 1) {
+    return { seasons: [], relatedMedia };
+  }
+
   const seasonOutgoing = new Map();
   const inDegree = new Map();
   for (const sid of seasonIds) {
@@ -2880,10 +3252,37 @@ async function resolveFullSeasonChain(rootMedia) {
     orderedIds.push(...remaining);
   }
 
-  const rootId = Number(rootMedia.id);
-  const rootIsDonghua = String(rootMedia.countryOfOrigin || '').toUpperCase() === 'CN';
-  return orderedIds.map((id, idx) => {
+  const seasons = [];
+  let currentSeasonNum = 0;
+  for (const id of orderedIds) {
     const sn = nodesById.get(id);
+    const parsed = extractWebSeasonAndPart(sn);
+    let assignedSeason;
+    let assignedPart = parsed.partNumber;
+
+    if (seasons.length === 0) {
+      assignedSeason = parsed.seasonNumber && parsed.seasonNumber >= 1 && parsed.seasonNumber <= 20 ? parsed.seasonNumber : 1;
+      currentSeasonNum = assignedSeason;
+    } else if (parsed.partNumber && parsed.partNumber >= 2 && (parsed.seasonNumber === null || parsed.seasonNumber === currentSeasonNum)) {
+      assignedSeason = currentSeasonNum;
+    } else if (parsed.seasonNumber === currentSeasonNum && parsed.partNumber) {
+      assignedSeason = currentSeasonNum;
+    } else if (parsed.seasonNumber && parsed.seasonNumber > currentSeasonNum && parsed.seasonNumber <= currentSeasonNum + 3) {
+      assignedSeason = parsed.seasonNumber;
+      currentSeasonNum = assignedSeason;
+    } else {
+      currentSeasonNum += 1;
+      assignedSeason = currentSeasonNum;
+    }
+
+    const shortLabel = assignedPart && assignedPart > 1 ? `${assignedSeason} Pt ${assignedPart}` : String(assignedSeason);
+    const displayLabel =
+      assignedPart && assignedPart > 1
+        ? `Season ${assignedSeason} • Part ${assignedPart}`
+        : parsed.isAnnualEdition
+        ? `Season ${assignedSeason} • Annual`
+        : `Season ${assignedSeason}`;
+
     const snIsDonghua = rootIsDonghua || String(sn?.countryOfOrigin || '').toUpperCase() === 'CN';
     const title =
       resolveEnglishTitle(
@@ -2895,18 +3294,24 @@ async function resolveFullSeasonChain(rootMedia) {
       sn?.title?.english ||
       sn?.title?.userPreferred ||
       sn?.title?.romaji ||
-      `Season ${idx + 1}`;
-    return {
+      displayLabel;
+
+    seasons.push({
       id,
-      seasonNumber: idx + 1,
+      seasonNumber: assignedSeason,
+      partNumber: assignedPart,
+      shortLabel,
+      displayLabel,
       title,
       seasonYear: sn?.seasonYear ?? sn?.startDate?.year ?? null,
       status: sn?.status || null,
       format: sn?.format || null,
       episodes: sn?.episodes ?? null,
       isCurrent: id === rootId
-    };
-  });
+    });
+  }
+
+  return { seasons, relatedMedia };
 }
 
 async function openAnimeDetail(animeId) {
@@ -2980,6 +3385,7 @@ async function openAnimeDetail(animeId) {
         format
         status
         episodes
+        duration
         averageScore
         season
         seasonYear
@@ -3003,6 +3409,7 @@ async function openAnimeDetail(animeId) {
               format
               status
               episodes
+              duration
               seasonYear
               startDate { year month day }
               averageScore
@@ -3016,12 +3423,23 @@ async function openAnimeDetail(animeId) {
   const myToken = ++detailFetchToken;
 
   try {
-    const resp = await fetch('https://graphql.anilist.co', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: gql, variables: { id: animeId } })
-    });
-    const json = await resp.json();
+    let json = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const resp = await fetch('https://graphql.anilist.co', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: gql, variables: { id: animeId } })
+      });
+      if ((resp.status === 429 || resp.status >= 500) && attempt < 2) {
+        const retryAfter = Number(resp.headers.get('Retry-After') || 0);
+        await new Promise((r) => setTimeout(r, retryAfter >= 1 && retryAfter <= 4 ? retryAfter * 1000 : 850 * (attempt + 1)));
+        continue;
+      }
+      if (resp.ok) {
+        json = await resp.json();
+      }
+      break;
+    }
     if (myToken !== detailFetchToken) return;
     const m = json?.data?.Media;
     if (m) {
@@ -3034,6 +3452,16 @@ async function openAnimeDetail(animeId) {
         m.title?.english ||
         m.title?.romaji ||
         'Anime';
+      const detailFmt = String(m.format || 'TV').toUpperCase();
+      const detailMedStatus = String(m.status || 'RELEASING').toUpperCase();
+      const detailRawEps = m.episodes && Number(m.episodes) > 0 ? Number(m.episodes) : null;
+      const detailNextEp = m.nextAiringEpisode?.episode || null;
+      const detailTotalEps =
+        detailFmt === 'MOVIE'
+          ? (detailRawEps || 1)
+          : detailMedStatus === 'RELEASING' && detailIsDonghua && detailRawEps && detailNextEp && detailNextEp > detailRawEps
+          ? null
+          : (detailRawEps || existing?.totalEpisodes || null);
       state.detailAnime = {
         ...(existing || {}),
         animeId: m.id,
@@ -3044,17 +3472,18 @@ async function openAnimeDetail(animeId) {
         synonyms: detailSynonyms,
         coverImage: m.coverImage?.extraLarge || m.coverImage?.large || '',
         bannerImage: m.bannerImage || '',
-        format: m.format || 'TV',
-        mediaStatus: m.status || 'RELEASING',
+        format: detailFmt,
+        mediaStatus: detailMedStatus,
+        duration: m.duration || null,
         seasonYear: m.seasonYear || m.startDate?.year || null,
         countryOfOrigin: detailCountry,
-        totalEpisodes: m.episodes || existing?.totalEpisodes || null,
+        totalEpisodes: detailTotalEps,
         averageScore: m.averageScore || null,
         genres: normalizeAnimeGenresWithAdult(m.genres || [], Boolean(m.isAdult)),
         isAdult: isHentaiOrAdultAnime(m.genres || [], Boolean(m.isAdult)),
         synopsis: (m.description || '').replace(/<[^>]+>/g, ''),
         airingTimeUnix: m.nextAiringEpisode?.airingAt || null,
-        nextEpisodeNumber: m.nextAiringEpisode?.episode || null,
+        nextEpisodeNumber: detailNextEp,
         status: existing?.status || 'watching',
         season: existing?.season || 1,
         watchedEpisodes: existing?.watchedEpisodes || 0,
@@ -3072,10 +3501,11 @@ async function openAnimeDetail(animeId) {
       state.detailLoading = false;
       renderApp();
 
-      const fullSeasons = await resolveFullSeasonChain(m);
+      const chainResult = await resolveFullSeasonChain(m);
       if (myToken !== detailFetchToken) return;
       state.detailRich = {
-        seasons: fullSeasons
+        seasons: chainResult.seasons || [],
+        relatedMedia: chainResult.relatedMedia || []
       };
       renderApp();
     }
@@ -5657,9 +6087,23 @@ function renderPosterTrackerCard(item, showTrackingStepper = true) {
   const userStars = starsVal ? starsVal.toFixed(1) : null;
   const catalogStars = effective.averageScore ? (effective.averageScore / 20).toFixed(1) : null;
   const displayStars = userStars || catalogStars;
-  const isDonghua = effective.countryOfOrigin === 'CN';
-  const formatLabel = isDonghua ? 'DONGHUA' : (effective.format || 'TV').toUpperCase();
-  const epBadge = isInUserList ? `EP ${Math.max(watched, effective.nextEpisodeNumber ? effective.nextEpisodeNumber - 1 : 0)}` : formatLabel;
+  const isDonghua = String(effective.countryOfOrigin || '').toUpperCase() === 'CN';
+  const rawFmt = String(effective.format || 'TV').toUpperCase();
+  const isMovie = rawFmt === 'MOVIE';
+  const formatLabel = isMovie
+    ? (isDonghua ? 'DONGHUA MOVIE' : 'MOVIE')
+    : rawFmt === 'OVA' || rawFmt === 'SPECIAL'
+    ? rawFmt
+    : isDonghua
+    ? 'DONGHUA'
+    : rawFmt.replace(/_/g, ' ');
+  const epBadge = isMovie
+    ? (isInUserList && watched >= (total || 1) ? 'MOVIE • ✓' : 'MOVIE')
+    : isInUserList
+    ? total && total > 0
+      ? `EP ${watched}/${total}`
+      : `EP ${Math.max(watched, effective.nextEpisodeNumber ? Math.max(0, effective.nextEpisodeNumber - 1) : 0)}`
+    : formatLabel;
   const airClock = formatAiringClock(effective.airingTimeUnix) || (effective.seasonYear ? String(effective.seasonYear) : '');
 
   const isCompleted = isInUserList && (effective.status === 'completed' || shouldAutoComplete(effective.mediaStatus, total, watched));
@@ -6609,11 +7053,27 @@ function renderAnimeDetailScreen() {
   if (!a) return '';
   const title = resolveTitle(a);
   const subJp = a.titleNative || (a.titleRomaji !== title ? a.titleRomaji : '');
-  const total = a.totalEpisodes;
+  const isMovie = String(a.format || '').toUpperCase() === 'MOVIE';
+  const isDonghua = String(a.countryOfOrigin || '').toUpperCase() === 'CN';
+  const total = a.totalEpisodes || (isMovie ? 1 : null);
   const watched = a.watchedEpisodes || 0;
   const stars = rating10ToStars(a.rating10) || 0;
   const sentiment = sentimentFromRating10(a.rating10);
-  const seasons = state.detailRich?.seasons || [];
+  const seasons = isMovie ? [] : (state.detailRich?.seasons || []);
+  const relatedMedia = state.detailRich?.relatedMedia || [];
+  const formatTag = isMovie
+    ? (isDonghua ? 'DONGHUA MOVIE' : 'MOVIE')
+    : isDonghua
+    ? 'DONGHUA'
+    : String(a.format || 'TV').replace(/_/g, ' ');
+  const statusTag =
+    String(a.mediaStatus || '').toUpperCase() === 'FINISHED'
+      ? 'FINISHED'
+      : String(a.mediaStatus || '').toUpperCase() === 'NOT_YET_RELEASED'
+      ? 'UPCOMING'
+      : String(a.mediaStatus || '').toUpperCase() === 'HIATUS'
+      ? 'HIATUS'
+      : 'ONGOING';
 
   return `
     <div style="max-width:940px;margin:0 auto;">
@@ -6634,6 +7094,8 @@ function renderAnimeDetailScreen() {
             <h1 class="serif-heading" style="font-size:28px;line-height:30px;color:#FFF;">${escapeHtml(title)}</h1>
             ${subJp ? `<div class="micro-label" style="color:var(--text-secondary);margin-top:4px;">${escapeHtml(subJp)}</div>` : ''}
             <div style="display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap;">
+              <span class="rating-badge" style="color:var(--accent-primary);">${escapeHtml(formatTag)}</span>
+              <span class="rating-badge" style="color:var(--text-secondary);">${escapeHtml(statusTag)}${a.seasonYear ? ` • ${a.seasonYear}` : ''}</span>
               ${stars > 0 ? `<span class="rating-badge">★ ${stars.toFixed(1)}</span>` : a.averageScore ? `<span class="rating-badge">★ ${(a.averageScore / 20).toFixed(1)}</span>` : ''}
               ${sentiment ? `<span class="sentiment-pill solid ${sentiment.key}">${sentiment.fullLabel}</span>` : ''}
             </div>
@@ -6646,9 +7108,14 @@ function renderAnimeDetailScreen() {
           seasons.length > 1
             ? (() => {
                 const activeSeason = seasons.find((s) => s.isCurrent || s.id === a.animeId);
+                const distinctSeasonCount = new Set(seasons.map((s) => s.seasonNumber)).size;
+                const totalLabel =
+                  distinctSeasonCount === 1
+                    ? `1 Season (${seasons.length} Parts)`
+                    : `${distinctSeasonCount} Seasons`;
                 const activeMeta = activeSeason
-                  ? `Season ${activeSeason.seasonNumber} of ${seasons.length}${activeSeason.seasonYear ? ` • ${activeSeason.seasonYear}` : ''}`
-                  : `${seasons.length} Seasons`;
+                  ? `${activeSeason.displayLabel || `Season ${activeSeason.seasonNumber}`} • ${totalLabel}${activeSeason.seasonYear ? ` • ${activeSeason.seasonYear}` : ''}`
+                  : totalLabel;
                 return `
               <div>
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;">
@@ -6659,10 +7126,10 @@ function renderAnimeDetailScreen() {
                   ${seasons
                     .map((s) => {
                       const isUpcoming = String(s.status || '').toUpperCase() === 'NOT_YET_RELEASED';
-                      const tooltip = `${s.title || `Season ${s.seasonNumber}`}${s.seasonYear ? ` (${s.seasonYear})` : ''}`;
+                      const tooltip = `${s.title || s.displayLabel || `Season ${s.seasonNumber}`}${s.seasonYear ? ` (${s.seasonYear})` : ''}`;
                       return `
-                      <button class="capsule-pill gold-solid ${s.isCurrent ? 'active' : ''}" data-open-detail="${s.id}" title="${escapeHtml(tooltip)}" style="min-width:52px;height:44px;justify-content:center;font-size:14px;gap:5px;">
-                        <span>${s.seasonNumber}</span>
+                      <button class="capsule-pill gold-solid ${s.isCurrent ? 'active' : ''}" data-open-detail="${s.id}" title="${escapeHtml(tooltip)}" style="min-width:52px;height:44px;justify-content:center;font-size:14px;gap:5px;padding:0 14px;">
+                        <span>${escapeHtml(s.shortLabel || String(s.seasonNumber))}</span>
                         ${isUpcoming && !s.isCurrent ? '<span style="width:6px;height:6px;border-radius:50%;background:var(--warning);display:inline-block;"></span>' : ''}
                       </button>`;
                     })
@@ -6674,12 +7141,14 @@ function renderAnimeDetailScreen() {
             : ''
         }
 
-        <div class="micro-label" style="color:var(--accent-primary);">EPISODE PROGRESS • CLICK NUMBER TO EDIT</div>
+        <div class="micro-label" style="color:var(--accent-primary);">${
+          isMovie ? 'MOVIE PROGRESS • 0 = UNWATCHED, 1 = WATCHED' : 'EPISODE PROGRESS • CLICK NUMBER TO EDIT'
+        }</div>
         ${
           !a.inWatchlist
             ? `<button class="btn-primary" id="btn-detail-add" style="width:100%;">+ ADD TO HOME &amp; LIBRARY</button>`
             : `
-              ${renderInlineEpisodeStepper(a, 'detail')}
+              ${renderInlineEpisodeStepper({ ...a, totalEpisodes: total }, 'detail')}
               <div class="capsule-strip" style="margin-bottom:0;">
                 ${WATCH_STATUSES.map(
                   (st) => `
@@ -6762,6 +7231,29 @@ function renderAnimeDetailScreen() {
           ${(a.genres || []).map((g) => `<span class="capsule-pill">${escapeHtml(g)}</span>`).join('')}
         </div>
       </div>
+
+      ${
+        relatedMedia.length > 0
+          ? `
+        <div class="app-card" style="border-radius:24px;margin-bottom:16px;display:flex;flex-direction:column;gap:12px;">
+          <div class="micro-label" style="color:var(--accent-primary);">RELATED MOVIES, SPECIALS &amp; SERIES</div>
+          <div style="display:flex;gap:12px;overflow-x:auto;padding-bottom:6px;">
+            ${relatedMedia
+              .map(
+                (rel) => `
+              <button type="button" data-open-detail="${rel.id}" style="flex:0 0 128px;background:var(--elevated-surface);border:1px solid var(--border-subtle);border-radius:16px;padding:8px;text-align:left;cursor:pointer;display:flex;flex-direction:column;gap:6px;color:var(--text-primary);">
+                <img src="${escapeHtml(rel.coverImage)}" alt="${escapeHtml(rel.title)}" loading="lazy" style="width:100%;height:156px;object-fit:cover;border-radius:10px;background:var(--card-bg);" />
+                <div class="micro-label" style="color:var(--accent-primary);font-size:9px;">${escapeHtml(rel.format || rel.relationType)}${rel.seasonYear ? ` • ${rel.seasonYear}` : ''}</div>
+                <div style="font-size:12px;font-weight:600;line-height:1.25;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;">${escapeHtml(rel.title)}</div>
+              </button>
+            `
+              )
+              .join('')}
+          </div>
+        </div>
+      `
+          : ''
+      }
 
       ${renderAnimeDiscussionSection(a)}
     </div>
@@ -9311,6 +9803,10 @@ function bindAppEvents() {
   // Discover events (live debounced keyword search without losing focus)
   const inpDisc = document.getElementById('inp-discover-search');
   const btnClearDisc = document.getElementById('btn-clear-disc-search');
+  const btnDiscRetry = document.getElementById('btn-discover-retry');
+  if (btnDiscRetry) {
+    btnDiscRetry.onclick = () => fetchDiscoverCatalog(false, { inPlace: true, forceRefresh: true });
+  }
   if (inpDisc) {
     inpDisc.oninput = (e) => {
       const nextVal = e.target.value;
@@ -9320,7 +9816,7 @@ function bindAppEvents() {
       discoverSearchDebounceTimer = setTimeout(() => {
         discoverSearchDebounceTimer = null;
         fetchDiscoverCatalog(false, { inPlace: true });
-      }, nextVal.trim() ? 260 : 80);
+      }, nextVal.trim() ? 380 : 80);
     };
     inpDisc.onkeydown = (e) => {
       if (e.key === 'Enter') {
@@ -10604,3 +11100,54 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('online', () => {
   reconcileNotificationsOnReturn(true);
 });
+
+// ==========================================================================
+// NATIVE SHELL GUARDS (Context Menu & Browser Shortcut Lockdown with Cleanup)
+// ==========================================================================
+let teardownNativeShellGuards = null;
+
+function isEditableNativeTarget(target) {
+  if (!target || typeof target !== 'object') return false;
+  if (typeof target.closest === 'function') {
+    return Boolean(target.closest('input, textarea, [contenteditable="true"]'));
+  }
+  const tag = String(target.tagName || '').toUpperCase();
+  return tag === 'INPUT' || tag === 'TEXTAREA' || Boolean(target.isContentEditable);
+}
+
+function mountNativeShellGuards() {
+  if (typeof teardownNativeShellGuards === 'function') {
+    teardownNativeShellGuards();
+  }
+
+  const handleContextMenu = (e) => {
+    if (isEditableNativeTarget(e.target)) return;
+    e.preventDefault();
+  };
+
+  const handleKeyDown = (e) => {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    const key = String(e.key || '').toLowerCase();
+    if (key === 's' || key === 'p' || key === 'u') {
+      e.preventDefault();
+    }
+  };
+
+  const cleanup = () => {
+    document.removeEventListener('contextmenu', handleContextMenu);
+    window.removeEventListener('keydown', handleKeyDown);
+    window.removeEventListener('pagehide', cleanup);
+    if (teardownNativeShellGuards === cleanup) {
+      teardownNativeShellGuards = null;
+    }
+  };
+
+  document.addEventListener('contextmenu', handleContextMenu);
+  window.addEventListener('keydown', handleKeyDown);
+  window.addEventListener('pagehide', cleanup);
+  teardownNativeShellGuards = cleanup;
+  return cleanup;
+}
+
+mountNativeShellGuards();
+

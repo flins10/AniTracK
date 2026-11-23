@@ -234,7 +234,7 @@ class ExampleUnitTest {
         assertEquals(3, SeasonRules.inferSeasonFromTitle("A Will Eternal 3"))
         assertEquals(2, SeasonRules.inferSeasonFromTitle("Demon Slayer: Entertainment District Season 2"))
         assertEquals(3, SeasonRules.inferSeasonFromTitle("Mob Psycho 100 III"))
-        assertEquals(2, SeasonRules.inferSeasonFromTitle("All Saints Street Part 2"))
+        assertEquals(1, SeasonRules.inferSeasonFromTitle("All Saints Street Part 2"))
         assertEquals(1, SeasonRules.inferSeasonFromTitle("Solo Leveling (2024)"))
         assertEquals(1, SeasonRules.inferSeasonFromTitle("Steins;Gate"))
 
@@ -363,6 +363,9 @@ class ExampleUnitTest {
 
         val fakeService = object : com.example.data.remote.AniListApiService {
             override suspend fun queryMedia(request: com.example.data.remote.AniListRequest) =
+                throw UnsupportedOperationException()
+
+            override suspend fun queryMultiPageMedia(request: com.example.data.remote.AniListRequest) =
                 throw UnsupportedOperationException()
 
             override suspend fun querySchedule(request: com.example.data.remote.AniListRequest) =

@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capability for ANIME UNIVERSE remote Cloudflare Pages WebView",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["https://animeuniverse.pages.dev/*"]
+  },
+  "permissions": [
+    "core:default"
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "anime-universe",
+  "version": "2.19.1",
+  "private": true,
+  "description": "ANIME UNIVERSE — Native Tauri v2 shell for https://animeuniverse.pages.dev",
+  "scripts": {
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0"
+  }
+}

@@ -69,10 +69,18 @@ data class AnimeEntity(
         get() = watchStatusEnum.label
 
     val effectiveSeasonNumber: Int
-        get() = SeasonRules.resolveInitialSeason(userSeason, titleEnglish ?: titleRomaji)
+        get() = SeasonRules.resolveInitialSeason(userSeason, titleEnglish ?: titleRomaji, format)
+
+    val isMovie: Boolean
+        get() = format.equals("MOVIE", ignoreCase = true)
 
     val effectiveProgressDisplay: String
         get() {
+            if (isMovie) {
+                val total = totalEpisodes?.takeIf { it > 0 } ?: 1
+                val clamped = ProgressRules.clampEpisodeProgress(watchedEpisodeCount, total)
+                return if (clamped >= total) "Movie • Watched" else "Movie • $clamped / $total"
+            }
             val clamped = ProgressRules.clampEpisodeProgress(watchedEpisodeCount, totalEpisodes)
             val epPart = if (totalEpisodes != null && totalEpisodes > 0) "$clamped / $totalEpisodes eps" else "$clamped eps"
             return if (effectiveSeasonNumber > 1) "S$effectiveSeasonNumber • $epPart" else epPart
@@ -116,36 +124,54 @@ data class AnimeEntity(
 
     fun getAiredEpisodeCount(nowSeconds: Long = System.currentTimeMillis() / 1000): Int {
         val total = totalEpisodes
-        val maxKnownAired = if (total != null && total > 0) minOf(maxOf(currentEpisode, 1), total) else maxOf(currentEpisode, 1)
-        val st = status?.uppercase() ?: ""
+        val st = status?.uppercase()?.trim() ?: ""
+        if (st == "NOT_YET_RELEASED") return 0
+        if (isMovie) {
+            return if (st == "FINISHED" || st == "FINISHED_AIRING") {
+                total?.takeIf { it > 0 } ?: 1
+            } else {
+                currentEpisode.coerceIn(0, total?.takeIf { it > 0 } ?: 1)
+            }
+        }
         if (st == "FINISHED" || st == "FINISHED_AIRING") {
             if (total != null && total > 0) return total
-            return maxKnownAired
+            return currentEpisode.coerceAtLeast(1)
         }
-        if (st == "NOT_YET_RELEASED") return 0
 
-        val baseEp = maxKnownAired
+        val baseEp = if (total != null && total > 0) {
+            currentEpisode.coerceIn(0, total)
+        } else {
+            currentEpisode.coerceAtLeast(0)
+        }
         val baseTime = airingTimeUnix ?: return baseEp
         if (baseTime <= 0) return baseEp
 
+        val isNonWeeklyFormat = format?.uppercase() in listOf("OVA", "SPECIAL", "MOVIE", "MUSIC")
+        if (isNonWeeklyFormat || (st != "RELEASING" && st != "CURRENTLY_AIRING" && st != "AIRING")) {
+            return baseEp
+        }
+
         val totalAired = if (nowSeconds >= baseTime) {
             val diff = nowSeconds - baseTime
-            val weeksPassed = (diff / 604800L).toInt()
+            val weeksPassed = (diff / 604800L).toInt().coerceAtMost(12)
             baseEp + 1 + weeksPassed
         } else {
             baseEp
         }
 
         return if (total != null && total > 0) {
-            totalAired.coerceIn(1, total)
+            totalAired.coerceIn(0, total)
         } else {
             maxOf(totalAired, baseEp)
         }
     }
 
     fun getEffectiveNextEpisodeNumber(nowSeconds: Long = System.currentTimeMillis() / 1000): Int? {
-        val st = status?.uppercase() ?: ""
+        val st = status?.uppercase()?.trim() ?: ""
         if (st == "FINISHED" || st == "FINISHED_AIRING" || st == "CANCELLED" || st == "HIATUS") return null
+        if (isMovie) {
+            return if (st == "NOT_YET_RELEASED") 1 else null
+        }
         val aired = getAiredEpisodeCount(nowSeconds)
         if (totalEpisodes != null && totalEpisodes > 0 && aired >= totalEpisodes) return null
         return aired + 1
@@ -154,12 +180,12 @@ data class AnimeEntity(
     fun getEffectiveAiringTime(nowSeconds: Long = System.currentTimeMillis() / 1000): Long? {
         val baseTime = airingTimeUnix ?: return null
         if (baseTime <= 0) return null
-        val st = status?.uppercase() ?: ""
+        val st = status?.uppercase()?.trim() ?: ""
         if (st == "FINISHED" || st == "FINISHED_AIRING" || st == "CANCELLED" || st == "HIATUS") return null
         if (totalEpisodes != null && totalEpisodes > 0 && getAiredEpisodeCount(nowSeconds) >= totalEpisodes) return null
         if (baseTime > nowSeconds) return baseTime
 
-        val isNonWeeklyFormat = format?.uppercase() in listOf("OVA", "SPECIAL", "MOVIE", "MUSIC", "ONA")
+        val isNonWeeklyFormat = format?.uppercase() in listOf("OVA", "SPECIAL", "MOVIE", "MUSIC")
         val isAdultOrHentai = genres.contains("Hentai", ignoreCase = true)
         if (isNonWeeklyFormat || isAdultOrHentai || (st != "RELEASING" && st != "CURRENTLY_AIRING" && st != "AIRING")) {
             return null
@@ -167,6 +193,7 @@ data class AnimeEntity(
 
         val diff = nowSeconds - baseTime
         val weeksPassed = 1 + (diff / 604800L).toInt()
+        if (weeksPassed > 12) return null
         val projectedEpisode = currentEpisode + weeksPassed
         if (totalEpisodes != null && totalEpisodes > 0 && projectedEpisode > totalEpisodes) {
             return null

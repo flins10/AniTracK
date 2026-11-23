@@ -514,11 +514,17 @@ internal object DesktopEnglishTitleMapper {
         return null
     }
 
+    private val SEARCH_STOP_WORDS = setOf(
+        "of", "the", "a", "an", "in", "to", "and", "or", "for", "on", "at", "by", "as", "is", "it", "my"
+    )
+
     fun expandSearchQueries(rawQuery: String, donghuaOnly: Boolean = false, maxExtra: Int = 2): List<String> {
         val normQuery = normalizeKey(rawQuery)
         if (normQuery.length < 2) return emptyList()
-        val queryTokens = normQuery.split(" ").filter { it.length >= 2 }
-        if (queryTokens.isEmpty()) return emptyList()
+        val rawTokens = normQuery.split(" ").filter { it.length >= 2 }
+        if (rawTokens.isEmpty()) return emptyList()
+        val contentTokens = rawTokens.filter { it !in SEARCH_STOP_WORDS }
+        val effectiveTokens = if (contentTokens.isNotEmpty()) contentTokens else rawTokens
 
         val scored = ArrayList<Pair<String, Int>>()
         val seen = HashSet<String>()
@@ -530,7 +536,9 @@ internal object DesktopEnglishTitleMapper {
             val candidates = listOf(entry.englishTitle) + entry.alternateEnglish
             var best = 0
             for (c in candidates) {
-                val sc = scoreSingleTextMatch(normQuery, queryTokens, c)
+                val candNorm = normalizeKey(c)
+                if (contentTokens.isNotEmpty() && contentTokens.none { tok -> candNorm.contains(tok) }) continue
+                val sc = scoreSingleTextMatch(normQuery, effectiveTokens, c)
                 if (sc > best) best = sc
             }
             if (best >= 40) {

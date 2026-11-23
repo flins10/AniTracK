@@ -16,3 +16,6 @@
 local.properties
 .env
 debug.keystore
+node_modules/
+src-tauri/target/
+src-tauri/gen/android/app/build/

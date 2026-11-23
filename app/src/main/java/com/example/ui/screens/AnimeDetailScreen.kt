@@ -382,7 +382,8 @@ fun AnimeDetailScreen(
                             modifier = Modifier.padding(18.dp),
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            if (seasonEntries.size > 1) {
+                            if (seasonEntries.size > 1 && !current.isMovie) {
+                                val distinctSeasonCount = seasonEntries.map { it.seasonNumber }.distinct().size
                                 Column(
                                     verticalArrangement = Arrangement.spacedBy(8.dp),
                                     modifier = Modifier.testTag("detail_seasons_section")
@@ -395,8 +396,13 @@ fun AnimeDetailScreen(
                                         DetailCardLabel("SEASONS")
                                         if (activeSeasonEntry != null) {
                                             val yearText = activeSeasonEntry.seasonYear?.let { " • $it" }.orEmpty()
+                                            val totalText = if (distinctSeasonCount == 1) {
+                                                "1 Season (${seasonEntries.size} Parts)"
+                                            } else {
+                                                "$distinctSeasonCount Seasons"
+                                            }
                                             Text(
-                                                text = "Season ${activeSeasonEntry.seasonNumber} of ${seasonEntries.size}$yearText",
+                                                text = "${activeSeasonEntry.displayLabel} • $totalText$yearText",
                                                 style = MicroUpperLabel.copy(fontSize = 8.5.sp, letterSpacing = 1.sp),
                                                 color = colors.textSecondary
                                             )
@@ -433,7 +439,7 @@ fun AnimeDetailScreen(
                                                     )
                                                     .clickable(enabled = !isSelected) { onSelectAnime(s.id) }
                                                     .padding(horizontal = 16.dp)
-                                                    .testTag("detail_season_pill_${s.seasonNumber}"),
+                                                    .testTag("detail_season_pill_${s.seasonNumber}_${s.partNumber ?: 0}"),
                                                 contentAlignment = Alignment.Center
                                             ) {
                                                 Row(
@@ -441,7 +447,7 @@ fun AnimeDetailScreen(
                                                     horizontalArrangement = Arrangement.spacedBy(5.dp)
                                                 ) {
                                                     Text(
-                                                        text = s.seasonNumber.toString(),
+                                                        text = s.shortLabel,
                                                         style = TabularNumMedium.copy(fontSize = 15.sp, fontWeight = FontWeight.Bold),
                                                         color = if (isSelected) {
                                                             if (colors.isDark) ChampagneOnGold else colors.onAccentPrimary
@@ -465,7 +471,7 @@ fun AnimeDetailScreen(
                                 HorizontalDivider(color = colors.borderSubtle, thickness = 1.dp)
                             }
 
-                            DetailCardLabel("EPISODE PROGRESS")
+                            DetailCardLabel(if (current.isMovie) "MOVIE PROGRESS" else "EPISODE PROGRESS")
 
                             if (!current.inWatchlist) {
                                 AppPrimaryButton(
@@ -480,11 +486,12 @@ fun AnimeDetailScreen(
                                 DetailEpisodeStepperControl(
                                     animeId = current.id,
                                     watchedEpisodeCount = current.watchedEpisodeCount,
-                                    totalEpisodes = total,
-                                    subtitle = if (activeSeasonEntry != null && seasonEntries.size > 1) {
-                                        "SEASON ${activeSeasonEntry.seasonNumber} • TAP NUMBER TO EDIT"
-                                    } else {
-                                        "EPISODES WATCHED • TAP NUMBER TO EDIT"
+                                    totalEpisodes = total ?: if (current.isMovie) 1 else null,
+                                    subtitle = when {
+                                        current.isMovie -> "MOVIE • TAP TO MARK WATCHED"
+                                        activeSeasonEntry != null && seasonEntries.size > 1 ->
+                                            "${activeSeasonEntry.displayLabel.uppercase()} • TAP NUMBER TO EDIT"
+                                        else -> "EPISODES WATCHED • TAP NUMBER TO EDIT"
                                     },
                                     canDecrement = canDec,
                                     canIncrement = canInc,

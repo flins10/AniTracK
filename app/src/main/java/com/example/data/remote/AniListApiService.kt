@@ -38,6 +38,13 @@ data class AniListMediaData(
 )
 
 @JsonClass(generateAdapter = true)
+data class AniListMultiPageData(
+    val primary: AniListMediaPage? = null,
+    val alias0: AniListMediaPage? = null,
+    val alias1: AniListMediaPage? = null
+)
+
+@JsonClass(generateAdapter = true)
 data class AniListSingleMediaData(
     val Media: AniListMedia? = null
 )
@@ -82,6 +89,7 @@ data class AniListMedia(
     val format: String? = "TV",
     val status: String? = "RELEASING",
     val episodes: Int? = null,
+    val duration: Int? = null,
     val genres: List<String>? = emptyList(),
     val averageScore: Int? = null,
     val popularity: Int? = null,
@@ -217,6 +225,11 @@ interface AniListApiService {
     ): Response<AniListResponseData<AniListMediaData>>
 
     @POST("/")
+    suspend fun queryMultiPageMedia(
+        @Body request: AniListRequest
+    ): Response<AniListResponseData<AniListMultiPageData>>
+
+    @POST("/")
     suspend fun querySchedule(
         @Body request: AniListRequest
     ): Response<AniListResponseData<AniListScheduleData>>
@@ -324,6 +337,7 @@ object AniListQueries {
                   format
                   status
                   episodes
+                  duration
                   genres
                   averageScore
                   popularity
@@ -351,6 +365,130 @@ object AniListQueries {
                 }
               }
             }
+        """.trimIndent()
+    }
+
+    /**
+     * Combines the primary search Page plus up to 2 Donghua/Romaji alias Pages into a SINGLE
+     * GraphQL HTTP POST request so live search never triggers AniList parallel 429 bursts.
+     */
+    fun buildBatchedSearchQuery(
+        aliasCount: Int,
+        hasGenre: Boolean,
+        hasSeason: Boolean,
+        hasSeasonYear: Boolean,
+        hasStatus: Boolean,
+        hasFormat: Boolean = false,
+        hasCountryOfOrigin: Boolean = false
+    ): String {
+        val clampedAliases = aliasCount.coerceIn(0, 2)
+        val queryArgs = mutableListOf(
+            "\$page: Int",
+            "\$perPage: Int",
+            "\$sort: [MediaSort]",
+            "\$search: String"
+        )
+        val sharedFilterArgs = mutableListOf("type: ANIME", "isAdult: false")
+
+        if (hasGenre) {
+            queryArgs.add("\$genre: String")
+            sharedFilterArgs.add("genre: \$genre")
+        }
+        if (hasSeason) {
+            queryArgs.add("\$season: MediaSeason")
+            sharedFilterArgs.add("season: \$season")
+        }
+        if (hasSeasonYear) {
+            queryArgs.add("\$seasonYear: Int")
+            sharedFilterArgs.add("seasonYear: \$seasonYear")
+        }
+        if (hasStatus) {
+            queryArgs.add("\$status: MediaStatus")
+            sharedFilterArgs.add("status: \$status")
+        }
+        if (hasFormat) {
+            queryArgs.add("\$format: MediaFormat")
+            sharedFilterArgs.add("format: \$format")
+        }
+        if (hasCountryOfOrigin) {
+            queryArgs.add("\$countryOfOrigin: CountryCode")
+            sharedFilterArgs.add("countryOfOrigin: \$countryOfOrigin")
+        }
+        for (i in 0 until clampedAliases) {
+            queryArgs.add("\$alias$i: String")
+        }
+
+        val sharedFilterStr = sharedFilterArgs.joinToString(", ")
+        val mediaFields = """
+                  id
+                  title {
+                    romaji
+                    english
+                    native
+                    userPreferred
+                  }
+                  coverImage {
+                    large
+                    extraLarge
+                  }
+                  bannerImage
+                  format
+                  status
+                  episodes
+                  duration
+                  genres
+                  averageScore
+                  popularity
+                  season
+                  seasonYear
+                  description(asHtml: false)
+                  countryOfOrigin
+                  synonyms
+                  studios(isMain: true) {
+                    nodes {
+                      name
+                    }
+                  }
+                  nextAiringEpisode {
+                    id
+                    airingAt
+                    timeUntilAiring
+                    episode
+                  }
+                  startDate {
+                    year
+                    month
+                    day
+                  }
+        """.trimIndent()
+
+        val aliasBlocks = buildString {
+            for (i in 0 until clampedAliases) {
+                append(
+                    """
+              alias$i: Page (page: 1, perPage: 12) {
+                media ($sharedFilterStr, search: ${'$'}alias$i, sort: [SEARCH_MATCH, POPULARITY_DESC]) {
+$mediaFields
+                }
+              }
+                    """.trimEnd()
+                )
+                append('\n')
+            }
+        }
+
+        return """
+            query (${queryArgs.joinToString(", ")}) {
+              primary: Page (page: ${'$'}page, perPage: ${'$'}perPage) {
+                pageInfo {
+                  hasNextPage
+                  total
+                }
+                media ($sharedFilterStr, search: ${'$'}search, sort: ${'$'}sort) {
+$mediaFields
+                }
+              }
+$aliasBlocks            }
         """.trimIndent()
     }
 
@@ -531,6 +669,7 @@ object AniListQueries {
             format
             status
             episodes
+            duration
             genres
             averageScore
             popularity
@@ -585,6 +724,7 @@ object AniListQueries {
                   format
                   status
                   episodes
+                  duration
                   seasonYear
                   countryOfOrigin
                   synonyms
@@ -702,6 +842,7 @@ object AniListQueries {
               format
               status
               episodes
+              duration
               seasonYear
               countryOfOrigin
               synonyms
@@ -730,6 +871,7 @@ object AniListQueries {
                     format
                     status
                     episodes
+                    duration
                     seasonYear
                     countryOfOrigin
                     synonyms

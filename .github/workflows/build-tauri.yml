@@ -1,0 +1,220 @@
+name: Build Tauri v2 Native Apps (Android, Windows, macOS)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Optional GitHub Release tag (leave blank to auto-generate)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.meta.outputs.tag_name }}
+      release_name: ${{ steps.meta.outputs.release_name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Determine release tag and create GitHub Release
+        id: meta
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ github.event.inputs.release_tag }}
+        run: |
+          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version || '1.0.0'")
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="v${VERSION}-tauri-${{ github.run_number }}"
+          fi
+          RELEASE_NAME="Anime Universe ${TAG}"
+          echo "tag_name=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "release_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
+
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --title "$RELEASE_NAME" \
+              --notes "Native Tauri v2 installers for **ANIME UNIVERSE** loading https://animeuniverse.pages.dev directly (auto-updates on every Cloudflare deployment)."
+          fi
+
+  build-desktop:
+    needs: prepare-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ''
+          - platform: macos-latest
+            args: '--target universal-apple-darwin'
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install Tauri CLI dependencies
+        run: npm install
+
+      - name: Ensure Tauri v2 project and icons are initialized
+        shell: bash
+        run: |
+          if [ ! -f "src-tauri/Cargo.toml" ]; then
+            cp src-tauri/tauri.conf.json /tmp/tauri.conf.json.bak || true
+            npx tauri init --ci \
+              --app-name "Anime Universe" \
+              --window-title "ANIME UNIVERSE" \
+              --frontend-dist "https://animeuniverse.pages.dev" \
+              --dev-url "https://animeuniverse.pages.dev" || true
+            if [ -f /tmp/tauri.conf.json.bak ]; then
+              cp /tmp/tauri.conf.json.bak src-tauri/tauri.conf.json
+            fi
+          fi
+          if [ ! -f "src-tauri/icons/icon.png" ] && [ -f "public/icon-512.png" ]; then
+            mkdir -p src-tauri/icons
+            cp public/icon-512.png src-tauri/icons/icon.png
+          fi
+          npx tauri icon src-tauri/icons/icon.png
+
+      - name: Build and attach desktop installers (.exe / .msi / .dmg)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ needs.prepare-release.outputs.tag_name }}
+          releaseName: ${{ needs.prepare-release.outputs.release_name }}
+          releaseBody: 'Native Tauri v2 installers for **ANIME UNIVERSE** loading https://animeuniverse.pages.dev directly.'
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }} --config '{"bundle":{"icon":["icons/32x32.png","icons/128x128.png","icons/128x128@2x.png","icons/icon.icns","icons/icon.ico","icons/icon.png"]}}'
+
+  build-android:
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK & NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK and Build Tools
+        run: |
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
+          echo "ANDROID_HOME=${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}" >> "$GITHUB_ENV"
+          echo "NDK_HOME=${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - name: Install Rust stable with Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install Tauri CLI dependencies
+        run: npm install
+
+      - name: Initialize Tauri v2 & Android project and generate icons
+        run: |
+          if [ ! -f "src-tauri/Cargo.toml" ]; then
+            cp src-tauri/tauri.conf.json /tmp/tauri.conf.json.bak || true
+            npx tauri init --ci \
+              --app-name "Anime Universe" \
+              --window-title "ANIME UNIVERSE" \
+              --frontend-dist "https://animeuniverse.pages.dev" \
+              --dev-url "https://animeuniverse.pages.dev" || true
+            if [ -f /tmp/tauri.conf.json.bak ]; then
+              cp /tmp/tauri.conf.json.bak src-tauri/tauri.conf.json
+            fi
+          fi
+          if [ ! -f "src-tauri/icons/icon.png" ] && [ -f "public/icon-512.png" ]; then
+            mkdir -p src-tauri/icons
+            cp public/icon-512.png src-tauri/icons/icon.png
+          fi
+          if [ ! -d "src-tauri/gen/android" ]; then
+            npx tauri android init --ci
+          fi
+          npx tauri icon src-tauri/icons/icon.png
+
+      - name: Build Android APK
+        run: |
+          npx tauri android build --apk --target aarch64
+
+      - name: Sign & package installable Android APK
+        run: |
+          mkdir -p dist-android
+          RAW_APK=$(find src-tauri/gen/android/app/build/outputs/apk -name "*.apk" | head -n 1)
+          if [ -z "$RAW_APK" ]; then
+            echo "No APK found in build outputs!"
+            exit 1
+          fi
+          OUT_APK="dist-android/Anime-Universe-Android.apk"
+          BUILD_TOOLS="${ANDROID_HOME}/build-tools/35.0.0"
+
+          if [[ "$RAW_APK" == *"-unsigned.apk" ]]; then
+            keytool -genkeypair -v \
+              -keystore /tmp/release-key.jks \
+              -alias animeuniverse \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass animeuniverse123 -keypass animeuniverse123 \
+              -dname "CN=Anime Universe, OU=App, O=Anime Universe, L=Cloud, S=Web, C=US"
+            "${BUILD_TOOLS}/zipalign" -f -p 4 "$RAW_APK" /tmp/aligned.apk
+            "${BUILD_TOOLS}/apksigner" sign \
+              --ks /tmp/release-key.jks \
+              --ks-key-alias animeuniverse \
+              --ks-pass pass:animeuniverse123 \
+              --key-pass pass:animeuniverse123 \
+              --out "$OUT_APK" \
+              /tmp/aligned.apk
+          else
+            cp "$RAW_APK" "$OUT_APK"
+          fi
+          ls -lh "$OUT_APK"
+
+      - name: Upload Android APK to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare-release.outputs.tag_name }}
+          files: dist-android/Anime-Universe-Android.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

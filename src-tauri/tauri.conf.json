@@ -1,0 +1,34 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Anime Universe",
+  "version": "2.19.1",
+  "identifier": "com.animeuniverse.app",
+  "build": {
+    "frontendDist": "https://animeuniverse.pages.dev",
+    "devUrl": "https://animeuniverse.pages.dev"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "ANIME UNIVERSE",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 380,
+        "minHeight": 640,
+        "decorations": true,
+        "resizable": true,
+        "backgroundColor": "#09090f"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.png"
+    ]
+  }
+}

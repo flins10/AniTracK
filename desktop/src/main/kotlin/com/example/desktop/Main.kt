@@ -1927,14 +1927,17 @@ private suspend fun fetchAniListDiscover(
     val countryFilter = if (mode == "donghua") ", countryOfOrigin: \"CN\"" else ""
     val adultFilter = if (safeMode) ", isAdult: false" else ""
 
-    val query = """
-        query(${'$'}page: Int, ${'$'}perPage: Int, ${'$'}search: String, ${'$'}genre: String) {
-          Page(page: ${'$'}page, perPage: ${'$'}perPage) {
-            pageInfo {
-              hasNextPage
-              currentPage
-            }
-            media(type: ANIME, sort: $sortExpr, search: ${'$'}search, genre: ${'$'}genre$statusFilter$seasonalFilter$countryFilter$adultFilter) {
+    val extraQueries = if (page == 1 && trimmedSearch.length >= 2) {
+        DesktopEnglishTitleMapper.expandSearchQueries(
+            rawQuery = trimmedSearch,
+            donghuaOnly = mode == "donghua",
+            maxExtra = 2
+        )
+    } else {
+        emptyList()
+    }
+
+    val mediaSelection = """
               id
               title { english romaji }
               synonyms
@@ -1946,13 +1949,42 @@ private suspend fun fetchAniListDiscover(
               status
               seasonYear
               episodes
+              duration
               averageScore
               genres
               nextAiringEpisode { airingAt episode }
               description(asHtml: false)
+    """.trimIndent()
+
+    val declArgs = mutableListOf("${'$'}page: Int", "${'$'}perPage: Int", "${'$'}search: String", "${'$'}genre: String")
+    extraQueries.indices.forEach { idx -> declArgs.add("${'$'}alias$idx: String") }
+    val aliasBlocks = buildString {
+        extraQueries.indices.forEach { idx ->
+            append(
+                """
+          alias$idx: Page(page: 1, perPage: 12) {
+            media(type: ANIME, sort: [SEARCH_MATCH, POPULARITY_DESC], search: ${'$'}alias$idx, genre: ${'$'}genre$statusFilter$seasonalFilter$countryFilter$adultFilter) {
+$mediaSelection
             }
           }
+                """.trimEnd()
+            )
+            append('\n')
         }
+    }
+
+    val query = """
+        query(${declArgs.joinToString(", ")}) {
+          primary: Page(page: ${'$'}page, perPage: ${'$'}perPage) {
+            pageInfo {
+              hasNextPage
+              currentPage
+            }
+            media(type: ANIME, sort: $sortExpr, search: ${'$'}search, genre: ${'$'}genre$statusFilter$seasonalFilter$countryFilter$adultFilter) {
+$mediaSelection
+            }
+          }
+$aliasBlocks        }
     """.trimIndent()
 
     data class RawParsed(
@@ -1962,124 +1994,198 @@ private suspend fun fetchAniListDiscover(
         val popularity: Int
     )
 
-    suspend fun runQuery(searchTerm: String?, targetPage: Int, targetPerPage: Int): Pair<List<RawParsed>, Boolean> {
-        val vars = JsonObject().apply {
-            addProperty("page", targetPage)
-            addProperty("perPage", targetPerPage)
-            if (!searchTerm.isNullOrBlank()) addProperty("search", searchTerm)
-            if (genre != "All Genres") addProperty("genre", genre)
-        }
-        val payload = JsonObject().apply {
-            addProperty("query", query)
-            add("variables", vars)
-        }
+    fun parseMediaArray(mediaArr: JsonArray?): List<RawParsed> {
+        if (mediaArr == null) return emptyList()
+        return mediaArr.mapNotNull { el ->
+            if (!el.isJsonObject) return@mapNotNull null
+            val obj = el.asJsonObject
+            val id = obj.get("id").asIntOrNull() ?: return@mapNotNull null
+            val titleObj = obj.get("title")?.takeIf { it.isJsonObject }?.asJsonObject
+            val officialEnglish = titleObj?.get("english").asStringOrNull()
+            val romaji = titleObj?.get("romaji").asStringOrNull().orEmpty()
+            val synonyms = obj.get("synonyms")?.takeIf { it.isJsonArray }?.asJsonArray
+                ?.mapNotNull { it.asStringOrNull()?.trim()?.takeIf { s -> s.isNotEmpty() } }
+                ?: emptyList()
+            val country = obj.get("countryOfOrigin").asStringOrNull() ?: "JP"
+            val isDonghua = country.equals("CN", ignoreCase = true)
+            val title = DesktopEnglishTitleMapper.resolve(
+                titleEnglish = officialEnglish,
+                titleRomaji = romaji,
+                synonyms = synonyms,
+                isDonghua = isDonghua
+            ) ?: officialEnglish?.takeIf { it.isNotBlank() }
+                ?: romaji.ifBlank { "Anime #$id" }
+            val coverObj = obj.get("coverImage")?.takeIf { it.isJsonObject }?.asJsonObject
+            val cover = coverObj?.get("extraLarge").asStringOrNull()
+                ?: coverObj?.get("large").asStringOrNull().orEmpty()
+            val banner = obj.get("bannerImage").asStringOrNull().orEmpty()
+            val format = obj.get("format").asStringOrNull() ?: "TV"
+            val status = obj.get("status").asStringOrNull() ?: "RELEASING"
+            val rawEps = obj.get("episodes").asIntOrNull()?.takeIf { it > 0 }
+            val nextAiringObj = obj.get("nextAiringEpisode")?.takeIf { it.isJsonObject }?.asJsonObject
+            val nextAiring = nextAiringObj?.get("airingAt").asLongOrNull()
+            val nextEpNum = nextAiringObj?.get("episode").asIntOrNull()
+            val eps = when {
+                format.equals("MOVIE", ignoreCase = true) -> rawEps ?: 1
+                status.equals("RELEASING", ignoreCase = true) && isDonghua && rawEps != null && nextEpNum != null && nextEpNum > rawEps -> null
+                else -> rawEps
+            }
+            val year = obj.get("seasonYear").asIntOrNull()
+            val score100 = obj.get("averageScore").asIntOrNull() ?: 0
+            val popularity = obj.get("popularity").asIntOrNull() ?: 0
+            val desc = obj.get("description").asStringOrNull().orEmpty()
+                .replace(Regex("<[^>]+>"), "")
+            val genresList = obj.get("genres")?.takeIf { it.isJsonArray }?.asJsonArray
+                ?.mapNotNull { it.asStringOrNull() } ?: emptyList()
 
-        var attempt = 0
-        while (attempt < 2) {
-            attempt++
-            val outcome = runCatching {
-                val req = Request.Builder()
-                    .url("https://graphql.anilist.co")
-                    .post(gson.toJson(payload).toRequestBody("application/json".toMediaType()))
-                    .build()
-                httpClient.newCall(req).execute().use { resp ->
-                    if (resp.code == 429) return@use null
-                    if (!resp.isSuccessful) return@use (emptyList<RawParsed>() to false)
-                    val body = resp.body?.string().orEmpty()
-                    val root = gson.fromJson(body, JsonObject::class.java)
-                    val pageObj = root?.getAsJsonObject("data")?.getAsJsonObject("Page")
-                        ?: return@use (emptyList<RawParsed>() to false)
-                    val hasNext = pageObj.get("pageInfo")?.takeIf { it.isJsonObject }?.asJsonObject
-                        ?.get("hasNextPage")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
-                    val mediaArr = pageObj.getAsJsonArray("media")
-                        ?: return@use (emptyList<RawParsed>() to false)
-                    val parsed = mediaArr.map { el ->
-                        val obj = el.asJsonObject
-                        val id = obj.get("id").asInt
-                        val titleObj = obj.getAsJsonObject("title")
-                        val officialEnglish = titleObj?.get("english").asStringOrNull()
-                        val romaji = titleObj?.get("romaji").asStringOrNull().orEmpty()
-                        val synonyms = obj.get("synonyms")?.takeIf { it.isJsonArray }?.asJsonArray
-                            ?.mapNotNull { it.asStringOrNull()?.trim()?.takeIf { s -> s.isNotEmpty() } }
-                            ?: emptyList()
-                        val country = obj.get("countryOfOrigin").asStringOrNull() ?: "JP"
-                        val isDonghua = country.equals("CN", ignoreCase = true)
-                        val title = DesktopEnglishTitleMapper.resolve(
-                            titleEnglish = officialEnglish,
-                            titleRomaji = romaji,
-                            synonyms = synonyms,
-                            isDonghua = isDonghua
-                        ) ?: officialEnglish?.takeIf { it.isNotBlank() }
-                            ?: romaji.ifBlank { "Anime #$id" }
-                        val coverObj = obj.getAsJsonObject("coverImage")
-                        val cover = coverObj?.get("extraLarge").asStringOrNull()
-                            ?: coverObj?.get("large").asStringOrNull().orEmpty()
-                        val banner = obj.get("bannerImage").asStringOrNull().orEmpty()
-                        val format = obj.get("format").asStringOrNull() ?: "TV"
-                        val status = obj.get("status").asStringOrNull() ?: "RELEASING"
-                        val eps = obj.get("episodes").asIntOrNull()
-                        val year = obj.get("seasonYear").asIntOrNull()
-                        val score100 = obj.get("averageScore").asIntOrNull() ?: 0
-                        val popularity = obj.get("popularity").asIntOrNull() ?: 0
-                        val nextAiring = obj.get("nextAiringEpisode")?.takeIf { it.isJsonObject }?.asJsonObject
-                            ?.get("airingAt").asLongOrNull()
-                        val desc = obj.get("description").asStringOrNull().orEmpty()
-                            .replace(Regex("<[^>]+>"), "")
-                        val genresList = obj.get("genres")?.takeIf { it.isJsonArray }?.asJsonArray
-                            ?.mapNotNull { it.asStringOrNull() } ?: emptyList()
+            RawParsed(
+                item = DesktopAnimeItem(
+                    id = id,
+                    title = title,
+                    titleRomaji = romaji,
+                    coverImage = cover,
+                    bannerImage = banner,
+                    format = format,
+                    status = status,
+                    totalEpisodes = eps,
+                    catalogStars = if (score100 > 0) (score100 / 20f) else 0f,
+                    airingDayOfWeek = computeDayOfWeek(id, nextAiring),
+                    seasonYear = year,
+                    genres = genresList,
+                    synopsis = desc
+                ),
+                officialEnglish = officialEnglish,
+                synonyms = synonyms,
+                popularity = popularity
+            )
+        }
+    }
 
-                        RawParsed(
+    val vars = JsonObject().apply {
+        addProperty("page", page)
+        addProperty("perPage", perPage)
+        if (trimmedSearch.isNotEmpty()) addProperty("search", trimmedSearch)
+        if (genre != "All Genres") addProperty("genre", genre)
+        extraQueries.forEachIndexed { idx, alias -> addProperty("alias$idx", alias) }
+    }
+    val payload = JsonObject().apply {
+        addProperty("query", query)
+        add("variables", vars)
+    }
+
+    var primaryHasNext = false
+    var anilistSuccess = false
+    val mergedById = LinkedHashMap<Int, RawParsed>()
+
+    var attempt = 0
+    while (attempt < 3) {
+        attempt++
+        var retryWaitMs = 0L
+        val ok = runCatching {
+            val req = Request.Builder()
+                .url("https://graphql.anilist.co")
+                .post(gson.toJson(payload).toRequestBody("application/json".toMediaType()))
+                .build()
+            httpClient.newCall(req).execute().use { resp ->
+                if (resp.code == 429 || resp.code in 500..599) {
+                    val retrySec = resp.header("Retry-After")?.toLongOrNull()
+                    retryWaitMs = if (retrySec != null && retrySec in 1..4) retrySec * 1000L else 850L * attempt
+                    return@use false
+                }
+                if (!resp.isSuccessful) return@use false
+                val body = resp.body?.string().orEmpty()
+                val root = gson.fromJson(body, JsonObject::class.java)
+                val dataObj = root?.get("data")?.takeIf { it.isJsonObject }?.asJsonObject ?: return@use false
+                val primaryObj = dataObj.get("primary")?.takeIf { it.isJsonObject }?.asJsonObject
+                val primaryParsed = parseMediaArray(primaryObj?.get("media")?.takeIf { it.isJsonArray }?.asJsonArray)
+                primaryHasNext = (primaryObj?.get("pageInfo")?.takeIf { it.isJsonObject }?.asJsonObject
+                    ?.get("hasNextPage")?.takeIf { !it.isJsonNull }?.asBoolean ?: false) && primaryParsed.isNotEmpty()
+                primaryParsed.forEach { if (!mergedById.containsKey(it.item.id)) mergedById[it.item.id] = it }
+                extraQueries.indices.forEach { idx ->
+                    val aliasObj = dataObj.get("alias$idx")?.takeIf { it.isJsonObject }?.asJsonObject
+                    parseMediaArray(aliasObj?.get("media")?.takeIf { it.isJsonArray }?.asJsonArray)
+                        .forEach { if (!mergedById.containsKey(it.item.id)) mergedById[it.item.id] = it }
+                }
+                true
+            }
+        }.getOrDefault(false)
+        if (ok) {
+            anilistSuccess = true
+            break
+        }
+        if (attempt < 3) delay(if (retryWaitMs > 0L) retryWaitMs else 700L * attempt)
+    }
+
+    // Automatic Jikan v4 fallback if AniList rate-limited or failed during a keyword search
+    if (!anilistSuccess && trimmedSearch.isNotEmpty()) {
+        runCatching {
+            val encodedQ = java.net.URLEncoder.encode(trimmedSearch, "UTF-8")
+            val jikanUrl = "https://api.jikan.moe/v4/anime?q=$encodedQ&page=$page&limit=${perPage.coerceIn(1, 25)}${if (safeMode) "&sfw=true" else ""}"
+            val req = Request.Builder().url(jikanUrl).header("Accept", "application/json").build()
+            httpClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@use
+                val body = resp.body?.string().orEmpty()
+                val root = gson.fromJson(body, JsonObject::class.java)
+                val arr = root?.get("data")?.takeIf { it.isJsonArray }?.asJsonArray ?: return@use
+                primaryHasNext = root.get("pagination")?.takeIf { it.isJsonObject }?.asJsonObject
+                    ?.get("has_next_page")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+                arr.forEach { el ->
+                    if (!el.isJsonObject) return@forEach
+                    val obj = el.asJsonObject
+                    val id = obj.get("mal_id").asIntOrNull() ?: return@forEach
+                    val rawTitle = obj.get("title").asStringOrNull().orEmpty()
+                    val officialEng = obj.get("title_english").asStringOrNull()
+                    val syns = obj.get("title_synonyms")?.takeIf { it.isJsonArray }?.asJsonArray
+                        ?.mapNotNull { it.asStringOrNull()?.trim()?.takeIf { s -> s.isNotEmpty() } } ?: emptyList()
+                    val jType = obj.get("type").asStringOrNull()?.uppercase() ?: "TV"
+                    val mappedFmt = when (jType) {
+                        "MOVIE" -> "MOVIE"
+                        "OVA" -> "OVA"
+                        "ONA" -> "ONA"
+                        "SPECIAL", "TV SPECIAL" -> "SPECIAL"
+                        else -> "TV"
+                    }
+                    val isDonghua = mappedFmt == "ONA" && DesktopEnglishTitleMapper.isLikelyPinyin(rawTitle)
+                    val title = DesktopEnglishTitleMapper.resolve(officialEng, rawTitle, syns, isDonghua)
+                        ?: officialEng ?: rawTitle.ifBlank { "Anime #$id" }
+                    val jpg = obj.get("images")?.takeIf { it.isJsonObject }?.asJsonObject
+                        ?.get("jpg")?.takeIf { it.isJsonObject }?.asJsonObject
+                    val cover = jpg?.get("large_image_url").asStringOrNull() ?: jpg?.get("image_url").asStringOrNull().orEmpty()
+                    val jStatus = obj.get("status").asStringOrNull()?.lowercase().orEmpty()
+                    val mappedStatus = when {
+                        jStatus.contains("currently airing") -> "RELEASING"
+                        jStatus.contains("not yet") -> "NOT_YET_RELEASED"
+                        else -> "FINISHED"
+                    }
+                    val eps = obj.get("episodes").asIntOrNull()?.takeIf { it > 0 } ?: if (mappedFmt == "MOVIE") 1 else null
+                    val scoreFloat = obj.get("score")?.takeIf { !it.isJsonNull }?.asFloat ?: 0f
+                    val year = obj.get("year").asIntOrNull()
+                    val pop = obj.get("members").asIntOrNull() ?: 0
+                    val genresList = obj.get("genres")?.takeIf { it.isJsonArray }?.asJsonArray
+                        ?.mapNotNull { it.takeIf { g -> g.isJsonObject }?.asJsonObject?.get("name").asStringOrNull() } ?: emptyList()
+                    if (!mergedById.containsKey(id)) {
+                        mergedById[id] = RawParsed(
                             item = DesktopAnimeItem(
                                 id = id,
                                 title = title,
-                                titleRomaji = romaji,
+                                titleRomaji = rawTitle,
                                 coverImage = cover,
-                                bannerImage = banner,
-                                format = format,
-                                status = status,
+                                bannerImage = "",
+                                format = mappedFmt,
+                                status = mappedStatus,
                                 totalEpisodes = eps,
-                                catalogStars = if (score100 > 0) (score100 / 20f) else 0f,
-                                airingDayOfWeek = computeDayOfWeek(id, nextAiring),
+                                catalogStars = if (scoreFloat > 0f) (scoreFloat / 2f) else 0f,
+                                airingDayOfWeek = (id % 7) + 1,
                                 seasonYear = year,
                                 genres = genresList,
-                                synopsis = desc
+                                synopsis = obj.get("synopsis").asStringOrNull().orEmpty()
                             ),
-                            officialEnglish = officialEnglish,
-                            synonyms = synonyms,
-                            popularity = popularity
+                            officialEnglish = officialEng,
+                            synonyms = syns,
+                            popularity = pop
                         )
                     }
-                    parsed to (hasNext && parsed.isNotEmpty())
                 }
-            }.getOrNull()
-            if (outcome != null) return outcome
-            if (attempt < 2) delay(700L)
-        }
-        return emptyList<RawParsed>() to false
-    }
-
-    val extraQueries = if (page == 1 && trimmedSearch.length >= 2) {
-        DesktopEnglishTitleMapper.expandSearchQueries(
-            rawQuery = trimmedSearch,
-            donghuaOnly = mode == "donghua",
-            maxExtra = 2
-        )
-    } else {
-        emptyList()
-    }
-
-    val batchResults = coroutineScope {
-        val primary = async { runQuery(trimmedSearch.takeIf { it.isNotEmpty() }, page, perPage) }
-        val extras = extraQueries.map { alias -> async { runQuery(alias, 1, 12) } }
-        listOf(primary.await()) + extras.awaitAll()
-    }
-
-    val primaryHasNext = batchResults.firstOrNull()?.second ?: false
-    val mergedById = LinkedHashMap<Int, RawParsed>()
-    for ((list, _) in batchResults) {
-        for (entry in list) {
-            if (!mergedById.containsKey(entry.item.id)) {
-                mergedById[entry.item.id] = entry
             }
         }
     }
@@ -2113,7 +2219,14 @@ data class DesktopSeasonEntry(
     val status: String?,
     val episodes: Int?,
     val seasonYear: Int?,
-    val isCurrent: Boolean
+    val isCurrent: Boolean,
+    val partNumber: Int? = null,
+    val shortLabel: String = seasonNumber.toString(),
+    val displayLabel: String = if (partNumber != null && partNumber > 1) {
+        "Season $seasonNumber • Part $partNumber"
+    } else {
+        "Season $seasonNumber"
+    }
 )
 
 private data class DesktopChainNode(
@@ -2127,6 +2240,7 @@ private data class DesktopChainNode(
     val format: String?,
     val status: String?,
     val episodes: Int?,
+    val duration: Int?,
     val seasonYear: Int?,
     val startYear: Int?,
     val startMonth: Int?,
@@ -2152,9 +2266,23 @@ private object DesktopSeasonResolver {
     private const val MAX_WAVES = 25
     private const val MAX_NODES = 60
     private const val BATCH_SIZE = 25
-    private val EPISODIC_FORMATS = setOf("TV", "TV_SHORT", "ONA")
-    private val SPECIAL_SEASON_REGEX = Regex("(final\\s+season|final\\s+chapters?|season\\s+\\d+|\\bpart\\s+\\d+)", RegexOption.IGNORE_CASE)
-    private val RECAP_REGEX = Regex("(recap|summary|digest|preview|special\\s+program|pv)", RegexOption.IGNORE_CASE)
+    private val NON_SEASON_FORMATS = setOf("MOVIE", "OVA", "MUSIC", "MANGA", "NOVEL", "ONE_SHOT")
+    private val MAIN_EPISODIC_FORMATS = setOf("TV", "ONA", "TV_SHORT")
+    private val EXPLICIT_SEASON_TITLE_REGEX = Regex(
+        "(?i)(?:\\bseason\\s*(\\d{1,2})\\b|\\b(\\d{1,2})(?:st|nd|rd|th)\\s+season\\b|\\bs(\\d{1,2})\\b|\\bdi\\s*(\\d{1,2})\\s*ji\\b|\\bdai\\s*(\\d{1,2})\\s*ki\\b|\\bfinal\\s+season\\b|\\bfinal\\s+chapters?\\b)"
+    )
+    private val EXPLICIT_SEASON_NUM_REGEX = Regex(
+        "(?i)(?:\\bseason\\s*(\\d{1,2})\\b|\\b(\\d{1,2})(?:st|nd|rd|th)\\s+season\\b|\\bs(\\d{1,2})\\b|\\bdi\\s*(\\d{1,2})\\s*ji\\b|\\bdai\\s*(\\d{1,2})\\s*ki\\b)"
+    )
+    private val PINYIN_SEASON_NUM_REGEX = Regex("(?i)\\bdi\\s*(yi|er|san|si|wu|liu|qi|ba|jiu|shi)\\s*ji\\b")
+    private val EXPLICIT_PART_REGEX = Regex("(?i)(?:\\bpart\\s*(\\d{1,2})\\b|\\bcour\\s*(\\d{1,2})\\b|\\b(\\d{1,2})(?:st|nd|rd|th)\\s+cour\\b)")
+    private val SECOND_HALF_REGEX = Regex("(?i)\\b(?:second\\s+half|2nd\\s+half|xia\\s*ji|xia\\s*pian)\\b")
+    private val ANNUAL_REGEX = Regex("(?i)\\b(?:nian\\s*fan|annual\\s+(?:edition|season))\\b")
+    private val TRAILING_ROMAN_REGEX = Regex("(?:^|\\s)(II|III|IV|V|VI)(?:$|[:\\-])")
+    private val NON_SEASON_SIDE_REGEX = Regex(
+        "(?i)(?:\\bmini\\s*theater\\b|\\bxiao\\s*juchang\\b|\\bchibi\\b|\\bq[- ]?ban\\b|\\bpetite\\b|\\bmini\\s*anime\\b|\\bshort\\s*theater\\b|\\bgekijou\\b|\\blittle\\s*theater\\b|\\brecap\\b|\\bsummary\\b|\\bdigest\\b|\\bpreview\\b|\\bteaser\\b|\\btrailer\\b|\\bpv\\b|\\bcm\\b|\\bcommercial\\b|\\bpromotional\\b|\\bspecial\\s+program\\b|\\bmusic\\s+video\\b|\\btebie\\s*pian\\b|\\bfanwai\\b|\\bomake\\b|\\bpicture\\s*drama\\b|\\bprologue\\b|\\bepisode\\s*0\\b|\\bep\\.?\\s*0\\b|\\bova\\b|\\boad\\b|\\bmovie\\b|\\bjuchang\\s*ban\\b|\\bgekijouban\\b|\\bspecials?\\b|\\bspecial\\s*\\d+\\b|\\bsan\\s*nian\\s*zhi\\s*yue\\b|\\bthree[- ]year\\s+agreement\\b|\\byuan\\s*qi\\b|\\borigin\\s*(?::|$))"
+    )
+    private val NON_SEASON_BEFORE_ROMAN_REGEX = Regex("(?i)\\b(?:part|cour|movie|film|special|ova|oad|episode|ep|chapter|act|vol|volume)\\s*$")
     private val nodeCache = java.util.concurrent.ConcurrentHashMap<Int, DesktopChainNode>()
 
     private const val BATCH_QUERY = """
@@ -2169,6 +2297,7 @@ private object DesktopSeasonResolver {
               format
               status
               episodes
+              duration
               seasonYear
               startDate { year month day }
               relations {
@@ -2183,6 +2312,7 @@ private object DesktopSeasonResolver {
                     format
                     status
                     episodes
+                    duration
                     seasonYear
                     startDate { year month day }
                   }
@@ -2223,6 +2353,7 @@ private object DesktopSeasonResolver {
             format = obj.get("format").asStringOrNull(),
             status = obj.get("status").asStringOrNull(),
             episodes = obj.get("episodes").asIntOrNull(),
+            duration = obj.get("duration").asIntOrNull(),
             seasonYear = obj.get("seasonYear").asIntOrNull(),
             startYear = startObj?.get("year").asIntOrNull(),
             startMonth = startObj?.get("month").asIntOrNull(),
@@ -2231,18 +2362,82 @@ private object DesktopSeasonResolver {
         )
     }
 
-    private fun isSeasonCandidate(node: DesktopChainNode): Boolean {
+    private fun extractSeasonAndPart(node: DesktopChainNode): Triple<Int?, Int?, Boolean> {
+        val primary = listOfNotNull(node.titleEnglish, node.titleUserPreferred, node.titleRomaji)
+            .filter { it.isNotBlank() }.joinToString(" | ")
+        val combined = (listOfNotNull(node.titleEnglish, node.titleUserPreferred, node.titleRomaji) + node.synonyms)
+            .filter { it.isNotBlank() }.joinToString(" | ")
+        val isAnnual = ANNUAL_REGEX.containsMatchIn(combined)
+
+        var parsedSeason: Int? = null
+        for (src in listOf(primary, combined)) {
+            if (parsedSeason != null) break
+            EXPLICIT_SEASON_NUM_REGEX.find(src)?.let { m ->
+                val n = m.groupValues.drop(1).firstOrNull { it.isNotBlank() }?.toIntOrNull()
+                if (n != null && n in 1..20) parsedSeason = n
+            }
+            if (parsedSeason == null) {
+                PINYIN_SEASON_NUM_REGEX.find(src)?.let { m ->
+                    parsedSeason = when (m.groupValues[1].lowercase()) {
+                        "yi" -> 1; "er" -> 2; "san" -> 3; "si" -> 4; "wu" -> 5
+                        "liu" -> 6; "qi" -> 7; "ba" -> 8; "jiu" -> 9; "shi" -> 10
+                        else -> null
+                    }
+                }
+            }
+        }
+        if (parsedSeason == null && !NON_SEASON_SIDE_REGEX.containsMatchIn(primary)) {
+            for (t in listOfNotNull(node.titleEnglish, node.titleUserPreferred, node.titleRomaji).filter { it.isNotBlank() }) {
+                val m = TRAILING_ROMAN_REGEX.find(t)
+                if (m != null && !NON_SEASON_BEFORE_ROMAN_REGEX.containsMatchIn(t.substring(0, m.range.first).trim())) {
+                    parsedSeason = when (m.groupValues[1]) {
+                        "II" -> 2; "III" -> 3; "IV" -> 4; "V" -> 5; "VI" -> 6
+                        else -> null
+                    }
+                    if (parsedSeason != null) break
+                }
+            }
+        }
+        var parsedPart: Int? = null
+        for (src in listOf(primary, combined)) {
+            if (parsedPart != null) break
+            EXPLICIT_PART_REGEX.find(src)?.let { m ->
+                val p = m.groupValues.drop(1).firstOrNull { it.isNotBlank() }?.toIntOrNull()
+                if (p != null && p in 1..6) parsedPart = p
+            }
+            if (parsedPart == null && SECOND_HALF_REGEX.containsMatchIn(src)) parsedPart = 2
+        }
+        return Triple(parsedSeason, parsedPart, isAnnual)
+    }
+
+    private fun isSeasonCandidate(node: DesktopChainNode, franchiseHasFullSeries: Boolean): Boolean {
         if (!node.type.isNullOrBlank() && !node.type.equals("ANIME", ignoreCase = true)) return false
         if (node.status.equals("CANCELLED", ignoreCase = true)) return false
         val fmt = node.format?.uppercase()?.trim().orEmpty()
-        if (fmt.isEmpty() || fmt in EPISODIC_FORMATS) return true
+        if (fmt in NON_SEASON_FORMATS) return false
+
+        val primary = listOfNotNull(node.titleEnglish, node.titleUserPreferred, node.titleRomaji)
+            .filter { it.isNotBlank() }.joinToString(" | ")
+        val hasExplicitSeason = EXPLICIT_SEASON_TITLE_REGEX.containsMatchIn(primary)
+        val hasSideMarker = NON_SEASON_SIDE_REGEX.containsMatchIn(primary)
+
         if (fmt == "SPECIAL") {
-            val combined = listOfNotNull(node.titleEnglish, node.titleUserPreferred, node.titleRomaji).joinToString(" ")
-            if (combined.isNotBlank() && SPECIAL_SEASON_REGEX.containsMatchIn(combined) && !RECAP_REGEX.containsMatchIn(combined)) {
-                return true
-            }
+            return Regex("(?i)(?:\\bfinal\\s+season\\b|\\bfinal\\s+chapters?\\b|\\bseason\\s+\\d+\\b)").containsMatchIn(primary) &&
+                !Regex("(?i)(?:\\brecap\\b|\\bsummary\\b|\\bdigest\\b|\\bpreview\\b|\\bpv\\b|\\bspecial\\s+program\\b|\\bchibi\\b|\\bmini\\b|\\bxiao\\s*juchang\\b)").containsMatchIn(primary)
         }
-        return false
+        if (fmt.isNotEmpty() && fmt !in MAIN_EPISODIC_FORMATS) return false
+        if (hasSideMarker && !hasExplicitSeason) return false
+
+        if (franchiseHasFullSeries) {
+            if (fmt == "TV_SHORT" && !hasExplicitSeason) return false
+            if (node.duration != null && node.duration in 1..6 && !hasExplicitSeason) return false
+            val (sNum, pNum, isAnn) = extractSeasonAndPart(node)
+            if (fmt == "ONA" && node.status.equals("FINISHED", ignoreCase = true) &&
+                node.episodes != null && node.episodes in 1..3 &&
+                sNum == null && pNum == null && !isAnn
+            ) return false
+        }
+        return true
     }
 
     private fun compareChrono(a: DesktopChainNode?, b: DesktopChainNode?, aId: Int, bId: Int): Int {
@@ -2273,7 +2468,7 @@ private object DesktopSeasonResolver {
 
         val fetched = mutableListOf<DesktopChainNode>()
         var attempt = 0
-        while (attempt < 2) {
+        while (attempt < 3) {
             attempt++
             val result = runCatching {
                 val idArr = JsonArray().apply { missing.forEach { add(it) } }
@@ -2302,7 +2497,7 @@ private object DesktopSeasonResolver {
                 }
             }.getOrDefault(0)
             if (result == 1) break
-            if (attempt < 2) delay(if (result == -1) 700L else 450L)
+            if (attempt < 3) delay(if (result == -1) 900L * attempt else 500L * attempt)
         }
         return cached + fetched
     }
@@ -2332,7 +2527,8 @@ private object DesktopSeasonResolver {
                     startMonth = candidate.startMonth ?: prev.startMonth,
                     startDay = candidate.startDay ?: prev.startDay,
                     seasonYear = candidate.seasonYear ?: prev.seasonYear,
-                    episodes = candidate.episodes ?: prev.episodes
+                    episodes = candidate.episodes ?: prev.episodes,
+                    duration = candidate.duration ?: prev.duration
                 )
             } else {
                 prev.copy(
@@ -2343,6 +2539,7 @@ private object DesktopSeasonResolver {
                     startDay = prev.startDay ?: candidate.startDay,
                     seasonYear = prev.seasonYear ?: candidate.seasonYear,
                     episodes = prev.episodes ?: candidate.episodes,
+                    duration = prev.duration ?: candidate.duration,
                     edges = if (prev.edges.isNotEmpty()) prev.edges else candidate.edges
                 )
             }
@@ -2390,8 +2587,16 @@ private object DesktopSeasonResolver {
             }
         }
 
-        val seasonIds = nodesById.values.filter { isSeasonCandidate(it) }.map { it.id }.toSet()
-        if (seasonIds.size <= 1) return@withContext emptyList()
+        val franchiseHasFullSeries = nodesById.values.any { n ->
+            val fmt = n.format?.uppercase()?.trim().orEmpty()
+            (fmt == "TV" || fmt == "ONA") &&
+                ((n.duration != null && n.duration >= 12) ||
+                    (n.episodes != null && n.episodes >= 10) ||
+                    (n.status.equals("RELEASING", ignoreCase = true) && (n.duration == null || n.duration >= 10)))
+        }
+
+        val seasonIds = nodesById.values.filter { isSeasonCandidate(it, franchiseHasFullSeries) }.map { it.id }.toSet()
+        if (rootId !in seasonIds || seasonIds.size <= 1) return@withContext emptyList()
 
         val seasonOutgoing = HashMap<Int, MutableSet<Int>>()
         val inDegree = HashMap<Int, Int>()
@@ -2436,19 +2641,55 @@ private object DesktopSeasonResolver {
             orderedIds.addAll(seasonIds.filter { it !in placed }.sortedWith(cmp))
         }
 
-        orderedIds.mapIndexed { idx, id ->
+        val entries = mutableListOf<DesktopSeasonEntry>()
+        var currentSeasonNum = 0
+        for (id in orderedIds) {
             val n = nodesById.getValue(id)
-            DesktopSeasonEntry(
-                id = id,
-                seasonNumber = idx + 1,
-                title = n.displayTitle,
-                format = n.format,
-                status = n.status,
-                episodes = n.episodes,
-                seasonYear = n.seasonYear ?: n.startYear,
-                isCurrent = id == rootId
+            val (parsedSeason, parsedPart, isAnnual) = extractSeasonAndPart(n)
+            val assignedSeason: Int
+            val assignedPart: Int?
+            if (entries.isEmpty()) {
+                assignedSeason = parsedSeason?.coerceIn(1, 20) ?: 1
+                assignedPart = parsedPart
+                currentSeasonNum = assignedSeason
+            } else if (parsedPart != null && parsedPart >= 2 && (parsedSeason == null || parsedSeason == currentSeasonNum)) {
+                assignedSeason = currentSeasonNum
+                assignedPart = parsedPart
+            } else if (parsedSeason != null && parsedSeason == currentSeasonNum && parsedPart != null) {
+                assignedSeason = currentSeasonNum
+                assignedPart = parsedPart
+            } else if (parsedSeason != null && parsedSeason in (currentSeasonNum + 1)..(currentSeasonNum + 3)) {
+                assignedSeason = parsedSeason
+                assignedPart = parsedPart
+                currentSeasonNum = assignedSeason
+            } else {
+                currentSeasonNum += 1
+                assignedSeason = currentSeasonNum
+                assignedPart = parsedPart
+            }
+            val shortLabel = if (assignedPart != null && assignedPart > 1) "$assignedSeason Pt $assignedPart" else assignedSeason.toString()
+            val displayLabel = when {
+                assignedPart != null && assignedPart > 1 -> "Season $assignedSeason • Part $assignedPart"
+                isAnnual -> "Season $assignedSeason • Annual"
+                else -> "Season $assignedSeason"
+            }
+            entries.add(
+                DesktopSeasonEntry(
+                    id = id,
+                    seasonNumber = assignedSeason,
+                    title = n.displayTitle,
+                    format = n.format,
+                    status = n.status,
+                    episodes = n.episodes,
+                    seasonYear = n.seasonYear ?: n.startYear,
+                    isCurrent = id == rootId,
+                    partNumber = assignedPart,
+                    shortLabel = shortLabel,
+                    displayLabel = displayLabel
+                )
             )
         }
+        entries
     }
 
     suspend fun fetchSingleAnimeItem(anilistId: Int): DesktopAnimeItem? = withContext(Dispatchers.IO) {
@@ -7464,11 +7705,17 @@ private fun DesktopDetailScreen(
                                 letterSpacing = 1.6.sp,
                                 color = ChampagneGold
                             )
+                            val distinctSeasonCount = seasons.map { it.seasonNumber }.distinct().size
                             val metaText = if (activeSeason != null) {
                                 val yr = activeSeason.seasonYear?.let { " • $it" }.orEmpty()
-                                "Season ${activeSeason.seasonNumber} of ${seasons.size}$yr"
+                                val totalLabel = if (distinctSeasonCount == 1) {
+                                    "1 Season (${seasons.size} Parts)"
+                                } else {
+                                    "$distinctSeasonCount Seasons"
+                                }
+                                "${activeSeason.displayLabel} • $totalLabel$yr"
                             } else {
-                                "${seasons.size} Seasons"
+                                "$distinctSeasonCount Seasons"
                             }
                             Text(
                                 metaText,
@@ -7498,7 +7745,7 @@ private fun DesktopDetailScreen(
                                         horizontalArrangement = Arrangement.spacedBy(5.dp)
                                     ) {
                                         Text(
-                                            text = s.seasonNumber.toString(),
+                                            text = s.shortLabel,
                                             fontSize = 13.5.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = if (isSelected) ChampagneOnGold else IvoryText
@@ -7552,8 +7799,9 @@ private fun DesktopDetailScreen(
                         }
                     }
 
+                    val isMovieFormat = item.format.equals("MOVIE", ignoreCase = true)
                     Text(
-                        "EPISODE PROGRESS (CLICK NUMBER TO TYPE DIRECTLY)",
+                        if (isMovieFormat) "MOVIE PROGRESS (0 = UNWATCHED, 1 = WATCHED)" else "EPISODE PROGRESS (CLICK NUMBER TO TYPE DIRECTLY)",
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 1.5.sp,
@@ -7562,7 +7810,7 @@ private fun DesktopDetailScreen(
 
                     DesktopInlineEpisodeStepper(
                         watchedEpisodes = watchedEps,
-                        totalEpisodes = item.totalEpisodes,
+                        totalEpisodes = item.totalEpisodes ?: if (isMovieFormat) 1 else null,
                         compact = false,
                         onCommitEpisode = { nextEps ->
                             val res = onCommitEpisodes(nextEps)

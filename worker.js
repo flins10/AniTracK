@@ -156,6 +156,14 @@ export default {
           headers
         });
       }
+      if (url.pathname === '/' || url.pathname === '/index.html' || url.pathname === '/sw.js') {
+        const noCacheHeaders = new Headers(assetResp.headers);
+        noCacheHeaders.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+        return new Response(assetResp.body, {
+          status: assetResp.status,
+          headers: noCacheHeaders
+        });
+      }
       return assetResp;
     }
     return new Response('Not Found', { status: 404 });
