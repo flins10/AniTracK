@@ -23,7 +23,7 @@
       "platformName": "Windows EXE",
       "appName": "Anime Universe for Windows",
       "version": "v2.1.0",
-      "fileSize": "3-5 MB",
+      "fileSize": "3 MB",
       "osSupported": "Windows 10 & Windows 11 (64-bit x64)",
       "releaseDate": "Nov 18, 2026",
       "fileName": "AnimeUniverse-Windows-Installer.exe",
@@ -37,7 +37,7 @@
       "platformName": "macOS DMG",
       "appName": "Anime Universe for macOS",
       "version": "v2.1.0",
-      "fileSize": "3-5.0 MB",
+      "fileSize": "8 MB",
       "osSupported": "macOS 12 Monterey & newer (Apple Silicon & Intel)",
       "releaseDate": "Nov 18, 2026",
       "fileName": "AnimeUniverse-macOS-Installer.dmg",
@@ -103,37 +103,4 @@
           "downloadUrl": ""
         }
       }
-    },
-    {
-      "version": "v1.9.0",
-      "title": "Weekly Airing Schedule & Half-Star Precision",
-      "releaseDate": "Oct 26, 2026",
-      "channel": "Archived Release",
-      "notes": [
-        "Launched the interactive 7-day Weekly Release Schedule with automatic local timezone conversion.",
-        "Added half-star rating precision (0.5★ to 5.0★) and editorial review quote cards.",
-        "Initial Compose Desktop packaging for Windows (.exe) and macOS (.dmg)."
-      ],
-      "downloads": {
-        "android": {
-          "version": "v1.9.0",
-          "fileSize": "23.1 MB",
-          "available": false,
-          "downloadUrl": ""
-        },
-        "windows": {
-          "version": "v1.9.0",
-          "fileSize": "64.2 MB",
-          "available": false,
-          "downloadUrl": ""
-        },
-        "macos": {
-          "version": "v1.9.0",
-          "fileSize": "70.5 MB",
-          "available": false,
-          "downloadUrl": ""
-        }
-      }
     }
-  ]
-}
