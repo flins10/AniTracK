@@ -86,6 +86,28 @@ let sandroneLastClipIndex = -1;
 let sandroneIsPlaying = false;
 let sandronePlayToken = 0;
 
+function isPcSandroneEnvironment() {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
+  const ua = String(navigator.userAgent || '');
+  // Never show Sandrone on Android (mobile browser or APK WebView), iPhone, iPad, iPod, or any mobile device
+  if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile|Silk|Kindle/i.test(ua)) {
+    return false;
+  }
+  if (navigator.userAgentData && navigator.userAgentData.mobile === true) {
+    return false;
+  }
+  // Touch-primary / coarse-pointer handheld devices are excluded even if "Request Desktop Site" is enabled
+  if (typeof window.matchMedia === 'function') {
+    if (window.matchMedia('(hover: none), (pointer: coarse)').matches) {
+      return false;
+    }
+    if (window.matchMedia('(max-width: 899px)').matches) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function syncSandronePlayingUI() {
   document.querySelectorAll('[data-sandrone-mascot]').forEach((el) => {
     el.classList.toggle('is-playing', sandroneIsPlaying);
@@ -93,6 +115,7 @@ function syncSandronePlayingUI() {
 }
 
 function playRandomSandroneVoice(triggerEl) {
+  if (!isPcSandroneEnvironment()) return;
   if (!SANDRONE_VOICE_CLIPS.length) return;
   let nextIdx = Math.floor(Math.random() * SANDRONE_VOICE_CLIPS.length);
   if (SANDRONE_VOICE_CLIPS.length > 1 && nextIdx === sandroneLastClipIndex) {
@@ -421,6 +444,9 @@ const state = {
   communityViewTab: 'feed', // 'feed' | 'tagged'
   communitySentimentFilter: null,
   communitySort: 'RECENT',
+  communityUserFilterOpen: false,
+  communitySelectedUsers: [], // up to 3 users: [{ key, userId, username, avatarKey }]
+  communityUserSearchQuery: '',
   communityCommentsAnimeId: null,
   communityCommentsAnimeFallback: null, // fallback template metadata when opening older anime from Tagged You
   communityCommentsTab: 'discussion', // 'discussion' (Live Chat) | 'notes' (Reviews)
@@ -488,6 +514,7 @@ const state = {
   detailLoading: false,
   quickEditAnime: null,
   contextMenu: null, // { animeId, x, y }
+  collectionContextMenu: null, // { id, name, count, x, y }
   confirmRemoveHomeAnime: null, // { animeId, title }
   inlineEpEdit: null, // { animeId, scope: 'card'|'detail', draft, saving, error }
   toastMessage: '',
@@ -1774,6 +1801,7 @@ async function loadCloudData(silent = false) {
     const hasActiveUserWork =
       Boolean(state.inlineEpEdit) ||
       Boolean(state.contextMenu) ||
+      Boolean(state.collectionContextMenu) ||
       Boolean(state.communityCommentsAnimeId !== null) ||
       Boolean(state.quickEditAnime) ||
       Boolean(state.showAvatarModal) ||
@@ -2114,6 +2142,78 @@ function groupCommunityReviewsByAnime(reviews) {
   });
 
   return groups;
+}
+
+function normalizeCommunityUserKey(revOrUser) {
+  if (!revOrUser) return '';
+  const uid = String(revOrUser.user_id || revOrUser.userId || '').trim();
+  const uname = String(revOrUser.username || '').trim().toLowerCase();
+  return uid || uname;
+}
+
+function extractCommunityPosters(reviews) {
+  const posterMap = new Map();
+  const allGroups = groupCommunityReviewsByAnime(reviews);
+  allGroups.forEach((grp) => {
+    (grp.reviews || []).forEach((r) => {
+      const key = normalizeCommunityUserKey(r);
+      const username = String(r.username || 'Member').trim() || 'Member';
+      if (!key) return;
+      const existing = posterMap.get(key);
+      if (existing) {
+        existing.animeIds.add(Number(grp.anime_id));
+        if (!existing.avatarKey && r.avatar_key) existing.avatarKey = r.avatar_key;
+      } else {
+        posterMap.set(key, {
+          key,
+          userId: String(r.user_id || ''),
+          username,
+          avatarKey: r.avatar_key || 'avatar_1',
+          animeIds: new Set([Number(grp.anime_id)])
+        });
+      }
+    });
+  });
+  return Array.from(posterMap.values())
+    .map((p) => ({
+      key: p.key,
+      userId: p.userId,
+      username: p.username,
+      avatarKey: p.avatarKey,
+      postCount: p.animeIds.size
+    }))
+    .sort((a, b) => b.postCount - a.postCount || a.username.localeCompare(b.username));
+}
+
+function doesReviewMatchSelectedUsers(rev, selectedUsers) {
+  if (!Array.isArray(selectedUsers) || selectedUsers.length === 0) return true;
+  const revKey = normalizeCommunityUserKey(rev);
+  const revUname = String(rev?.username || '').trim().toLowerCase();
+  return selectedUsers.some(
+    (u) =>
+      (u.key && u.key === revKey) ||
+      (u.username && String(u.username).trim().toLowerCase() === revUname)
+  );
+}
+
+async function deleteCollectionCategoryById(colId) {
+  if (!colId) return;
+  const target = state.collections.find((c) => String(c.id) === String(colId));
+  const colName = target?.name || 'Category';
+  state.collections = state.collections.filter((c) => String(c.id) !== String(colId));
+  if (String(state.myListCollectionFilter || '') === String(colId)) {
+    state.myListCollectionFilter = null;
+  }
+  state.collectionContextMenu = null;
+  saveCollections();
+  renderApp();
+  showToast(`Deleted category "${colName}"`);
+
+  if (state.session && !String(colId).startsWith('local_')) {
+    const enc = encodeURIComponent(String(colId));
+    await supabaseRequest(`/rest/v1/collection_anime?collection_id=eq.${enc}`, 'DELETE').catch(() => {});
+    await supabaseRequest(`/rest/v1/collections?id=eq.${enc}`, 'DELETE').catch(() => {});
+  }
 }
 
 let discoverFetchToken = 0;
@@ -6477,7 +6577,14 @@ function renderMyListScreen() {
     <!-- Collections Section (Matches Screenshot 2) -->
     <div style="margin: 14px 0 18px;">
       <div class="section-header-row" style="margin-bottom:10px;">
-        <h3 class="serif-heading" style="font-size:24px;">Collections</h3>
+        <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;">
+          <h3 class="serif-heading" style="font-size:24px;">Collections</h3>
+          ${
+            state.collections.length > 0
+              ? `<span style="font-size:11px;color:var(--text-muted);">Right-click (PC) or Long-press (Phone) a category to delete</span>`
+              : ''
+          }
+        </div>
         <button id="btn-new-collection-inline" style="background:none;border:none;color:var(--accent-primary);font-size:11.5px;font-weight:700;letter-spacing:1.4px;cursor:pointer;font-family:inherit;">
           + NEW
         </button>
@@ -6495,7 +6602,14 @@ function renderMyListScreen() {
               ${state.collections
                 .map(
                   (c) => `
-                  <button class="capsule-pill ${state.myListCollectionFilter === c.id ? 'active' : ''}" data-mylist-col="${c.id}">
+                  <button
+                    type="button"
+                    class="capsule-pill collection-category-pill ${state.myListCollectionFilter === c.id ? 'active' : ''}"
+                    data-mylist-col="${escapeHtml(c.id)}"
+                    data-mylist-col-name="${escapeHtml(c.name)}"
+                    data-mylist-col-count="${(c.animeIds || []).length}"
+                    title="Click to filter • Right-click (PC) or Long-press (Phone) to delete"
+                  >
                     <span>${escapeHtml(c.name)}</span>
                     <span class="pill-count-circle">${(c.animeIds || []).length}</span>
                   </button>`
@@ -6529,7 +6643,20 @@ function renderFiveStarsHtml(starsVal) {
 }
 
 function renderCommunityScreen() {
-  const allGroups = groupCommunityReviewsByAnime(state.communityReviews);
+  const allUnfilteredGroups = groupCommunityReviewsByAnime(state.communityReviews);
+  const allPosters = extractCommunityPosters(state.communityReviews);
+  const validPosterKeys = new Set(allPosters.map((p) => p.key));
+  const selectedUsers = (state.communitySelectedUsers || []).filter((u) => validPosterKeys.has(u.key)).slice(0, 3);
+  if (selectedUsers.length !== (state.communitySelectedUsers || []).length) {
+    state.communitySelectedUsers = selectedUsers;
+  }
+
+  // If 1-3 users are selected, scope templates and card reviews strictly to those selected users
+  const activeReviewsPool =
+    selectedUsers.length > 0
+      ? (state.communityReviews || []).filter((r) => doesReviewMatchSelectedUsers(r, selectedUsers))
+      : state.communityReviews;
+  const allGroups = groupCommunityReviewsByAnime(activeReviewsPool);
   const totalNotesAndRatings = allGroups.reduce((acc, g) => acc + g.total_count, 0);
 
   const topBar = renderObsidianTopBar({
@@ -6566,9 +6693,10 @@ function renderCommunityScreen() {
     });
 
   const shownAnimeIds = new Set(filtered.map((g) => Number(g.anime_id)));
-  const unseenOnlyCards = (state.notifications.unseenAnime || []).filter(
-    (u) => !shownAnimeIds.has(Number(u.anime_id))
-  );
+  const unseenOnlyCards =
+    selectedUsers.length > 0
+      ? []
+      : (state.notifications.unseenAnime || []).filter((u) => !shownAnimeIds.has(Number(u.anime_id)));
 
   const viewTab = state.communityViewTab === 'tagged' ? 'tagged' : 'feed';
   const unreadTaggedCount = Math.max(
@@ -6679,7 +6807,7 @@ function renderCommunityScreen() {
       ).join('')}
     </div>
 
-    <div class="capsule-strip">
+    <div class="capsule-strip" style="align-items:center;">
       ${[
         { k: 'RECENT', label: 'Newest' },
         { k: 'HIGHEST', label: 'Highest Rated' }
@@ -6689,7 +6817,103 @@ function renderCommunityScreen() {
             `<button class="capsule-pill ${state.communitySort === opt.k ? 'active' : ''}" data-comm-sort="${opt.k}">${opt.label}</button>`
         )
         .join('')}
+      <button
+        type="button"
+        class="capsule-pill ${state.communityUserFilterOpen || selectedUsers.length > 0 ? 'active' : ''}"
+        id="btn-comm-toggle-user-filter"
+        title="Filter templates by posted username (up to 3 users)"
+      >
+        <span>Posted By${selectedUsers.length > 0 ? ` (${selectedUsers.length}/3)` : ''}</span>
+        <span style="font-size:10px;opacity:0.85;">${state.communityUserFilterOpen ? '▴' : '▾'}</span>
+      </button>
     </div>
+
+    ${
+      selectedUsers.length > 0
+        ? `
+          <div class="community-user-active-bar">
+            <span class="community-user-by-label">by →</span>
+            <div class="community-user-applied-chips">
+              ${selectedUsers
+                .map(
+                  (u, idx) => `
+                  <button
+                    type="button"
+                    class="community-user-applied-chip"
+                    data-comm-remove-user="${escapeHtml(u.key)}"
+                    title="Remove @${escapeHtml(u.username)} from filter"
+                  >
+                    ${renderAvatarCircle(u.avatarKey || 'avatar_1', u.username, 18)}
+                    <span>${escapeHtml(u.username)}</span>
+                    <span class="chip-close-x">✕</span>
+                  </button>${idx < selectedUsers.length - 1 ? `<span class="community-user-comma">,</span>` : ''}`
+                )
+                .join('')}
+            </div>
+            <span class="community-user-limit-tag">${selectedUsers.length}/3 max</span>
+            <button type="button" class="community-user-clear-btn" id="btn-comm-clear-user-filter">Clear</button>
+          </div>
+        `
+        : ''
+    }
+
+    ${
+      state.communityUserFilterOpen
+        ? `
+          <div class="community-user-picker-panel">
+            <div class="community-user-picker-header">
+              <div>
+                <div class="micro-label" style="color:var(--accent-primary);">FILTER TEMPLATES BY POSTED USERNAME</div>
+                <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;">
+                  Select up to <strong>3 users max</strong> (by → 1, 2, 3) to show only templates posted by them (${selectedUsers.length}/3 selected • ${allUnfilteredGroups.length} total templates).
+                </div>
+              </div>
+              ${
+                allPosters.length > 5
+                  ? `<input
+                       id="inp-comm-user-search"
+                       class="auth-input"
+                       style="height:34px;max-width:210px;font-size:12.5px;padding:0 12px;"
+                       placeholder="Search username..."
+                       value="${escapeHtml(state.communityUserSearchQuery || '')}"
+                     />`
+                  : ''
+              }
+            </div>
+            <div class="community-user-picker-grid">
+              ${
+                allPosters
+                  .filter((p) => {
+                    const q = String(state.communityUserSearchQuery || '').trim().toLowerCase();
+                    return !q || p.username.toLowerCase().includes(q);
+                  })
+                  .map((p) => {
+                    const selIdx = selectedUsers.findIndex((u) => u.key === p.key);
+                    const isSelected = selIdx !== -1;
+                    const isDisabled = !isSelected && selectedUsers.length >= 3;
+                    return `
+                      <button
+                        type="button"
+                        class="community-user-option-pill ${isSelected ? 'selected' : ''} ${isDisabled ? 'disabled-limit' : ''}"
+                        data-comm-pick-user="${escapeHtml(p.key)}"
+                        data-comm-pick-uid="${escapeHtml(p.userId)}"
+                        data-comm-pick-name="${escapeHtml(p.username)}"
+                        data-comm-pick-av="${escapeHtml(p.avatarKey || 'avatar_1')}"
+                      >
+                        ${renderAvatarCircle(p.avatarKey || 'avatar_1', p.username, 22)}
+                        <span class="community-user-option-name">${escapeHtml(p.username)}</span>
+                        <span class="pill-count-circle">${p.postCount}</span>
+                        ${isSelected ? `<span class="community-user-order-badge">#${selIdx + 1}</span>` : ''}
+                      </button>
+                    `;
+                  })
+                  .join('') || `<div style="color:var(--text-muted);font-size:12.5px;padding:6px 4px;">No matching usernames found.</div>`
+              }
+            </div>
+          </div>
+        `
+        : ''
+    }
 
     ${
       filtered.length === 0 && unseenOnlyCards.length === 0
@@ -8449,13 +8673,44 @@ function renderContextMenuOverlay() {
   `;
 }
 
+function renderCollectionContextMenuOverlay() {
+  if (!state.collectionContextMenu) return '';
+  const { id, name, count, x, y } = state.collectionContextMenu;
+  const menuW = 248;
+  const menuH = 148;
+  const safeX = Math.max(12, Math.min(Number(x || 20), (window.innerWidth || 1024) - menuW - 12));
+  const safeY = Math.max(12, Math.min(Number(y || 20), (window.innerHeight || 768) - menuH - 12));
+
+  return `
+    <div class="anime-context-backdrop" id="collection-context-backdrop">
+      <div class="anime-context-menu" id="collection-context-menu" style="left:${safeX}px;top:${safeY}px;" onclick="event.stopPropagation()">
+        <div class="anime-context-header">
+          <div style="width:32px;height:32px;border-radius:10px;background:rgba(216,183,120,0.16);display:grid;place-items:center;color:var(--accent-primary);flex-shrink:0;">
+            ${SVG_ICONS.collectionIcon}
+          </div>
+          <div style="min-width:0;">
+            <div class="anime-context-title">${escapeHtml(name || 'Category')}</div>
+            <div style="font-size:11px;color:var(--text-muted);">${Number(count || 0)} anime in category</div>
+          </div>
+        </div>
+        <button type="button" class="anime-context-item danger" id="btn-ctx-delete-collection" data-delete-col-id="${escapeHtml(id)}">
+          <span>🗑</span><span>Delete Category</span>
+        </button>
+        <button type="button" class="anime-context-item" id="btn-ctx-cancel-collection">
+          <span>✕</span><span>Cancel</span>
+        </button>
+      </div>
+    </div>
+  `;
+}
+
 function renderToastOverlay() {
   if (!state.toastMessage) return '';
   return `<div id="au-toast-banner" class="au-toast ${state.toastError ? 'error' : ''}">${escapeHtml(state.toastMessage)}</div>`;
 }
 
 function renderModals() {
-  let overlays = `${renderContextMenuOverlay()}${renderToastOverlay()}`;
+  let overlays = `${renderContextMenuOverlay()}${renderCollectionContextMenuOverlay()}${renderToastOverlay()}`;
 
   if (state.confirmRemoveHomeAnime) {
     const target = state.confirmRemoveHomeAnime;
@@ -8873,11 +9128,15 @@ function renderApp() {
             </button>`
           )
           .join('')}
-        <div class="sidebar-sandrone-slot">
-          <button type="button" class="sandrone-mascot-btn ${sandroneIsPlaying ? 'is-playing' : ''}" data-sandrone-mascot="sidebar" aria-label="Play a random Sandrone voice line" title="Click Sandrone">
-            <img class="sandrone-mascot-img" src="${SANDRONE_IMAGE_SRC}" alt="Sandrone" draggable="false" />
-          </button>
-        </div>
+        ${
+          isPcSandroneEnvironment()
+            ? `<div class="sidebar-sandrone-slot">
+                 <button type="button" class="sandrone-mascot-btn ${sandroneIsPlaying ? 'is-playing' : ''}" data-sandrone-mascot="sidebar" aria-label="Play a random Sandrone voice line" title="Click Sandrone">
+                   <img class="sandrone-mascot-img" src="${SANDRONE_IMAGE_SRC}" alt="Sandrone" draggable="false" />
+                 </button>
+               </div>`
+            : ''
+        }
       </aside>
 
       <!-- MidnightCompactRail (600-899px) -->
@@ -8894,11 +9153,6 @@ function renderApp() {
             </button>`
           )
           .join('')}
-        <div class="rail-sandrone-slot">
-          <button type="button" class="sandrone-mascot-btn compact ${sandroneIsPlaying ? 'is-playing' : ''}" data-sandrone-mascot="rail" aria-label="Play a random Sandrone voice line" title="Click Sandrone">
-            <img class="sandrone-mascot-img" src="${SANDRONE_IMAGE_SRC}" alt="Sandrone" draggable="false" />
-          </button>
-        </div>
       </aside>
 
       <!-- Main Content Stage -->
@@ -8906,15 +9160,10 @@ function renderApp() {
         ${screenHtml}
       </main>
 
-      <!-- MidnightBottomNavigationBar (<600px, Capsule Tabs) + Mobile Sandrone Mascot -->
+      <!-- MidnightBottomNavigationBar (<600px, Capsule Tabs) -->
       ${
         state.tab !== 'detail' && state.tab !== 'profile' && state.tab !== 'settings' && state.tab !== 'downloads'
           ? `
-            <div class="mobile-sandrone-slot">
-              <button type="button" class="sandrone-mascot-btn mobile-floating ${sandroneIsPlaying ? 'is-playing' : ''}" data-sandrone-mascot="mobile" aria-label="Play a random Sandrone voice line" title="Tap Sandrone">
-                <img class="sandrone-mascot-img" src="${SANDRONE_IMAGE_SRC}" alt="Sandrone" draggable="false" />
-              </button>
-            </div>
             <div class="midnight-bottom-dock-wrap">
               <nav class="midnight-bottom-dock">
                 ${bottomDockTabs
@@ -9899,11 +10148,111 @@ function bindAppEvents() {
     };
   });
   document.querySelectorAll('[data-mylist-col]').forEach((btn) => {
-    btn.onclick = () => {
-      state.myListCollectionFilter = btn.getAttribute('data-mylist-col') || null;
+    const colId = btn.getAttribute('data-mylist-col') || '';
+    const colName = btn.getAttribute('data-mylist-col-name') || 'Category';
+    const colCount = Number(btn.getAttribute('data-mylist-col-count') || 0);
+
+    btn.onclick = (e) => {
+      if (state._suppressNextCategoryClick) {
+        state._suppressNextCategoryClick = false;
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      state.myListCollectionFilter = colId || null;
       renderApp();
     };
+
+    // Right-click on PC & Long-press on Phone to delete user-created category
+    if (colId) {
+      btn.oncontextmenu = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        state.collectionContextMenu = {
+          id: colId,
+          name: colName,
+          count: colCount,
+          x: e.clientX || 120,
+          y: e.clientY || 160
+        };
+        renderApp();
+      };
+
+      let colTouchTimer = null;
+      let startX = 0;
+      let startY = 0;
+      btn.ontouchstart = (e) => {
+        if (!e.touches || e.touches.length !== 1) return;
+        startX = e.touches[0].clientX;
+        startY = e.touches[0].clientY;
+        colTouchTimer = setTimeout(() => {
+          colTouchTimer = null;
+          state._suppressNextCategoryClick = true;
+          try {
+            if (navigator.vibrate) navigator.vibrate(18);
+          } catch (_) {}
+          state.collectionContextMenu = {
+            id: colId,
+            name: colName,
+            count: colCount,
+            x: startX,
+            y: startY
+          };
+          renderApp();
+        }, 450);
+      };
+      btn.ontouchmove = (e) => {
+        if (!colTouchTimer || !e.touches || e.touches.length !== 1) return;
+        const dx = Math.abs(e.touches[0].clientX - startX);
+        const dy = Math.abs(e.touches[0].clientY - startY);
+        if (dx > 10 || dy > 10) {
+          clearTimeout(colTouchTimer);
+          colTouchTimer = null;
+        }
+      };
+      btn.ontouchend = () => {
+        if (colTouchTimer) {
+          clearTimeout(colTouchTimer);
+          colTouchTimer = null;
+        }
+      };
+      btn.ontouchcancel = () => {
+        if (colTouchTimer) {
+          clearTimeout(colTouchTimer);
+          colTouchTimer = null;
+        }
+      };
+    }
   });
+
+  const colCtxBackdrop = document.getElementById('collection-context-backdrop');
+  if (colCtxBackdrop) {
+    colCtxBackdrop.onclick = () => {
+      state.collectionContextMenu = null;
+      renderApp();
+    };
+    colCtxBackdrop.oncontextmenu = (e) => {
+      e.preventDefault();
+      state.collectionContextMenu = null;
+      renderApp();
+    };
+  }
+  const btnCtxCancelCol = document.getElementById('btn-ctx-cancel-collection');
+  if (btnCtxCancelCol) {
+    btnCtxCancelCol.onclick = (e) => {
+      e.stopPropagation();
+      state.collectionContextMenu = null;
+      renderApp();
+    };
+  }
+  const btnCtxDeleteCol = document.getElementById('btn-ctx-delete-collection');
+  if (btnCtxDeleteCol) {
+    btnCtxDeleteCol.onclick = async (e) => {
+      e.stopPropagation();
+      const targetId = btnCtxDeleteCol.getAttribute('data-delete-col-id');
+      await deleteCollectionCategoryById(targetId);
+    };
+  }
   const inpMyList = document.getElementById('inp-mylist-search');
   if (inpMyList) {
     inpMyList.oninput = (e) => {
@@ -9975,6 +10324,68 @@ function bindAppEvents() {
       renderApp();
     };
   });
+  const btnToggleCommUserFilter = document.getElementById('btn-comm-toggle-user-filter');
+  if (btnToggleCommUserFilter) {
+    btnToggleCommUserFilter.onclick = () => {
+      state.communityUserFilterOpen = !state.communityUserFilterOpen;
+      renderApp();
+    };
+  }
+  const btnClearCommUserFilter = document.getElementById('btn-comm-clear-user-filter');
+  if (btnClearCommUserFilter) {
+    btnClearCommUserFilter.onclick = () => {
+      state.communitySelectedUsers = [];
+      renderApp();
+    };
+  }
+  document.querySelectorAll('[data-comm-remove-user]').forEach((btn) => {
+    btn.onclick = () => {
+      const key = btn.getAttribute('data-comm-remove-user');
+      state.communitySelectedUsers = (state.communitySelectedUsers || []).filter((u) => u.key !== key);
+      renderApp();
+    };
+  });
+  document.querySelectorAll('[data-comm-pick-user]').forEach((btn) => {
+    btn.onclick = () => {
+      const key = btn.getAttribute('data-comm-pick-user');
+      const uid = btn.getAttribute('data-comm-pick-uid') || '';
+      const username = btn.getAttribute('data-comm-pick-name') || 'Member';
+      const avatarKey = btn.getAttribute('data-comm-pick-av') || 'avatar_1';
+      if (!key) return;
+      const cur = Array.isArray(state.communitySelectedUsers) ? [...state.communitySelectedUsers] : [];
+      const existsIdx = cur.findIndex((u) => u.key === key);
+      if (existsIdx !== -1) {
+        cur.splice(existsIdx, 1);
+        state.communitySelectedUsers = cur;
+        renderApp();
+      } else {
+        if (cur.length >= 3) {
+          showToast('Max 3 users can be selected at once (by → 1, 2, 3)', true);
+          return;
+        }
+        cur.push({ key, userId: uid, username, avatarKey });
+        state.communitySelectedUsers = cur;
+        renderApp();
+      }
+    };
+  });
+  const inpCommUserSearch = document.getElementById('inp-comm-user-search');
+  if (inpCommUserSearch) {
+    inpCommUserSearch.oninput = (e) => {
+      const pos = e.target.selectionStart;
+      state.communityUserSearchQuery = e.target.value;
+      renderApp();
+      const refreshed = document.getElementById('inp-comm-user-search');
+      if (refreshed) {
+        refreshed.focus();
+        if (typeof pos === 'number') {
+          try {
+            refreshed.setSelectionRange(pos, pos);
+          } catch (_) {}
+        }
+      }
+    };
+  }
   document.querySelectorAll('[data-open-comments]').forEach((el) => {
     el.onclick = (e) => {
       e.stopPropagation();
@@ -10686,6 +11097,7 @@ function bindAppEvents() {
     state.pendingCommunityReplyUser = null;
     state.confirmRemoveHomeAnime = null;
     state.contextMenu = null;
+    state.collectionContextMenu = null;
     state.discussion.contextMenu = null;
     state.discussion.emojiTrayOpen = false;
     if (!getActiveDiscussionAnime()) {

@@ -62,6 +62,7 @@ jobs:
             printf "8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e\n24333f8a63b6825ea9c5514f83c2829b004d1fee\n859f317696f67ef3d7f30a50a5560e7834b43903\n" > "${SDK_ROOT}/licenses/android-sdk-license"
             printf "84831b9409646a918e30573bab4c9c91346d8abd\n504667f4c0de7af1a06de9f4b1727b84351f2910\n" > "${SDK_ROOT}/licenses/android-sdk-preview-license"
             printf "859f317696f67ef3d7f30a50a5560e7834b43903\n" > "${SDK_ROOT}/licenses/android-sdk-arm-dbt-license"
+            printf "sdk.dir=%s\n" "${SDK_ROOT}" > local.properties
           fi
           if [ -n "${SUPABASE_URL:-}" ] && [ -n "${SUPABASE_ANON_KEY:-}" ]; then
             printf "SUPABASE_URL=%s\nSUPABASE_ANON_KEY=%s\n" "${SUPABASE_URL}" "${SUPABASE_ANON_KEY}" > .env

@@ -3727,6 +3727,27 @@ fun AnimeUniverseDesktopRoot() {
                                 onSearchChange = { libSearchQuery = it },
                                 onSortChange = { libSortMode = it },
                                 onCreateCollectionClick = { showCreateCollectionDialog = true },
+                                onDeleteCollection = { col ->
+                                    collections = collections.filterNot { it.id == col.id }
+                                    sessionState = sessionState.copy(collections = collections)
+                                    DesktopStorage.saveActive(sessionState)
+                                    showToast("Deleted category \"${col.title}\"")
+                                    if (!sessionState.isGuest && !col.id.startsWith("local_") && sessionState.accessToken.isNotBlank()) {
+                                        scope.launch(Dispatchers.IO) {
+                                            runCatching {
+                                                val enc = java.net.URLEncoder.encode(col.id, "UTF-8")
+                                                val req = java.net.http.HttpRequest.newBuilder()
+                                                    .uri(java.net.URI.create("$SUPABASE_URL/rest/v1/collections?id=eq.$enc"))
+                                                    .header("apikey", SUPABASE_ANON_KEY)
+                                                    .header("Authorization", "Bearer ${sessionState.accessToken}")
+                                                    .DELETE()
+                                                    .build()
+                                                java.net.http.HttpClient.newHttpClient()
+                                                    .send(req, java.net.http.HttpResponse.BodyHandlers.ofString())
+                                            }
+                                        }
+                                    }
+                                },
                                 onOpenProfile = { currentScreen = DesktopScreen.PROFILE },
                                 onOpenDetail = { item -> openDetailFrom(DesktopScreen.LIBRARY, item) },
                                 onAddToHome = { item -> handleAddToHome(item) },
@@ -5459,6 +5480,7 @@ private fun DesktopLibraryScreen(
     onSearchChange: (String) -> Unit,
     onSortChange: (String) -> Unit,
     onCreateCollectionClick: () -> Unit,
+    onDeleteCollection: (DesktopCollectionItem) -> Unit = {},
     onOpenProfile: () -> Unit,
     onOpenDetail: (DesktopAnimeItem) -> Unit,
     onAddToHome: (DesktopAnimeItem) -> Unit,
@@ -5466,6 +5488,7 @@ private fun DesktopLibraryScreen(
     onViewCommunity: (DesktopAnimeItem) -> Unit,
     onCommitEpisodes: suspend (DesktopAnimeItem, Int) -> Result<Unit>
 ) {
+    var contextDeleteCol by remember { mutableStateOf<DesktopCollectionItem?>(null) }
     // Top Bar matching Screenshot 2
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -5733,7 +5756,20 @@ private fun DesktopLibraryScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Collections", fontFamily = FontFamily.Serif, fontSize = 24.sp, color = IvoryText)
+                        Row(
+                            verticalAlignment = Alignment.Bottom,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Text("Collections", fontFamily = FontFamily.Serif, fontSize = 24.sp, color = IvoryText)
+                            if (collections.isNotEmpty()) {
+                                Text(
+                                    "Right-click a category to delete",
+                                    fontSize = 11.5.sp,
+                                    color = WarmSilver,
+                                    modifier = Modifier.padding(bottom = 3.dp)
+                                )
+                            }
+                        }
                         Text(
                             "+  NEW",
                             fontSize = 12.sp,
@@ -5761,20 +5797,51 @@ private fun DesktopLibraryScreen(
                     } else {
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             items(collections, key = { it.id }) { col ->
-                                Surface(
-                                    shape = RoundedCornerShape(18.dp),
-                                    color = ObsidianInputBg,
-                                    border = BorderStroke(1.dp, ObsidianBorder),
-                                    modifier = Modifier.width(240.dp)
-                                ) {
-                                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                        Text(col.title, fontFamily = FontFamily.Serif, fontSize = 18.sp, color = IvoryText)
-                                        Text(
-                                            col.description.ifBlank { "${col.count} anime" },
-                                            fontSize = 12.sp,
-                                            color = WarmSilver,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
+                                Box {
+                                    Surface(
+                                        shape = RoundedCornerShape(18.dp),
+                                        color = ObsidianInputBg,
+                                        border = BorderStroke(1.dp, ObsidianBorder),
+                                        modifier = Modifier
+                                            .width(240.dp)
+                                            .pointerInput(col.id) {
+                                                awaitPointerEventScope {
+                                                    while (true) {
+                                                        val event = awaitPointerEvent()
+                                                        if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) {
+                                                            event.changes.forEach { it.consume() }
+                                                            contextDeleteCol = col
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                    ) {
+                                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            Text(col.title, fontFamily = FontFamily.Serif, fontSize = 18.sp, color = IvoryText)
+                                            Text(
+                                                col.description.ifBlank { "${col.count} anime" },
+                                                fontSize = 12.sp,
+                                                color = WarmSilver,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
+                                    DropdownMenu(
+                                        expanded = contextDeleteCol?.id == col.id,
+                                        onDismissRequest = { contextDeleteCol = null },
+                                        modifier = Modifier.background(ObsidianCard)
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { Text("Delete Category \"${col.title}\"", color = Color(0xFFEF4444), fontSize = 13.sp, fontWeight = FontWeight.SemiBold) },
+                                            onClick = {
+                                                contextDeleteCol = null
+                                                onDeleteCollection(col)
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Cancel", color = WarmSilver, fontSize = 13.sp) },
+                                            onClick = { contextDeleteCol = null }
                                         )
                                     }
                                 }
@@ -5832,7 +5899,47 @@ private fun DesktopCommunityScreen(
     onSubmitCommentNote: (animeId: Int, animeTitle: String, animeCover: String, stars: Float, note: String) -> Unit
 ) {
     val scope = rememberCoroutineScope()
-    val animeGroups = remember(reviews) { groupDesktopCommunityReviews(reviews) }
+    val allUnfilteredGroups = remember(reviews) { groupDesktopCommunityReviews(reviews) }
+    var userFilterOpen by remember { mutableStateOf(false) }
+    var selectedUserKeys by remember { mutableStateOf<List<String>>(emptyList()) }
+
+    val allPosters = remember(allUnfilteredGroups) {
+        val byUser = LinkedHashMap<String, Pair<DesktopCommunityReview, MutableSet<Int>>>()
+        allUnfilteredGroups.forEach { grp ->
+            grp.reviews.forEach { rev ->
+                val k = rev.userId.trim().ifBlank { rev.username.trim().lowercase() }
+                if (k.isNotBlank()) {
+                    val existing = byUser[k]
+                    if (existing != null) existing.second.add(grp.animeId)
+                    else byUser[k] = rev to mutableSetOf(grp.animeId)
+                }
+            }
+        }
+        byUser.entries.map { (k, pair) ->
+            Triple(k, pair.first, pair.second.size)
+        }.sortedWith(compareByDescending<Triple<String, DesktopCommunityReview, Int>> { it.third }.thenBy { it.second.username.lowercase() })
+    }
+
+    val activeSelectedPosters = remember(selectedUserKeys, allPosters) {
+        val byKey = allPosters.associateBy { it.first }
+        selectedUserKeys.mapNotNull { byKey[it] }.take(3)
+    }
+
+    val animeGroups = remember(reviews, activeSelectedPosters, allUnfilteredGroups) {
+        if (activeSelectedPosters.isEmpty()) {
+            allUnfilteredGroups
+        } else {
+            val allowedKeys = activeSelectedPosters.map { it.first }.toSet()
+            val allowedNames = activeSelectedPosters.map { it.second.username.trim().lowercase() }.toSet()
+            val scoped = reviews.filter { r ->
+                val rk = r.userId.trim().ifBlank { r.username.trim().lowercase() }
+                val rn = r.username.trim().lowercase()
+                rk in allowedKeys || rn in allowedNames
+            }
+            groupDesktopCommunityReviews(scoped)
+        }
+    }
+
     val unseenByAnimeId = remember(unseenDiscussionAnime) { unseenDiscussionAnime.associateBy { it.animeId } }
     val totalNotesAndRatings = remember(animeGroups) { animeGroups.sumOf { it.notesAndRatingsCount } }
     var activeCommunitySection by remember { mutableStateOf("feed") } // "feed" | "tagged"
@@ -6100,8 +6207,8 @@ private fun DesktopCommunityScreen(
 
     Spacer(modifier = Modifier.height(10.dp))
 
-    // Sort Row: Newest, Highest Rated
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    // Sort Row: Newest, Highest Rated + Posted By User Filter Toggle
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
         listOf("newest" to "Newest", "highest" to "Highest Rated").forEach { (sKey, sLabel) ->
             val active = sortMode == sKey
             Surface(
@@ -6116,6 +6223,138 @@ private fun DesktopCommunityScreen(
                         fontSize = 13.sp,
                         color = if (active) ChampagneGoldSoft else WarmSilver
                     )
+                }
+            }
+        }
+        val userFilterActive = userFilterOpen || activeSelectedPosters.isNotEmpty()
+        Surface(
+            shape = CircleShape,
+            color = if (userFilterActive) Color(0xFF2B271F) else ObsidianPillBg,
+            border = BorderStroke(1.dp, if (userFilterActive) ChampagneGold.copy(alpha = 0.65f) else ObsidianBorder),
+            modifier = Modifier.height(38.dp).clip(CircleShape).clickable { userFilterOpen = !userFilterOpen }
+        ) {
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 18.dp)) {
+                Text(
+                    if (activeSelectedPosters.isNotEmpty()) {
+                        "Posted By (${activeSelectedPosters.size}/3) ${if (userFilterOpen) "▴" else "▾"}"
+                    } else {
+                        "Posted By ${if (userFilterOpen) "▴" else "▾"}"
+                    },
+                    fontSize = 13.sp,
+                    color = if (userFilterActive) ChampagneGoldSoft else WarmSilver
+                )
+            }
+        }
+    }
+
+    if (activeSelectedPosters.isNotEmpty()) {
+        Spacer(modifier = Modifier.height(10.dp))
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = ChampagneGold.copy(alpha = 0.12f),
+            border = BorderStroke(1.dp, ChampagneGold.copy(alpha = 0.45f)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+            ) {
+                Text(
+                    "by →",
+                    fontSize = 12.5.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = ChampagneGold
+                )
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    items(activeSelectedPosters, key = { it.first }) { (uKey, rev, _) ->
+                        Surface(
+                            shape = CircleShape,
+                            color = ChampagneGold.copy(alpha = 0.22f),
+                            border = BorderStroke(1.dp, ChampagneGold.copy(alpha = 0.65f)),
+                            modifier = Modifier.clip(CircleShape).clickable {
+                                selectedUserKeys = selectedUserKeys.filterNot { it == uKey }
+                            }
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                            ) {
+                                Text(rev.username.ifBlank { "Member" }, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = ChampagneGoldSoft)
+                                Text("✕", fontSize = 10.sp, color = ChampagneGoldSoft)
+                            }
+                        }
+                    }
+                }
+                Text("${activeSelectedPosters.size}/3 max", fontSize = 11.sp, color = WarmSilver)
+                Surface(
+                    shape = CircleShape,
+                    color = ObsidianPillBg,
+                    border = BorderStroke(1.dp, ObsidianBorder),
+                    modifier = Modifier.clip(CircleShape).clickable { selectedUserKeys = emptyList() }
+                ) {
+                    Text("Clear", fontSize = 11.5.sp, color = WarmSilver, modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
+                }
+            }
+        }
+    }
+
+    if (userFilterOpen) {
+        Spacer(modifier = Modifier.height(10.dp))
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = ObsidianInputBg,
+            border = BorderStroke(1.dp, ChampagneGold.copy(alpha = 0.3f)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "SELECT UP TO 3 USERS (by → 1, 2, 3)",
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.2.sp,
+                    color = ChampagneGold
+                )
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(allPosters, key = { it.first }) { (uKey, rev, cnt) ->
+                        val selIdx = selectedUserKeys.indexOf(uKey)
+                        val isSelected = selIdx >= 0
+                        Surface(
+                            shape = CircleShape,
+                            color = if (isSelected) Color(0xFF2B271F) else ObsidianPillBg,
+                            border = BorderStroke(1.dp, if (isSelected) ChampagneGold else ObsidianBorder),
+                            modifier = Modifier.clip(CircleShape).clickable {
+                                if (isSelected) {
+                                    selectedUserKeys = selectedUserKeys.filterNot { it == uKey }
+                                } else if (selectedUserKeys.size < 3) {
+                                    selectedUserKeys = selectedUserKeys + uKey
+                                } else {
+                                    onShowToast("Max 3 users can be selected at once (by → 1, 2, 3)", true)
+                                }
+                            }
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                            ) {
+                                Text(
+                                    rev.username.ifBlank { "Member" },
+                                    fontSize = 12.5.sp,
+                                    color = if (isSelected) ChampagneGoldSoft else IvoryText
+                                )
+                                Text("($cnt)", fontSize = 11.sp, color = WarmSilver)
+                                if (isSelected) {
+                                    Text("#${selIdx + 1}", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = ChampagneGold)
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -6137,9 +6376,13 @@ private fun DesktopCommunityScreen(
             .sortedByDescending { unseenByAnimeId.containsKey(it.animeId) }
     }
 
-    val unseenOnlyAnime = remember(unseenDiscussionAnime, filteredGroups) {
-        val visibleIds = filteredGroups.map { it.animeId }.toSet()
-        unseenDiscussionAnime.filter { !visibleIds.contains(it.animeId) }
+    val unseenOnlyAnime = remember(unseenDiscussionAnime, filteredGroups, activeSelectedPosters) {
+        if (activeSelectedPosters.isNotEmpty()) {
+            emptyList()
+        } else {
+            val visibleIds = filteredGroups.map { it.animeId }.toSet()
+            unseenDiscussionAnime.filter { !visibleIds.contains(it.animeId) }
+        }
     }
 
     LazyColumn(

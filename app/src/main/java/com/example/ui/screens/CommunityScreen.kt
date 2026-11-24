@@ -140,6 +140,20 @@ internal fun formatCommunityTimestamp(raw: String): String {
     }
 }
 
+private data class CommunityPosterOption(
+    val key: String,
+    val userId: String,
+    val username: String,
+    val avatarKey: String,
+    val avatarUrl: String?,
+    val postCount: Int
+)
+
+private fun normalizeCommunityReviewUserKey(review: CommunityReview): String {
+    val uid = review.userId.trim()
+    return uid.ifBlank { review.username.trim().lowercase() }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CommunityScreen(
@@ -164,6 +178,8 @@ fun CommunityScreen(
 
     var activeSection by rememberSaveable { mutableStateOf("feed") } // "feed" | "tagged"
     var selectedSentimentKey by rememberSaveable { mutableStateOf<String?>(null) }
+    var userFilterOpen by rememberSaveable { mutableStateOf(false) }
+    var selectedUserKeys by rememberSaveable { mutableStateOf<List<String>>(emptyList()) }
     var selectedCommentsAnimeId by rememberSaveable { mutableStateOf<Int?>(null) }
     var selectedFallbackGroup by remember { mutableStateOf<CommunityAnimeGroup?>(null) }
     var activeModalJumpTarget by remember { mutableStateOf<NotificationJumpTarget?>(null) }
@@ -185,8 +201,55 @@ fun CommunityScreen(
         unseenDiscussionAnime.associateBy { it.animeId }
     }
 
-    val animeGroups = remember(reviews) {
+    val allUnfilteredGroups = remember(reviews) {
         groupCommunityReviewsByAnime(reviews)
+    }
+
+    val allPosters = remember(allUnfilteredGroups) {
+        val byUser = LinkedHashMap<String, Triple<CommunityReview, MutableSet<Int>, String>>()
+        allUnfilteredGroups.forEach { grp ->
+            grp.reviews.forEach { rev ->
+                val k = normalizeCommunityReviewUserKey(rev)
+                if (k.isNotBlank()) {
+                    val existing = byUser[k]
+                    if (existing != null) {
+                        existing.second.add(grp.animeId)
+                    } else {
+                        byUser[k] = Triple(rev, mutableSetOf(grp.animeId), k)
+                    }
+                }
+            }
+        }
+        byUser.values.map { (rev, animeIds, k) ->
+            CommunityPosterOption(
+                key = k,
+                userId = rev.userId,
+                username = rev.username.ifBlank { "Member" },
+                avatarKey = rev.avatarKey,
+                avatarUrl = rev.avatarUrl,
+                postCount = animeIds.size
+            )
+        }.sortedWith(compareByDescending<CommunityPosterOption> { it.postCount }.thenBy { it.username.lowercase() })
+    }
+
+    val activeSelectedPosters = remember(selectedUserKeys, allPosters) {
+        val posterByKey = allPosters.associateBy { it.key }
+        selectedUserKeys.mapNotNull { posterByKey[it] }.take(3)
+    }
+
+    val animeGroups = remember(reviews, activeSelectedPosters) {
+        if (activeSelectedPosters.isEmpty()) {
+            allUnfilteredGroups
+        } else {
+            val allowedKeys = activeSelectedPosters.map { it.key }.toSet()
+            val allowedNames = activeSelectedPosters.map { it.username.trim().lowercase() }.toSet()
+            val scopedReviews = reviews.filter { r ->
+                val rk = normalizeCommunityReviewUserKey(r)
+                val rn = r.username.trim().lowercase()
+                rk in allowedKeys || rn in allowedNames
+            }
+            groupCommunityReviewsByAnime(scopedReviews)
+        }
     }
 
     val filteredGroups = remember(animeGroups, selectedSentiment, reviewSort) {
@@ -212,9 +275,13 @@ fun CommunityScreen(
         }
     }
 
-    val unseenOnlyAnime = remember(unseenDiscussionAnime, filteredGroups) {
-        val shownIds = filteredGroups.map { it.animeId }.toSet()
-        unseenDiscussionAnime.filter { it.animeId !in shownIds }
+    val unseenOnlyAnime = remember(unseenDiscussionAnime, filteredGroups, activeSelectedPosters) {
+        if (activeSelectedPosters.isNotEmpty()) {
+            emptyList()
+        } else {
+            val shownIds = filteredGroups.map { it.animeId }.toSet()
+            unseenDiscussionAnime.filter { it.animeId !in shownIds }
+        }
     }
 
     val selectedCommentsGroup = remember(animeGroups, selectedCommentsAnimeId, selectedFallbackGroup) {
@@ -648,12 +715,13 @@ fun CommunityScreen(
                         }
                     }
 
-                    // Sort Capsules
-                    Row(
-                        modifier = Modifier.padding(horizontal = AppSpacing.md, vertical = 4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    // Sort Capsules + Posted By User Filter Toggle
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = AppSpacing.md, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        ReviewSortOption.entries.forEach { opt ->
+                        items(ReviewSortOption.entries, key = { it.name }) { opt ->
                             val active = reviewSort == opt
                             Surface(
                                 shape = CircleShape,
@@ -670,6 +738,216 @@ fun CommunityScreen(
                                     color = if (active) colors.highlight else colors.textSecondary,
                                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
                                 )
+                            }
+                        }
+                        item(key = "posted_by_user_filter_toggle") {
+                            val active = userFilterOpen || activeSelectedPosters.isNotEmpty()
+                            Surface(
+                                shape = CircleShape,
+                                color = if (active) colors.accentPrimary.copy(alpha = 0.22f) else colors.elevatedSurface.copy(alpha = 0.58f),
+                                border = if (active) BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.72f)) else null,
+                                modifier = Modifier
+                                    .pointerHoverIcon(PointerIcon.Hand)
+                                    .clip(CircleShape)
+                                    .clickable { userFilterOpen = !userFilterOpen }
+                                    .testTag("community_user_filter_toggle")
+                            ) {
+                                Text(
+                                    text = if (activeSelectedPosters.isNotEmpty()) {
+                                        "Posted By (${activeSelectedPosters.size}/3) ${if (userFilterOpen) "▴" else "▾"}"
+                                    } else {
+                                        "Posted By ${if (userFilterOpen) "▴" else "▾"}"
+                                    },
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = if (active) colors.highlight else colors.textSecondary,
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    // Active "by -> 1, 2, 3" Filter Indicator Bar (Up to 3 users max)
+                    if (activeSelectedPosters.isNotEmpty()) {
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = colors.accentPrimary.copy(alpha = 0.12f),
+                            border = BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.45f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = AppSpacing.md, vertical = 4.dp)
+                                .testTag("community_active_user_filter_bar")
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                            ) {
+                                Text(
+                                    text = "by →",
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.ExtraBold),
+                                    color = colors.accentPrimary
+                                )
+                                LazyRow(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    items(activeSelectedPosters, key = { it.key }) { poster ->
+                                        Surface(
+                                            shape = CircleShape,
+                                            color = colors.accentPrimary.copy(alpha = 0.22f),
+                                            border = BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.65f)),
+                                            modifier = Modifier
+                                                .clip(CircleShape)
+                                                .clickable {
+                                                    selectedUserKeys = selectedUserKeys.filterNot { it == poster.key }
+                                                }
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                                modifier = Modifier.padding(start = 6.dp, end = 9.dp, top = 4.dp, bottom = 4.dp)
+                                            ) {
+                                                MemberAvatar(
+                                                    avatarKey = poster.avatarKey,
+                                                    avatarUrl = poster.avatarUrl,
+                                                    username = poster.username,
+                                                    size = 18.dp
+                                                )
+                                                Text(
+                                                    text = poster.username,
+                                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                                    color = colors.highlight
+                                                )
+                                                Icon(
+                                                    imageVector = Icons.Filled.Close,
+                                                    contentDescription = "Remove ${poster.username}",
+                                                    tint = colors.highlight,
+                                                    modifier = Modifier.size(12.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                                Text(
+                                    text = "${activeSelectedPosters.size}/3",
+                                    style = TabularNumSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
+                                    color = colors.textMuted
+                                )
+                                Surface(
+                                    shape = CircleShape,
+                                    color = colors.elevatedSurface,
+                                    modifier = Modifier
+                                        .clip(CircleShape)
+                                        .clickable { selectedUserKeys = emptyList() }
+                                ) {
+                                    Text(
+                                        text = "Clear",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = colors.textSecondary,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Expandable Posted By Username Selector Panel (Up to 3 users max)
+                    if (userFilterOpen) {
+                        Surface(
+                            shape = RoundedCornerShape(18.dp),
+                            color = colors.elevatedSurface.copy(alpha = 0.88f),
+                            border = BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.32f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = AppSpacing.md, vertical = 4.dp)
+                                .testTag("community_user_filter_panel")
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = "SELECT UP TO 3 USERS (by → 1, 2, 3)",
+                                    style = MicroUpperLabel.copy(fontSize = 9.sp, letterSpacing = 0.8.sp),
+                                    color = colors.accentPrimary
+                                )
+                                if (allPosters.isEmpty()) {
+                                    Text(
+                                        text = "No members have posted templates yet.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = colors.textSecondary
+                                    )
+                                } else {
+                                    LazyRow(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        items(allPosters, key = { it.key }) { poster ->
+                                            val selIdx = selectedUserKeys.indexOf(poster.key)
+                                            val isSelected = selIdx >= 0
+                                            val atMaxLimit = !isSelected && selectedUserKeys.size >= 3
+                                            Surface(
+                                                shape = CircleShape,
+                                                color = if (isSelected) {
+                                                    colors.accentPrimary.copy(alpha = 0.24f)
+                                                } else {
+                                                    colors.cardBackground.copy(alpha = if (atMaxLimit) 0.45f else 0.85f)
+                                                },
+                                                border = BorderStroke(
+                                                    1.dp,
+                                                    if (isSelected) colors.accentPrimary else colors.borderSubtle.copy(alpha = 0.5f)
+                                                ),
+                                                modifier = Modifier
+                                                    .clip(CircleShape)
+                                                    .clickable {
+                                                        if (isSelected) {
+                                                            selectedUserKeys = selectedUserKeys.filterNot { it == poster.key }
+                                                        } else if (selectedUserKeys.size < 3) {
+                                                            selectedUserKeys = selectedUserKeys + poster.key
+                                                        }
+                                                    }
+                                                    .testTag("community_user_chip_${poster.username}")
+                                            ) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                                ) {
+                                                    MemberAvatar(
+                                                        avatarKey = poster.avatarKey,
+                                                        avatarUrl = poster.avatarUrl,
+                                                        username = poster.username,
+                                                        size = 20.dp
+                                                    )
+                                                    Text(
+                                                        text = poster.username,
+                                                        style = MaterialTheme.typography.labelMedium,
+                                                        color = if (isSelected) colors.highlight else colors.textPrimary
+                                                    )
+                                                    Text(
+                                                        text = "(${poster.postCount})",
+                                                        style = TabularNumSmall.copy(fontSize = 10.sp),
+                                                        color = colors.textMuted
+                                                    )
+                                                    if (isSelected) {
+                                                        Surface(
+                                                            shape = CircleShape,
+                                                            color = colors.accentPrimary
+                                                        ) {
+                                                            Text(
+                                                                text = "#${selIdx + 1}",
+                                                                style = TabularNumSmall.copy(fontSize = 9.sp, fontWeight = FontWeight.Bold),
+                                                                color = Color(0xFF12151F),
+                                                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

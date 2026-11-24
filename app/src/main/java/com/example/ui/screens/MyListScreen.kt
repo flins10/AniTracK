@@ -127,6 +127,7 @@ fun MyListScreen(
     var showCreateCollectionDialog by remember { mutableStateOf(false) }
     var inspectingCollection by remember { mutableStateOf<AnimeCollection?>(null) }
     var editingCollection by remember { mutableStateOf<AnimeCollection?>(null) }
+    var pendingDeleteCollection by remember { mutableStateOf<AnimeCollection?>(null) }
 
     val selectedStatus = statusTabs[selectedTabIndex]
     val selectedSentiment = remember(selectedSentimentKey) {
@@ -362,13 +363,26 @@ fun MyListScreen(
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text(
-                                        text = "Collections",
-                                        fontFamily = CormorantSerifFamily,
-                                        fontSize = 20.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        color = colors.textPrimary
-                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.Bottom,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Text(
+                                            text = "Collections",
+                                            fontFamily = CormorantSerifFamily,
+                                            fontSize = 20.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = colors.textPrimary
+                                        )
+                                        if (collections.isNotEmpty()) {
+                                            Text(
+                                                text = "Long-press to delete",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = colors.textMuted,
+                                                modifier = Modifier.padding(bottom = 2.dp)
+                                            )
+                                        }
+                                    }
                                     TextButton(onClick = { showCreateCollectionDialog = true }) {
                                         Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp), tint = colors.accentPrimary)
                                         Spacer(modifier = Modifier.width(4.dp))
@@ -390,7 +404,10 @@ fun MyListScreen(
                                             AppCard(
                                                 shape = RoundedCornerShape(22.dp),
                                                 onClick = { inspectingCollection = col },
-                                                modifier = Modifier.width(206.dp)
+                                                onLongClick = { pendingDeleteCollection = col },
+                                                modifier = Modifier
+                                                    .width(206.dp)
+                                                    .testTag("collection_card_${col.id}")
                                             ) {
                                                 Column(
                                                     modifier = Modifier.padding(AppSpacing.sm),
@@ -655,6 +672,47 @@ fun MyListScreen(
             },
             confirmButton = {
                 TextButton(onClick = { inspectingCollection = null }) { Text("Close", color = colors.accentPrimary) }
+            }
+        )
+    }
+
+    pendingDeleteCollection?.let { targetCol ->
+        AlertDialog(
+            onDismissRequest = { pendingDeleteCollection = null },
+            shape = RoundedCornerShape(AppRadius.xl),
+            containerColor = colors.backgroundSecondary,
+            title = {
+                Text(
+                    text = "Delete Category?",
+                    fontWeight = FontWeight.Bold,
+                    color = colors.textPrimary
+                )
+            },
+            text = {
+                Text(
+                    text = "Delete \"${targetCol.name}\"? Your tracked anime entries in Library will not be removed.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.textSecondary
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteCollection(targetCol.id)
+                        if (inspectingCollection?.id == targetCol.id) {
+                            inspectingCollection = null
+                        }
+                        pendingDeleteCollection = null
+                    },
+                    modifier = Modifier.testTag("confirm_delete_collection_button")
+                ) {
+                    Text("Delete", color = colors.error, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeleteCollection = null }) {
+                    Text("Cancel", color = colors.textSecondary)
+                }
             }
         )
     }

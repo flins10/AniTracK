@@ -18,11 +18,16 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.hoverable
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.isSecondaryPressed
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -314,6 +319,7 @@ fun ObsidianTopBar(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun AppCard(
     modifier: Modifier = Modifier,
@@ -321,6 +327,7 @@ fun AppCard(
     containerColor: Color = AppTheme.colors.cardBackground,
     borderColor: Color? = null,
     onClick: (() -> Unit)? = null,
+    onLongClick: (() -> Unit)? = null,
     content: @Composable BoxScope.() -> Unit
 ) {
     val interactionSource = remember { MutableInteractionSource() }
@@ -328,10 +335,11 @@ fun AppCard(
     val hovered by interactionSource.collectIsHoveredAsState()
     val reducedMotion = rememberReducedMotion()
     val colors = AppTheme.colors
+    val interactive = onClick != null || onLongClick != null
 
     val scale by animateFloatAsState(
         targetValue = when {
-            reducedMotion || onClick == null -> 1f
+            reducedMotion || !interactive -> 1f
             pressed -> 0.985f
             hovered -> 1.03f
             else -> 1f
@@ -341,7 +349,7 @@ fun AppCard(
     )
     val elevation by animateDpAsState(
         targetValue = when {
-            hovered && onClick != null -> 14.dp
+            hovered && interactive -> 14.dp
             colors.isDark -> 2.dp
             else -> 4.dp
         },
@@ -350,7 +358,7 @@ fun AppCard(
     )
     val resolvedBorder = borderColor ?: colors.borderSubtle
     val animatedBorder by animateColorAsState(
-        targetValue = if (hovered && onClick != null) colors.accentPrimary.copy(alpha = 0.72f) else resolvedBorder,
+        targetValue = if (hovered && interactive) colors.accentPrimary.copy(alpha = 0.72f) else resolvedBorder,
         animationSpec = tween(durationMillis = AppMotion.FAST_MS),
         label = "card_hover_border"
     )
@@ -358,25 +366,41 @@ fun AppCard(
     Surface(
         shape = shape,
         color = containerColor,
-        border = BorderStroke(if (hovered && onClick != null) 1.2.dp else 0.75.dp, animatedBorder),
+        border = BorderStroke(if (hovered && interactive) 1.2.dp else 0.75.dp, animatedBorder),
         tonalElevation = 0.dp,
         shadowElevation = elevation,
         modifier = modifier
-            .zIndex(if (hovered && onClick != null) 3f else 0f)
+            .zIndex(if (hovered && interactive) 3f else 0f)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
             }
             .hoverable(interactionSource = interactionSource)
             .then(
-                if (onClick != null) {
+                if (interactive) {
                     Modifier
                         .pointerHoverIcon(PointerIcon.Hand)
                         .clip(shape)
-                        .clickable(
+                        .then(
+                            if (onLongClick != null) {
+                                Modifier.pointerInput(onLongClick) {
+                                    awaitPointerEventScope {
+                                        while (true) {
+                                            val event = awaitPointerEvent()
+                                            if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) {
+                                                event.changes.forEach { it.consume() }
+                                                onLongClick()
+                                            }
+                                        }
+                                    }
+                                }
+                            } else Modifier
+                        )
+                        .combinedClickable(
                             interactionSource = interactionSource,
                             indication = null,
-                            onClick = onClick
+                            onClick = { onClick?.invoke() },
+                            onLongClick = onLongClick
                         )
                 } else Modifier.clip(shape)
             )
