@@ -9,42 +9,42 @@
       "platformName": "Android APK",
       "appName": "Anime Universe for Android",
       "version": "v2.1.0",
-      "fileSize": "24.0 MB",
+      "fileSize": "14.0 MB",
       "osSupported": "Android 8.0 (Oreo) & above • ARM64 / Universal",
       "releaseDate": "Nov 18, 2026",
       "fileName": "AnimeUniverse-v2.1.0-arm64.apk",
       "architecture": "Universal APK (ARM64-v8a / armeabi-v7a / x86_64)",
       "packageType": "Signed Android Package (.apk)",
       "available": true,
-      "downloadUrl": "https://drive.usercontent.google.com/download?id=1bvDpEEuwfAhWy9ECEzjUK9rdAMv18gys&export=download&confirm=t"
+      "downloadUrl": "https://drive.google.com/uc?export=download&id=1PgQkk8PTjrJspjx5uOvCx3ZNPrwWyKSx"
     },
     "windows": {
       "id": "windows",
       "platformName": "Windows EXE",
       "appName": "Anime Universe for Windows",
       "version": "v2.1.0",
-      "fileSize": "112.9 MB",
+      "fileSize": "3-5 MB",
       "osSupported": "Windows 10 & Windows 11 (64-bit x64)",
       "releaseDate": "Nov 18, 2026",
       "fileName": "AnimeUniverse-Windows-Installer.exe",
       "architecture": "64-bit Native JVM Desktop (.exe)",
       "packageType": "Windows Native Installer (.exe)",
       "available": true,
-      "downloadUrl": "https://drive.usercontent.google.com/download?id=1nARmFc6FHBLt1JnCJTjGEqoDla0njtOU&export=download&confirm=t"
+      "downloadUrl": "https://drive.google.com/uc?export=download&id=1hNlNCL_K6-GjkktUfPNk_qY3Vjxqrckt"
     },
     "macos": {
       "id": "macos",
       "platformName": "macOS DMG",
       "appName": "Anime Universe for macOS",
       "version": "v2.1.0",
-      "fileSize": "122.0 MB",
+      "fileSize": "3-5.0 MB",
       "osSupported": "macOS 12 Monterey & newer (Apple Silicon & Intel)",
       "releaseDate": "Nov 18, 2026",
       "fileName": "AnimeUniverse-macOS-Installer.dmg",
       "architecture": "Universal macOS Disk Image (.dmg)",
       "packageType": "macOS Disk Image (.dmg)",
       "available": true,
-      "downloadUrl": "https://drive.usercontent.google.com/download?id=1W6GoMBMHr-Vbd5_jCGv140HLMG8r3D5Y&export=download&confirm=t"
+      "downloadUrl": "https://drive.google.com/uc?export=download&id=1IHvY4Tru4KpvEg_rcuD7BE6iu4EOai5R"
     }
   },
   "currentRelease": {
