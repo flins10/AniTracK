@@ -29,26 +29,80 @@ import java.util.concurrent.TimeUnit
 object AnimeNotifScheduler {
     private const val WORK_NAME = "anime_universe_bg_notifications"
     const val CHANNEL_ID = "anime_community_alerts"
+    const val CHANNEL_REMINDERS_ID = "anime_reminders"
+    const val CHANNEL_UPDATES_ID = "anime_updates"
 
     fun ensureChannel(context: Context) {
+        ensureChannels(context)
+    }
+
+    fun ensureChannels(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+
             if (nm.getNotificationChannel(CHANNEL_ID) == null) {
                 val ch = NotificationChannel(
                     CHANNEL_ID,
-                    "Anime Universe Notifications",
+                    "Messages & Mentions",
                     NotificationManager.IMPORTANCE_HIGH
                 ).apply {
-                    description = "Messages, reminders, updates, and community alerts from Anime Universe"
+                    description = "Replies, mentions, and community discussion alerts from Anime Universe"
                     enableVibration(true)
+                    enableLights(true)
+                    setShowBadge(true)
+                }
+                nm.createNotificationChannel(ch)
+            }
+
+            if (nm.getNotificationChannel(CHANNEL_REMINDERS_ID) == null) {
+                val ch = NotificationChannel(
+                    CHANNEL_REMINDERS_ID,
+                    "Episode Reminders",
+                    NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "Upcoming episode release and schedule reminders"
+                    enableVibration(true)
+                    setShowBadge(true)
+                }
+                nm.createNotificationChannel(ch)
+            }
+
+            if (nm.getNotificationChannel(CHANNEL_UPDATES_ID) == null) {
+                val ch = NotificationChannel(
+                    CHANNEL_UPDATES_ID,
+                    "Updates & Announcements",
+                    NotificationManager.IMPORTANCE_DEFAULT
+                ).apply {
+                    description = "Catalog updates, announcements, and system notifications"
+                    setShowBadge(true)
                 }
                 nm.createNotificationChannel(ch)
             }
         }
     }
 
+    fun channelForType(type: String?): String {
+        return when (type?.trim()?.lowercase()) {
+            "reminder" -> CHANNEL_REMINDERS_ID
+            "update", "system" -> CHANNEL_UPDATES_ID
+            else -> CHANNEL_ID
+        }
+    }
+
+    /**
+     * Resolves a valid monochrome status-bar icon for Android notifications.
+     * Avoids passing adaptive launcher mipmaps which fail or render blank on Android 12–16.
+     */
+    fun resolveSmallIcon(context: Context): Int {
+        val customIcon = runCatching {
+            context.resources.getIdentifier("ic_stat_anime_notification", "drawable", context.packageName)
+        }.getOrDefault(0)
+        if (customIcon != 0) return customIcon
+        return android.R.drawable.ic_popup_reminder
+    }
+
     fun schedulePeriodic(context: Context) {
-        ensureChannel(context)
+        ensureChannels(context)
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .build()
@@ -78,7 +132,7 @@ class AnimeNotifWorker(
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
-        AnimeNotifScheduler.ensureChannel(applicationContext)
+        AnimeNotifScheduler.ensureChannels(applicationContext)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val granted = ContextCompat.checkSelfPermission(
                 applicationContext,
@@ -86,6 +140,10 @@ class AnimeNotifWorker(
             ) == PackageManager.PERMISSION_GRANTED
             if (!granted) return Result.success()
         }
+        val areEnabled = runCatching {
+            NotificationManagerCompat.from(applicationContext).areNotificationsEnabled()
+        }.getOrDefault(false)
+        if (!areEnabled) return Result.success()
 
         // Check local notification preferences before polling
         val prefsFile = File(applicationContext.filesDir, "notif_prefs.json")
@@ -134,7 +192,6 @@ class AnimeNotifWorker(
             }
         }
 
-        // Fallback to user_notifications if public.notifications is not yet migrated
         if (code !in 200..299) {
             val fallbackEndpoint = "$supabaseUrl/rest/v1/user_notifications?select=id,notification_type,preview_text,sender_user_id&recipient_user_id=eq.$userId&is_read=eq.false&order=created_at.desc&limit=10"
             val fallbackResp = httpGet(fallbackEndpoint, anonKey, accessToken)
@@ -159,6 +216,7 @@ class AnimeNotifWorker(
 
         var changed = false
         val nm = NotificationManagerCompat.from(applicationContext)
+        val smallIconRes = AnimeNotifScheduler.resolveSmallIcon(applicationContext)
 
         for (i in rows.length() - 1 downTo 0) {
             val row = rows.optJSONObject(i) ?: continue
@@ -204,12 +262,14 @@ class AnimeNotifWorker(
             val pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             val pendingIntent = PendingIntent.getActivity(applicationContext, id.hashCode(), launchIntent, pendingFlags)
 
-            val notification = NotificationCompat.Builder(applicationContext, AnimeNotifScheduler.CHANNEL_ID)
-                .setSmallIcon(applicationContext.applicationInfo.icon)
+            val channelId = AnimeNotifScheduler.channelForType(type)
+            val notification = NotificationCompat.Builder(applicationContext, channelId)
+                .setSmallIcon(smallIconRes)
                 .setContentTitle(title)
                 .setContentText(preview)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(preview))
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setDefaults(NotificationCompat.DEFAULT_ALL)
                 .setAutoCancel(true)
                 .setContentIntent(pendingIntent)
                 .build()

@@ -1,6 +1,6 @@
 {
   "name": "anime-universe",
-  "version": "2.23.0",
+  "version": "2.25.0",
   "private": true,
   "description": "ANIME UNIVERSE — Native Tauri v2 shell for https://animeuniverse.pages.dev",
   "scripts": {

@@ -104,14 +104,14 @@ async function sendAndroidFcmPush(
   device: DeviceRow,
   payload: { notification_id: string; title: string; message: string; type: string; metadata: Record<string, unknown> }
 ): Promise<{ delivered: boolean; invalidToken?: boolean; providerResponse?: unknown; error?: string }> {
-  const projectId = Deno.env.get("FIREBASE_PROJECT_ID") ?? "";
-  const clientEmail = Deno.env.get("FIREBASE_CLIENT_EMAIL") ?? "";
-  const privateKey = Deno.env.get("FIREBASE_PRIVATE_KEY") ?? "";
+  const projectId = Deno.env.get("FIREBASE_PROJECT_ID") ?? Deno.env.get("FCM_PROJECT_ID") ?? "";
+  const clientEmail = Deno.env.get("FIREBASE_CLIENT_EMAIL") ?? Deno.env.get("FCM_CLIENT_EMAIL") ?? "";
+  const privateKey = Deno.env.get("FIREBASE_PRIVATE_KEY") ?? Deno.env.get("FCM_PRIVATE_KEY") ?? "";
 
   if (!projectId || !clientEmail || !privateKey) {
     return {
       delivered: false,
-      error: "FCM credentials not configured (FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY)",
+      error: "FCM credentials not configured (FIREBASE_PROJECT_ID/FCM_PROJECT_ID, FIREBASE_CLIENT_EMAIL/FCM_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY/FCM_PRIVATE_KEY)",
     };
   }
 
@@ -141,7 +141,12 @@ async function sendAndroidFcmPush(
         android: {
           priority: "HIGH",
           notification: {
-            channel_id: "anime_community_alerts",
+            channel_id:
+              payload.type === "reminder"
+                ? "anime_reminders"
+                : payload.type === "update" || payload.type === "system"
+                ? "anime_updates"
+                : "anime_community_alerts",
             sound: "default",
             click_action: "OPEN_ANIME_UNIVERSE_NOTIFICATION",
           },
@@ -201,7 +206,7 @@ async function sendMacOsApnsPush(
   const keyId = Deno.env.get("APNS_KEY_ID") ?? "";
   const teamId = Deno.env.get("APNS_TEAM_ID") ?? "";
   const privateKey = Deno.env.get("APNS_PRIVATE_KEY") ?? "";
-  const bundleId = Deno.env.get("APNS_BUNDLE_ID") ?? "com.animeuniverse.desktop";
+  const bundleId = Deno.env.get("APNS_BUNDLE_ID") ?? "com.animeuniverse.app";
   const apnsEnv = (Deno.env.get("APNS_ENV") ?? "production").toLowerCase();
 
   if (!keyId || !teamId || !privateKey) {

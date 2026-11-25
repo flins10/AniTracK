@@ -1,4 +1,16 @@
 fn main() {
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os == "macos" {
+        println!("cargo:rerun-if-changed=macos/notifications.m");
+        cc::Build::new()
+            .file("macos/notifications.m")
+            .flag("-fobjc-arc")
+            .compile("anime_macos_notifications");
+        println!("cargo:rustc-link-lib=framework=UserNotifications");
+        println!("cargo:rustc-link-lib=framework=Foundation");
+        println!("cargo:rustc-link-lib=framework=AppKit");
+    }
+
     tauri_build::try_build(
         tauri_build::Attributes::new().app_manifest(
             tauri_build::AppManifest::new().commands(&[

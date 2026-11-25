@@ -192,6 +192,8 @@ jobs:
         run: npm install
 
       - name: Initialize Tauri v2 & Android project and generate icons
+        env:
+          FIREBASE_GOOGLE_SERVICES_JSON: ${{ secrets.FIREBASE_GOOGLE_SERVICES_JSON }}
         run: |
           if [ ! -f "src-tauri/Cargo.toml" ]; then
             cp src-tauri/tauri.conf.json /tmp/tauri.conf.json.bak || true
@@ -224,31 +226,66 @@ jobs:
             fi
           fi
           if [ -f "src-tauri/gen/android/app/proguard-rules.pro" ]; then
-            cat << 'EOF' >> src-tauri/gen/android/app/proguard-rules.pro
+            if ! grep -q "com.animeuniverse.app" src-tauri/gen/android/app/proguard-rules.pro; then
+              cat << 'EOF' >> src-tauri/gen/android/app/proguard-rules.pro
 -keep class app.tauri.** { *; }
 -keep class com.animeuniverse.app.** { *; }
+-keep class androidx.work.** { *; }
+-keep class com.google.firebase.messaging.** { *; }
 -keepclassmembers class * {
     @android.webkit.JavascriptInterface <methods>;
 }
 EOF
+            fi
+          fi
+          mkdir -p src-tauri/gen/android/app/src/main/res/drawable
+          if [ -f "src-tauri/android-bg/ic_stat_anime_notification.xml" ]; then
+            cp src-tauri/android-bg/ic_stat_anime_notification.xml src-tauri/gen/android/app/src/main/res/drawable/ic_stat_anime_notification.xml
           fi
           ANDROID_PKG_DIR="src-tauri/gen/android/app/src/main/java/com/animeuniverse/app"
           if [ -d "${ANDROID_PKG_DIR}" ] && [ -f "src-tauri/android-bg/AnimeNotifWorker.kt" ]; then
             cp src-tauri/android-bg/AnimeNotifWorker.kt "${ANDROID_PKG_DIR}/AnimeNotifWorker.kt"
             cp src-tauri/android-bg/MainActivity.kt "${ANDROID_PKG_DIR}/MainActivity.kt"
           fi
+          HAS_FCM=0
+          if [ -n "${FIREBASE_GOOGLE_SERVICES_JSON:-}" ]; then
+            printf "%s" "${FIREBASE_GOOGLE_SERVICES_JSON}" > src-tauri/gen/android/app/google-services.json
+            HAS_FCM=1
+          elif [ -f "src-tauri/android-bg/google-services.json" ]; then
+            cp src-tauri/android-bg/google-services.json src-tauri/gen/android/app/google-services.json
+            HAS_FCM=1
+          fi
+          if [ "${HAS_FCM}" = "1" ] && [ -d "${ANDROID_PKG_DIR}" ] && [ -f "src-tauri/android-bg/AnimeFirebaseMessagingService.kt" ]; then
+            cp src-tauri/android-bg/AnimeFirebaseMessagingService.kt "${ANDROID_PKG_DIR}/AnimeFirebaseMessagingService.kt"
+            if ! grep -q "com.google.gms.google-services" src-tauri/gen/android/build.gradle.kts; then
+              sed -i 's/dependencies {/dependencies {\n        classpath("com.google.gms:google-services:4.4.2")/' src-tauri/gen/android/build.gradle.kts || true
+            fi
+            if ! grep -q "firebase-messaging" src-tauri/gen/android/app/build.gradle.kts; then
+              printf '\napply(plugin = "com.google.gms.google-services")\ndependencies {\n    implementation("com.google.firebase:firebase-messaging-ktx:24.0.3")\n}\n' >> src-tauri/gen/android/app/build.gradle.kts
+            fi
+          fi
           ANDROID_MANIFEST="src-tauri/gen/android/app/src/main/AndroidManifest.xml"
           if [ -f "${ANDROID_MANIFEST}" ]; then
-            python3 -c '
+            HAS_FCM="${HAS_FCM}" python3 -c '
+          import os
           from pathlib import Path
           p = Path("src-tauri/gen/android/app/src/main/AndroidManifest.xml")
           txt = p.read_text(encoding="utf-8")
           for perm in [
               "<uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\" />",
               "<uses-permission android:name=\"android.permission.RECEIVE_BOOT_COMPLETED\" />",
+              "<uses-permission android:name=\"android.permission.VIBRATE\" />",
+              "<uses-permission android:name=\"android.permission.WAKE_LOCK\" />",
           ]:
               if perm not in txt:
                   txt = txt.replace("<application", f"    {perm}\n    <application", 1)
+          meta_channel = (
+              "        <meta-data\n"
+              "            android:name=\"com.google.firebase.messaging.default_notification_channel_id\"\n"
+              "            android:value=\"anime_community_alerts\" />"
+          )
+          if "com.google.firebase.messaging.default_notification_channel_id" not in txt:
+              txt = txt.replace("</application>", f"{meta_channel}\n    </application>", 1)
           receiver = (
               "        <receiver\n"
               "            android:name=\".AnimeNotifBootReceiver\"\n"
@@ -262,6 +299,17 @@ EOF
           )
           if "AnimeNotifBootReceiver" not in txt:
               txt = txt.replace("</application>", f"{receiver}\n    </application>", 1)
+          if os.environ.get("HAS_FCM") == "1" and "AnimeFirebaseMessagingService" not in txt:
+              fcm_svc = (
+                  "        <service\n"
+                  "            android:name=\".AnimeFirebaseMessagingService\"\n"
+                  "            android:exported=\"false\">\n"
+                  "            <intent-filter>\n"
+                  "                <action android:name=\"com.google.firebase.MESSAGING_EVENT\" />\n"
+                  "            </intent-filter>\n"
+                  "        </service>"
+              )
+              txt = txt.replace("</application>", f"{fcm_svc}\n    </application>", 1)
           p.write_text(txt, encoding="utf-8")
           '
           fi

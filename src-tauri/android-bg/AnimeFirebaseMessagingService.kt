@@ -39,7 +39,7 @@ class AnimeFirebaseMessagingService : FirebaseMessagingService() {
 
     override fun onMessageReceived(remoteMessage: RemoteMessage) {
         super.onMessageReceived(remoteMessage)
-        AnimeNotifScheduler.ensureChannel(applicationContext)
+        AnimeNotifScheduler.ensureChannels(applicationContext)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val granted = ContextCompat.checkSelfPermission(
@@ -48,6 +48,10 @@ class AnimeFirebaseMessagingService : FirebaseMessagingService() {
             ) == PackageManager.PERMISSION_GRANTED
             if (!granted) return
         }
+        val areEnabled = runCatching {
+            NotificationManagerCompat.from(applicationContext).areNotificationsEnabled()
+        }.getOrDefault(false)
+        if (!areEnabled) return
 
         // Check local notification preferences synced from user_notification_settings
         val prefsFile = File(applicationContext.filesDir, "notif_prefs.json")
@@ -96,12 +100,16 @@ class AnimeFirebaseMessagingService : FirebaseMessagingService() {
             pendingFlags
         )
 
-        val notification = NotificationCompat.Builder(applicationContext, AnimeNotifScheduler.CHANNEL_ID)
-            .setSmallIcon(applicationContext.applicationInfo.icon)
+        val channelId = AnimeNotifScheduler.channelForType(type)
+        val smallIconRes = AnimeNotifScheduler.resolveSmallIcon(applicationContext)
+
+        val notification = NotificationCompat.Builder(applicationContext, channelId)
+            .setSmallIcon(smallIconRes)
             .setContentTitle(title)
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
             .build()
