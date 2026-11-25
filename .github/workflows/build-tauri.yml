@@ -61,6 +61,14 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /package.json
+            /package-lock.json
+            /icon-512.png
+            /src-tauri/
+            /public/icon-512.png
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -233,24 +241,43 @@ jobs:
           NDK_DIR="${NDK_HOME:-${SDK_ROOT}/ndk/27.2.12479018}"
           printf "sdk.dir=%s\nndk.dir=%s\n" "${SDK_ROOT}" "${NDK_DIR}" > local.properties
           if [ -d "src-tauri/gen/android" ]; then
-            printf "sdk.dir=%s\nndk.dir=%s\n" "${SDK_ROOT}" "${NDK_DIR}" > src-tauri/gen/android/local.properties
-          fi
-          if [ -f "src-tauri/gen/android/gradle.properties" ]; then
-            if ! grep -q "android.enableR8.fullMode" src-tauri/gen/android/gradle.properties; then
-              printf '\nandroid.enableR8.fullMode=false\n' >> src-tauri/gen/android/gradle.properties
-            fi
+            printf "sdk.dir=%s\n" "${SDK_ROOT}" > src-tauri/gen/android/local.properties
           fi
           if [ -f "src-tauri/gen/android/app/build.gradle.kts" ]; then
-            sed -i 's/compileSdk = 3[0-4]/compileSdk = 35/g' src-tauri/gen/android/app/build.gradle.kts || true
-            sed -i 's/isMinifyEnabled = true/isMinifyEnabled = false/g' src-tauri/gen/android/app/build.gradle.kts || true
-            sed -i 's/isShrinkResources = true/isShrinkResources = false/g' src-tauri/gen/android/app/build.gradle.kts || true
-            if ! grep -q "work-runtime-ktx" src-tauri/gen/android/app/build.gradle.kts; then
-              printf '\ndependencies {\n    implementation("androidx.work:work-runtime-ktx:2.9.1")\n}\n' >> src-tauri/gen/android/app/build.gradle.kts
-            fi
+            python3 -c '
+          import re
+          from pathlib import Path
+          p = Path("src-tauri/gen/android/app/build.gradle.kts")
+          txt = p.read_text(encoding="utf-8")
+          txt = re.sub(r"compileSdk\s*=\s*3[0-4]\b", "compileSdk = 35", txt)
+          txt = re.sub(r"\b(isM|m)inifyEnabled\s*=\s*[^\n]+", "isMinifyEnabled = false", txt)
+          txt = re.sub(r"\b(isS|s)hrinkResources\s*=\s*[^\n]+", "isShrinkResources = false", txt)
+          if "ANIME_UNIVERSE_NO_MINIFY" not in txt:
+              txt += "\n// ANIME_UNIVERSE_NO_MINIFY\nandroid {\n    buildTypes {\n        getByName(\"release\") {\n            isMinifyEnabled = false\n            isShrinkResources = false\n        }\n    }\n}\n"
+          if "work-runtime-ktx" not in txt:
+              txt += "\ndependencies {\n    implementation(\"androidx.work:work-runtime-ktx:2.9.1\")\n}\n"
+          p.write_text(txt, encoding="utf-8")
+          '
           fi
+          cat << 'PROEOF' > src-tauri/gen/android/app/proguard-missing-fix.pro
+          -keep class app.tauri.** { *; }
+          -keep class org.tauri.** { *; }
+          -keep class com.animeuniverse.app.** { *; }
+          -keep class androidx.work.** { *; }
+          -keep class androidx.startup.** { *; }
+          -keep public class * extends androidx.work.ListenableWorker { public <init>(android.content.Context, androidx.work.WorkerParameters); }
+          -keep class com.google.firebase.** { *; }
+          -keepclasseswithmembernames class * { native <methods>; }
+          -keepclassmembers class * { @android.webkit.JavascriptInterface <methods>; }
+          -dontwarn app.tauri.**
+          -dontwarn java.beans.**
+          -dontwarn com.fasterxml.jackson.**
+          -dontwarn javax.xml.**
+          PROEOF
+          sed -i 's/^[[:space:]]*//' src-tauri/gen/android/app/proguard-missing-fix.pro
           if [ -f "src-tauri/gen/android/app/proguard-rules.pro" ]; then
-            if ! grep -q "com.animeuniverse.app" src-tauri/gen/android/app/proguard-rules.pro; then
-              printf '\n-keep class app.tauri.** { *; }\n-keep class org.tauri.** { *; }\n-keep class com.animeuniverse.app.** { *; }\n-keep class androidx.work.** { *; }\n-keep class androidx.startup.** { *; }\n-keep public class * extends androidx.work.ListenableWorker { public <init>(android.content.Context, androidx.work.WorkerParameters); }\n-keep class com.google.firebase.** { *; }\n-keepclasseswithmembernames class * { native <methods>; }\n-keepclassmembers class * { @android.webkit.JavascriptInterface <methods>; }\n-dontwarn app.tauri.**\n' >> src-tauri/gen/android/app/proguard-rules.pro
+            if ! grep -q "java.beans" src-tauri/gen/android/app/proguard-rules.pro; then
+              cat src-tauri/gen/android/app/proguard-missing-fix.pro >> src-tauri/gen/android/app/proguard-rules.pro
             fi
           fi
           mkdir -p src-tauri/gen/android/app/src/main/res/drawable

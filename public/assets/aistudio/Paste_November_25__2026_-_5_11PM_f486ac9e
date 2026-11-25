@@ -1,0 +1,946 @@
+﻿2026-11-25T10:30:36.7248709Z ##[group]Run npx tauri android build --apk --target aarch64
+npx tauri android build --apk --target aarch64
+shell: /usr/bin/bash -e {0}
+env:
+  JAVA_HOME: /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk/17.0.21-9/x64
+  JAVA_HOME_17_X64: /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk/17.0.21-9/x64
+  ANDROID_HOME: /usr/local/lib/android/sdk
+  ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+  NDK_HOME: /usr/local/lib/android/sdk/ndk/27.2.12479018
+  ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/27.2.12479018
+  CARGO_HOME: /home/runner/.cargo
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+  CACHE_ON_FAILURE: false
+        Info Using installed NDK: /usr/local/lib/android/sdk/ndk/27.2.12479018
+        Info Looking up installed tauri packages to check mismatched versions...
+        Warn The bundle identifier "com.animeuniverse.app" set in `"tauri.conf.json" identifier` ends with `.app`. This is not recommended because it conflicts with the application bundle extension on macOS.
+    Updating crates.io index
+     Locking 520 packages to highest compatible versions
+      Adding generic-array v0.14.7 (available: v0.14.9)
+      Adding reqwest v0.12.28 (available: v0.13.5)
+      Adding toml v0.8.2 (available: v0.8.23)
+      Adding toml_datetime v0.6.3 (available: v0.6.11)
+      Adding toml_edit v0.20.2 (available: v0.20.7)
+      Adding winreg v0.52.0 (available: v0.56.0)
+ Downloading crates ...
+  Downloaded adler2 v2.0.1
+  Downloaded crypto-common v0.1.7
+  Downloaded crossbeam-utils v0.8.23
+  Downloaded crc32fast v1.5.6
+  Downloaded crossbeam-channel v0.5.17
+  Downloaded crypto-common v0.2.2
+  Downloaded cssparser v0.37.0
+  Downloaded ctor v1.0.14
+  Downloaded deranged v0.5.9
+  Downloaded cssparser-macros v0.7.1
+  Downloaded darling_core v0.24.1
+  Downloaded derive_more v2.1.1
+  Downloaded displaydoc v0.2.7
+  Downloaded rustc-hash v2.1.3
+  Downloaded cssparser v0.38.0
+  Downloaded dirs v6.0.0
+  Downloaded dlopen2 v0.8.2
+  Downloaded futures-core v0.3.34
+  Downloaded rustc_version v0.4.1
+  Downloaded dbus v0.9.12
+  Downloaded dirs v7.0.0
+  Downloaded dirs-sys v0.5.0
+  Downloaded dlopen2_derive v0.4.3
+  Downloaded dtoa-short v0.3.5
+  Downloaded dyn-clone v1.0.20
+  Downloaded embed-resource v3.0.12
+  Downloaded equivalent v1.0.3
+  Downloaded erased-serde v0.4.11
+  Downloaded field-offset v0.3.6
+  Downloaded find-msvc-tools v0.1.15
+  Downloaded futures-io v0.3.34
+  Downloaded futures-task v0.3.34
+  Downloaded gdkwayland-sys v0.18.2
+  Downloaded generic-array v0.14.7
+  Downloaded scopeguard v1.2.0
+  Downloaded serde-untagged v0.1.9
+  Downloaded serde_derive_internals v0.29.1
+  Downloaded serde_repr v0.1.21
+  Downloaded serde_urlencoded v0.7.1
+  Downloaded darling_macro v0.24.1
+  Downloaded digest v0.10.7
+  Downloaded dom_query v0.28.0
+  Downloaded foreign-types-shared v0.1.1
+  Downloaded gdkx11-sys v0.18.2
+  Downloaded gtk3-macros v0.18.2
+  Downloaded same-file v1.0.6
+  Downloaded schemars v0.8.22
+  Downloaded schemars_derive v0.8.22
+  Downloaded semver v1.0.28
+  Downloaded serde_derive v1.0.229
+  Downloaded serde_spanned v0.6.9
+  Downloaded serde_spanned v1.1.3
+  Downloaded serde_with_macros v3.25.0
+  Downloaded toml v0.8.2
+  Downloaded dpi v0.1.2
+  Downloaded endi v1.1.1
+  Downloaded enumflags2_derive v0.7.12
+  Downloaded errno v0.3.15
+  Downloaded fnv v1.0.7
+  Downloaded foreign-types v0.3.2
+  Downloaded heck v0.4.1
+  Downloaded heck v0.5.0
+  Downloaded hex v0.4.3
+  Downloaded icu_normalizer_data v2.4.0
+  Downloaded reqwest v0.12.28
+  Downloaded reqwest v0.13.5
+  Downloaded schemars v0.9.0
+  Downloaded selectors v0.41.0
+  Downloaded serde v1.0.229
+  Downloaded serde_core v1.0.229
+  Downloaded serde_json v1.0.154
+  Downloaded toml_datetime v0.6.3
+  Downloaded tower-service v0.3.3
+  Downloaded darling v0.24.1
+  Downloaded dunce v1.0.5
+  Downloaded event-listener-strategy v0.5.4
+  Downloaded fdeflate v0.3.7
+  Downloaded form_urlencoded v1.2.3
+  Downloaded futures-channel v0.3.34
+  Downloaded futures-macro v0.3.34
+  Downloaded futures-sink v0.3.34
+  Downloaded gdk-pixbuf v0.18.5
+  Downloaded gdkx11 v0.18.2
+  Downloaded http-body v1.1.0
+  Downloaded hyper-tls v0.6.0
+  Downloaded idna_adapter v1.2.2
+  Downloaded itoa v1.0.19
+  Downloaded javascriptcore-rs v1.1.2
+  Downloaded jni-sys v0.3.1
+  Downloaded lock_api v0.4.14
+  Downloaded markup5ever v0.39.0
+  Downloaded markup5ever v0.40.0
+  Downloaded new_debug_unreachable v1.0.6
+  Downloaded num-conv v0.2.2
+  Downloaded percent-encoding v2.3.2
+  Downloaded phf_codegen v0.13.1
+  Downloaded phf_codegen v0.14.0
+  Downloaded phf_generator v0.13.1
+  Downloaded phf_macros v0.13.1
+  Downloaded rustix v1.1.6
+  Downloaded serde_with v3.25.0
+  Downloaded serialize-to-javascript v0.1.2
+  Downloaded serialize-to-javascript-impl v0.1.2
+  Downloaded servo_arc v0.4.3
+  Downloaded sha2 v0.10.9
+  Downloaded sha2 v0.11.1
+  Downloaded signal-hook-registry v1.4.8
+  Downloaded simd-adler32 v0.3.10
+  Downloaded siphasher v1.0.4
+  Downloaded slab v0.4.12
+  Downloaded smallvec v1.16.6
+  Downloaded socket2 v0.6.5
+  Downloaded soup3 v0.5.0
+  Downloaded stable_deref_trait v1.2.1
+  Downloaded static_vcruntime v3.0.0
+  Downloaded string_cache v0.9.0
+  Downloaded string_cache v0.11.0
+  Downloaded string_cache_codegen v0.6.1
+  Downloaded string_cache_codegen v0.11.2
+  Downloaded strsim v0.11.1
+  Downloaded sync_wrapper v1.0.2
+  Downloaded synstructure v0.14.0
+  Downloaded system-deps v6.2.2
+  Downloaded tao-macros v0.1.4
+  Downloaded target-lexicon v0.12.16
+  Downloaded tauri-codegen v2.7.6
+  Downloaded tauri-macros v2.7.6
+  Downloaded tauri-plugin v2.7.4
+  Downloaded thiserror-impl v1.0.69
+  Downloaded thiserror-impl v2.0.21
+  Downloaded time-core v0.1.9
+  Downloaded toml_parser v1.1.7+spec-1.1.0
+  Downloaded toml_writer v1.2.0+spec-1.1.0
+  Downloaded tower-layer v0.3.3
+  Downloaded try-lock v0.2.5
+  Downloaded typeid v1.0.3
+  Downloaded zerofrom-derive v0.1.8
+  Downloaded zvariant_derive v5.15.1
+  Downloaded digest v0.11.3
+  Downloaded dtoa v1.0.11
+  Downloaded enumflags2 v0.7.12
+  Downloaded event-listener v5.4.2
+  Downloaded fastrand v2.5.0
+  Downloaded flate2 v1.1.11
+  Downloaded foldhash v0.2.0
+  Downloaded futures-executor v0.3.34
+  Downloaded futures-lite v2.6.1
+  Downloaded gdk-pixbuf-sys v0.18.0
+  Downloaded gdk-sys v0.18.2
+  Downloaded getrandom v0.3.4
+  Downloaded getrandom v0.4.3
+  Downloaded gio-sys v0.18.1
+  Downloaded glib-macros v0.18.5
+  Downloaded glib-sys v0.18.1
+  Downloaded glob v0.3.4
+  Downloaded gobject-sys v0.18.0
+  Downloaded html5ever v0.39.0
+  Downloaded http-body-util v0.1.5
+  Downloaded httparse v1.10.1
+  Downloaded hybrid-array v0.4.15
+  Downloaded iana-time-zone v0.1.65
+  Downloaded icu_locale_core v2.4.0
+  Downloaded ident_case v1.0.1
+  Downloaded javascriptcore-rs-sys v1.1.1
+  Downloaded jsonptr v0.7.1
+  Downloaded libappindicator v0.9.0
+  Downloaded log v0.4.35
+  Downloaded phf v0.13.1
+  Downloaded phf v0.14.0
+  Downloaded phf_generator v0.14.0
+  Downloaded phf_macros v0.14.0
+  Downloaded phf_shared v0.13.1
+  Downloaded phf_shared v0.14.0
+  Downloaded pin-project-lite v0.2.18
+  Downloaded piper v0.2.5
+  Downloaded pkg-config v0.3.34
+  Downloaded plist v1.10.4
+  Downloaded rustls-pki-types v1.16.0
+  Downloaded rustversion v1.0.23
+  Downloaded servo_arc v0.5.0
+  Downloaded shlex v2.0.1
+  Downloaded soup3-sys v0.5.0
+  Downloaded tauri-build v2.7.6
+  Downloaded tauri-plugin-autostart v2.7.0
+  Downloaded tauri-runtime v2.12.4
+  Downloaded tauri-winres v0.3.7
+  Downloaded tendril v0.5.1
+  Downloaded thiserror v1.0.69
+  Downloaded thiserror v2.0.21
+  Downloaded time-macros v0.2.32
+  Downloaded tinystr v0.8.5
+  Downloaded tinyvec v1.13.3
+  Downloaded tokio-native-tls v0.3.1
+  Downloaded toml v1.2.3+spec-1.1.0
+  Downloaded toml_datetime v1.1.3+spec-1.1.0
+  Downloaded toml_edit v0.20.2
+  Downloaded tracing-attributes v0.1.31
+  Downloaded tracing-core v0.1.36
+  Downloaded zbus_macros v6.5.0
+  Downloaded zbus_names v4.3.5
+  Downloaded zbus_utils v6.1.0
+  Downloaded zcheapstr v1.4.0
+  Downloaded zerofrom v0.1.8
+  Downloaded zeroize v1.9.2
+  Downloaded zerovec-derive v0.11.7
+  Downloaded zmij v1.0.23
+  Downloaded derive_more-impl v2.1.1
+  Downloaded gdk v0.18.2
+  Downloaded gtk-sys v0.18.2
+  Downloaded hashbrown v0.12.3
+  Downloaded html5ever v0.40.1
+  Downloaded http v1.5.0
+  Downloaded hyper-util v0.1.21
+  Downloaded ico v0.6.0
+  Downloaded icu_collections v2.4.0
+  Downloaded icu_provider v2.4.0
+  Downloaded indexmap v1.9.3
+  Downloaded infer v0.22.0
+  Downloaded ipnet v2.12.2
+  Downloaded keyboard-types v0.8.3
+  Downloaded notify-rust v4.19.0
+  Downloaded num-traits v0.2.19
+  Downloaded png v0.18.1
+  Downloaded ryu v1.0.23
+  Downloaded schemars v1.2.3
+  Downloaded selectors v0.38.0
+  Downloaded tauri-plugin-notification v2.8.1
+  Downloaded tauri-runtime-wry v2.12.5
+  Downloaded tauri-utils v2.10.4
+  Downloaded toml_edit v0.19.15
+  Downloaded toml_edit v0.25.21+spec-1.1.0
+  Downloaded tower v0.5.3
+  Downloaded tray-icon v0.25.1
+  Downloaded typenum v1.20.1
+  Downloaded zerotrie v0.2.5
+  Downloaded zerovec v0.11.9
+  Downloaded zvariant v5.15.1
+  Downloaded aho-corasick v1.1.5
+  Downloaded combine v4.6.9
+  Downloaded concurrent-queue v2.5.0
+  Downloaded const-oid v0.10.3
+  Downloaded cookie v0.18.3
+  Downloaded cpufeatures v0.2.17
+  Downloaded cpufeatures v0.3.1
+  Downloaded dom_query v0.30.0
+  Downloaded futures-util v0.3.34
+  Downloaded gio v0.18.4
+  Downloaded glib v0.18.5
+  Downloaded gtk v0.18.2
+  Downloaded hashbrown v0.17.2
+  Downloaded hyper v1.13.0
+  Downloaded icu_properties v2.4.0
+  Downloaded icu_properties_data v2.4.0
+  Downloaded idna v1.1.0
+  Downloaded indexmap v2.14.2
+  Downloaded nix v0.31.4
+  Downloaded openssl-probe v0.2.2
+  Downloaded openssl-sys v0.9.118
+  Downloaded option-ext v0.2.0
+  Downloaded ordered-stream v0.2.0
+  Downloaded os_info v3.15.0
+  Downloaded pango v0.18.3
+  Downloaded pango-sys v0.18.0
+  Downloaded parking v2.2.1
+  Downloaded parking_lot v0.12.5
+  Downloaded parking_lot_core v0.9.12
+  Downloaded polling v3.11.0
+  Downloaded potential_utf v0.1.6
+  Downloaded powerfmt v0.2.1
+  Downloaded precomputed-hash v0.1.1
+  Downloaded proc-macro-crate v1.3.1
+  Downloaded proc-macro-crate v2.0.2
+  Downloaded proc-macro-crate v3.5.0
+  Downloaded proc-macro-error v1.0.4
+  Downloaded proc-macro-error-attr v1.0.4
+  Downloaded quote v1.0.47
+  Downloaded rand_core v0.10.1
+  Downloaded raw-window-handle v0.6.2
+  Downloaded ref-cast v1.0.27
+  Downloaded syn v1.0.109
+  Downloaded tao v0.37.3
+  Downloaded tokio-util v0.7.20
+  Downloaded tower-http v0.6.11
+  Downloaded zlib-rs v0.6.9
+  Downloaded icu_normalizer v2.4.0
+  Downloaded proc-macro2 v1.0.107
+  Downloaded quick-xml v0.42.0
+  Downloaded rand v0.10.4
+  Downloaded syn v2.0.119
+  Downloaded syn v3.0.10
+  Downloaded tauri v2.12.7
+  Downloaded time v0.3.55
+  Downloaded tracing v0.1.44
+  Downloaded zruntime v0.2.4
+  Downloaded zvariant_utils v4.2.0
+  Downloaded jiff v0.2.46
+  Downloaded jni-sys v0.4.1
+  Downloaded jni-sys-macros v0.4.1
+  Downloaded libappindicator-sys v0.9.0
+  Downloaded memoffset v0.9.1
+  Downloaded openssl-macros v0.1.1
+  Downloaded ref-cast-impl v1.0.27
+  Downloaded tokio v1.54.1
+  Downloaded writeable v0.6.4
+  Downloaded jiff v1.0.3
+  Downloaded jni v0.21.1
+  Downloaded json-patch v4.2.0
+  Downloaded libloading v0.7.4
+  Downloaded litemap v0.8.3
+  Downloaded mime v0.3.18
+  Downloaded native-tls v0.2.18
+  Downloaded ndk-context v0.1.1
+  Downloaded num_enum v0.7.6
+  Downloaded num_enum_derive v0.7.6
+  Downloaded once_cell v1.21.4
+  Downloaded regex v1.13.2
+  Downloaded regex-automata v0.4.19
+  Downloaded unicode-ident v1.0.27
+  Downloaded url v2.5.9
+  Downloaded urlpattern v0.6.0
+  Downloaded utf8_iter v1.1.0
+  Downloaded uuid v1.29.3
+  Downloaded vcpkg v0.2.15
+  Downloaded walkdir v2.5.1
+  Downloaded want v0.3.2
+  Downloaded web-time v1.1.0
+  Downloaded web_atoms v0.2.6
+  Downloaded winnow v1.0.5
+  Downloaded yoke v0.8.4
+  Downloaded yoke-derive v0.8.4
+  Downloaded zbus_macros v5.19.0
+  Downloaded async-recursion v1.2.0
+  Downloaded jiff-core v0.1.8
+  Downloaded jiff-core v1.0.2
+  Downloaded miniz_oxide v0.9.1
+  Downloaded ndk v0.9.0
+  Downloaded utf_types v1.0.0
+  Downloaded version-compare v0.2.1
+  Downloaded version_check v0.9.5
+  Downloaded web_atoms v0.3.0
+  Downloaded webkit2gtk v2.0.2
+  Downloaded winnow v0.5.40
+  Downloaded x11-dl v2.21.0
+  Downloaded zbus v5.19.0
+  Downloaded alloc-no-stdlib v3.0.0
+  Downloaded anyhow v1.0.105
+  Downloaded async-executor v1.14.1
+  Downloaded async-lock v3.5.0
+  Downloaded memchr v2.8.3
+  Downloaded miniz_oxide v0.8.9
+  Downloaded mio v1.2.5
+  Downloaded webkit2gtk-sys v2.0.2
+  Downloaded wry v0.57.4
+  Downloaded x11 v2.21.0
+  Downloaded alloc-stdlib v0.3.0
+  Downloaded android_system_properties v0.1.6
+  Downloaded async-broadcast v0.7.2
+  Downloaded async-channel v2.5.0
+  Downloaded async-io v2.6.0
+  Downloaded async-process v2.5.0
+  Downloaded muda v0.20.0
+  Downloaded zbus v6.5.0
+  Downloaded async-signal v0.2.14
+  Downloaded bitflags v2.13.2
+  Downloaded block-buffer v0.12.1
+  Downloaded blocking v1.7.0
+  Downloaded bytes v1.12.2
+  Downloaded cairo-sys-rs v0.18.2
+  Downloaded cargo-platform v0.1.9
+  Downloaded atk-sys v0.18.2
+  Downloaded bitflags v1.3.2
+  Downloaded block-buffer v0.10.4
+  Downloaded cairo-rs v0.18.5
+  Downloaded camino v1.2.6
+  Downloaded cargo_metadata v0.19.2
+  Downloaded cargo_toml v1.0.1
+  Downloaded cesu8 v1.1.0
+  Downloaded cfg-expr v0.15.8
+  Downloaded cfg-if v1.0.5
+  Downloaded chacha20 v0.10.2
+  Downloaded openssl v0.10.82
+  Downloaded async-task v4.7.1
+  Downloaded atomic-waker v1.1.2
+  Downloaded bs58 v0.5.1
+  Downloaded byteorder v1.5.0
+  Downloaded regex-syntax v0.8.12
+  Downloaded atk v0.18.2
+  Downloaded bit-set v0.8.0
+  Downloaded bit-vec v0.8.0
+  Downloaded ndk-sys v0.6.0+11769913
+  Downloaded base64 v0.22.1
+  Downloaded bit-set v0.11.1
+  Downloaded bit-vec v0.10.2
+  Downloaded cc v1.11.3
+  Downloaded cfb v0.14.0
+  Downloaded async-trait v0.1.92
+  Downloaded autocfg v1.5.1
+  Downloaded cfg_aliases v0.2.2
+  Downloaded base64 v0.23.1
+  Downloaded auto-launch v0.6.0
+  Downloaded chrono v0.4.45
+  Downloaded libc v0.2.191
+  Downloaded brotli-decompressor v6.4.0
+  Downloaded libdbus-sys v0.2.7
+  Downloaded brotli v9.1.3
+  Downloaded linux-raw-sys v0.12.1
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.27
+   Compiling quote v1.0.47
+   Compiling libc v0.2.191
+   Compiling siphasher v1.0.4
+   Compiling serde_core v1.0.229
+   Compiling fastrand v2.5.0
+   Compiling icu_properties_data v2.4.0
+   Compiling icu_normalizer_data v2.4.0
+   Compiling phf_shared v0.13.1
+   Compiling phf_generator v0.13.1
+   Compiling syn v3.0.10
+   Compiling syn v2.0.119
+   Compiling parking_lot_core v0.9.12
+   Compiling stable_deref_trait v1.2.1
+   Compiling zmij v1.0.23
+   Compiling cfg-if v1.0.5
+   Compiling serde v1.0.229
+   Compiling smallvec v1.16.6
+   Compiling memchr v2.8.3
+   Compiling synstructure v0.14.0
+   Compiling winnow v1.0.5
+   Compiling toml_datetime v1.1.3+spec-1.1.0
+   Compiling phf_macros v0.13.1
+   Compiling thiserror v2.0.21
+   Compiling serde_derive v1.0.229
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.4
+   Compiling zerovec-derive v0.11.7
+   Compiling displaydoc v0.2.7
+   Compiling zerofrom v0.1.8
+   Compiling toml_parser v1.1.7+spec-1.1.0
+   Compiling yoke v0.8.4
+   Compiling zerovec v0.11.9
+   Compiling typeid v1.0.3
+   Compiling equivalent v1.0.3
+   Compiling hashbrown v0.17.2
+   Compiling num-conv v0.2.2
+   Compiling time-core v0.1.9
+   Compiling tinystr v0.8.5
+   Compiling thiserror-impl v2.0.21
+   Compiling phf_codegen v0.13.1
+   Compiling indexmap v2.14.2
+   Compiling erased-serde v0.4.11
+   Compiling writeable v0.6.4
+   Compiling itoa v1.0.19
+   Compiling strsim v0.11.1
+   Compiling litemap v0.8.3
+   Compiling ident_case v1.0.1
+   Compiling utf_types v1.0.0
+   Compiling darling_core v0.24.1
+   Compiling icu_locale_core v2.4.0
+   Compiling utf8_iter v1.1.0
+   Compiling potential_utf v0.1.6
+   Compiling zerotrie v0.2.5
+   Compiling cssparser-macros v0.7.1
+   Compiling derive_more-impl v2.1.1
+   Compiling icu_collections v2.4.0
+   Compiling icu_provider v2.4.0
+   Compiling anyhow v1.0.105
+   Compiling scopeguard v1.2.0
+   Compiling new_debug_unreachable v1.0.6
+   Compiling lock_api v0.4.14
+   Compiling bytes v1.12.2
+   Compiling phf v0.13.1
+   Compiling string_cache_codegen v0.6.1
+   Compiling precomputed-hash v0.1.1
+   Compiling serde_json v1.0.154
+   Compiling getrandom v0.4.3
+   Compiling web_atoms v0.2.6
+   Compiling parking_lot v0.12.5
+   Compiling icu_normalizer v2.4.0
+   Compiling icu_properties v2.4.0
+   Compiling semver v1.0.28
+   Compiling darling_macro v0.24.1
+   Compiling darling v0.24.1
+   Compiling serde_with_macros v3.25.0
+   Compiling string_cache v0.9.0
+   Compiling serde_spanned v1.1.3
+   Compiling phf_shared v0.14.0
+   Compiling idna_adapter v1.2.2
+   Compiling toml_writer v1.2.0+spec-1.1.0
+   Compiling dtoa v1.0.11
+   Compiling percent-encoding v2.3.2
+   Compiling log v0.4.35
+   Compiling bitflags v2.13.2
+   Compiling autocfg v1.5.1
+   Compiling form_urlencoded v1.2.3
+   Compiling toml v1.2.3+spec-1.1.0
+   Compiling dtoa-short v0.3.5
+   Compiling idna v1.1.0
+   Compiling phf_generator v0.14.0
+   Compiling indexmap v1.9.3
+   Compiling uuid v1.29.3
+   Compiling tendril v0.5.1
+   Compiling selectors v0.38.0
+   Compiling aho-corasick v1.1.5
+   Compiling camino v1.2.6
+   Compiling regex-syntax v0.8.12
+   Compiling alloc-no-stdlib v3.0.0
+   Compiling alloc-stdlib v0.3.0
+   Compiling markup5ever v0.39.0
+   Compiling url v2.5.9
+   Compiling cssparser v0.37.0
+   Compiling regex-automata v0.4.19
+   Compiling derive_more v2.1.1
+   Compiling serde_derive_internals v0.29.1
+   Compiling servo_arc v0.4.3
+   Compiling schemars v0.8.22
+   Compiling fnv v1.0.7
+   Compiling hashbrown v0.12.3
+   Compiling version_check v0.9.5
+   Compiling powerfmt v0.2.1
+   Compiling rustc-hash v2.1.3
+   Compiling web-time v1.1.0
+   Compiling deranged v0.5.9
+   Compiling bit-vec v0.8.0
+   Compiling cfb v0.14.0
+   Compiling bit-set v0.8.0
+   Compiling regex v1.13.2
+   Compiling time v0.3.55
+   Compiling schemars_derive v0.8.22
+   Compiling html5ever v0.39.0
+   Compiling brotli-decompressor v6.4.0
+   Compiling jsonptr v0.7.1
+   Compiling cargo-platform v0.1.9
+   Compiling quick-xml v0.42.0
+   Compiling foldhash v0.2.0
+   Compiling dunce v1.0.5
+   Compiling dyn-clone v1.0.20
+   Compiling same-file v1.0.6
+   Compiling tauri-utils v2.10.4
+   Compiling base64 v0.23.1
+   Compiling walkdir v2.5.1
+   Compiling http v1.5.0
+   Compiling plist v1.10.4
+   Compiling dom_query v0.28.0
+   Compiling brotli v9.1.3
+   Compiling cargo_metadata v0.19.2
+   Compiling json-patch v4.2.0
+   Compiling serde-untagged v0.1.9
+   Compiling urlpattern v0.6.0
+   Compiling infer v0.22.0
+   Compiling serde_with v3.25.0
+   Compiling ctor v1.0.14
+   Compiling glob v0.3.4
+   Compiling pin-project-lite v0.2.18
+   Compiling futures-core v0.3.34
+   Compiling phf_macros v0.14.0
+   Compiling jni-sys-macros v0.4.1
+   Compiling jni-sys v0.3.1
+   Compiling phf v0.14.0
+   Compiling jni-sys v0.4.1
+   Compiling generic-array v0.14.7
+   Compiling phf_codegen v0.14.0
+   Compiling string_cache_codegen v0.11.2
+   Compiling simd-adler32 v0.3.10
+   Compiling thiserror v1.0.69
+   Compiling web_atoms v0.3.0
+   Compiling toml_edit v0.25.21+spec-1.1.0
+   Compiling time-macros v0.2.32
+   Compiling thiserror-impl v1.0.69
+   Compiling mio v1.2.5
+   Compiling socket2 v0.6.5
+   Compiling crc32fast v1.5.6
+   Compiling adler2 v2.0.1
+   Compiling typenum v1.20.1
+   Compiling heck v0.5.0
+   Compiling rustversion v1.0.23
+   Compiling tokio v1.54.1
+   Compiling hybrid-array v0.4.15
+   Compiling proc-macro-crate v3.5.0
+   Compiling string_cache v0.11.0
+   Compiling crossbeam-utils v0.8.23
+   Compiling num_enum_derive v0.7.6
+   Compiling miniz_oxide v0.9.1
+   Compiling http-body v1.1.0
+   Compiling cookie v0.18.3
+   Compiling combine v4.6.9
+   Compiling httparse v1.10.1
+   Compiling raw-window-handle v0.6.2
+   Compiling slab v0.4.12
+   Compiling futures-task v0.3.34
+   Compiling cesu8 v1.1.0
+   Compiling futures-util v0.3.34
+   Compiling jni v0.21.1
+   Compiling markup5ever v0.40.0
+   Compiling flate2 v1.1.11
+   Compiling num_enum v0.7.6
+   Compiling cssparser v0.38.0
+   Compiling crypto-common v0.2.2
+   Compiling block-buffer v0.12.1
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling miniz_oxide v0.8.9
+   Compiling ndk-sys v0.6.0+11769913
+   Compiling fdeflate v0.3.7
+   Compiling dpi v0.1.2
+   Compiling servo_arc v0.5.0
+   Compiling try-lock v0.2.5
+   Compiling once_cell v1.21.4
+   Compiling bit-vec v0.10.2
+   Compiling tower-service v0.3.3
+   Compiling const-oid v0.10.3
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.15
+   Compiling digest v0.11.3
+   Compiling cc v1.11.3
+   Compiling bit-set v0.11.1
+   Compiling selectors v0.41.0
+   Compiling tracing-core v0.1.36
+   Compiling want v0.3.2
+   Compiling ndk v0.9.0
+   Compiling png v0.18.1
+   Compiling digest v0.10.7
+   Compiling crossbeam-channel v0.5.17
+   Compiling html5ever v0.40.1
+   Compiling tauri v2.12.7
+   Compiling sync_wrapper v1.0.2
+   Compiling rustc_version v0.4.1
+   Compiling tao-macros v0.1.4
+   Compiling cpufeatures v0.2.17
+   Compiling cpufeatures v0.3.1
+   Compiling wry v0.57.4
+   Compiling tauri-runtime v2.12.4
+   Compiling option-ext v0.2.0
+   Compiling byteorder v1.5.0
+   Compiling atomic-waker v1.1.2
+   Compiling tower-layer v0.3.3
+   Compiling hyper v1.13.0
+   Compiling tower v0.5.3
+   Compiling ico v0.6.0
+   Compiling dom_query v0.30.0
+   Compiling dirs-sys v0.5.0
+   Compiling sha2 v0.11.1
+   Compiling sha2 v0.10.9
+   Compiling embed-resource v3.0.12
+   Compiling tracing v0.1.44
+   Compiling tauri-plugin v2.7.4
+   Compiling futures-channel v0.3.34
+   Compiling ndk-context v0.1.1
+   Compiling getrandom v0.3.4
+   Compiling rand_core v0.10.1
+   Compiling futures-sink v0.3.34
+   Compiling ipnet v2.12.2
+   Compiling tauri-runtime-wry v2.12.5
+   Compiling tokio-util v0.7.20
+   Compiling hyper-util v0.1.21
+   Compiling tao v0.37.3
+   Compiling tauri-plugin-notification v2.8.1
+   Compiling tauri-winres v0.3.7
+   Compiling tauri-codegen v2.7.6
+   Compiling dirs v7.0.0
+   Compiling tower-http v0.6.11
+   Compiling http-body-util v0.1.5
+   Compiling cargo_toml v1.0.1
+   Compiling serialize-to-javascript-impl v0.1.2
+   Compiling static_vcruntime v3.0.0
+   Compiling tauri-build v2.7.6
+   Compiling serialize-to-javascript v0.1.2
+   Compiling reqwest v0.13.5
+   Compiling tauri-macros v2.7.6
+   Compiling chacha20 v0.10.2
+   Compiling serde_repr v0.1.21
+   Compiling mime v0.3.18
+   Compiling rand v0.10.4
+   Compiling anime-universe v2.25.0 (/home/runner/work/AniTracK/AniTracK/src-tauri)
+warning: unreachable pattern
+   --> src/lib.rs:576:17
+    |
+576 |                 Ok(_) | Err(_) => query_os_permission_status(&app_clone),
+    |                 ^^^^^ no value can reach this
+    |
+note: multiple earlier patterns match some of the same values
+   --> src/lib.rs:576:17
+    |
+571 |                 Ok(PermissionState::Granted) => "granted".to_string(),
+    |                 ---------------------------- matches some of the same values
+572 |                 Ok(PermissionState::Denied) => "denied".to_string(),
+    |                 --------------------------- matches some of the same values
+573 |                 Ok(PermissionState::Prompt) | Ok(PermissionState::PromptWithRationale) => {
+    |                 ---------------------------   ---------------------------------------- matches some of the same values
+    |                 |
+    |                 matches some of the same values
+...
+576 |                 Ok(_) | Err(_) => query_os_permission_status(&app_clone),
+    |                 ^^^^^ collectively making this unreachable
+    = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
+
+warning: unreachable pattern
+   --> src/lib.rs:391:13
+    |
+391 |             Ok(_) | Err(_) => "prompt".to_string(),
+    |             ^^^^^ no value can reach this
+    |
+note: multiple earlier patterns match some of the same values
+   --> src/lib.rs:391:13
+    |
+386 |             Ok(PermissionState::Granted) => "granted".to_string(),
+    |             ---------------------------- matches some of the same values
+387 |             Ok(PermissionState::Denied) => "denied".to_string(),
+    |             --------------------------- matches some of the same values
+388 |             Ok(PermissionState::Prompt) | Ok(PermissionState::PromptWithRationale) => {
+    |             ---------------------------   ---------------------------------------- matches some of the same values
+    |             |
+    |             matches some of the same values
+...
+391 |             Ok(_) | Err(_) => "prompt".to_string(),
+    |             ^^^^^ collectively making this unreachable
+
+warning: variable does not need to be mutable
+    --> src/lib.rs:1037:9
+     |
+1037 |     let mut builder = tauri::Builder::default().plugin(tauri_plugin_notification::init());
+     |         ----^^^^^^^
+     |         |
+     |         help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `APP_AUMID` is never used
+  --> src/lib.rs:12:7
+   |
+12 | const APP_AUMID: &str = "com.animeuniverse.app";
+   |       ^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `anime-universe` (lib) generated 4 warnings (run `cargo fix --lib -p anime-universe` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 2m 14s
+        Info symlinking lib "/home/runner/work/AniTracK/AniTracK/src-tauri/target/aarch64-linux-android/release/libanime_universe_lib.so" in jniLibs dir "/home/runner/work/AniTracK/AniTracK/src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a"
+        Info "/home/runner/work/AniTracK/AniTracK/src-tauri/target/aarch64-linux-android/release/libanime_universe_lib.so" requires shared lib "libandroid.so"
+        Info "/home/runner/work/AniTracK/AniTracK/src-tauri/target/aarch64-linux-android/release/libanime_universe_lib.so" requires shared lib "libdl.so"
+        Info "/home/runner/work/AniTracK/AniTracK/src-tauri/target/aarch64-linux-android/release/libanime_universe_lib.so" requires shared lib "liblog.so"
+        Info "/home/runner/work/AniTracK/AniTracK/src-tauri/target/aarch64-linux-android/release/libanime_universe_lib.so" requires shared lib "libm.so"
+        Info "/home/runner/work/AniTracK/AniTracK/src-tauri/target/aarch64-linux-android/release/libanime_universe_lib.so" requires shared lib "libc.so"
+        Info symlink at "/home/runner/work/AniTracK/AniTracK/src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a/libanime_universe_lib.so" points to "/home/runner/work/AniTracK/AniTracK/src-tauri/target/aarch64-linux-android/release/libanime_universe_lib.so"
+Fetching distribution.
+Downloading https://services.gradle.org/distributions/gradle-9.6.1-bin.zip
+.............10%.............20%..............30%.............40%..............50%.............60%.............70%..............80%.............90%..............100%
+WARNING: The option setting 'android.enableR8.fullMode=false' is deprecated.
+The current default is 'true'.
+It will be removed in version 10.0 of the Android Gradle plugin.
+Add android.sync.suppressAgpWarnings=UNSUPPORTED_PROJECT_OPTION_USE to the gradle.properties file to suppress this warning.
+WARNING: The option setting 'android.proguard.failOnMissingFiles=false' is deprecated.
+The current default is 'true'.
+It will be removed in version 10.0 of the Android Gradle plugin.
+Add android.sync.suppressAgpWarnings=UNSUPPORTED_PROJECT_OPTION_USE to the gradle.properties file to suppress this warning.
+WARNING: The option setting 'android.builtInKotlin=false' is deprecated.
+The current default is 'true'.
+It will be removed in version 10.0 of the Android Gradle plugin.
+Add android.sync.suppressAgpWarnings=UNSUPPORTED_PROJECT_OPTION_USE to the gradle.properties file to suppress this warning.
+WARNING: The option setting 'android.newDsl=false' is deprecated.
+The current default is 'true'.
+It will be removed in version 10.0 of the Android Gradle plugin.
+Add android.sync.suppressAgpWarnings=UNSUPPORTED_PROJECT_OPTION_USE to the gradle.properties file to suppress this warning.
+WARNING: API 'applicationVariants' is obsolete and has been replaced with 'AndroidComponentsExtension'.
+It will be removed in version 10.0 of the Android Gradle plugin.
+The legacy variant API is disabled by default in AGP 9.0, but can be re-enabled by adding 
+    android.newDsl=false
+to this project's gradle.properties file.
+For more information, see http://developer.android.com/build/r/new-dsl.
+
+To determine what is calling applicationVariants, use -Pandroid.debug.obsoleteApi=true on the command line to display more information.
+Add android.sync.suppressAgpWarnings=DEPRECATED_DSL to the gradle.properties file to suppress this warning.
+WARNING: API 'testVariants' is obsolete and has been replaced with 'AndroidComponentsExtension'.
+It will be removed in version 10.0 of the Android Gradle plugin.
+The legacy variant API is disabled by default in AGP 9.0, but can be re-enabled by adding 
+    android.newDsl=false
+to this project's gradle.properties file.
+For more information, see http://developer.android.com/build/r/new-dsl.
+
+To determine what is calling testVariants, use -Pandroid.debug.obsoleteApi=true on the command line to display more information.
+Add android.sync.suppressAgpWarnings=DEPRECATED_DSL to the gradle.properties file to suppress this warning.
+WARNING: API 'unitTestVariants' is obsolete and has been replaced with 'AndroidComponentsExtension'.
+It will be removed in version 10.0 of the Android Gradle plugin.
+The legacy variant API is disabled by default in AGP 9.0, but can be re-enabled by adding 
+    android.newDsl=false
+to this project's gradle.properties file.
+For more information, see http://developer.android.com/build/r/new-dsl.
+
+To determine what is calling unitTestVariants, use -Pandroid.debug.obsoleteApi=true on the command line to display more information.
+Add android.sync.suppressAgpWarnings=DEPRECATED_DSL to the gradle.properties file to suppress this warning.
+w: file:///home/runner/work/AniTracK/AniTracK/src-tauri/gen/android/app/build.gradle.kts:17:1: 'fun Project.android(configure: Action<BaseAppModuleExtension>): Unit' is deprecated. Replaced by com.android.build.api.dsl.ApplicationExtension.
+This class is not used for the public extensions in AGP when android.newDsl=true, which is the default in AGP 9.0, and will be removed in AGP 10.0.
+WARNING: API 'libraryVariants' is obsolete and has been replaced with 'AndroidComponentsExtension'.
+It will be removed in version 10.0 of the Android Gradle plugin.
+The legacy variant API is disabled by default in AGP 9.0, but can be re-enabled by adding 
+    android.newDsl=false
+to this project's gradle.properties file.
+For more information, see http://developer.android.com/build/r/new-dsl.
+
+To determine what is calling libraryVariants, use -Pandroid.debug.obsoleteApi=true on the command line to display more information.
+Add android.sync.suppressAgpWarnings=DEPRECATED_DSL to the gradle.properties file to suppress this warning.
+w: file:///home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-2.12.7/mobile/android/build.gradle.kts:8:1: 'fun Project.android(configure: Action<LibraryExtension>): Unit' is deprecated. Replaced by com.android.build.api.dsl.LibraryExtension.
+This class is not used for the public extensions in AGP when android.newDsl=true, which is the default in AGP 9.0, and will be removed in AGP 10.0.
+w: file:///home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-plugin-notification-2.8.1/android/build.gradle.kts:8:1: 'fun Project.android(configure: Action<LibraryExtension>): Unit' is deprecated. Replaced by com.android.build.api.dsl.LibraryExtension.
+This class is not used for the public extensions in AGP when android.newDsl=true, which is the default in AGP 9.0, and will be removed in AGP 10.0.
+
+> anime-universe@2.25.0 tauri
+> tauri android android-studio-script --release --target aarch64
+
+        Info connection; remote_addr=127.0.0.1:46164 conn_id=0
+        Info Using installed NDK: /usr/local/lib/android/sdk/ndk/27.2.12479018
+   Compiling wry v0.57.4
+   Compiling tauri v2.12.7
+   Compiling tauri-plugin-notification v2.8.1
+   Compiling anime-universe v2.25.0 (/home/runner/work/AniTracK/AniTracK/src-tauri)
+   Compiling tauri-runtime-wry v2.12.5
+warning: unreachable pattern
+   --> src/lib.rs:576:17
+    |
+576 |                 Ok(_) | Err(_) => query_os_permission_status(&app_clone),
+    |                 ^^^^^ no value can reach this
+    |
+note: multiple earlier patterns match some of the same values
+   --> src/lib.rs:576:17
+    |
+571 |                 Ok(PermissionState::Granted) => "granted".to_string(),
+    |                 ---------------------------- matches some of the same values
+572 |                 Ok(PermissionState::Denied) => "denied".to_string(),
+    |                 --------------------------- matches some of the same values
+573 |                 Ok(PermissionState::Prompt) | Ok(PermissionState::PromptWithRationale) => {
+    |                 ---------------------------   ---------------------------------------- matches some of the same values
+    |                 |
+    |                 matches some of the same values
+...
+576 |                 Ok(_) | Err(_) => query_os_permission_status(&app_clone),
+    |                 ^^^^^ collectively making this unreachable
+    = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
+
+warning: unreachable pattern
+   --> src/lib.rs:391:13
+    |
+391 |             Ok(_) | Err(_) => "prompt".to_string(),
+    |             ^^^^^ no value can reach this
+    |
+note: multiple earlier patterns match some of the same values
+   --> src/lib.rs:391:13
+    |
+386 |             Ok(PermissionState::Granted) => "granted".to_string(),
+    |             ---------------------------- matches some of the same values
+387 |             Ok(PermissionState::Denied) => "denied".to_string(),
+    |             --------------------------- matches some of the same values
+388 |             Ok(PermissionState::Prompt) | Ok(PermissionState::PromptWithRationale) => {
+    |             ---------------------------   ---------------------------------------- matches some of the same values
+    |             |
+    |             matches some of the same values
+...
+391 |             Ok(_) | Err(_) => "prompt".to_string(),
+    |             ^^^^^ collectively making this unreachable
+
+warning: variable does not need to be mutable
+    --> src/lib.rs:1037:9
+     |
+1037 |     let mut builder = tauri::Builder::default().plugin(tauri_plugin_notification::init());
+     |         ----^^^^^^^
+     |         |
+     |         help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `APP_AUMID` is never used
+  --> src/lib.rs:12:7
+   |
+12 | const APP_AUMID: &str = "com.animeuniverse.app";
+   |       ^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+w: file:///home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-2.12.7/mobile/android/src/main/java/app/tauri/AppPlugin.kt:35:37 'fun onBackPressed(): Unit' is deprecated. Deprecated in Java.
+w: file:///home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-2.12.7/mobile/android/src/main/java/app/tauri/plugin/Plugin.kt:125:5 'fun onDestroy(): Unit' is deprecated. use onDestroy(activity: AppCompatActivity) instead.
+w: file:///home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-2.12.7/mobile/android/src/main/java/app/tauri/plugin/Plugin.kt:130:5 'fun onRestart(): Unit' is deprecated. use onRestart(activity: AppCompatActivity) instead.
+w: file:///home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-2.12.7/mobile/android/src/main/java/app/tauri/plugin/Plugin.kt:135:5 'fun onPause(): Unit' is deprecated. use onPause(activity: AppCompatActivity) instead.
+w: file:///home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-2.12.7/mobile/android/src/main/java/app/tauri/plugin/Plugin.kt:140:5 'fun onResume(): Unit' is deprecated. use onResume(activity: AppCompatActivity) instead.
+w: file:///home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-2.12.7/mobile/android/src/main/java/app/tauri/plugin/Plugin.kt:145:5 'fun onStop(): Unit' is deprecated. use onStop(activity: AppCompatActivity) instead.
+w: file:///home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-2.12.7/mobile/android/src/main/java/app/tauri/plugin/PluginHandle.kt:159:22 Java type mismatch: inferred type is 'Class<in CapturedType(*)!>?', but 'Class<*>' was expected.
+w: file:///home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-plugin-notification-2.8.1/android/src/main/java/NotificationSchedule.kt:99:7 'when' is exhaustive so 'else' is redundant here.
+w: file:///home/runner/work/AniTracK/AniTracK/src-tauri/gen/android/app/src/main/java/com/animeuniverse/app/generated/RustWebView.kt:26:18 'var databaseEnabled: Boolean' is deprecated. Deprecated in Java.
+w: file:///home/runner/work/AniTracK/AniTracK/src-tauri/gen/android/app/src/main/java/com/animeuniverse/app/generated/WryActivity.kt:73:46 'fun onBackPressed(): Unit' is deprecated. This method has been deprecated in favor of using the
+      {@link OnBackPressedDispatcher} via {@link #getOnBackPressedDispatcher()}.
+      The OnBackPressedDispatcher controls how back button events are dispatched
+      to one or more {@link OnBackPressedCallback} objects.
+warning: `anime-universe` (lib) generated 4 warnings (run `cargo fix --lib -p anime-universe` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 1m 18s
+        Info symlinking lib "/home/runner/work/AniTracK/AniTracK/src-tauri/target/aarch64-linux-android/release/libanime_universe_lib.so" in jniLibs dir "/home/runner/work/AniTracK/AniTracK/src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a"
+        Info "/home/runner/work/AniTracK/AniTracK/src-tauri/target/aarch64-linux-android/release/libanime_universe_lib.so" requires shared lib "libandroid.so"
+        Info "/home/runner/work/AniTracK/AniTracK/src-tauri/target/aarch64-linux-android/release/libanime_universe_lib.so" requires shared lib "libdl.so"
+        Info "/home/runner/work/AniTracK/AniTracK/src-tauri/target/aarch64-linux-android/release/libanime_universe_lib.so" requires shared lib "liblog.so"
+        Info "/home/runner/work/AniTracK/AniTracK/src-tauri/target/aarch64-linux-android/release/libanime_universe_lib.so" requires shared lib "libm.so"
+        Info "/home/runner/work/AniTracK/AniTracK/src-tauri/target/aarch64-linux-android/release/libanime_universe_lib.so" requires shared lib "libc.so"
+[CXX1104] NDK from ndk.dir at /usr/local/lib/android/sdk/ndk/27.2.12479018 had version [27.2.12479018] which disagrees with android.ndkVersion [28.2.13676358]
+ERROR: Missing classes detected while running R8. Please add the missing classes or apply additional keep rules that are generated in /home/runner/work/AniTracK/AniTracK/src-tauri/gen/android/app/build/outputs/mapping/universalRelease/missing_rules.txt.
+ERROR: R8: Missing class java.beans.ConstructorProperties (referenced from: void com.fasterxml.jackson.databind.ext.Java7SupportImpl.<init>() and 2 other contexts)
+Missing class java.beans.Transient (referenced from: void com.fasterxml.jackson.databind.ext.Java7SupportImpl.<init>() and 1 other context)
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':app:minifyUniversalReleaseWithR8' (registered by plugin 'com.android.internal.application').
+> A failure occurred while executing com.android.build.gradle.internal.tasks.R8Task$R8Runnable
+   > Compilation failed to complete
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights from a Build Scan (powered by Develocity).
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 3m 19s
+Configuration cache entry stored.
+failed to build APK: Failed to assemble APK with Io(BeforeSpawn(<closure>), Io(StderrFile(OwnedFd { fd: 24 }), Io(StdoutFile(OwnedFd { fd: 23 }), Io(StdinFile(OwnedFd { fd: 22 }), Io(Env("CARGO_HOME", "/home/runner/.cargo"), Io(Env("CARGO_TARGET_I686_LINUX_ANDROID_LINKER", "/usr/local/lib/android/sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android24-clang"), Io(Env("TAURI_CLI_VERBOSITY", "0"), Io(Env("NDK_HOME", "/usr/local/lib/android/sdk/ndk/27.2.12479018"), Io(Env("CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER", "/usr/local/lib/android/sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android24-clang"), Io(Env("CARGO_TARGET_I686_LINUX_ANDROID_RUSTFLAGS", "-Clink-arg=-landroid -Clink-arg=-llog -Clink-arg=-lOpenSLES"), Io(Env("CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS", "-Clink-arg=-landroid -Clink-arg=-llog -Clink-arg=-lOpenSLES"), Io(Env("WRY_ANDROID_KOTLIN_FILES_OUT_DIR", "/home/runner/work/AniTracK/AniTracK/src-tauri/gen/android/app/src/main/java/com/animeuniverse/app/generated"), Io(Env("CARGO_INCREMENTAL", "0"), Io(Env("TAURI_ANDROID_PROJECT_PATH", "/home/runner/work/AniTracK/AniTracK/src-tauri/gen/android"), Io(Env("WRY_ANDROID_LIBRARY", "anime_universe_lib"), Io(Env("PATH", "/home/runner/work/AniTracK/AniTracK/node_modules/.bin:/home/runner/work/AniTracK/AniTracK/node_modules/.bin:/home/runner/work/AniTracK/node_modules/.bin:/home/runner/work/node_modules/.bin:/home/runner/node_modules/.bin:/home/node_modules/.bin:/node_modules/.bin:/opt/hostedtoolcache/node/20.20.2/x64/lib/node_modules/npm/node_modules/@npmcli/run-script/lib/node-gyp-bin:/opt/hostedtoolcache/Java_Temurin-Hotspot_jdk/17.0.21-9/x64/bin:/opt/hostedtoolcache/node/20.20.2/x64/bin:/snap/bin:/home/runner/.local/bin:/opt/pipx_bin:/home/runner/.cargo/bin:/home/runner/.config/composer/vendor/bin:/usr/local/.ghcup/bin:/home/runner/.dotnet/tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin"), Io(Env("RUST_LOG_STYLE", "always"), Io(Env("TAURI_ANDROID_PACKAGE_UNESCAPED", "com.animeuniverse.app"), Io(Env("WRY_ANDROID_PACKAGE", "com.animeuniverse.app"), Io(Env("CARGO_TERM_COLOR", "always"), Io(Env("ANDROID_HOME", "/usr/local/lib/android/sdk"), Io(Env("CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER", "/usr/local/lib/android/sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi24-clang"), Io(Env("CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS", "-Clink-arg=-landroid -Clink-arg=-llog -Clink-arg=-lOpenSLES"), Io(Env("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", "/usr/local/lib/android/sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"), Io(Env("HOME", "/home/runner"), Io(Env("CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS", "-Clink-arg=-landroid -Clink-arg=-llog -Clink-arg=-lOpenSLES"), Cmd(["/home/runner/work/AniTracK/AniTracK/src-tauri/gen/android/gradlew", "--project-dir", "/home/runner/work/AniTracK/AniTracK/src-tauri/gen/android"]))))))))))))))))))))))))))): command ["/home/runner/work/AniTracK/AniTracK/src-tauri/gen/android/gradlew", "--project-dir", "/home/runner/work/AniTracK/AniTracK/src-tauri/gen/android"] exited with code 1
+       Error failed to build APK: Failed to assemble APK with Io(BeforeSpawn(<closure>), Io(StderrFile(OwnedFd { fd: 24 }), Io(StdoutFile(OwnedFd { fd: 23 }), Io(StdinFile(OwnedFd { fd: 22 }), Io(Env("CARGO_HOME", "/home/runner/.cargo"), Io(Env("CARGO_TARGET_I686_LINUX_ANDROID_LINKER", "/usr/local/lib/android/sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android24-clang"), Io(Env("TAURI_CLI_VERBOSITY", "0"), Io(Env("NDK_HOME", "/usr/local/lib/android/sdk/ndk/27.2.12479018"), Io(Env("CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER", "/usr/local/lib/android/sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android24-clang"), Io(Env("CARGO_TARGET_I686_LINUX_ANDROID_RUSTFLAGS", "-Clink-arg=-landroid -Clink-arg=-llog -Clink-arg=-lOpenSLES"), Io(Env("CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS", "-Clink-arg=-landroid -Clink-arg=-llog -Clink-arg=-lOpenSLES"), Io(Env("WRY_ANDROID_KOTLIN_FILES_OUT_DIR", "/home/runner/work/AniTracK/AniTracK/src-tauri/gen/android/app/src/main/java/com/animeuniverse/app/generated"), Io(Env("CARGO_INCREMENTAL", "0"), Io(Env("TAURI_ANDROID_PROJECT_PATH", "/home/runner/work/AniTracK/AniTracK/src-tauri/gen/android"), Io(Env("WRY_ANDROID_LIBRARY", "anime_universe_lib"), Io(Env("PATH", "/home/runner/work/AniTracK/AniTracK/node_modules/.bin:/home/runner/work/AniTracK/AniTracK/node_modules/.bin:/home/runner/work/AniTracK/node_modules/.bin:/home/runner/work/node_modules/.bin:/home/runner/node_modules/.bin:/home/node_modules/.bin:/node_modules/.bin:/opt/hostedtoolcache/node/20.20.2/x64/lib/node_modules/npm/node_modules/@npmcli/run-script/lib/node-gyp-bin:/opt/hostedtoolcache/Java_Temurin-Hotspot_jdk/17.0.21-9/x64/bin:/opt/hostedtoolcache/node/20.20.2/x64/bin:/snap/bin:/home/runner/.local/bin:/opt/pipx_bin:/home/runner/.cargo/bin:/home/runner/.config/composer/vendor/bin:/usr/local/.ghcup/bin:/home/runner/.dotnet/tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin"), Io(Env("RUST_LOG_STYLE", "always"), Io(Env("TAURI_ANDROID_PACKAGE_UNESCAPED", "com.animeuniverse.app"), Io(Env("WRY_ANDROID_PACKAGE", "com.animeuniverse.app"), Io(Env("CARGO_TERM_COLOR", "always"), Io(Env("ANDROID_HOME", "/usr/local/lib/android/sdk"), Io(Env("CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER", "/usr/local/lib/android/sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi24-clang"), Io(Env("CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS", "-Clink-arg=-landroid -Clink-arg=-llog -Clink-arg=-lOpenSLES"), Io(Env("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", "/usr/local/lib/android/sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"), Io(Env("HOME", "/home/runner"), Io(Env("CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS", "-Clink-arg=-landroid -Clink-arg=-llog -Clink-arg=-lOpenSLES"), Cmd(["/home/runner/work/AniTracK/AniTracK/src-tauri/gen/android/gradlew", "--project-dir", "/home/runner/work/AniTracK/AniTracK/src-tauri/gen/android"]))))))))))))))))))))))))))): command ["/home/runner/work/AniTracK/AniTracK/src-tauri/gen/android/gradlew", "--project-dir", "/home/runner/work/AniTracK/AniTracK/src-tauri/gen/android"] exited with code 1
+Process completed with exit code 1.

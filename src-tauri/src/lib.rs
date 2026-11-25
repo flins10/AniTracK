@@ -9,6 +9,7 @@ use tauri::plugin::PermissionState;
 #[allow(unused_imports)]
 use tauri_plugin_notification::NotificationExt;
 
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 const APP_AUMID: &str = "com.animeuniverse.app";
 const APP_DISPLAY_NAME: &str = "Anime Universe";
 
@@ -388,7 +389,7 @@ fn query_os_permission_status(app: &AppHandle) -> String {
             Ok(PermissionState::Prompt) | Ok(PermissionState::PromptWithRationale) => {
                 "prompt".to_string()
             }
-            Ok(_) | Err(_) => "prompt".to_string(),
+            Err(_) => "prompt".to_string(),
         }
     }
 }
@@ -573,7 +574,7 @@ async fn request_os_notification_permission(app: AppHandle) -> Result<String, St
                 Ok(PermissionState::Prompt) | Ok(PermissionState::PromptWithRationale) => {
                     "prompt".to_string()
                 }
-                Ok(_) | Err(_) => query_os_permission_status(&app_clone),
+                Err(_) => query_os_permission_status(&app_clone),
             }
         }
     })
@@ -1034,6 +1035,7 @@ fn setup_desktop_tray_and_autostart(app: &mut tauri::App) -> Result<(), Box<dyn 
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg_attr(not(desktop), allow(unused_mut))]
     let mut builder = tauri::Builder::default().plugin(tauri_plugin_notification::init());
 
     #[cfg(desktop)]
