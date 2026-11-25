@@ -4198,10 +4198,8 @@ svg {
   align-items: center;
   justify-content: center;
   padding: 20px;
-  background: rgba(6, 7, 11, 0.78);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  animation: notifPopupBackdropIn 260ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  background: rgba(6, 7, 11, 0.86);
+  animation: notifPopupBackdropIn 200ms ease-out forwards;
 }
 
 @keyframes notifPopupBackdropIn {
@@ -4216,24 +4214,27 @@ svg {
 .notif-perm-popup-card {
   position: relative;
   width: 100%;
-  max-width: 410px;
-  padding: 32px 26px 26px;
-  border-radius: 28px;
-  background: linear-gradient(165deg, rgba(24, 27, 36, 0.98) 0%, rgba(15, 17, 23, 0.99) 100%);
-  border: 1px solid rgba(232, 200, 143, 0.28);
+  max-width: 400px;
+  padding: 30px 24px 24px;
+  border-radius: 26px;
+  background: linear-gradient(165deg, #181B24 0%, #0F1117 100%);
+  border: 1px solid rgba(232, 200, 143, 0.32);
   box-shadow:
-    0 28px 72px rgba(0, 0, 0, 0.72),
-    0 0 0 1px rgba(255, 255, 255, 0.04) inset,
-    0 12px 36px rgba(232, 200, 143, 0.08);
+    0 24px 64px rgba(0, 0, 0, 0.78),
+    0 0 0 1px rgba(255, 255, 255, 0.05) inset;
   text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
   overflow: hidden;
-  animation: notifPopupCardIn 340ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  animation: notifPopupCardIn 240ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
 
 @keyframes notifPopupCardIn {
   from {
     opacity: 0;
-    transform: translateY(22px) scale(0.95);
+    transform: translateY(14px) scale(0.97);
   }
   to {
     opacity: 1;
@@ -4249,43 +4250,46 @@ svg {
   width: 240px;
   height: 160px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(232, 200, 143, 0.22) 0%, rgba(232, 200, 143, 0) 72%);
+  background: radial-gradient(circle, rgba(232, 200, 143, 0.2) 0%, rgba(232, 200, 143, 0) 72%);
   pointer-events: none;
 }
 
 .notif-perm-bell-stage {
   position: relative;
-  width: 96px;
-  height: 96px;
-  margin: 0 auto 20px;
+  width: 88px;
+  height: 88px;
+  margin: 0 auto 6px;
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
 }
 
 .notif-perm-bell-ring {
   position: absolute;
   inset: 0;
   border-radius: 50%;
-  border: 1.5px solid rgba(232, 200, 143, 0.32);
-  animation: notifBellPulse 2.8s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+  border: 1.5px solid rgba(232, 200, 143, 0.28);
+  pointer-events: none;
+  animation: notifBellPulse 3s cubic-bezier(0.16, 1, 0.3, 1) infinite;
 }
 
+.notif-perm-bell-ring.ring-2,
 .notif-perm-bell-ring-2 {
-  animation-delay: 1.4s;
+  animation-delay: 1.5s;
 }
 
 @keyframes notifBellPulse {
   0% {
-    transform: scale(0.84);
-    opacity: 0.75;
+    transform: scale(0.86);
+    opacity: 0.65;
   }
-  70% {
-    transform: scale(1.24);
+  75% {
+    transform: scale(1.22);
     opacity: 0;
   }
   100% {
-    transform: scale(1.24);
+    transform: scale(1.22);
     opacity: 0;
   }
 }
@@ -4293,22 +4297,27 @@ svg {
 .notif-perm-bell-circle {
   position: relative;
   z-index: 2;
-  width: 74px;
-  height: 74px;
+  width: 68px;
+  height: 68px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
   background: radial-gradient(circle at 30% 25%, rgba(232, 200, 143, 0.26), rgba(232, 200, 143, 0.08) 70%);
-  border: 1px solid rgba(232, 200, 143, 0.42);
+  border: 1px solid rgba(232, 200, 143, 0.44);
   box-shadow:
-    0 10px 26px rgba(0, 0, 0, 0.45),
+    0 10px 24px rgba(0, 0, 0, 0.45),
     inset 0 1px 0 rgba(255, 255, 255, 0.16);
 }
 
 .notif-perm-bell-svg {
+  width: 34px;
+  height: 34px;
+  color: #E8C88F;
+  display: block;
+  flex-shrink: 0;
   transform-origin: 50% 18%;
-  animation: notifBellSwing 3.4s ease-in-out infinite;
+  animation: notifBellSwing 3.6s ease-in-out infinite;
 }
 
 @keyframes notifBellSwing {
@@ -4316,16 +4325,16 @@ svg {
     transform: rotate(0deg);
   }
   12% {
-    transform: rotate(12deg);
+    transform: rotate(10deg);
   }
   24% {
-    transform: rotate(-10deg);
+    transform: rotate(-8deg);
   }
   36% {
-    transform: rotate(6deg);
+    transform: rotate(5deg);
   }
   48% {
-    transform: rotate(-3deg);
+    transform: rotate(-2deg);
   }
   60% {
     transform: rotate(0deg);
@@ -4334,21 +4343,24 @@ svg {
 
 .notif-perm-bell-sparkle {
   position: absolute;
+  top: 4px;
+  right: 6px;
   z-index: 3;
   color: #E8C88F;
-  font-size: 13px;
+  font-size: 12px;
+  line-height: 1;
   pointer-events: none;
-  animation: notifSparkleFloat 2.6s ease-in-out infinite;
+  animation: notifSparkleFloat 2.8s ease-in-out infinite;
 }
 
 .notif-perm-bell-sparkle-1 {
-  top: 6px;
-  right: 8px;
+  top: 4px;
+  right: 6px;
 }
 
 .notif-perm-bell-sparkle-2 {
-  bottom: 10px;
-  left: 8px;
+  bottom: 8px;
+  left: 6px;
   font-size: 10px;
   animation-delay: 1.2s;
 }
@@ -4359,15 +4371,15 @@ svg {
     opacity: 0.65;
   }
   50% {
-    transform: translateY(-4px) scale(1.15);
+    transform: translateY(-3px) scale(1.12);
     opacity: 1;
   }
 }
 
 .notif-perm-title {
-  margin: 0 0 10px;
+  margin: 0;
   font-family: 'Cormorant Garamond', Georgia, serif;
-  font-size: 30px;
+  font-size: 28px;
   font-weight: 700;
   letter-spacing: 0.2px;
   color: var(--text-primary);
@@ -4375,20 +4387,21 @@ svg {
 }
 
 .notif-perm-desc {
-  margin: 0 auto 22px;
+  margin: 0 auto 6px;
   max-width: 340px;
-  font-size: 14px;
+  font-size: 13.5px;
   line-height: 1.55;
   color: var(--text-secondary);
 }
 
 .notif-perm-denied-box {
-  margin: 0 0 18px;
-  padding: 13px 15px;
+  width: 100%;
+  margin: 4px 0 6px;
+  padding: 12px 14px;
   border-radius: 16px;
   text-align: left;
-  background: rgba(245, 158, 11, 0.11);
-  border: 1px solid rgba(245, 158, 11, 0.36);
+  background: rgba(229, 115, 115, 0.1);
+  border: 1px solid rgba(229, 115, 115, 0.34);
 }
 
 .notif-perm-denied-title {
@@ -4405,9 +4418,11 @@ svg {
 }
 
 .notif-perm-actions {
+  width: 100%;
   display: flex;
   flex-direction: column;
   gap: 10px;
+  margin-top: 6px;
 }
 
 .notif-perm-btn-primary {

@@ -1,26 +1,198 @@
 package com.animeuniverse.app
 
+import android.Manifest
+import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
+import android.webkit.JavascriptInterface
+import android.webkit.WebView
+import androidx.core.app.ActivityCompat
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import org.json.JSONObject
 import java.io.File
 
 class MainActivity : TauriActivity() {
+    companion object {
+        private const val REQ_CODE_POST_NOTIFICATIONS = 7001
+        private const val PREFS_NAME = "anime_universe_notif_bridge"
+        private const val KEY_HAS_REQUESTED_ONCE = "has_requested_post_notifications_once"
+    }
+
+    private var activeWebView: WebView? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Ensure Android notification channel and background fallback worker are registered.
-        // Note: We do NOT force the Android OS permission dialog immediately on launch here;
-        // instead, the user sees the "Stay in the Loop!" first-time permission popup in-app,
-        // and clicking "Enable Notifications" invokes the native Android POST_NOTIFICATIONS dialog.
         AnimeNotifScheduler.schedulePeriodic(applicationContext)
         captureNotificationClickIntent(intent)
         refreshFcmPushTokenIfAvailable()
+    }
+
+    override fun onWebViewCreate(webView: WebView) {
+        super.onWebViewCreate(webView)
+        activeWebView = webView
+        runCatching {
+            webView.addJavascriptInterface(AnimeAndroidNotifBridge(this), "AnimeNativeBridge")
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         captureNotificationClickIntent(intent)
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQ_CODE_POST_NOTIFICATIONS) {
+            val status = resolveCurrentOsPermissionStatus()
+            notifyWebViewPermissionResult(status)
+        }
+    }
+
+    fun resolveCurrentOsPermissionStatus(): String {
+        AnimeNotifScheduler.ensureChannel(applicationContext)
+        val areEnabledInManager = runCatching {
+            NotificationManagerCompat.from(applicationContext).areNotificationsEnabled()
+        }.getOrDefault(false)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val runtimeGranted = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+
+            if (runtimeGranted && areEnabledInManager) {
+                return "granted"
+            }
+            val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val requestedBefore = prefs.getBoolean(KEY_HAS_REQUESTED_ONCE, false)
+            val showRationale = ActivityCompat.shouldShowRequestPermissionRationale(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            )
+            return if (!requestedBefore || showRationale) {
+                "prompt"
+            } else {
+                "denied"
+            }
+        } else {
+            return if (areEnabledInManager) "granted" else "denied"
+        }
+    }
+
+    fun triggerNativePermissionRequest() {
+        runOnUiThread {
+            AnimeNotifScheduler.ensureChannel(applicationContext)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val alreadyGranted = ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+
+                if (alreadyGranted) {
+                    val status = resolveCurrentOsPermissionStatus()
+                    notifyWebViewPermissionResult(status)
+                    return@runOnUiThread
+                }
+
+                val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                prefs.edit().putBoolean(KEY_HAS_REQUESTED_ONCE, true).apply()
+
+                ActivityCompat.requestPermissions(
+                    this,
+                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                    REQ_CODE_POST_NOTIFICATIONS
+                )
+            } else {
+                val status = resolveCurrentOsPermissionStatus()
+                notifyWebViewPermissionResult(status)
+            }
+        }
+    }
+
+    fun launchAppNotificationSettings(): Boolean {
+        return runCatching {
+            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                    putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            } else {
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.fromParts("package", packageName, null)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            }
+            startActivity(intent)
+            true
+        }.getOrElse {
+            runCatching {
+                val fallback = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.fromParts("package", packageName, null)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                startActivity(fallback)
+                true
+            }.getOrDefault(false)
+        }
+    }
+
+    fun postDirectLocalNotification(title: String, body: String): Boolean {
+        if (resolveCurrentOsPermissionStatus() != "granted") {
+            return false
+        }
+        return runCatching {
+            AnimeNotifScheduler.ensureChannel(applicationContext)
+            val launchIntent = (applicationContext.packageManager.getLaunchIntentForPackage(packageName)
+                ?: Intent(applicationContext, MainActivity::class.java)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                putExtra("notification_id", "local_${System.currentTimeMillis()}")
+                putExtra("target_screen", "notifications")
+            }
+            val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            val pendingIntent = PendingIntent.getActivity(
+                applicationContext,
+                (System.currentTimeMillis() % Int.MAX_VALUE).toInt(),
+                launchIntent,
+                flags
+            )
+            val cleanTitle = title.trim().ifEmpty { "Anime Universe" }
+            val cleanBody = body.trim().ifEmpty { "You have a new notification." }
+            val notification = NotificationCompat.Builder(applicationContext, AnimeNotifScheduler.CHANNEL_ID)
+                .setSmallIcon(applicationContext.applicationInfo.icon)
+                .setContentTitle(cleanTitle)
+                .setContentText(cleanBody)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(cleanBody))
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true)
+                .setContentIntent(pendingIntent)
+                .build()
+
+            NotificationManagerCompat.from(applicationContext)
+                .notify((System.currentTimeMillis() % Int.MAX_VALUE).toInt(), notification)
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun notifyWebViewPermissionResult(status: String) {
+        val safeStatus = status.replace("'", "")
+        runOnUiThread {
+            activeWebView?.evaluateJavascript(
+                "window.__onAnimeNativeNotifPermResult && window.__onAnimeNativeNotifPermResult('$safeStatus');",
+                null
+            )
+        }
     }
 
     private fun captureNotificationClickIntent(incomingIntent: Intent?) {
@@ -47,11 +219,6 @@ class MainActivity : TauriActivity() {
         }
     }
 
-    /**
-     * Retrieves the device FCM registration token via reflection if Firebase Messaging
-     * is configured in the Android build, writing it to `device_push_token.json` so the
-     * Tauri Rust bridge and Supabase `register-device` Edge Function can sync it automatically.
-     */
     private fun refreshFcmPushTokenIfAvailable() {
         runCatching {
             val fcmClass = Class.forName("com.google.firebase.messaging.FirebaseMessaging")
@@ -85,5 +252,27 @@ class MainActivity : TauriActivity() {
             val addOnCompleteMethod = taskObj.javaClass.getMethod("addOnCompleteListener", listenerClass)
             addOnCompleteMethod.invoke(taskObj, proxy)
         }
+    }
+}
+
+class AnimeAndroidNotifBridge(private val activity: MainActivity) {
+    @JavascriptInterface
+    fun getPermissionStatus(): String {
+        return activity.resolveCurrentOsPermissionStatus()
+    }
+
+    @JavascriptInterface
+    fun requestPermission() {
+        activity.triggerNativePermissionRequest()
+    }
+
+    @JavascriptInterface
+    fun openNotificationSettings(): Boolean {
+        return activity.launchAppNotificationSettings()
+    }
+
+    @JavascriptInterface
+    fun sendLocalNotification(title: String, body: String): Boolean {
+        return activity.postDirectLocalNotification(title, body)
     }
 }

@@ -223,6 +223,15 @@ jobs:
               printf '\ndependencies {\n    implementation("androidx.work:work-runtime-ktx:2.9.1")\n}\n' >> src-tauri/gen/android/app/build.gradle.kts
             fi
           fi
+          if [ -f "src-tauri/gen/android/app/proguard-rules.pro" ]; then
+            cat << 'EOF' >> src-tauri/gen/android/app/proguard-rules.pro
+-keep class app.tauri.** { *; }
+-keep class com.animeuniverse.app.** { *; }
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}
+EOF
+          fi
           ANDROID_PKG_DIR="src-tauri/gen/android/app/src/main/java/com/animeuniverse/app"
           if [ -d "${ANDROID_PKG_DIR}" ] && [ -f "src-tauri/android-bg/AnimeNotifWorker.kt" ]; then
             cp src-tauri/android-bg/AnimeNotifWorker.kt "${ANDROID_PKG_DIR}/AnimeNotifWorker.kt"

@@ -4,10 +4,28 @@
   "description": "Default capability for ANIME UNIVERSE remote Cloudflare Pages WebView",
   "windows": ["main"],
   "remote": {
-    "urls": ["https://animeuniverse.pages.dev/*"]
+    "urls": [
+      "https://animeuniverse.pages.dev",
+      "https://animeuniverse.pages.dev/*",
+      "https://*.animeuniverse.pages.dev/*",
+      "https://*.run.app/*"
+    ]
   },
   "permissions": [
     "core:default",
-    "notification:default"
+    "notification:default",
+    "notification:allow-is-permission-granted",
+    "notification:allow-request-permission",
+    "notification:allow-notify",
+    "allow-sync-notification-auth",
+    "allow-clear-notification-auth",
+    "allow-mark-seen-notification-ids",
+    "allow-get-device-notification-status",
+    "allow-request-os-notification-permission",
+    "allow-set-native-push-token",
+    "allow-sync-local-notification-preferences",
+    "allow-open-os-notification-settings",
+    "allow-consume-pending-notification-click",
+    "allow-send-native-notification"
   ]
 }
