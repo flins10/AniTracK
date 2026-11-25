@@ -1,0 +1,15 @@
+[[permission]]
+identifier = "allow-anime-commands"
+description = "Allows ANIME UNIVERSE remote WebView to invoke native notification, permission, and device sync commands."
+commands.allow = [
+  "sync_notification_auth",
+  "clear_notification_auth",
+  "mark_seen_notification_ids",
+  "get_device_notification_status",
+  "request_os_notification_permission",
+  "set_native_push_token",
+  "sync_local_notification_preferences",
+  "open_os_notification_settings",
+  "consume_pending_notification_click",
+  "send_native_notification"
+]

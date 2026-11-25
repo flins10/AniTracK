@@ -34,6 +34,14 @@ class MainActivity : TauriActivity() {
         runCatching { AnimeNotifScheduler.ensureChannels(applicationContext) }
         runCatching { captureNotificationClickIntent(intent) }
         runCatching {
+            addOnNewIntentListener { newIntent ->
+                runCatching {
+                    setIntent(newIntent)
+                    captureNotificationClickIntent(newIntent)
+                }
+            }
+        }
+        runCatching {
             window?.decorView?.post {
                 runCatching { AnimeNotifScheduler.schedulePeriodic(applicationContext) }
                 runCatching { refreshFcmPushTokenIfAvailable() }
@@ -61,14 +69,7 @@ class MainActivity : TauriActivity() {
         }
     }
 
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        runCatching {
-            setIntent(intent)
-            captureNotificationClickIntent(intent)
-        }
-    }
-
+    @Suppress("DEPRECATION")
     override fun onRequestPermissionsResult(
         requestCode: Int,
         permissions: Array<out String>,

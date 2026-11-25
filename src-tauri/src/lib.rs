@@ -5,7 +5,9 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 #[allow(unused_imports)]
-use tauri_plugin_notification::{NotificationExt, PermissionState};
+use tauri::plugin::PermissionState;
+#[allow(unused_imports)]
+use tauri_plugin_notification::NotificationExt;
 
 const APP_AUMID: &str = "com.animeuniverse.app";
 const APP_DISPLAY_NAME: &str = "Anime Universe";
@@ -386,7 +388,7 @@ fn query_os_permission_status(app: &AppHandle) -> String {
             Ok(PermissionState::Prompt) | Ok(PermissionState::PromptWithRationale) => {
                 "prompt".to_string()
             }
-            Err(_) => "prompt".to_string(),
+            Ok(_) | Err(_) => "prompt".to_string(),
         }
     }
 }
@@ -571,7 +573,7 @@ async fn request_os_notification_permission(app: AppHandle) -> Result<String, St
                 Ok(PermissionState::Prompt) | Ok(PermissionState::PromptWithRationale) => {
                     "prompt".to_string()
                 }
-                Err(_) => query_os_permission_status(&app_clone),
+                Ok(_) | Err(_) => query_os_permission_status(&app_clone),
             }
         }
     })
@@ -1089,6 +1091,8 @@ pub fn run() {
                 api.prevent_close();
                 let _ = window.hide();
             }
+            #[cfg(not(desktop))]
+            let _ = (window, event);
         })
         .run(tauri::generate_context!())
         .expect("error while running Anime Universe");

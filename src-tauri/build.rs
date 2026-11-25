@@ -5,6 +5,7 @@ fn main() {
         cc::Build::new()
             .file("macos/notifications.m")
             .flag("-fobjc-arc")
+            .flag("-mmacosx-version-min=11.0")
             .compile("anime_macos_notifications");
         println!("cargo:rustc-link-lib=framework=UserNotifications");
         println!("cargo:rustc-link-lib=framework=Foundation");
