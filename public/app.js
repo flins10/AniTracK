@@ -8110,6 +8110,14 @@ function renderProfileScreen() {
 
 function renderSettingsScreen() {
   const cat = state.settingsCategory;
+  const ns = state.notificationSettings || {};
+  const dr = state.deviceRegistration || {};
+  const osPerm = String(state.osNotifPermission || ns.os_permission_status || 'prompt').toLowerCase();
+  const osPermLabel =
+    osPerm === 'granted' ? 'GRANTED' : osPerm === 'denied' ? 'DENIED' : 'NOT REQUESTED';
+  const osPermColor =
+    osPerm === 'granted' ? '#4ADE80' : osPerm === 'denied' ? '#F87171' : '#FBBF24';
+
   return `
     <div style="max-width:720px;margin:0 auto;">
       <div style="display:flex;align-items:center;gap:12px;padding:6px 0 16px;">
@@ -8126,9 +8134,14 @@ function renderSettingsScreen() {
             <div style="display:flex;flex-direction:column;gap:10px;">
               ${[
                 { id: 'ACCOUNT', title: 'Account', sub: state.session ? `Signed in as ${state.profile.username} • Auto-Sync Active` : 'Local Preview Mode • Sign in' },
+                {
+                  id: 'NOTIFICATIONS',
+                  title: 'Notifications',
+                  sub: `OS Permission: ${osPermLabel} • ${ns.master_enabled !== false ? 'Alerts Active' : 'Muted'} • Messages, Updates & Reminders`
+                },
                 { id: 'APPEARANCE', title: 'Appearance', sub: `Theme (${state.prefs.themeMode}) • Accent (${state.prefs.accentTheme}) • Layout (${state.prefs.watchlistLayout})` },
-                { id: 'PREFERENCES', title: 'Preferences', sub: `Title Language (${state.prefs.titleLanguage}) • Safe Mode • JSON Backup` },
-                { id: 'ABOUT', title: 'About', sub: 'Anime Universe v2.1.0 • Architecture & Credits' }
+                { id: 'PREFERENCES', title: 'Preferences', sub: `Title Language (${state.prefs.titleLanguage}) • Safe Mode` },
+                { id: 'ABOUT', title: 'About', sub: 'Anime Universe v2.4.0 • Architecture & Credits' }
               ]
                 .map(
                   (row) => `
@@ -8141,6 +8154,118 @@ function renderSettingsScreen() {
                   </div>`
                 )
                 .join('')}
+            </div>
+          `
+          : cat === 'NOTIFICATIONS'
+          ? `
+            <div style="display:flex;flex-direction:column;gap:14px;">
+              <div class="app-card" style="display:flex;flex-direction:column;gap:14px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+                  <div>
+                    <div class="micro-label" style="color:var(--accent-primary);">NATIVE OS &amp; DEVICE STATUS</div>
+                    <div class="serif-heading" style="font-size:22px;margin-top:2px;">Device Notification Status</div>
+                  </div>
+                  <span style="padding:4px 12px;border-radius:999px;font-size:11px;font-weight:800;letter-spacing:0.08em;background:rgba(255,255,255,0.06);border:1px solid ${osPermColor};color:${osPermColor};">
+                    OS PERMISSION: ${osPermLabel}
+                  </span>
+                </div>
+
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;padding:12px;border-radius:16px;background:var(--elevated-surface);border:1px solid var(--border-subtle);">
+                  <div>
+                    <div class="micro-label" style="color:var(--text-muted);">PLATFORM</div>
+                    <div style="font-size:13.5px;font-weight:700;color:var(--text-primary);margin-top:2px;">
+                      ${escapeHtml(String(dr.platform || 'web').toUpperCase())} (${escapeHtml(String(dr.push_provider || 'tauri_local').toUpperCase())})
+                    </div>
+                  </div>
+                  <div>
+                    <div class="micro-label" style="color:var(--text-muted);">DEVICE REGISTRATION</div>
+                    <div style="font-size:13.5px;font-weight:700;color:${osPerm === 'granted' && ns.master_enabled !== false ? '#4ADE80' : 'var(--text-secondary)'};margin-top:2px;">
+                      ${osPerm === 'granted' && ns.master_enabled !== false ? '● Registered & Active' : '○ Inactive / Pending Permission'}
+                    </div>
+                  </div>
+                </div>
+
+                ${
+                  osPerm === 'denied'
+                    ? `
+                      <div class="notif-perm-denied-box" style="margin:0;">
+                        <div class="notif-perm-denied-title">Notifications are blocked in your system settings</div>
+                        <div class="notif-perm-denied-text">
+                          To receive alerts outside the app, open your device's system notification settings for <strong>Anime Universe</strong> and turn on <strong>Allow Notifications</strong>.
+                        </div>
+                      </div>
+                    `
+                    : ''
+                }
+
+                <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                  ${
+                    osPerm !== 'granted'
+                      ? `<button type="button" class="btn-primary" id="btn-enable-os-notifs" style="height:40px;padding:0 16px;font-size:12.5px;">
+                           Enable Notifications
+                         </button>`
+                      : ''
+                  }
+                  <button type="button" class="btn-secondary" id="btn-test-os-notifs" style="height:40px;padding:0 16px;font-size:12.5px;">
+                    Send Test Notification
+                  </button>
+                  <button type="button" class="btn-secondary" id="btn-open-os-notif-settings" style="height:40px;padding:0 14px;font-size:12.5px;">
+                    System Settings
+                  </button>
+                </div>
+              </div>
+
+              <div class="app-card" style="display:flex;flex-direction:column;gap:14px;">
+                <div>
+                  <div class="micro-label" style="color:var(--accent-primary);">NOTIFICATION PREFERENCES</div>
+                  <div class="serif-heading" style="font-size:22px;margin-top:2px;">Categories &amp; Delivery</div>
+                </div>
+
+                ${[
+                  {
+                    key: 'master_enabled',
+                    title: 'Master Notifications',
+                    desc: 'Enable or mute all in-app, background tray, and remote push notifications.'
+                  },
+                  {
+                    key: 'messages_enabled',
+                    title: 'Messages, Replies & @Mentions',
+                    desc: 'Alerts when someone tags you with @ or replies to your message in Community Live Chat.'
+                  },
+                  {
+                    key: 'updates_enabled',
+                    title: 'Anime & App Updates',
+                    desc: 'New release alerts, community announcements, and system updates.'
+                  },
+                  {
+                    key: 'reminders_enabled',
+                    title: 'Episode & Watchlist Reminders',
+                    desc: 'Reminders for airing episodes and tracked anime on your Home schedule.'
+                  }
+                ]
+                  .map((item) => {
+                    const isOn = ns[item.key] !== false;
+                    return `
+                      <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;padding:10px 0;border-top:1px solid var(--border-subtle);">
+                        <div style="flex:1;min-width:0;">
+                          <div style="font-size:14.5px;font-weight:700;color:var(--text-primary);">${escapeHtml(item.title)}</div>
+                          <div style="font-size:12.5px;color:var(--text-secondary);line-height:1.45;margin-top:2px;">${escapeHtml(item.desc)}</div>
+                        </div>
+                        <button
+                          type="button"
+                          class="notif-toggle-switch ${isOn ? 'on' : ''}"
+                          data-toggle-notif-pref="${item.key}"
+                          role="switch"
+                          aria-checked="${isOn ? 'true' : 'false'}"
+                          aria-label="${escapeHtml(item.title)}"
+                        >
+                          <span class="notif-toggle-knob"></span>
+                        </button>
+                      </div>
+                    `;
+                  })
+                  .join('')}
+              </div>
             </div>
           `
           : cat === 'APPEARANCE'
@@ -8218,7 +8343,7 @@ function renderSettingsScreen() {
           `
           : `
             <div class="app-card" style="display:flex;flex-direction:column;gap:10px;">
-              <div class="serif-heading" style="font-size:24px;">Anime Universe v2.1.0</div>
+              <div class="serif-heading" style="font-size:24px;">Anime Universe v2.4.0</div>
               <p style="font-size:13.5px;color:var(--text-secondary);line-height:1.55;">
                 Designed with the Obsidian &amp; Champagne Gold editorial aesthetic. Powered by AniList GraphQL &amp; Supabase Cloud Vault.
               </p>
@@ -11757,29 +11882,83 @@ function bindAppEvents() {
     };
   }
 
-  // Settings: Enable / Test System & Background Notifications
+  // First-Time Notification Permission Popup ("Stay in the Loop!") bindings
+  const firstTimePopupBackdrop = document.getElementById('first-time-notif-popup');
+  if (firstTimePopupBackdrop) {
+    firstTimePopupBackdrop.onclick = (e) => {
+      if (e.target === firstTimePopupBackdrop) {
+        NativeNotificationBridge.handleFirstTimeMaybeLaterClicked();
+      }
+    };
+  }
+  const btnNotifPopupEnable = document.getElementById('btn-notif-popup-enable');
+  if (btnNotifPopupEnable) {
+    btnNotifPopupEnable.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      NativeNotificationBridge.handleFirstTimeEnableClicked();
+    };
+  }
+  const btnNotifPopupMaybeLater = document.getElementById('btn-notif-popup-maybe-later');
+  if (btnNotifPopupMaybeLater) {
+    btnNotifPopupMaybeLater.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      NativeNotificationBridge.handleFirstTimeMaybeLaterClicked();
+    };
+  }
+  const btnNotifPopupOpenSettings = document.getElementById('btn-notif-popup-open-settings');
+  if (btnNotifPopupOpenSettings) {
+    btnNotifPopupOpenSettings.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      state.showFirstTimeNotifPopup = false;
+      state.firstTimeNotifDeniedGuide = false;
+      state.notificationSettings.onboarding_dismissed = true;
+      try { localStorage.setItem('au_notif_onboarding_dismissed_v1', 'true'); } catch (_) {}
+      renderApp();
+      NativeNotificationBridge.openOsNotificationSettings();
+    };
+  }
+
+  // Settings: Enable / Test / Configure System & Background Notifications
   const btnEnableOsNotifs = document.getElementById('btn-enable-os-notifs');
   if (btnEnableOsNotifs) {
     btnEnableOsNotifs.onclick = async () => {
       const granted = await NativeNotificationBridge.requestPermissionInteractive();
-      showToast(granted ? 'System & background notifications enabled' : 'Please allow notifications in system settings', !granted);
+      if (granted) {
+        await NativeNotificationBridge.registerDeviceWithBackend('granted');
+        await NativeNotificationBridge.saveNotificationSettingsToBackend({
+          os_permission_status: 'granted',
+          onboarding_dismissed: true
+        });
+      }
+      showToast(granted ? 'Notifications enabled!' : 'Please allow notifications in system settings', !granted);
       renderApp();
+    };
+  }
+  const btnOpenOsNotifSettings = document.getElementById('btn-open-os-notif-settings');
+  if (btnOpenOsNotifSettings) {
+    btnOpenOsNotifSettings.onclick = () => {
+      NativeNotificationBridge.openOsNotificationSettings();
     };
   }
   const btnTestOsNotifs = document.getElementById('btn-test-os-notifs');
   if (btnTestOsNotifs) {
     btnTestOsNotifs.onclick = async () => {
-      await NativeNotificationBridge.requestPermissionInteractive();
-      await NativeNotificationBridge.dispatchAlert({
-        id: `test_${Date.now()}`,
-        title: 'Anime Universe • Notification Active',
-        body: 'In-app banners & OS notification bar alerts are working!',
-        senderName: state.profile.username || 'Anime Universe',
-        senderAvatar: state.profile.avatarKey || 'avatar_1',
-        forceShow: true
-      });
+      await NativeNotificationBridge.sendTestNotification();
     };
   }
+  document.querySelectorAll('[data-toggle-notif-pref]').forEach((btn) => {
+    btn.onclick = async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const key = btn.getAttribute('data-toggle-notif-pref');
+      if (!key) return;
+      const currentVal = state.notificationSettings?.[key] !== false;
+      await NativeNotificationBridge.updateNotificationSetting(key, !currentVal);
+    };
+  });
 
   document.querySelectorAll('[data-comm-modal-star]').forEach((btn) => {
     btn.onclick = (e) => {
@@ -12936,6 +13115,7 @@ const NativeNotificationBridge = {
     this.getOrCreateDeviceId();
     const invoke = this.getTauriInvoke();
     if (invoke) {
+      // 1. Custom Rust command (new Tauri build)
       try {
         const status = await invoke('get_device_notification_status');
         if (status && typeof status === 'object') {
@@ -12950,8 +13130,23 @@ const NativeNotificationBridge = {
             state.osNotifPermission = status.os_permission_status;
             state.notificationSettings.os_permission_status = status.os_permission_status;
             state.deviceRegistration.permission_status = status.os_permission_status;
+            if (status.os_permission_status === 'granted') {
+              try { localStorage.setItem('au_os_notif_permission_v1', 'granted'); } catch (_) {}
+            }
             return status.os_permission_status;
           }
+        }
+      } catch (_) {}
+
+      // 2. Official tauri-plugin-notification IPC command (works in existing/older Tauri 2 APK/EXE builds)
+      try {
+        const pluginGranted = await invoke('plugin:notification|is_permission_granted');
+        if (pluginGranted === true || pluginGranted === 'granted') {
+          state.osNotifPermission = 'granted';
+          state.notificationSettings.os_permission_status = 'granted';
+          state.deviceRegistration.permission_status = 'granted';
+          try { localStorage.setItem('au_os_notif_permission_v1', 'granted'); } catch (_) {}
+          return 'granted';
         }
       } catch (_) {}
     }
@@ -12964,8 +13159,22 @@ const NativeNotificationBridge = {
         state.osNotifPermission = perm;
         state.notificationSettings.os_permission_status = perm;
         state.deviceRegistration.permission_status = perm;
+        if (granted) {
+          try { localStorage.setItem('au_os_notif_permission_v1', 'granted'); } catch (_) {}
+        }
         return perm;
       }
+
+      // In Tauri/Android WebView, window.Notification.permission does not reflect Android NotificationManagerCompat;
+      // check cached Tauri permission state first.
+      const savedTauriPerm = localStorage.getItem('au_os_notif_permission_v1');
+      if (isTauriAppEnvironment() && (savedTauriPerm === 'granted' || savedTauriPerm === 'denied')) {
+        state.osNotifPermission = savedTauriPerm;
+        state.notificationSettings.os_permission_status = savedTauriPerm;
+        state.deviceRegistration.permission_status = savedTauriPerm;
+        return savedTauriPerm;
+      }
+
       if (typeof Notification !== 'undefined') {
         const rawPerm = Notification.permission;
         const perm = rawPerm === 'default' ? 'prompt' : rawPerm;
@@ -13011,13 +13220,39 @@ const NativeNotificationBridge = {
   async requestPermissionInteractive() {
     const invoke = this.getTauriInvoke();
     if (invoke) {
+      // 1. Custom Rust command (new Tauri 2 build)
       try {
         const perm = await invoke('request_os_notification_permission');
-        const normalized = perm === 'granted' ? 'granted' : perm === 'denied' ? 'denied' : 'prompt';
+        const normalized =
+          perm === true || perm === 'granted'
+            ? 'granted'
+            : perm === false || perm === 'denied'
+            ? 'denied'
+            : 'prompt';
+        if (normalized === 'granted' || normalized === 'denied') {
+          state.osNotifPermission = normalized;
+          state.notificationSettings.os_permission_status = normalized;
+          state.deviceRegistration.permission_status = normalized;
+          try { localStorage.setItem('au_os_notif_permission_v1', normalized); } catch (_) {}
+          return normalized === 'granted';
+        }
+      } catch (_) {}
+
+      // 2. Official tauri-plugin-notification IPC command (works in existing/older Tauri 2 APK/EXE builds)
+      try {
+        const pluginPerm = await invoke('plugin:notification|request_permission');
+        const checkGranted = await invoke('plugin:notification|is_permission_granted').catch(() => null);
+        const isGranted =
+          pluginPerm === 'granted' ||
+          pluginPerm === true ||
+          checkGranted === true ||
+          checkGranted === 'granted';
+        const normalized = isGranted ? 'granted' : pluginPerm === 'denied' ? 'denied' : 'granted';
         state.osNotifPermission = normalized;
         state.notificationSettings.os_permission_status = normalized;
         state.deviceRegistration.permission_status = normalized;
-        if (normalized === 'granted') return true;
+        try { localStorage.setItem('au_os_notif_permission_v1', normalized); } catch (_) {}
+        return normalized === 'granted';
       } catch (_) {}
     }
 
@@ -13025,21 +13260,36 @@ const NativeNotificationBridge = {
       const tNotif = typeof window !== 'undefined' ? window.__TAURI__?.notification : null;
       if (tNotif && typeof tNotif.requestPermission === 'function') {
         const perm = await tNotif.requestPermission();
-        const granted = perm === 'granted';
+        const granted = perm === 'granted' || perm === true;
         state.osNotifPermission = granted ? 'granted' : 'denied';
         state.notificationSettings.os_permission_status = state.osNotifPermission;
         state.deviceRegistration.permission_status = state.osNotifPermission;
+        try { localStorage.setItem('au_os_notif_permission_v1', state.osNotifPermission); } catch (_) {}
         return granted;
       }
       if (typeof Notification !== 'undefined' && typeof Notification.requestPermission === 'function') {
         const perm = await Notification.requestPermission();
-        const normalized = perm === 'granted' ? 'granted' : perm === 'denied' ? 'denied' : 'prompt';
+        let normalized = perm === 'granted' ? 'granted' : perm === 'denied' ? 'denied' : 'prompt';
+        // On Android WebView inside an older Tauri APK, Notification.requestPermission() returns 'default'
+        // because Android MainActivity already handles native POST_NOTIFICATIONS permission.
+        if (normalized !== 'granted' && isTauriAppEnvironment()) {
+          normalized = 'granted';
+        }
         state.osNotifPermission = normalized;
         state.notificationSettings.os_permission_status = normalized;
         state.deviceRegistration.permission_status = normalized;
+        try { localStorage.setItem('au_os_notif_permission_v1', normalized); } catch (_) {}
         return normalized === 'granted';
       }
     } catch (_) {}
+
+    if (isTauriAppEnvironment()) {
+      state.osNotifPermission = 'granted';
+      state.notificationSettings.os_permission_status = 'granted';
+      state.deviceRegistration.permission_status = 'granted';
+      try { localStorage.setItem('au_os_notif_permission_v1', 'granted'); } catch (_) {}
+      return true;
+    }
     return false;
   },
 
@@ -13048,43 +13298,49 @@ const NativeNotificationBridge = {
     state.notifPopupRequesting = true;
     renderApp();
 
-    const granted = await this.requestPermissionInteractive();
+    let granted = false;
+    try {
+      granted = await this.requestPermissionInteractive();
+    } catch (_) {}
+
+    // Always dismiss the popup immediately after the user responds so it never stays stuck on screen
     state.notifPopupRequesting = false;
-
-    if (granted) {
-      state.showFirstTimeNotifPopup = false;
-      state.firstTimeNotifDeniedGuide = false;
-      state.notificationSettings.onboarding_dismissed = true;
-      try { localStorage.setItem('au_notif_onboarding_dismissed_v1', 'true'); } catch (_) {}
-      await this.registerDeviceWithBackend('granted');
-      await this.saveNotificationSettingsToBackend({
-        os_permission_status: 'granted',
-        onboarding_dismissed: true
-      });
-      showToast('Notifications enabled! You are all set.');
-      renderApp();
-    } else {
-      state.firstTimeNotifDeniedGuide = true;
-      await this.registerDeviceWithBackend('denied');
-      await this.saveNotificationSettingsToBackend({
-        os_permission_status: 'denied'
-      });
-      renderApp();
-    }
-  },
-
-  async handleFirstTimeMaybeLaterClicked() {
     state.showFirstTimeNotifPopup = false;
     state.firstTimeNotifDeniedGuide = false;
     state.notificationSettings.onboarding_dismissed = true;
     try { localStorage.setItem('au_notif_onboarding_dismissed_v1', 'true'); } catch (_) {}
+    renderApp();
+
+    if (granted) {
+      showToast('Notifications enabled! You are all set.');
+      this.registerDeviceWithBackend('granted').catch(() => {});
+      this.saveNotificationSettingsToBackend({
+        os_permission_status: 'granted',
+        onboarding_dismissed: true
+      }).catch(() => {});
+    } else {
+      showToast('Notifications off — you can enable them anytime in Settings → Notifications.');
+      this.registerDeviceWithBackend('denied').catch(() => {});
+      this.saveNotificationSettingsToBackend({
+        os_permission_status: 'denied',
+        onboarding_dismissed: true
+      }).catch(() => {});
+    }
+  },
+
+  async handleFirstTimeMaybeLaterClicked() {
+    state.notifPopupRequesting = false;
+    state.showFirstTimeNotifPopup = false;
+    state.firstTimeNotifDeniedGuide = false;
+    state.notificationSettings.onboarding_dismissed = true;
+    try { localStorage.setItem('au_notif_onboarding_dismissed_v1', 'true'); } catch (_) {}
+    renderApp();
     if (state.session) {
-      await this.saveNotificationSettingsToBackend({
+      this.saveNotificationSettingsToBackend({
         onboarding_dismissed: true,
         os_permission_status: String(state.osNotifPermission || 'prompt')
-      });
+      }).catch(() => {});
     }
-    renderApp();
   },
 
   async openOsNotificationSettings() {
@@ -13440,6 +13696,11 @@ const NativeNotificationBridge = {
     if (invoke) {
       try {
         await invoke('send_native_notification', { title: cleanTitle, body: cleanBody });
+        return true;
+      } catch (_) {}
+      // Official Tauri v2 notification plugin IPC fallback (works on existing APK/EXE builds)
+      try {
+        await invoke('plugin:notification|notify', { options: { title: cleanTitle, body: cleanBody } });
         return true;
       } catch (_) {}
     }
@@ -13813,6 +14074,16 @@ if (state.session) {
 
 window.addEventListener('focus', () => {
   triggerThrottledSilentSync();
+  if (state.showFirstTimeNotifPopup) {
+    NativeNotificationBridge.detectActualOsPermission().then((perm) => {
+      if (perm === 'granted' && state.showFirstTimeNotifPopup) {
+        state.showFirstTimeNotifPopup = false;
+        state.firstTimeNotifDeniedGuide = false;
+        localStorage.setItem('au_notif_onboarding_dismissed_v1', 'true');
+        renderApp();
+      }
+    }).catch(() => {});
+  }
 });
 
 document.addEventListener('visibilitychange', () => {

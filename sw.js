@@ -1,4 +1,4 @@
-const CACHE_NAME = 'anime-universe-pwa-v2.24.0';
+const CACHE_NAME = 'anime-universe-pwa-v2.24.1';
 const EMOJI_CACHE_NAME = 'community-emoji-cache-v1';
 const STATIC_ASSETS = [
   '/',
