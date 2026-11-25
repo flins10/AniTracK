@@ -49,6 +49,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -1647,31 +1649,31 @@ internal fun CommunityAnimeTemplateCard(
                                 }
                             }
                         }
+                        Slider(
+                            value = draftQuickStars.coerceIn(0.1f, 5.0f),
+                            onValueChange = { raw -> draftQuickStars = raw.coerceIn(0.1f, 5.0f) },
+                            onValueChangeFinished = { draftQuickStars = StarRatingUtils.roundTenth(draftQuickStars) },
+                            valueRange = 0.1f..5.0f,
+                            colors = SliderDefaults.colors(
+                                thumbColor = colors.accentPrimary,
+                                activeTrackColor = colors.accentPrimary,
+                                inactiveTrackColor = colors.borderSubtle.copy(alpha = 0.65f)
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(44.dp)
+                                .testTag("quick_rate_slider_${group.animeId}")
+                        )
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                (1..5).forEach { idx ->
-                                    val active = draftQuickStars >= idx - 0.5f
-                                    Icon(
-                                        imageVector = Icons.Filled.Star,
-                                        contentDescription = "Set $idx stars",
-                                        tint = if (active) colors.accentPrimary else colors.textMuted.copy(alpha = 0.45f),
-                                        modifier = Modifier
-                                            .size(22.dp)
-                                            .clip(CircleShape)
-                                            .clickable {
-                                                draftQuickStars = if (draftQuickStars == idx.toFloat()) {
-                                                    StarRatingUtils.roundTenth((idx - 0.1f).coerceAtLeast(0.1f))
-                                                } else {
-                                                    idx.toFloat()
-                                                }
-                                            }
-                                    )
-                                }
-                            }
+                            Text(
+                                text = "0.1 ★  —  5.0 ★",
+                                style = TabularNumSmall.copy(fontSize = 10.sp),
+                                color = colors.textMuted
+                            )
                             Surface(
                                 shape = CircleShape,
                                 color = colors.accentPrimary,
@@ -1687,7 +1689,7 @@ internal fun CommunityAnimeTemplateCard(
                                     text = "Save",
                                     style = TabularNumSmall.copy(fontSize = 11.sp, fontWeight = FontWeight.Bold),
                                     color = colors.onAccentPrimary,
-                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 7.dp)
                                 )
                             }
                         }
@@ -2569,32 +2571,21 @@ internal fun CommunityCommentsDialog(
                                     }
                                 }
                             }
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    (1..5).forEach { idx ->
-                                        val active = selectedStars >= idx - 0.5f
-                                        Icon(
-                                            imageVector = Icons.Filled.Star,
-                                            contentDescription = "Rate $idx stars",
-                                            tint = if (active) colors.accentPrimary else colors.textMuted.copy(alpha = 0.45f),
-                                            modifier = Modifier
-                                                .size(22.dp)
-                                                .clip(CircleShape)
-                                                .clickable {
-                                                    selectedStars = if (selectedStars == idx.toFloat()) {
-                                                        StarRatingUtils.roundTenth((idx - 0.1f).coerceAtLeast(0.1f))
-                                                    } else {
-                                                        idx.toFloat()
-                                                    }
-                                                }
-                                        )
-                                    }
-                                }
-                            }
+                            Slider(
+                                value = if (selectedStars > 0f) selectedStars.coerceIn(0.1f, 5.0f) else 4.0f,
+                                onValueChange = { raw -> selectedStars = raw.coerceIn(0.1f, 5.0f) },
+                                onValueChangeFinished = { selectedStars = StarRatingUtils.roundTenth(selectedStars) },
+                                valueRange = 0.1f..5.0f,
+                                colors = SliderDefaults.colors(
+                                    thumbColor = colors.accentPrimary,
+                                    activeTrackColor = colors.accentPrimary,
+                                    inactiveTrackColor = colors.borderSubtle.copy(alpha = 0.65f)
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(44.dp)
+                                    .testTag("community_modal_rating_slider")
+                            )
                         }
 
                         if (!successMessage.isNullOrBlank()) {
