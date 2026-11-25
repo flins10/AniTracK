@@ -1,13 +1,14 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Anime Universe",
-  "version": "2.19.1",
+  "version": "2.23.0",
   "identifier": "com.animeuniverse.app",
   "build": {
-    "frontendDist": "https://animeuniverse.pages.dev",
-    "devUrl": "https://animeuniverse.pages.dev"
+    "frontendDist": "https://animeuniverse.pages.dev/?tauri=1",
+    "devUrl": "https://animeuniverse.pages.dev/?tauri=1"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "ANIME UNIVERSE",

@@ -219,6 +219,42 @@ jobs:
           fi
           if [ -f "src-tauri/gen/android/app/build.gradle.kts" ]; then
             sed -i 's/compileSdk = [0-9]\+/compileSdk = 36\n    buildToolsVersion = "36.0.0"/' src-tauri/gen/android/app/build.gradle.kts || true
+            if ! grep -q "work-runtime-ktx" src-tauri/gen/android/app/build.gradle.kts; then
+              printf '\ndependencies {\n    implementation("androidx.work:work-runtime-ktx:2.9.1")\n}\n' >> src-tauri/gen/android/app/build.gradle.kts
+            fi
+          fi
+          ANDROID_PKG_DIR="src-tauri/gen/android/app/src/main/java/com/animeuniverse/app"
+          if [ -d "${ANDROID_PKG_DIR}" ] && [ -f "src-tauri/android-bg/AnimeNotifWorker.kt" ]; then
+            cp src-tauri/android-bg/AnimeNotifWorker.kt "${ANDROID_PKG_DIR}/AnimeNotifWorker.kt"
+            cp src-tauri/android-bg/MainActivity.kt "${ANDROID_PKG_DIR}/MainActivity.kt"
+          fi
+          ANDROID_MANIFEST="src-tauri/gen/android/app/src/main/AndroidManifest.xml"
+          if [ -f "${ANDROID_MANIFEST}" ]; then
+            python3 -c '
+          from pathlib import Path
+          p = Path("src-tauri/gen/android/app/src/main/AndroidManifest.xml")
+          txt = p.read_text(encoding="utf-8")
+          for perm in [
+              "<uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\" />",
+              "<uses-permission android:name=\"android.permission.RECEIVE_BOOT_COMPLETED\" />",
+          ]:
+              if perm not in txt:
+                  txt = txt.replace("<application", f"    {perm}\n    <application", 1)
+          receiver = (
+              "        <receiver\n"
+              "            android:name=\".AnimeNotifBootReceiver\"\n"
+              "            android:enabled=\"true\"\n"
+              "            android:exported=\"false\">\n"
+              "            <intent-filter>\n"
+              "                <action android:name=\"android.intent.action.BOOT_COMPLETED\" />\n"
+              "                <action android:name=\"android.intent.action.MY_PACKAGE_REPLACED\" />\n"
+              "            </intent-filter>\n"
+              "        </receiver>"
+          )
+          if "AnimeNotifBootReceiver" not in txt:
+              txt = txt.replace("</application>", f"{receiver}\n    </application>", 1)
+          p.write_text(txt, encoding="utf-8")
+          '
           fi
           npx tauri icon src-tauri/icons/icon.png
 

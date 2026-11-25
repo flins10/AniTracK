@@ -799,7 +799,7 @@ fun InteractiveStarRatingSelector(
                 ) {
                     for (starIdx in 1..5) {
                         val fullVal = starIdx.toFloat()
-                        val halfVal = starIdx - 0.5f
+                        val steppedDownVal = StarRatingUtils.roundTenth((starIdx - 0.1f).coerceAtLeast(0.1f))
                         val fill = (clamped - (starIdx - 1)).coerceIn(0f, 1f)
                         val starInteraction = remember { MutableInteractionSource() }
                         val starHovered by starInteraction.collectIsHoveredAsState()
@@ -824,7 +824,7 @@ fun InteractiveStarRatingSelector(
                                 .clip(CircleShape)
                                 .clickable(interactionSource = starInteraction, indication = null) {
                                     val next = when {
-                                        clamped == fullVal -> halfVal
+                                        clamped == fullVal -> steppedDownVal
                                         else -> fullVal
                                     }
                                     onStarsChanged(next)
@@ -856,14 +856,14 @@ fun InteractiveStarRatingSelector(
                     }
                 }
 
-                // Precision half-star quick pills & hint
+                // Precision 0.1-star quick pills & hint
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Tap a star again for ½ ★",
+                        text = "Fine-tune by ±0.1 ★",
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.textMuted
                     )
@@ -874,12 +874,13 @@ fun InteractiveStarRatingSelector(
                             modifier = Modifier
                                 .clip(CircleShape)
                                 .clickable {
-                                    val next = (clamped - 0.5f).coerceAtLeast(0.5f)
+                                    val base = if (clamped > 0f) clamped else 0.2f
+                                    val next = StarRatingUtils.roundTenth((base - 0.1f).coerceAtLeast(0.1f))
                                     onStarsChanged(next)
                                 }
                         ) {
                             Text(
-                                text = "−0.5 ★",
+                                text = "−0.1 ★",
                                 style = TabularNumSmall.copy(fontSize = 10.sp),
                                 color = colors.textSecondary,
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
@@ -891,12 +892,12 @@ fun InteractiveStarRatingSelector(
                             modifier = Modifier
                                 .clip(CircleShape)
                                 .clickable {
-                                    val next = if (clamped <= 0f) 0.5f else (clamped + 0.5f).coerceAtMost(5f)
+                                    val next = StarRatingUtils.roundTenth((clamped + 0.1f).coerceAtMost(5f))
                                     onStarsChanged(next)
                                 }
                         ) {
                             Text(
-                                text = "+0.5 ★",
+                                text = "+0.1 ★",
                                 style = TabularNumSmall.copy(fontSize = 10.sp),
                                 color = colors.accentPrimary,
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)

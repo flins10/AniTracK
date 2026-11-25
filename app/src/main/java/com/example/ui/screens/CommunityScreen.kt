@@ -1064,7 +1064,21 @@ fun CommunityScreen(
                                                         forceLiveChatTab = true
                                                         selectedCommentsAnimeId = firstGroup.animeId
                                                     },
-                                                    onToggleLike = { viewModel.toggleReviewLike(firstGroup.leadReview) }
+                                                    onToggleLike = { viewModel.toggleReviewLike(firstGroup.leadReview) },
+                                                    initialMyRatingStars = StarRatingUtils.rating10ToStars(
+                                                        firstGroup.reviews.firstOrNull { it.userId == profile?.id.orEmpty() }?.rating
+                                                    ),
+                                                    onQuickRate = { newStars ->
+                                                        val existingNote = firstGroup.reviews.firstOrNull { it.userId == profile?.id.orEmpty() }?.reviewNotes.orEmpty()
+                                                        viewModel.submitCommunityCommentNote(
+                                                            animeId = firstGroup.animeId,
+                                                            animeTitle = firstGroup.animeTitle,
+                                                            coverImage = firstGroup.animeCoverImage,
+                                                            ratingStars = newStars,
+                                                            noteText = existingNote,
+                                                            onSuccessCallback = {}
+                                                        )
+                                                    }
                                                 )
                                             }
                                         } else {
@@ -1104,7 +1118,21 @@ fun CommunityScreen(
                                                                 forceLiveChatTab = true
                                                                 selectedCommentsAnimeId = grp.animeId
                                                             },
-                                                            onToggleLike = { viewModel.toggleReviewLike(grp.leadReview) }
+                                                            onToggleLike = { viewModel.toggleReviewLike(grp.leadReview) },
+                                                            initialMyRatingStars = StarRatingUtils.rating10ToStars(
+                                                                grp.reviews.firstOrNull { it.userId == profile?.id.orEmpty() }?.rating
+                                                            ),
+                                                            onQuickRate = { newStars ->
+                                                                val existingNote = grp.reviews.firstOrNull { it.userId == profile?.id.orEmpty() }?.reviewNotes.orEmpty()
+                                                                viewModel.submitCommunityCommentNote(
+                                                                    animeId = grp.animeId,
+                                                                    animeTitle = grp.animeTitle,
+                                                                    coverImage = grp.animeCoverImage,
+                                                                    ratingStars = newStars,
+                                                                    noteText = existingNote,
+                                                                    onSuccessCallback = {}
+                                                                )
+                                                            }
                                                         )
                                                     }
                                                 }
@@ -1188,7 +1216,9 @@ internal fun CommunityAnimeTemplateCard(
     onClick: () -> Unit,
     onOpenComments: () -> Unit,
     onToggleLike: (() -> Unit)? = null,
-    unseenInfo: UnseenDiscussionAnime? = null
+    unseenInfo: UnseenDiscussionAnime? = null,
+    initialMyRatingStars: Float = 0f,
+    onQuickRate: ((Float) -> Unit)? = null
 ) {
     val colors = AppTheme.colors
     val lead = group.leadReview
@@ -1197,6 +1227,10 @@ internal fun CommunityAnimeTemplateCard(
     val avgStars = remember(group.averageRating10) { StarRatingUtils.rating10ToStars(group.averageRating10) }
     val contributors = remember(group.reviews) { group.distinctContributors }
     val extraContributors = (contributors.size - 1).coerceAtLeast(0)
+    var showQuickRate by remember(group.animeId) { mutableStateOf(false) }
+    var draftQuickStars by remember(group.animeId, initialMyRatingStars) {
+        mutableFloatStateOf(if (initialMyRatingStars > 0f) initialMyRatingStars else 4.0f)
+    }
 
     AppCard(
         shape = RoundedCornerShape(24.dp),
@@ -1442,8 +1476,40 @@ internal fun CommunityAnimeTemplateCard(
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
+                    if (onQuickRate != null) {
+                        Surface(
+                            shape = CircleShape,
+                            color = colors.accentPrimary.copy(alpha = if (showQuickRate) 0.24f else 0.14f),
+                            border = BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.55f)),
+                            modifier = Modifier
+                                .height(34.dp)
+                                .pointerHoverIcon(PointerIcon.Hand)
+                                .clip(CircleShape)
+                                .clickable { showQuickRate = !showQuickRate }
+                                .testTag("quick_rate_anime_${group.animeId}")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Star,
+                                    contentDescription = "Rate directly in Community",
+                                    tint = colors.accentPrimary,
+                                    modifier = Modifier.size(13.dp)
+                                )
+                                Text(
+                                    text = if (initialMyRatingStars > 0f) StarRatingUtils.formatStars(initialMyRatingStars) else "Rate",
+                                    style = TabularNumSmall.copy(fontSize = 11.sp, fontWeight = FontWeight.Bold),
+                                    color = colors.highlight
+                                )
+                            }
+                        }
+                    }
+
                     // Themed Comment Icon Pill (Obsidian + Champagne Gold)
                     Surface(
                         shape = CircleShape,
@@ -1502,6 +1568,128 @@ internal fun CommunityAnimeTemplateCard(
                                 style = TabularNumSmall.copy(fontSize = 11.sp, fontWeight = FontWeight.SemiBold),
                                 color = if (lead.likedByMe) colors.highlight else colors.textSecondary
                             )
+                        }
+                    }
+                }
+            }
+
+            if (showQuickRate && onQuickRate != null) {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = colors.elevatedSurface.copy(alpha = 0.72f),
+                    border = BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.4f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("community_quick_rate_drawer_${group.animeId}")
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = "DIRECT RATING",
+                                    style = MicroUpperLabel.copy(fontSize = 9.sp, letterSpacing = 1.sp),
+                                    color = colors.accentPrimary
+                                )
+                                Text(
+                                    text = "${StarRatingUtils.formatStars(draftQuickStars)} ★",
+                                    style = TabularNumSmall.copy(fontSize = 12.sp, fontWeight = FontWeight.Bold),
+                                    color = colors.highlight
+                                )
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = colors.cardBackground,
+                                    border = BorderStroke(1.dp, colors.borderSubtle.copy(alpha = 0.6f)),
+                                    modifier = Modifier
+                                        .clip(CircleShape)
+                                        .clickable {
+                                            draftQuickStars = StarRatingUtils.roundTenth((draftQuickStars - 0.1f).coerceAtLeast(0.1f))
+                                        }
+                                        .testTag("quick_rate_minus_${group.animeId}")
+                                ) {
+                                    Text(
+                                        text = "−0.1 ★",
+                                        style = TabularNumSmall.copy(fontSize = 10.sp),
+                                        color = colors.textSecondary,
+                                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
+                                    )
+                                }
+                                Surface(
+                                    shape = CircleShape,
+                                    color = colors.cardBackground,
+                                    border = BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.5f)),
+                                    modifier = Modifier
+                                        .clip(CircleShape)
+                                        .clickable {
+                                            draftQuickStars = StarRatingUtils.roundTenth((draftQuickStars + 0.1f).coerceAtMost(5.0f))
+                                        }
+                                        .testTag("quick_rate_plus_${group.animeId}")
+                                ) {
+                                    Text(
+                                        text = "+0.1 ★",
+                                        style = TabularNumSmall.copy(fontSize = 10.sp),
+                                        color = colors.accentPrimary,
+                                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
+                                    )
+                                }
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                (1..5).forEach { idx ->
+                                    val active = draftQuickStars >= idx - 0.5f
+                                    Icon(
+                                        imageVector = Icons.Filled.Star,
+                                        contentDescription = "Set $idx stars",
+                                        tint = if (active) colors.accentPrimary else colors.textMuted.copy(alpha = 0.45f),
+                                        modifier = Modifier
+                                            .size(22.dp)
+                                            .clip(CircleShape)
+                                            .clickable {
+                                                draftQuickStars = if (draftQuickStars == idx.toFloat()) {
+                                                    StarRatingUtils.roundTenth((idx - 0.1f).coerceAtLeast(0.1f))
+                                                } else {
+                                                    idx.toFloat()
+                                                }
+                                            }
+                                    )
+                                }
+                            }
+                            Surface(
+                                shape = CircleShape,
+                                color = colors.accentPrimary,
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .clickable {
+                                        onQuickRate(StarRatingUtils.roundTenth(draftQuickStars))
+                                        showQuickRate = false
+                                    }
+                                    .testTag("quick_rate_save_${group.animeId}")
+                            ) {
+                                Text(
+                                    text = "Save",
+                                    style = TabularNumSmall.copy(fontSize = 11.sp, fontWeight = FontWeight.Bold),
+                                    color = colors.onAccentPrimary,
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                                )
+                            }
                         }
                     }
                 }
@@ -2322,30 +2510,89 @@ internal fun CommunityCommentsDialog(
 
                     // Inline Composer: Add or update your note & rating in the same anime template
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = if (initialMyNote.isNotBlank() || initialMyRatingStars > 0f) "UPDATE YOUR NOTE & RATING" else "ADD YOUR NOTE & RATING",
-                                style = MicroUpperLabel.copy(fontSize = 9.sp, letterSpacing = 1.sp),
-                                color = colors.accentPrimary
-                            )
-                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                (1..5).forEach { idx ->
-                                    val active = selectedStars >= idx - 0.5f
-                                    Icon(
-                                        imageVector = Icons.Filled.Star,
-                                        contentDescription = "Rate $idx stars",
-                                        tint = if (active) colors.accentPrimary else colors.textMuted.copy(alpha = 0.45f),
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = if (initialMyNote.isNotBlank() || initialMyRatingStars > 0f) "UPDATE RATING" else "YOUR RATING",
+                                        style = MicroUpperLabel.copy(fontSize = 9.sp, letterSpacing = 1.sp),
+                                        color = colors.accentPrimary
+                                    )
+                                    if (selectedStars > 0f) {
+                                        Text(
+                                            text = "${StarRatingUtils.formatStars(selectedStars)} ★",
+                                            style = TabularNumSmall.copy(fontSize = 12.sp, fontWeight = FontWeight.Bold),
+                                            color = colors.highlight
+                                        )
+                                    }
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = colors.elevatedSurface,
                                         modifier = Modifier
-                                            .size(22.dp)
                                             .clip(CircleShape)
                                             .clickable {
-                                                selectedStars = if (selectedStars == idx.toFloat()) idx - 0.5f else idx.toFloat()
+                                                val base = if (selectedStars > 0f) selectedStars else 0.2f
+                                                selectedStars = StarRatingUtils.roundTenth((base - 0.1f).coerceAtLeast(0.1f))
                                             }
-                                    )
+                                    ) {
+                                        Text(
+                                            text = "−0.1 ★",
+                                            style = TabularNumSmall.copy(fontSize = 10.sp),
+                                            color = colors.textSecondary,
+                                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                                        )
+                                    }
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = colors.elevatedSurface,
+                                        modifier = Modifier
+                                            .clip(CircleShape)
+                                            .clickable {
+                                                selectedStars = StarRatingUtils.roundTenth((selectedStars + 0.1f).coerceAtMost(5f))
+                                            }
+                                    ) {
+                                        Text(
+                                            text = "+0.1 ★",
+                                            style = TabularNumSmall.copy(fontSize = 10.sp),
+                                            color = colors.accentPrimary,
+                                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                                        )
+                                    }
+                                }
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    (1..5).forEach { idx ->
+                                        val active = selectedStars >= idx - 0.5f
+                                        Icon(
+                                            imageVector = Icons.Filled.Star,
+                                            contentDescription = "Rate $idx stars",
+                                            tint = if (active) colors.accentPrimary else colors.textMuted.copy(alpha = 0.45f),
+                                            modifier = Modifier
+                                                .size(22.dp)
+                                                .clip(CircleShape)
+                                                .clickable {
+                                                    selectedStars = if (selectedStars == idx.toFloat()) {
+                                                        StarRatingUtils.roundTenth((idx - 0.1f).coerceAtLeast(0.1f))
+                                                    } else {
+                                                        idx.toFloat()
+                                                    }
+                                                }
+                                        )
+                                    }
                                 }
                             }
                         }

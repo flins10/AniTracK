@@ -1,4 +1,4 @@
-const CACHE_NAME = 'anime-universe-pwa-v2.20.0';
+const CACHE_NAME = 'anime-universe-pwa-v2.23.0';
 const EMOJI_CACHE_NAME = 'community-emoji-cache-v1';
 const STATIC_ASSETS = [
   '/',
@@ -38,6 +38,48 @@ self.addEventListener('activate', (event) => {
     )
   );
   self.clients.claim();
+});
+
+self.addEventListener('push', (event) => {
+  let payload = {};
+  try {
+    payload = event.data ? event.data.json() : {};
+  } catch (_) {
+    payload = { body: event.data ? event.data.text() : '' };
+  }
+  const title = payload.title || 'Anime Universe';
+  const body = payload.body || 'You have a new community notification.';
+  const data = payload.data || {};
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body,
+      icon: '/icon-192.png',
+      badge: '/icon-192.png',
+      tag: data.notificationId ? `au-notif-${data.notificationId}` : 'au-notif',
+      renotify: true,
+      data
+    })
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const data = event.notification.data || {};
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      for (const client of clientList) {
+        if ('focus' in client) {
+          client.focus();
+          client.postMessage({ type: 'AU_NOTIFICATION_CLICK', data });
+          return;
+        }
+      }
+      if (self.clients.openWindow) {
+        return self.clients.openWindow('/');
+      }
+      return undefined;
+    })
+  );
 });
 
 self.addEventListener('fetch', (event) => {

@@ -199,12 +199,25 @@ fun AnimeDetailScreen(
         }
     }
 
-    val seasonEntries = remember(richDetail) { richDetail?.seasons.orEmpty() }
-    val activeSeasonEntry = remember(seasonEntries, current.id) {
-        seasonEntries.firstOrNull { it.isCurrent || it.id == current.id }
+    val watchlist by viewModel.watchlist.collectAsState()
+    val trackedById = remember(watchlist, current) {
+        val map = watchlist.associateBy { it.id }.toMutableMap()
+        map[current.id] = current
+        map
     }
-    val seasonIdSet = remember(seasonEntries) {
-        if (seasonEntries.size > 1) seasonEntries.map { it.id }.toSet() else emptySet()
+
+    val seasonEntries = remember(richDetail) { richDetail?.seasons.orEmpty() }
+    val moviesAndOvas = remember(richDetail) { richDetail?.moviesAndOvas.orEmpty() }
+    val franchiseId = richDetail?.franchiseId ?: current.id
+    val rawMainSeasonNodeCount = richDetail?.rawMainSeasonNodeCount ?: seasonEntries.size
+
+    val activeSeasonEntry = remember(seasonEntries, current.id) {
+        seasonEntries.firstOrNull { it.isCurrent || it.containsAnimeId(current.id) }
+    }
+    val seasonIdSet = remember(seasonEntries, moviesAndOvas) {
+        val sIds = seasonEntries.flatMap { s -> listOf(s.id) + s.subEntries.map { it.id } }
+        val mIds = moviesAndOvas.map { it.id }
+        (sIds + mIds).toSet()
     }
     val otherParts = remember(richDetail, seasonIdSet, current.id) {
         richDetail?.relations.orEmpty()
@@ -364,13 +377,42 @@ fun AnimeDetailScreen(
 
                 // Editorial Big-Card 1: EPISODE PROGRESS & RATING
                 item {
-                    val total = current.totalEpisodes
-                    val canInc = !current.inWatchlist || total == null || total <= 0 || current.watchedEpisodeCount < total
-                    val canDec = current.inWatchlist && current.watchedEpisodeCount > 0
-                    val isCompleted = current.inWatchlist && (
+                    val isMergedContinuous = activeSeasonEntry != null && activeSeasonEntry.subEntries.size > 1
+                    val total = if (isMergedContinuous) {
+                        activeSeasonEntry?.episodes ?: current.totalEpisodes
+                    } else {
+                        current.totalEpisodes
+                    }
+                    val effectiveWatched = if (isMergedContinuous) {
+                        viewModel.computeContinuousWatchedProgress(activeSeasonEntry, current, trackedById)
+                    } else {
+                        current.watchedEpisodeCount
+                    }
+                    val isTrackedInVault = current.inWatchlist || (
+                        isMergedContinuous && activeSeasonEntry?.subEntries.orEmpty().any { seg ->
+                            trackedById[seg.id]?.inWatchlist == true
+                        }
+                        )
+                    val canInc = !isTrackedInVault || total == null || total <= 0 || effectiveWatched < total
+                    val canDec = isTrackedInVault && effectiveWatched > 0
+                    val isCompleted = isTrackedInVault && (
                         current.watchStatusEnum == WatchStatus.COMPLETED ||
-                            ProgressRules.shouldAutoComplete(current.status, total, current.watchedEpisodeCount)
-                    )
+                            ProgressRules.shouldAutoComplete(
+                                activeSeasonEntry?.status ?: current.status,
+                                total,
+                                effectiveWatched
+                            )
+                        )
+
+                    val isFranchiseMergedAsOne = seasonEntries.size == 1 && (
+                        seasonEntries.first().subEntries.size > 1 || rawMainSeasonNodeCount > 1
+                        )
+                    val canToggleSeasonMerge = rawMainSeasonNodeCount > 1 ||
+                        seasonEntries.size > 1 ||
+                        seasonEntries.any { it.subEntries.size > 1 }
+                    val showSeasonsSelector = seasonEntries.size > 1 ||
+                        isFranchiseMergedAsOne ||
+                        (seasonEntries.isNotEmpty() && moviesAndOvas.isNotEmpty())
 
                     AppCard(
                         shape = RoundedCornerShape(24.dp),
@@ -382,7 +424,7 @@ fun AnimeDetailScreen(
                             modifier = Modifier.padding(18.dp),
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            if (seasonEntries.size > 1 && !current.isMovie) {
+                            if (showSeasonsSelector) {
                                 val distinctSeasonCount = seasonEntries.map { it.seasonNumber }.distinct().size
                                 Column(
                                     verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -393,26 +435,70 @@ fun AnimeDetailScreen(
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        DetailCardLabel("SEASONS")
-                                        if (activeSeasonEntry != null) {
-                                            val yearText = activeSeasonEntry.seasonYear?.let { " • $it" }.orEmpty()
-                                            val totalText = if (distinctSeasonCount == 1) {
-                                                "1 Season (${seasonEntries.size} Parts)"
-                                            } else {
-                                                "$distinctSeasonCount Seasons"
+                                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                            DetailCardLabel("SEASONS")
+                                            if (activeSeasonEntry != null) {
+                                                val yearText = activeSeasonEntry.seasonYear?.let { " • $it" }.orEmpty()
+                                                val totalText = if (distinctSeasonCount == 1) {
+                                                    if (activeSeasonEntry.subEntries.size > 1) {
+                                                        "1 Continuous Season (${activeSeasonEntry.subEntries.size} Parts)"
+                                                    } else {
+                                                        "1 Season"
+                                                    }
+                                                } else {
+                                                    "$distinctSeasonCount Seasons"
+                                                }
+                                                Text(
+                                                    text = "${activeSeasonEntry.displayLabel} • $totalText$yearText",
+                                                    style = MicroUpperLabel.copy(fontSize = 8.5.sp, letterSpacing = 1.sp),
+                                                    color = colors.textSecondary
+                                                )
                                             }
-                                            Text(
-                                                text = "${activeSeasonEntry.displayLabel} • $totalText$yearText",
-                                                style = MicroUpperLabel.copy(fontSize = 8.5.sp, letterSpacing = 1.sp),
-                                                color = colors.textSecondary
-                                            )
+                                        }
+                                        if (canToggleSeasonMerge) {
+                                            val toggleLabel = if (isFranchiseMergedAsOne) {
+                                                "Split Seasons"
+                                            } else {
+                                                "Merge as 1 Season"
+                                            }
+                                            Surface(
+                                                shape = CircleShape,
+                                                color = colors.elevatedSurface.copy(alpha = 0.9f),
+                                                border = BorderStroke(1.dp, colors.accentPrimary.copy(alpha = 0.45f)),
+                                                modifier = Modifier
+                                                    .height(34.dp)
+                                                    .clip(CircleShape)
+                                                    .pointerHoverIcon(PointerIcon.Hand)
+                                                    .clickable {
+                                                        viewModel.toggleFranchiseSeasonOverride(
+                                                            franchiseId = franchiseId,
+                                                            currentlyMergedAsOne = isFranchiseMergedAsOne
+                                                        )
+                                                    }
+                                                    .testTag("detail_season_override_toggle")
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier.padding(horizontal = 12.dp),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Text(
+                                                        text = toggleLabel,
+                                                        style = MicroUpperLabel.copy(
+                                                            fontSize = 9.sp,
+                                                            fontWeight = FontWeight.Bold,
+                                                            letterSpacing = 0.8.sp
+                                                        ),
+                                                        color = colors.accentPrimary
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                     LazyRow(
                                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
                                         items(seasonEntries, key = { it.id }) { s ->
-                                            val isSelected = s.isCurrent || s.id == current.id
+                                            val isSelected = s.isCurrent || s.containsAnimeId(current.id)
                                             val isUpcoming = s.status.equals("NOT_YET_RELEASED", ignoreCase = true)
                                             val pillBrush = if (isSelected) {
                                                 if (colors.isDark) Brush.linearGradient(listOf(ChampagneGoldSoft, ChampagneGold))
@@ -444,7 +530,7 @@ fun AnimeDetailScreen(
                                             ) {
                                                 Row(
                                                     verticalAlignment = Alignment.CenterVertically,
-                                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                                                 ) {
                                                     Text(
                                                         text = s.shortLabel,
@@ -455,6 +541,17 @@ fun AnimeDetailScreen(
                                                             colors.textPrimary
                                                         }
                                                     )
+                                                    if (s.isMergedContinuousRun && s.episodes != null && s.episodes > 0) {
+                                                        Text(
+                                                            text = "• ${s.episodes} EPS",
+                                                            style = MicroUpperLabel.copy(fontSize = 8.5.sp, letterSpacing = 0.8.sp),
+                                                            color = if (isSelected) {
+                                                                if (colors.isDark) ChampagneOnGold.copy(alpha = 0.85f) else colors.onAccentPrimary.copy(alpha = 0.85f)
+                                                            } else {
+                                                                colors.textSecondary
+                                                            }
+                                                        )
+                                                    }
                                                     if (isUpcoming && !isSelected) {
                                                         Box(
                                                             modifier = Modifier
@@ -468,12 +565,109 @@ fun AnimeDetailScreen(
                                         }
                                     }
                                 }
+                            }
+
+                            if (moviesAndOvas.isNotEmpty()) {
+                                if (showSeasonsSelector) {
+                                    HorizontalDivider(color = colors.borderSubtle.copy(alpha = 0.6f), thickness = 1.dp)
+                                }
+                                Column(
+                                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.testTag("detail_movies_ovas_section")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        DetailCardLabel("MOVIES & OVAs")
+                                        Text(
+                                            text = "${moviesAndOvas.size} ${if (moviesAndOvas.size == 1) "ITEM" else "ITEMS"}",
+                                            style = MicroUpperLabel.copy(fontSize = 8.5.sp, letterSpacing = 1.sp),
+                                            color = colors.textSecondary
+                                        )
+                                    }
+                                    LazyRow(
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        items(moviesAndOvas, key = { it.id }) { m ->
+                                            val isSelected = m.isCurrent || m.id == current.id
+                                            val mEntity = if (m.id == current.id) current else trackedById[m.id]
+                                            val mWatched = mEntity?.watchedEpisodeCount ?: 0
+                                            val mTotal = (mEntity?.totalEpisodes?.takeIf { it > 0 } ?: m.episodes).coerceAtLeast(1)
+                                            Surface(
+                                                shape = RoundedCornerShape(16.dp),
+                                                color = if (isSelected) {
+                                                    colors.accentPrimary.copy(alpha = 0.16f)
+                                                } else {
+                                                    colors.elevatedSurface.copy(alpha = 0.85f)
+                                                },
+                                                border = BorderStroke(
+                                                    width = if (isSelected) 1.5.dp else 1.dp,
+                                                    color = if (isSelected) colors.accentPrimary else colors.borderSubtle
+                                                ),
+                                                modifier = Modifier
+                                                    .widthIn(min = 160.dp, max = 230.dp)
+                                                    .clip(RoundedCornerShape(16.dp))
+                                                    .pointerHoverIcon(PointerIcon.Hand)
+                                                    .clickable(enabled = !isSelected) { onSelectAnime(m.id) }
+                                                    .testTag("detail_movie_ova_pill_${m.id}")
+                                            ) {
+                                                Column(
+                                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                                ) {
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        Surface(
+                                                            shape = RoundedCornerShape(6.dp),
+                                                            color = if (isSelected) colors.accentPrimary else colors.cardBackground
+                                                        ) {
+                                                            Text(
+                                                                text = m.formatBadge,
+                                                                style = MicroUpperLabel.copy(fontSize = 8.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.9.sp),
+                                                                color = if (isSelected) {
+                                                                    if (colors.isDark) ChampagneOnGold else colors.onAccentPrimary
+                                                                } else {
+                                                                    colors.accentPrimary
+                                                                },
+                                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                            )
+                                                        }
+                                                        Text(
+                                                            text = "${m.releaseYear ?: "TBA"} • EP $mWatched / $mTotal",
+                                                            style = TabularNumSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.SemiBold),
+                                                            color = if (isSelected) colors.accentPrimary else colors.textSecondary
+                                                        )
+                                                    }
+                                                    Text(
+                                                        text = m.title,
+                                                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                                        color = colors.textPrimary,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (showSeasonsSelector || moviesAndOvas.isNotEmpty()) {
                                 HorizontalDivider(color = colors.borderSubtle, thickness = 1.dp)
                             }
 
+                            val isMovieOrOvaSpecial = current.isMovie ||
+                                current.format.equals("OVA", ignoreCase = true) ||
+                                current.format.equals("SPECIAL", ignoreCase = true)
+
                             DetailCardLabel(if (current.isMovie) "MOVIE PROGRESS" else "EPISODE PROGRESS")
 
-                            if (!current.inWatchlist) {
+                            if (!isTrackedInVault) {
                                 AppPrimaryButton(
                                     text = "Add to My List",
                                     leadingIcon = Icons.Filled.Add,
@@ -485,20 +679,38 @@ fun AnimeDetailScreen(
                             } else {
                                 DetailEpisodeStepperControl(
                                     animeId = current.id,
-                                    watchedEpisodeCount = current.watchedEpisodeCount,
-                                    totalEpisodes = total ?: if (current.isMovie) 1 else null,
+                                    watchedEpisodeCount = effectiveWatched,
+                                    totalEpisodes = total ?: if (isMovieOrOvaSpecial) 1 else null,
                                     subtitle = when {
                                         current.isMovie -> "MOVIE • TAP TO MARK WATCHED"
+                                        isMergedContinuous && activeSeasonEntry != null ->
+                                            "${activeSeasonEntry.displayLabel.uppercase()} • CONTINUOUS EPISODE COUNTER"
                                         activeSeasonEntry != null && seasonEntries.size > 1 ->
                                             "${activeSeasonEntry.displayLabel.uppercase()} • TAP NUMBER TO EDIT"
                                         else -> "EPISODES WATCHED • TAP NUMBER TO EDIT"
                                     },
                                     canDecrement = canDec,
                                     canIncrement = canInc,
-                                    onDecrement = { viewModel.decrementEpisode(current.id) },
-                                    onIncrement = { viewModel.incrementEpisode(current.id) },
+                                    onDecrement = {
+                                        if (isMergedContinuous && activeSeasonEntry != null) {
+                                            viewModel.stepMergedContinuousEpisode(activeSeasonEntry, effectiveWatched, -1)
+                                        } else {
+                                            viewModel.decrementEpisode(current.id)
+                                        }
+                                    },
+                                    onIncrement = {
+                                        if (isMergedContinuous && activeSeasonEntry != null) {
+                                            viewModel.stepMergedContinuousEpisode(activeSeasonEntry, effectiveWatched, 1)
+                                        } else {
+                                            viewModel.incrementEpisode(current.id)
+                                        }
+                                    },
                                     onCommitCustomEpisode = { targetEp ->
-                                        viewModel.commitEpisodeProgress(current.id, targetEp).map { }
+                                        if (isMergedContinuous && activeSeasonEntry != null) {
+                                            viewModel.commitMergedContinuousEpisodeProgress(activeSeasonEntry, targetEp).map { }
+                                        } else {
+                                            viewModel.commitEpisodeProgress(current.id, targetEp).map { }
+                                        }
                                     }
                                 )
 
@@ -533,8 +745,8 @@ fun AnimeDetailScreen(
                                 }
 
                                 val pct = if (total != null && total > 0) {
-                                    (current.watchedEpisodeCount.toFloat() / total.toFloat()).coerceIn(0f, 1f)
-                                } else if (current.watchedEpisodeCount > 0) 0.5f else 0.05f
+                                    (effectiveWatched.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+                                } else if (effectiveWatched > 0) 0.5f else 0.05f
 
                                 AppProgressBar(
                                     progress = pct,

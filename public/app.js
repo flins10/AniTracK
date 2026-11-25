@@ -86,6 +86,45 @@ let sandroneLastClipIndex = -1;
 let sandroneIsPlaying = false;
 let sandronePlayToken = 0;
 
+function isTauriAppEnvironment() {
+  if (typeof window === 'undefined') return false;
+  try {
+    const params = new URLSearchParams(window.location.search || '');
+    if (params.get('tauri') === '1') {
+      sessionStorage.setItem('au_tauri_app', '1');
+      return true;
+    }
+    if (sessionStorage.getItem('au_tauri_app') === '1') {
+      return true;
+    }
+  } catch (_) {}
+  if (window.__TAURI_INTERNALS__ || window.__TAURI__ || window.__ANIME_UNIVERSE_TAURI__) {
+    return true;
+  }
+  if (window.ipc && typeof window.ipc.postMessage === 'function') {
+    return true;
+  }
+  if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ipc) {
+    return true;
+  }
+  if (window.chrome && window.chrome.webview) {
+    return true;
+  }
+  const proto = String(window.location?.protocol || '').toLowerCase();
+  const host = String(window.location?.hostname || '').toLowerCase();
+  if (proto === 'tauri:' || host === 'tauri.localhost' || host.endsWith('.tauri.localhost')) {
+    return true;
+  }
+  const ua = String(navigator.userAgent || '');
+  if (/\bTauri\b/i.test(ua)) {
+    return true;
+  }
+  if (/\bAndroid\b/i.test(ua) && /\bwv\b/i.test(ua)) {
+    return true;
+  }
+  return false;
+}
+
 function isPcSandroneEnvironment() {
   if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
   const ua = String(navigator.userAgent || '');
@@ -168,16 +207,33 @@ const SENTIMENTS = [
   { key: 'waste', shortLabel: 'Waste', fullLabel: 'Waste of Time', minScore100: 1, suggestedStars: 1.0 }
 ];
 
-function normalizeRating10(rawRating) {
-  if (rawRating === null || rawRating === undefined || Number(rawRating) <= 0) return null;
+function roundStarsTenth(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.round(Math.min(5.0, Math.max(0.1, n)) * 10) / 10;
+}
+
+function starsToRating10(stars) {
+  const clean = roundStarsTenth(stars);
+  if (clean <= 0) return null;
+  return Number((clean * 2).toFixed(1));
+}
+
+function clampRating10(rawRating) {
+  if (rawRating === null || rawRating === undefined) return null;
   const num = Number(rawRating);
-  return num;
+  if (!Number.isFinite(num) || num <= 0) return null;
+  return Number(Math.min(10, Math.max(0.2, num)).toFixed(1));
+}
+
+function normalizeRating10(rawRating) {
+  return clampRating10(rawRating);
 }
 
 function rating10ToStars(rawRating) {
   const r10 = normalizeRating10(rawRating);
   if (!r10) return null;
-  return r10 / 2;
+  return roundStarsTenth(r10 / 2);
 }
 
 function sentimentFromRating10(rating10) {
@@ -519,74 +575,46 @@ const state = {
   inlineEpEdit: null, // { animeId, scope: 'card'|'detail', draft, saving, error }
   toastMessage: '',
   toastError: false,
+  communityQuickRate: null, // { animeId, stars, saving }
+  inAppNotifBanner: null, // { id, title, body, senderName, senderAvatar, animeId, animeTitle, animeCover, commentId, threadId, replyId }
+  osNotifPermission: typeof Notification !== 'undefined' ? Notification.permission : 'default',
 
-  // Download Center & Admin Release Configuration State
-  downloadsConfig: JSON.parse(localStorage.getItem('anime_universe_downloads_admin_override') || 'null') || {
-    githubRepo: '',
-    autoFetchGithubReleases: true,
-    lastUpdated: '2026-11-18',
+  // Download Center Configuration State (Web-only)
+  downloadsConfig: {
     platforms: {
       android: {
         id: 'android',
         platformName: 'Android APK',
         appName: 'Anime Universe for Android',
-        version: 'v2.1.0',
-        fileSize: '24.0 MB',
         osSupported: 'Android 8.0 (Oreo) & above • ARM64 / Universal',
-        releaseDate: 'Nov 18, 2026',
-        fileName: 'AnimeUniverse-v2.1.0-arm64.apk',
-        architecture: 'Universal APK (ARM64-v8a / armeabi-v7a / x86_64)',
-        packageType: 'Signed Android Package (.apk)',
+        fileName: 'AnimeUniverse-Android.apk',
+        packageType: 'Android Package (.apk)',
         available: true,
-        downloadUrl: 'https://drive.usercontent.google.com/download?id=1bvDpEEuwfAhWy9ECEzjUK9rdAMv18gys&export=download&confirm=t'
+        downloadUrl: 'https://drive.google.com/file/d/1PgQkk8PTjrJspjx5uOvCx3ZNPrwWyKSx/view?usp=drivesdk'
       },
       windows: {
         id: 'windows',
         platformName: 'Windows EXE',
         appName: 'Anime Universe for Windows',
-        version: 'v2.1.0',
-        fileSize: '112.9 MB',
         osSupported: 'Windows 10 & Windows 11 (64-bit x64)',
-        releaseDate: 'Nov 18, 2026',
         fileName: 'AnimeUniverse-Windows-Installer.exe',
-        architecture: '64-bit Native JVM Desktop (.exe)',
-        packageType: 'Windows Native Installer (.exe)',
+        packageType: 'Windows Installer (.exe)',
         available: true,
-        downloadUrl: 'https://drive.usercontent.google.com/download?id=1nARmFc6FHBLt1JnCJTjGEqoDla0njtOU&export=download&confirm=t'
+        downloadUrl: 'https://drive.google.com/file/d/1hNlNCL_K6-GjkktUfPNk_qY3Vjxqrckt/view?usp=drivesdk'
       },
       macos: {
         id: 'macos',
         platformName: 'macOS DMG',
         appName: 'Anime Universe for macOS',
-        version: 'v2.1.0',
-        fileSize: '122.0 MB',
         osSupported: 'macOS 12 Monterey & newer (Apple Silicon & Intel)',
-        releaseDate: 'Nov 18, 2026',
         fileName: 'AnimeUniverse-macOS-Installer.dmg',
-        architecture: 'Universal macOS Disk Image (.dmg)',
         packageType: 'macOS Disk Image (.dmg)',
         available: true,
-        downloadUrl: 'https://drive.usercontent.google.com/download?id=1W6GoMBMHr-Vbd5_jCGv140HLMG8r3D5Y&export=download&confirm=t'
+        downloadUrl: 'https://drive.google.com/file/d/1IHvY4Tru4KpvEg_rcuD7BE6iu4EOai5R/view?usp=drivesdk'
       }
-    },
-    currentRelease: {
-      version: 'v2.1.0',
-      title: 'Obsidian & Champagne Gold Parity + Instant Cloud Sync',
-      releaseDate: 'Nov 18, 2026',
-      channel: 'Stable Release',
-      summary: 'Unified 1:1 visual design across Android, Windows, macOS, and Web with instant startup session restore and automatic background cloud synchronization.',
-      highlights: [
-        { tag: 'SYNC', text: 'Automatic real-time cross-platform cloud synchronization every 15 seconds across Android, Windows, macOS, and Web without manual refresh.' },
-        { tag: 'PERFORMANCE', text: 'Eliminated the 4–5 second startup login flash on Android APK and Desktop by caching verified session snapshots locally.' },
-        { tag: 'DESIGN', text: '1:1 Obsidian & Champagne Gold visual parity across Home Weekly Schedule, Global Catalog Discover, Library Collections, and Community Reviews.' },
-        { tag: 'AUTH', text: 'Added seamless Email or Username sign-in resolution and automatic background JWT session refresh.' }
-      ]
-    },
-    previousVersions: []
+    }
   },
-  downloadTasks: {},
-  showDownloadsAdminModal: false,
-  githubSyncMessage: ''
+  downloadTasks: {}
 };
 
 const syncedCatalogHashes = new Map();
@@ -801,6 +829,10 @@ function saveSession(session) {
     state.isGuestMode = false;
     localStorage.removeItem('anime_universe_guest');
     hydrateActiveIdentityState();
+    if (typeof NativeNotificationBridge !== 'undefined') {
+      NativeNotificationBridge.syncAuthToTauri(session);
+      NativeNotificationBridge.ensurePermissionSilently();
+    }
   } else {
     state.session = null;
     state.isGuestMode = false;
@@ -809,6 +841,7 @@ function saveSession(session) {
     localStorage.removeItem('anime_universe_guest');
     if (typeof NotificationRealtimeManager !== 'undefined') NotificationRealtimeManager.disconnect();
     if (typeof NotificationSyncState !== 'undefined') NotificationSyncState.reset();
+    if (typeof NativeNotificationBridge !== 'undefined') NativeNotificationBridge.clearAuthInTauri();
     clearActiveUserMemoryState();
   }
 }
@@ -819,6 +852,7 @@ function enterGuestSession(forceNewGuestId = false) {
   localStorage.removeItem('auralog_session');
   if (typeof NotificationRealtimeManager !== 'undefined') NotificationRealtimeManager.disconnect();
   if (typeof NotificationSyncState !== 'undefined') NotificationSyncState.reset();
+  if (typeof NativeNotificationBridge !== 'undefined') NativeNotificationBridge.clearAuthInTauri();
   state.guestId = forceNewGuestId ? rotateGuestId() : getOrCreateGuestId();
   state.isGuestMode = true;
   localStorage.setItem('anime_universe_guest', 'true');
@@ -2926,6 +2960,7 @@ const ANILIST_SEASON_BATCH_QUERY = `
         duration
         seasonYear
         startDate { year month day }
+        endDate { year month day }
         averageScore
         relations {
           edges {
@@ -2943,6 +2978,7 @@ const ANILIST_SEASON_BATCH_QUERY = `
               duration
               seasonYear
               startDate { year month day }
+              endDate { year month day }
               averageScore
             }
           }
@@ -2952,23 +2988,57 @@ const ANILIST_SEASON_BATCH_QUERY = `
   }
 `;
 
-const WEB_NON_SEASON_FORMATS = new Set(['MOVIE', 'OVA', 'MUSIC', 'MANGA', 'NOVEL', 'ONE_SHOT']);
+const WEB_NON_SEASON_FORMATS = new Set(['MOVIE', 'OVA', 'SPECIAL', 'MUSIC', 'MANGA', 'NOVEL', 'ONE_SHOT']);
+const WEB_MOVIE_OVA_SPECIAL_FORMATS = new Set(['MOVIE', 'OVA', 'SPECIAL']);
 const WEB_MAIN_EPISODIC_FORMATS = new Set(['TV', 'ONA', 'TV_SHORT']);
+const WEB_MAINLINE_TRAVERSAL_RELS = new Set(['SEQUEL', 'PREQUEL', 'PARENT']);
+const WEB_SIDE_COLLECTION_RELS = new Set(['SIDE_STORY', 'SPIN_OFF', 'SUMMARY', 'ALTERNATIVE']);
+const WEB_CONTINUOUS_MAX_GAP_DAYS = 21;
+const FRANCHISE_SEASON_OVERRIDE_STORAGE_KEY = 'anime_universe_season_overrides_v1';
+
 const WEB_EXPLICIT_SEASON_TITLE_RE = /(?:\bseason\s*(\d{1,2})\b|\b(\d{1,2})(?:st|nd|rd|th)\s+season\b|\bs(\d{1,2})\b|\bdi\s*(\d{1,2})\s*ji\b|\bdai\s*(\d{1,2})\s*ki\b|\bfinal\s+season\b|\bfinal\s+chapters?\b)/i;
 const WEB_EXPLICIT_SEASON_NUM_RE = /(?:\bseason\s*(\d{1,2})\b|\b(\d{1,2})(?:st|nd|rd|th)\s+season\b|\bs(\d{1,2})\b|\bdi\s*(\d{1,2})\s*ji\b|\bdai\s*(\d{1,2})\s*ki\b)/i;
 const WEB_PINYIN_SEASON_NUM_RE = /\bdi\s*(yi|er|san|si|wu|liu|qi|ba|jiu|shi)\s*ji\b/i;
-const WEB_EXPLICIT_PART_RE = /(?:\bpart\s*(\d{1,2})\b|\bcour\s*(\d{1,2})\b|\b(\d{1,2})(?:st|nd|rd|th)\s+cour\b)/i;
+const WEB_EXPLICIT_PART_RE = /(?:\bpart\s*(\d{1,2})\b|\bcour\s*(\d{1,2})\b|\b(\d{1,2})(?:st|nd|rd|th)\s+(?:part|cour)\b)/i;
 const WEB_SECOND_HALF_RE = /\b(?:second\s+half|2nd\s+half|xia\s*ji|xia\s*pian)\b/i;
 const WEB_ANNUAL_RE = /\b(?:nian\s*fan|annual\s+(?:edition|season))\b/i;
 const WEB_TRAILING_ROMAN_RE = /(?:^|\s)(II|III|IV|V|VI)(?:$|[:\-])/;
 const WEB_NON_SEASON_BEFORE_ROMAN_RE = /\b(?:part|cour|movie|film|special|ova|oad|episode|ep|chapter|act|vol|volume)\s*$/i;
 const WEB_NON_SEASON_SIDE_RE = /(?:\bmini\s*theater\b|\bxiao\s*juchang\b|\bchibi\b|\bq[- ]?ban\b|\bpetite\b|\bmini\s*anime\b|\bshort\s*theater\b|\bgekijou\b|\blittle\s*theater\b|\brecap\b|\bsummary\b|\bdigest\b|\bpreview\b|\bteaser\b|\btrailer\b|\bpv\b|\bcm\b|\bcommercial\b|\bpromotional\b|\bspecial\s+program\b|\bmusic\s+video\b|\btebie\s*pian\b|\bfanwai\b|\bomake\b|\bpicture\s*drama\b|\bprologue\b|\bepisode\s*0\b|\bep\.?\s*0\b|\bova\b|\boad\b|\bmovie\b|\bjuchang\s*ban\b|\bgekijouban\b|\bspecials?\b|\bspecial\s*\d+\b|\bsan\s*nian\s*zhi\s*yue\b|\bthree[- ]year\s+agreement\b|\byuan\s*qi\b|\borigin\s*(?::|$))/i;
+const WEB_BASE_TITLE_SPLIT_SUFFIX_RE = /(?:[:\-\s]+(?:(?:season\s*1\s*)?(?:part|cour)\s*\d{1,2}|\d{1,2}(?:st|nd|rd|th)\s+(?:part|cour)|second\s+half|2nd\s+half|xia\s*ji|xia\s*pian|nian\s*fan|annual\s*(?:edition|season)?)|(?<!\bseason)(?<!\bs)(?<!\bno\.)(?<!\bno)(?<!#)\s+[2-9])\s*$/i;
+
+function getFranchiseSeasonOverride(franchiseId) {
+  if (!franchiseId) return 'auto';
+  try {
+    const raw = localStorage.getItem(FRANCHISE_SEASON_OVERRIDE_STORAGE_KEY);
+    if (!raw) return 'auto';
+    const parsed = JSON.parse(raw);
+    const mode = parsed && parsed[String(franchiseId)];
+    if (mode === 'merge_one' || mode === 'split_all') return mode;
+  } catch (_) {}
+  return 'auto';
+}
+
+function setFranchiseSeasonOverride(franchiseId, mode) {
+  if (!franchiseId) return;
+  try {
+    const raw = localStorage.getItem(FRANCHISE_SEASON_OVERRIDE_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    if (mode === 'merge_one' || mode === 'split_all') {
+      parsed[String(franchiseId)] = mode;
+    } else {
+      delete parsed[String(franchiseId)];
+    }
+    localStorage.setItem(FRANCHISE_SEASON_OVERRIDE_STORAGE_KEY, JSON.stringify(parsed));
+  } catch (_) {}
+}
 
 function extractWebSeasonAndPart(node) {
   const primaryList = [node?.title?.english, node?.title?.userPreferred, node?.title?.romaji].filter(Boolean);
   const primary = primaryList.join(' | ');
   const combined = [...primaryList, ...(Array.isArray(node?.synonyms) ? node.synonyms : [])].filter(Boolean).join(' | ');
   const isAnnualEdition = WEB_ANNUAL_RE.test(combined);
+  const hasFinalSeasonMarker = /\b(?:final\s+season|final\s+chapters?)\b/i.test(primary);
 
   let seasonNumber = null;
   const pinyinMap = { yi: 1, er: 2, san: 3, si: 4, wu: 5, liu: 6, qi: 7, ba: 8, jiu: 9, shi: 10 };
@@ -3012,7 +3082,7 @@ function extractWebSeasonAndPart(node) {
     if (partNumber === null && WEB_SECOND_HALF_RE.test(src)) partNumber = 2;
   }
 
-  return { seasonNumber, partNumber, isAnnualEdition };
+  return { seasonNumber, partNumber, isAnnualEdition, hasFinalSeasonMarker };
 }
 
 function isSeasonCandidateMedia(node, franchiseHasFullSeries = false) {
@@ -3021,18 +3091,12 @@ function isSeasonCandidateMedia(node, franchiseHasFullSeries = false) {
   if (String(node.status || '').toUpperCase() === 'CANCELLED') return false;
   const fmt = String(node.format || '').toUpperCase().trim();
   if (WEB_NON_SEASON_FORMATS.has(fmt)) return false;
+  if (fmt && !WEB_MAIN_EPISODIC_FORMATS.has(fmt)) return false;
 
   const primary = [node.title?.english, node.title?.userPreferred, node.title?.romaji].filter(Boolean).join(' | ');
   const hasExplicitSeason = WEB_EXPLICIT_SEASON_TITLE_RE.test(primary);
   const hasSideMarker = WEB_NON_SEASON_SIDE_RE.test(primary);
 
-  if (fmt === 'SPECIAL') {
-    return (
-      /(?:\bfinal\s+season\b|\bfinal\s+chapters?\b|\bseason\s+\d+\b)/i.test(primary) &&
-      !/(?:\brecap\b|\bsummary\b|\bdigest\b|\bpreview\b|\bpv\b|\bspecial\s+program\b|\bchibi\b|\bmini\b|\bxiao\s*juchang\b)/i.test(primary)
-    );
-  }
-  if (fmt && !WEB_MAIN_EPISODIC_FORMATS.has(fmt)) return false;
   if (hasSideMarker && !hasExplicitSeason) return false;
 
   if (franchiseHasFullSeries) {
@@ -3054,6 +3118,94 @@ function isSeasonCandidateMedia(node, franchiseHasFullSeries = false) {
     }
   }
   return true;
+}
+
+function normalizeWebBaseTitle(rawTitle) {
+  if (!rawTitle) return '';
+  let cleaned = String(rawTitle).trim();
+  for (let i = 0; i < 3; i++) {
+    const next = cleaned.replace(WEB_BASE_TITLE_SPLIT_SUFFIX_RE, '').trim();
+    if (!next || next === cleaned) break;
+    cleaned = next;
+  }
+  return cleaned
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, ' ')
+    .trim();
+}
+
+function extractNodeNormalizedBaseTitles(node, rootIsDonghua = false) {
+  const snIsDonghua = rootIsDonghua || String(node?.countryOfOrigin || '').toUpperCase() === 'CN';
+  const mapped = resolveEnglishTitle(
+    node?.title?.english || '',
+    node?.title?.romaji || node?.title?.userPreferred || '',
+    node?.synonyms || [],
+    snIsDonghua
+  );
+  const candidates = [mapped, node?.title?.english, node?.title?.userPreferred, node?.title?.romaji]
+    .map((t) => normalizeWebBaseTitle(t))
+    .filter((t) => t.length >= 2);
+  return new Set(candidates);
+}
+
+function sharesSameWebBaseTitle(prevNode, currNode, rootIsDonghua = false) {
+  const prevSet = extractNodeNormalizedBaseTitles(prevNode, rootIsDonghua);
+  const currSet = extractNodeNormalizedBaseTitles(currNode, rootIsDonghua);
+  if (!prevSet.size || !currSet.size) return false;
+  for (const a of prevSet) {
+    if (currSet.has(a)) return true;
+    for (const b of currSet) {
+      if (a.length >= 5 && b.length >= 5 && (a.startsWith(`${b} `) || b.startsWith(`${a} `))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function toWebEpochDay(fuzzyDate) {
+  const y = Number(fuzzyDate?.year || 0);
+  if (!y || y < 1900 || y > 2100) return null;
+  const m = Math.min(12, Math.max(1, Number(fuzzyDate?.month || 1)));
+  const d = Math.min(31, Math.max(1, Number(fuzzyDate?.day || 1)));
+  return Math.floor(Date.UTC(y, m - 1, d) / 86400000);
+}
+
+function computeWebBroadcastGapDays(prevNode, currNode) {
+  const currStart = toWebEpochDay(currNode?.startDate);
+  if (currStart === null) return null;
+  const prevEndDirect = toWebEpochDay(prevNode?.endDate);
+  if (prevEndDirect !== null) {
+    return currStart - prevEndDirect;
+  }
+  const prevStart = toWebEpochDay(prevNode?.startDate);
+  if (prevStart === null) return null;
+  const prevEps = Number(prevNode?.episodes || 0);
+  if (prevEps > 0) {
+    const estimatedEnd = prevStart + Math.max(0, prevEps - 1) * 7;
+    return currStart - estimatedEnd;
+  }
+  return null;
+}
+
+function hasExplicitWebSeasonBreakLabel(prevNode, currNode) {
+  const prevParsed = extractWebSeasonAndPart(prevNode);
+  const currParsed = extractWebSeasonAndPart(currNode);
+  if (currParsed.hasFinalSeasonMarker && !prevParsed.hasFinalSeasonMarker) return true;
+  if (currParsed.seasonNumber === null) return false;
+  const prevSeason = prevParsed.seasonNumber ?? 1;
+  return currParsed.seasonNumber >= 2 && currParsed.seasonNumber !== prevSeason;
+}
+
+function shouldMergeWebContinuousRun(prevNode, currNode, hadBridgeBetween, rootIsDonghua = false) {
+  if (hadBridgeBetween) return false;
+  if (hasExplicitWebSeasonBreakLabel(prevNode, currNode)) return false;
+  if (!sharesSameWebBaseTitle(prevNode, currNode, rootIsDonghua)) return false;
+  const gapDays = computeWebBroadcastGapDays(prevNode, currNode);
+  if (gapDays !== null) {
+    return gapDays >= -14 && gapDays <= WEB_CONTINUOUS_MAX_GAP_DAYS;
+  }
+  return false;
 }
 
 function compareSeasonNodesChronologically(a, b, aId, bId) {
@@ -3113,16 +3265,18 @@ async function fetchAniListSeasonBatch(ids) {
   return [...cached, ...fetched];
 }
 
-async function resolveFullSeasonChain(rootMedia) {
-  if (!rootMedia?.id) return { seasons: [], relatedMedia: [] };
+async function resolveFullSeasonChain(rootMedia, explicitOverrideMode = null) {
+  if (!rootMedia?.id) {
+    return { seasons: [], moviesAndOvas: [], relatedMedia: [], franchiseId: 0, rawMainSeasonNodeCount: 0 };
+  }
   anilistSeasonNodeCache.set(Number(rootMedia.id), rootMedia);
 
   const rootId = Number(rootMedia.id);
   const rootIsDonghua = String(rootMedia.countryOfOrigin || '').toUpperCase() === 'CN';
 
-  const toRelatedEntry = (node, relLabel = '') => {
+  const resolveCleanNodeTitle = (node, fallback = '') => {
     const snIsDonghua = rootIsDonghua || String(node?.countryOfOrigin || '').toUpperCase() === 'CN';
-    const title =
+    return (
       resolveEnglishTitle(
         node?.title?.english || '',
         node?.title?.romaji || node?.title?.userPreferred || '',
@@ -3132,7 +3286,13 @@ async function resolveFullSeasonChain(rootMedia) {
       node?.title?.english ||
       node?.title?.userPreferred ||
       node?.title?.romaji ||
-      `Anime #${node.id}`;
+      fallback ||
+      `Anime #${node?.id || ''}`
+    );
+  };
+
+  const toRelatedEntry = (node, relLabel = '') => {
+    const title = resolveCleanNodeTitle(node, `Anime #${node.id}`);
     return {
       id: Number(node.id),
       title,
@@ -3145,17 +3305,41 @@ async function resolveFullSeasonChain(rootMedia) {
     };
   };
 
-  const hasImmediateLink = (rootMedia.relations?.edges || []).some(
-    (e) =>
+  const hasImmediateLink = (rootMedia.relations?.edges || []).some((e) => {
+    const rel = String(e?.relationType || '').toUpperCase().trim();
+    return (
       e?.node &&
       (!e.node.type || String(e.node.type).toUpperCase() === 'ANIME') &&
-      (e.relationType === 'PREQUEL' || e.relationType === 'SEQUEL')
-  );
+      (WEB_MAINLINE_TRAVERSAL_RELS.has(rel) || WEB_SIDE_COLLECTION_RELS.has(rel))
+    );
+  });
+
   if (!hasImmediateLink) {
     const directRelated = (rootMedia.relations?.edges || [])
       .filter((e) => e?.node?.id && (!e.node.type || String(e.node.type).toUpperCase() === 'ANIME') && Number(e.node.id) !== rootId)
       .map((e) => toRelatedEntry(e.node, String(e.relationType || '').replace(/_/g, ' ')));
-    return { seasons: [], relatedMedia: directRelated.slice(0, 12) };
+    const rootFmt = String(rootMedia?.format || '').toUpperCase().trim();
+    const selfMovies = WEB_MOVIE_OVA_SPECIAL_FORMATS.has(rootFmt)
+      ? [
+          {
+            id: rootId,
+            title: resolveCleanNodeTitle(rootMedia),
+            coverImage: rootMedia?.coverImage?.extraLarge || rootMedia?.coverImage?.large || '',
+            formatBadge: rootFmt === 'MOVIE' || rootFmt === 'OVA' ? rootFmt : 'SPECIAL',
+            status: rootMedia?.status || null,
+            episodes: Number(rootMedia?.episodes) > 0 ? Number(rootMedia.episodes) : 1,
+            releaseYear: rootMedia?.startDate?.year ?? rootMedia?.seasonYear ?? null,
+            isCurrent: true
+          }
+        ]
+      : [];
+    return {
+      seasons: [],
+      moviesAndOvas: selfMovies,
+      relatedMedia: directRelated.slice(0, 12),
+      franchiseId: rootId,
+      rawMainSeasonNodeCount: WEB_MOVIE_OVA_SPECIAL_FORMATS.has(rootFmt) ? 0 : 1
+    };
   }
 
   const MAX_WAVES = 25;
@@ -3164,6 +3348,8 @@ async function resolveFullSeasonChain(rootMedia) {
 
   const nodesById = new Map();
   const outgoing = new Map();
+  const mainlineEligibleIds = new Set([rootId]);
+  const sideOnlyAttachedIds = new Set();
   const expandedIds = new Set();
   const queuedIds = new Set();
   const frontier = [];
@@ -3182,6 +3368,7 @@ async function resolveFullSeasonChain(rootMedia) {
         ...existing,
         ...candidate,
         startDate: candidate.startDate || existing.startDate,
+        endDate: candidate.endDate || existing.endDate,
         seasonYear: candidate.seasonYear ?? existing.seasonYear,
         episodes: candidate.episodes ?? existing.episodes,
         duration: candidate.duration ?? existing.duration
@@ -3191,6 +3378,7 @@ async function resolveFullSeasonChain(rootMedia) {
         ...candidate,
         ...existing,
         startDate: existing.startDate || candidate.startDate,
+        endDate: existing.endDate || candidate.endDate,
         seasonYear: existing.seasonYear ?? candidate.seasonYear,
         episodes: existing.episodes ?? candidate.episodes,
         duration: existing.duration ?? candidate.duration,
@@ -3215,18 +3403,37 @@ async function resolveFullSeasonChain(rootMedia) {
     const mediaId = Number(media.id);
     mergeNode(media);
     expandedIds.add(mediaId);
+    const mediaFmt = String(media?.format || '').toUpperCase().trim();
+    const isMainlineOrBridge = mainlineEligibleIds.has(mediaId) || WEB_MOVIE_OVA_SPECIAL_FORMATS.has(mediaFmt);
+
     for (const edge of media.relations?.edges || []) {
-      const rel = String(edge?.relationType || '').toUpperCase();
-      if (rel !== 'PREQUEL' && rel !== 'SEQUEL') continue;
+      const rel = String(edge?.relationType || '').toUpperCase().trim();
       const target = edge.node;
       if (!target?.id) continue;
       if (target.type && String(target.type).toUpperCase() !== 'ANIME') continue;
       const targetId = Number(target.id);
       if (!nodesById.has(targetId) && nodesById.size >= MAX_NODES) continue;
-      mergeNode(target);
-      if (rel === 'SEQUEL') addDirectedEdge(mediaId, targetId);
-      else addDirectedEdge(targetId, mediaId);
-      enqueue(targetId);
+      const targetFmt = String(target?.format || '').toUpperCase().trim();
+
+      if (WEB_MAINLINE_TRAVERSAL_RELS.has(rel)) {
+        mergeNode(target);
+        if (isMainlineOrBridge) {
+          mainlineEligibleIds.add(targetId);
+          sideOnlyAttachedIds.delete(targetId);
+        }
+        if (rel === 'SEQUEL') addDirectedEdge(mediaId, targetId);
+        else if (rel === 'PREQUEL') addDirectedEdge(targetId, mediaId);
+        enqueue(targetId);
+      } else if (WEB_SIDE_COLLECTION_RELS.has(rel)) {
+        mergeNode(target);
+        if (!mainlineEligibleIds.has(targetId)) {
+          sideOnlyAttachedIds.add(targetId);
+        }
+        // Walk through MOVIE, OVA, SPECIAL nodes even when linked via SIDE_STORY / SUMMARY
+        if (WEB_MOVIE_OVA_SPECIAL_FORMATS.has(targetFmt)) {
+          enqueue(targetId);
+        }
+      }
     }
   };
 
@@ -3265,13 +3472,51 @@ async function resolveFullSeasonChain(rootMedia) {
 
   const seasonIds = new Set();
   for (const [id, node] of nodesById.entries()) {
-    if (isSeasonCandidateMedia(node, franchiseHasFullSeries)) seasonIds.add(id);
+    if (
+      mainlineEligibleIds.has(id) &&
+      !sideOnlyAttachedIds.has(id) &&
+      isSeasonCandidateMedia(node, franchiseHasFullSeries)
+    ) {
+      seasonIds.add(id);
+    }
   }
+
+  // Merge all collected MOVIE, OVA, and SPECIAL entries from the franchise graph into one unified list sorted by release date
+  const movieOvaSpecialNodes = Array.from(nodesById.values())
+    .filter((node) => {
+      if (node?.type && String(node.type).toUpperCase() !== 'ANIME') return false;
+      if (String(node?.status || '').toUpperCase() === 'CANCELLED') return false;
+      const fmt = String(node?.format || '').toUpperCase().trim();
+      return WEB_MOVIE_OVA_SPECIAL_FORMATS.has(fmt);
+    })
+    .sort((a, b) => compareSeasonNodesChronologically(a, b, Number(a.id), Number(b.id)));
+
+  const moviesAndOvas = movieOvaSpecialNodes.map((node) => {
+    const fmt = String(node?.format || 'SPECIAL').toUpperCase().trim();
+    const badge = fmt === 'MOVIE' || fmt === 'OVA' ? fmt : 'SPECIAL';
+    const totalEps = Number(node?.episodes) > 0 ? Number(node.episodes) : 1;
+    return {
+      id: Number(node.id),
+      title: resolveCleanNodeTitle(node),
+      coverImage: node?.coverImage?.extraLarge || node?.coverImage?.large || node?.coverImage?.medium || '',
+      formatBadge: badge,
+      status: node?.status || null,
+      episodes: totalEps,
+      releaseYear: node?.startDate?.year ?? node?.seasonYear ?? null,
+      isCurrent: Number(node.id) === rootId
+    };
+  });
+
+  const movieOvaIds = new Set(moviesAndOvas.map((m) => m.id));
+
+  const allFranchiseIds = [...seasonIds, ...movieOvaIds, rootId].filter((id) => id > 0);
+  const franchiseId = allFranchiseIds.length ? Math.min(...allFranchiseIds) : rootId;
+  const overrideMode = explicitOverrideMode || getFranchiseSeasonOverride(franchiseId);
 
   const relatedById = new Map();
   for (const [id, node] of nodesById.entries()) {
     if (id === rootId || String(node?.status || '').toUpperCase() === 'CANCELLED') continue;
-    if (!seasonIds.has(id) || !seasonIds.has(rootId)) {
+    if (!seasonIds.has(id) && !movieOvaIds.has(id)) {
       relatedById.set(id, toRelatedEntry(node));
     }
   }
@@ -3280,25 +3525,37 @@ async function resolveFullSeasonChain(rootMedia) {
     if (!node?.id || Number(node.id) === rootId) continue;
     if (node.type && String(node.type).toUpperCase() !== 'ANIME') continue;
     const nid = Number(node.id);
-    if (!seasonIds.has(nid) && !relatedById.has(nid)) {
+    if (!seasonIds.has(nid) && !movieOvaIds.has(nid) && !relatedById.has(nid)) {
       relatedById.set(nid, toRelatedEntry(node, String(edge.relationType || '').replace(/_/g, ' ')));
     }
   }
   const relatedMedia = Array.from(relatedById.values()).slice(0, 14);
 
-  // If the opened item is a Movie / OVA / Special / Chibi Short, or only 1 main season exists, do NOT show Season 1..N tabs
-  if (!seasonIds.has(rootId) || seasonIds.size <= 1) {
-    return { seasons: [], relatedMedia };
+  if (seasonIds.size === 0) {
+    return {
+      seasons: [],
+      moviesAndOvas,
+      relatedMedia,
+      franchiseId,
+      rawMainSeasonNodeCount: 0
+    };
   }
 
   const seasonOutgoing = new Map();
+  const directNonBridgeOutgoing = new Map();
   const inDegree = new Map();
   for (const sid of seasonIds) {
     seasonOutgoing.set(sid, new Set());
+    directNonBridgeOutgoing.set(sid, new Set());
     inDegree.set(sid, 0);
   }
 
   for (const startId of seasonIds) {
+    for (const directNext of outgoing.get(startId) || []) {
+      if (seasonIds.has(directNext) && directNext !== startId) {
+        directNonBridgeOutgoing.get(startId).add(directNext);
+      }
+    }
     const seen = new Set();
     const queue = [];
     for (const next of outgoing.get(startId) || []) {
@@ -3352,66 +3609,209 @@ async function resolveFullSeasonChain(rootMedia) {
     orderedIds.push(...remaining);
   }
 
-  const seasons = [];
-  let currentSeasonNum = 0;
-  for (const id of orderedIds) {
-    const sn = nodesById.get(id);
-    const parsed = extractWebSeasonAndPart(sn);
-    let assignedSeason;
-    let assignedPart = parsed.partNumber;
+  const sortedMainNodes = orderedIds.map((id) => nodesById.get(id)).filter(Boolean);
 
-    if (seasons.length === 0) {
-      assignedSeason = parsed.seasonNumber && parsed.seasonNumber >= 1 && parsed.seasonNumber <= 20 ? parsed.seasonNumber : 1;
-      currentSeasonNum = assignedSeason;
-    } else if (parsed.partNumber && parsed.partNumber >= 2 && (parsed.seasonNumber === null || parsed.seasonNumber === currentSeasonNum)) {
-      assignedSeason = currentSeasonNum;
-    } else if (parsed.seasonNumber === currentSeasonNum && parsed.partNumber) {
-      assignedSeason = currentSeasonNum;
-    } else if (parsed.seasonNumber && parsed.seasonNumber > currentSeasonNum && parsed.seasonNumber <= currentSeasonNum + 3) {
-      assignedSeason = parsed.seasonNumber;
-      currentSeasonNum = assignedSeason;
-    } else {
-      currentSeasonNum += 1;
-      assignedSeason = currentSeasonNum;
-    }
-
-    const shortLabel = assignedPart && assignedPart > 1 ? `${assignedSeason} Pt ${assignedPart}` : String(assignedSeason);
-    const displayLabel =
-      assignedPart && assignedPart > 1
-        ? `Season ${assignedSeason} • Part ${assignedPart}`
-        : parsed.isAnnualEdition
-        ? `Season ${assignedSeason} • Annual`
-        : `Season ${assignedSeason}`;
-
-    const snIsDonghua = rootIsDonghua || String(sn?.countryOfOrigin || '').toUpperCase() === 'CN';
-    const title =
-      resolveEnglishTitle(
-        sn?.title?.english || '',
-        sn?.title?.romaji || sn?.title?.userPreferred || '',
-        sn?.synonyms || [],
-        snIsDonghua
-      ) ||
-      sn?.title?.english ||
-      sn?.title?.userPreferred ||
-      sn?.title?.romaji ||
-      displayLabel;
-
-    seasons.push({
-      id,
-      seasonNumber: assignedSeason,
-      partNumber: assignedPart,
-      shortLabel,
-      displayLabel,
-      title,
-      seasonYear: sn?.seasonYear ?? sn?.startDate?.year ?? null,
-      status: sn?.status || null,
-      format: sn?.format || null,
-      episodes: sn?.episodes ?? null,
-      isCurrent: id === rootId
-    });
+  if (sortedMainNodes.length <= 1 && moviesAndOvas.length === 0) {
+    return {
+      seasons: [],
+      moviesAndOvas: [],
+      relatedMedia,
+      franchiseId,
+      rawMainSeasonNodeCount: sortedMainNodes.length
+    };
   }
 
-  return { seasons, relatedMedia };
+  let groupedMainNodes = [];
+  if (overrideMode === 'merge_one') {
+    groupedMainNodes = [sortedMainNodes];
+  } else if (overrideMode === 'split_all') {
+    groupedMainNodes = sortedMainNodes.map((n) => [n]);
+  } else {
+    for (const node of sortedMainNodes) {
+      if (groupedMainNodes.length === 0) {
+        groupedMainNodes.push([node]);
+      } else {
+        const currentGroup = groupedMainNodes[groupedMainNodes.length - 1];
+        const prevNode = currentGroup[currentGroup.length - 1];
+        const prevId = Number(prevNode.id);
+        const currId = Number(node.id);
+        const connectedViaBridge =
+          seasonOutgoing.has(prevId) &&
+          seasonOutgoing.get(prevId).has(currId) &&
+          !(directNonBridgeOutgoing.get(prevId)?.has(currId));
+        if (shouldMergeWebContinuousRun(prevNode, node, connectedViaBridge, rootIsDonghua)) {
+          currentGroup.push(node);
+        } else {
+          groupedMainNodes.push([node]);
+        }
+      }
+    }
+  }
+
+  const seasons = groupedMainNodes.map((groupNodes, idx) => {
+    const seasonNum = idx + 1;
+    const leadNode = groupNodes.find((n) => Number(n.id) === rootId) || groupNodes[0];
+    const isCurrentSeason = groupNodes.some((n) => Number(n.id) === rootId);
+
+    let runningOffset = 0;
+    let knownEpisodesSum = 0;
+    const subEntries = groupNodes.map((segNode) => {
+      const segEps = Number(segNode?.episodes) > 0 ? Number(segNode.episodes) : null;
+      const startEpisodeOffset = runningOffset;
+      if (segEps !== null) {
+        runningOffset += segEps;
+        knownEpisodesSum += segEps;
+      }
+      return {
+        id: Number(segNode.id),
+        title: resolveCleanNodeTitle(segNode),
+        episodes: segEps,
+        startEpisodeOffset,
+        status: segNode?.status || null,
+        format: segNode?.format || null,
+        seasonYear: segNode?.seasonYear ?? segNode?.startDate?.year ?? null
+      };
+    });
+
+    const mergedEpisodes =
+      groupNodes.length === 1
+        ? (Number(leadNode?.episodes) > 0 ? Number(leadNode.episodes) : null)
+        : (knownEpisodesSum > 0 ? knownEpisodesSum : null);
+
+    const mergedStatus = groupNodes.some((n) => String(n?.status || '').toUpperCase() === 'RELEASING')
+      ? 'RELEASING'
+      : groupNodes.every((n) => String(n?.status || '').toUpperCase() === 'FINISHED')
+      ? 'FINISHED'
+      : leadNode?.status || null;
+
+    const shortLabel = String(seasonNum);
+    const displayLabel =
+      groupNodes.length > 1
+        ? `Season ${seasonNum} (${groupNodes.length} Parts Merged)`
+        : `Season ${seasonNum}`;
+
+    return {
+      id: Number(leadNode.id),
+      seasonNumber: seasonNum,
+      partNumber: null,
+      shortLabel,
+      displayLabel,
+      title: resolveCleanNodeTitle(groupNodes[0], displayLabel),
+      seasonYear: groupNodes[0]?.seasonYear ?? groupNodes[0]?.startDate?.year ?? null,
+      status: mergedStatus,
+      format: leadNode?.format || null,
+      episodes: mergedEpisodes,
+      isCurrent: isCurrentSeason,
+      subEntries,
+      isMergedContinuousRun: groupNodes.length > 1
+    };
+  });
+
+  return {
+    seasons,
+    moviesAndOvas,
+    relatedMedia,
+    franchiseId,
+    rawMainSeasonNodeCount: sortedMainNodes.length
+  };
+}
+
+function getActiveMergedSeasonForDetail() {
+  const a = state.detailAnime;
+  const seasons = state.detailRich?.seasons || [];
+  if (!a || !seasons.length) return null;
+  const active = seasons.find(
+    (s) => s.isCurrent || s.id === Number(a.animeId) || (Array.isArray(s.subEntries) && s.subEntries.some((seg) => seg.id === Number(a.animeId)))
+  );
+  if (active && Array.isArray(active.subEntries) && active.subEntries.length > 1) {
+    return active;
+  }
+  return null;
+}
+
+function computeWebContinuousWatched(seasonEntry, detailAnime) {
+  if (!seasonEntry || !Array.isArray(seasonEntry.subEntries) || seasonEntry.subEntries.length <= 1) {
+    return Number(detailAnime?.watchedEpisodes || 0);
+  }
+  let sumOfWatched = 0;
+  let maxOffsetPlusWatched = 0;
+  for (const seg of seasonEntry.subEntries) {
+    const vaultEntry = state.vault.find((v) => Number(v.animeId) === Number(seg.id));
+    const rawW =
+      Number(seg.id) === Number(detailAnime?.animeId)
+        ? Math.max(Number(detailAnime?.watchedEpisodes || 0), Number(vaultEntry?.watchedEpisodes || 0))
+        : Number(vaultEntry?.watchedEpisodes || 0);
+    if (rawW > 0) {
+      const cap = seg.episodes && seg.episodes > 0 ? seg.episodes : rawW;
+      sumOfWatched += Math.min(cap, Math.max(0, rawW));
+      const implied = (seg.startEpisodeOffset || 0) + rawW;
+      if (implied > maxOffsetPlusWatched) {
+        maxOffsetPlusWatched = implied;
+      }
+    }
+  }
+  return Math.max(sumOfWatched, maxOffsetPlusWatched);
+}
+
+async function commitWebContinuousEpisodeProgress(seasonEntry, targetContinuousEp) {
+  const a = state.detailAnime;
+  if (!a) return { ok: false, error: 'Anime not loaded' };
+  if (!seasonEntry || !Array.isArray(seasonEntry.subEntries) || seasonEntry.subEntries.length <= 1) {
+    return commitEpisodeProgress(a.animeId, targetContinuousEp);
+  }
+  const totalMerged = seasonEntry.episodes || a.totalEpisodes || null;
+  const check = validateEpisodeInput(String(targetContinuousEp), totalMerged);
+  if (!check.valid) {
+    return { ok: false, error: check.error };
+  }
+  const validatedContinuous = check.value;
+  let activeSeg = seasonEntry.subEntries[0];
+  for (const seg of seasonEntry.subEntries) {
+    if (validatedContinuous > (seg.startEpisodeOffset || 0)) {
+      activeSeg = seg;
+    }
+  }
+
+  let lastRes = { ok: true };
+  for (const seg of seasonEntry.subEntries) {
+    const segMax = seg.episodes && seg.episodes > 0 ? seg.episodes : null;
+    const rawLocal = Math.max(0, validatedContinuous - (seg.startEpisodeOffset || 0));
+    const localEp = segMax !== null ? Math.min(segMax, rawLocal) : rawLocal;
+    let existing = state.vault.find((v) => Number(v.animeId) === Number(seg.id));
+    const shouldUpdate =
+      Number(seg.id) === Number(a.animeId) ||
+      Number(seg.id) === Number(activeSeg.id) ||
+      Boolean(existing) ||
+      localEp > 0;
+    if (!shouldUpdate) continue;
+
+    if (!existing) {
+      const cachedNode = anilistSeasonNodeCache.get(Number(seg.id));
+      const segEntry = {
+        ...a,
+        animeId: Number(seg.id),
+        title: seg.title || a.title,
+        titleEnglish: seg.title || a.titleEnglish,
+        coverImage: cachedNode?.coverImage?.extraLarge || cachedNode?.coverImage?.large || a.coverImage,
+        totalEpisodes: seg.episodes || null,
+        mediaStatus: seg.status || a.mediaStatus,
+        format: seg.format || a.format,
+        seasonYear: seg.seasonYear || a.seasonYear,
+        watchedEpisodes: localEp,
+        status: segMax && localEp >= segMax && String(seg.status || '').toUpperCase() === 'FINISHED' ? 'completed' : 'watching',
+        inWatchlist: true
+      };
+      await saveVaultEntry(segEntry, { addToHome: Number(seg.id) === Number(a.animeId) });
+      existing = state.vault.find((v) => Number(v.animeId) === Number(seg.id));
+    }
+    if (existing && Number(existing.watchedEpisodes || 0) !== localEp) {
+      const res = await commitEpisodeProgress(seg.id, localEp);
+      if (Number(seg.id) === Number(a.animeId)) {
+        lastRes = res;
+      }
+    }
+  }
+  return lastRes;
 }
 
 async function openAnimeDetail(animeId) {
@@ -3438,6 +3838,7 @@ async function openAnimeDetail(animeId) {
         inWatchlist: false
       };
   state.detailRich = null;
+  state.detailRootMedia = null;
   state.detailLoading = true;
   state.detailRatingSaving = false;
   state.detailRatingFeedback = '';
@@ -3490,6 +3891,7 @@ async function openAnimeDetail(animeId) {
         season
         seasonYear
         startDate { year month day }
+        endDate { year month day }
         countryOfOrigin
         genres
         isAdult
@@ -3512,6 +3914,7 @@ async function openAnimeDetail(animeId) {
               duration
               seasonYear
               startDate { year month day }
+              endDate { year month day }
               averageScore
             }
           }
@@ -3543,6 +3946,7 @@ async function openAnimeDetail(animeId) {
     if (myToken !== detailFetchToken) return;
     const m = json?.data?.Media;
     if (m) {
+      state.detailRootMedia = m;
       const existing = state.vault.find((v) => v.animeId === animeId);
       const detailCountry = m.countryOfOrigin || 'JP';
       const detailIsDonghua = String(detailCountry).toUpperCase() === 'CN';
@@ -3605,7 +4009,10 @@ async function openAnimeDetail(animeId) {
       if (myToken !== detailFetchToken) return;
       state.detailRich = {
         seasons: chainResult.seasons || [],
-        relatedMedia: chainResult.relatedMedia || []
+        moviesAndOvas: chainResult.moviesAndOvas || [],
+        relatedMedia: chainResult.relatedMedia || [],
+        franchiseId: chainResult.franchiseId || m.id,
+        rawMainSeasonNodeCount: chainResult.rawMainSeasonNodeCount || 0
       };
       renderApp();
     }
@@ -3709,7 +4116,7 @@ async function saveVaultEntry(item, opts = {}) {
         status: cleanItem.status,
         episode_progress: cleanItem.watchedEpisodes,
         total_episodes: cleanItem.totalEpisodes || null,
-        personal_rating: cleanItem.rating10 ? Math.min(10, Math.max(1, Number(cleanItem.rating10))) : null,
+        personal_rating: clampRating10(cleanItem.rating10),
         review_notes: String(cleanItem.reviewNotes || '').trim().slice(0, 320),
         is_favorite: Boolean(cleanItem.isFavorite)
       },
@@ -3790,7 +4197,7 @@ async function syncCommunityNoteCloud(animeId, rating10Val, noteText) {
   try {
     await supabaseRequest('/rest/v1/rpc/upsert_community_note', 'POST', {
       p_anime_id: Number(animeId),
-      p_rating: rating10Val ? Math.min(10, Math.max(1, Number(rating10Val))) : null,
+      p_rating: clampRating10(rating10Val),
       p_note_text: String(noteText || '').trim().slice(0, 600)
     });
   } catch (_) {
@@ -3800,7 +4207,7 @@ async function syncCommunityNoteCloud(animeId, rating10Val, noteText) {
       {
         user_id: state.session.userId,
         anime_id: Number(animeId),
-        rating: rating10Val ? Math.min(10, Math.max(1, Number(rating10Val))) : null,
+        rating: clampRating10(rating10Val),
         note_text: String(noteText || '').trim().slice(0, 600)
       },
       'resolution=merge-duplicates,return=minimal'
@@ -3843,7 +4250,7 @@ async function removeFromHomeOnly(animeId) {
 async function submitCommunityCommentNote(animeId, rating10Val, noteText, animeMeta = null, opts = {}) {
   const aid = Number(animeId);
   const cleanNote = String(noteText || '').trim();
-  const cleanRating = rating10Val && Number(rating10Val) > 0 ? Math.min(10, Math.max(1, Number(rating10Val))) : null;
+  const cleanRating = clampRating10(rating10Val);
   if (!cleanNote && !cleanRating) return { ok: false, error: 'Please select a rating or write a note first.' };
 
   const existingVault = state.vault.find((v) => Number(v.animeId) === aid);
@@ -5697,10 +6104,28 @@ async function refreshUnreadNotificationCount() {
       supabaseRequest('/rest/v1/rpc/get_unseen_discussion_anime', 'POST', {}).catch(() => null)
     ]);
     if (state.session?.userId !== uid) return;
+    const prevKnownIds = typeof NativeNotificationBridge !== 'undefined' ? NativeNotificationBridge.knownUnreadIds : null;
+    const isInitialSync = typeof NativeNotificationBridge !== 'undefined' ? !NativeNotificationBridge.hasPrimedUnread : true;
     if (!NotificationSyncState.applyAuthoritativeUnreadIds(snap.unreadIds, startGen)) {
       return;
     }
     state.notifications.unreadCount = NotificationSyncState.unreadCount;
+    if (typeof NativeNotificationBridge !== 'undefined') {
+      const newlyDetectedIds = [];
+      snap.unreadIds.forEach((nid) => {
+        if (!isInitialSync && prevKnownIds && !prevKnownIds.has(nid)) {
+          newlyDetectedIds.push(nid);
+        }
+        NativeNotificationBridge.knownUnreadIds.add(nid);
+      });
+      NativeNotificationBridge.hasPrimedUnread = true;
+      if (snap.unreadIds.size > 0) {
+        NativeNotificationBridge.markSeenInNative(Array.from(snap.unreadIds));
+      }
+      if (newlyDetectedIds.length > 0) {
+        NativeNotificationBridge.alertNewlyDetectedUnread(newlyDetectedIds[0], summary);
+      }
+    }
     if (state.notifications.items.length > 0) {
       state.notifications.items = state.notifications.items.map((n) => {
         const shouldBeUnread = snap.unreadIds.has(n.id);
@@ -6007,7 +6432,7 @@ async function commitEpisodeProgress(animeId, targetEpisode) {
             status: nextStatus,
             episode_progress: clamped,
             total_episodes: totalEp || null,
-            personal_rating: updated.rating10 ? Math.min(10, Math.max(1, Number(updated.rating10))) : null,
+            personal_rating: clampRating10(updated.rating10),
             review_notes: String(updated.reviewNotes || '').trim().slice(0, 320),
             is_favorite: Boolean(updated.isFavorite)
           },
@@ -6296,7 +6721,7 @@ function renderHomeScreen() {
     accentTitleTail: 'UNIVERSE',
     subtitle: 'WEEKLY SCHEDULE',
     actionsHtml: `
-      <button class="app-icon-btn" data-nav="downloads" title="Download Applications">${SVG_ICONS.download}</button>
+      ${isTauriAppEnvironment() ? '' : `<button class="app-icon-btn" data-nav="downloads" title="Download Applications">${SVG_ICONS.download}</button>`}
       <button class="app-icon-btn" id="btn-open-quick-search" title="Quick Search">${SVG_ICONS.search}</button>
     `
   });
@@ -6306,7 +6731,7 @@ function renderHomeScreen() {
       <h2 class="serif-heading" style="font-size:28px;">This Week</h2>
       <button class="library-jump-pill" data-nav="mylist">LIBRARY ›</button>
     </div>
-    <div class="week-strip">
+    <div class="week-strip" data-hscroll-key="home-week-strip">
       <button class="week-day-pill all-pill ${state.homeAllWeekDays ? 'selected' : ''}" id="btn-home-all-days">
         <span class="all-label">All</span>
         ${state.homeAllWeekDays ? `<span class="all-dot"></span>` : ''}
@@ -6597,7 +7022,7 @@ function renderMyListScreen() {
             </div>
           `
           : `
-            <div class="capsule-strip">
+            <div class="capsule-strip" data-hscroll-key="library-collections-strip">
               <button class="capsule-pill ${!state.myListCollectionFilter ? 'active' : ''}" data-mylist-col="">All Collections</button>
               ${state.collections
                 .map(
@@ -6633,11 +7058,11 @@ function renderMyListScreen() {
 // ============================================================================
 
 function renderFiveStarsHtml(starsVal) {
-  const fullCount = Math.round(starsVal || 0);
+  const val = Math.max(0, Math.min(5, Number(starsVal) || 0));
   let html = '';
   for (let i = 1; i <= 5; i++) {
-    const filled = i <= fullCount;
-    html += `<span style="color:${filled ? 'var(--accent-primary)' : '#383D4E'};font-size:17px;">★</span>`;
+    const fillPct = Math.round(Math.max(0, Math.min(1, val - (i - 1))) * 100);
+    html += `<span class="star-frac-wrap">★<span class="star-frac-fill" style="width:${fillPct}%;">★</span></span>`;
   }
   return html;
 }
@@ -7044,8 +7469,28 @@ function renderCommunityScreen() {
                         </span>
                       </div>
 
-                      <div style="display:flex;align-items:center;gap:10px;flex-shrink:0;">
+                      <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
                         <span style="font-size:12.5px;color:var(--text-muted);">${escapeHtml(formatReviewDate(grp.latest_updated_at))}</span>
+                        ${
+                          state.session
+                            ? (() => {
+                                const myRev = grp.reviews.find((r) => r.user_id === state.session?.userId);
+                                const myVault = state.vault.find((v) => Number(v.animeId) === Number(grp.anime_id));
+                                const myStars = rating10ToStars(myRev?.rating ?? myVault?.rating10) || 0;
+                                const isQrOpen = state.communityQuickRate && Number(state.communityQuickRate.animeId) === Number(grp.anime_id);
+                                return `<button
+                                  type="button"
+                                  class="community-quick-rate-btn ${isQrOpen ? 'active' : ''}"
+                                  data-comm-quick-rate="${grp.anime_id}"
+                                  data-comm-my-stars="${myStars}"
+                                  title="Rate ${escapeHtml(grp.anime_title)} directly with 0.1 precision"
+                                >
+                                  <span>★</span>
+                                  <span class="tabular-num">${myStars > 0 ? myStars.toFixed(1) : 'Rate'}</span>
+                                </button>`;
+                              })()
+                            : ''
+                        }
                         <button
                           type="button"
                           class="community-comment-btn"
@@ -7057,6 +7502,57 @@ function renderCommunityScreen() {
                         </button>
                       </div>
                     </div>
+                    ${
+                      state.session && state.communityQuickRate && Number(state.communityQuickRate.animeId) === Number(grp.anime_id)
+                        ? (() => {
+                            const qrStars = Number(state.communityQuickRate.stars || 0);
+                            const qrSent = qrStars > 0 ? sentimentFromRating10(starsToRating10(qrStars)) : null;
+                            return `
+                              <div class="community-quick-rate-drawer" onclick="event.stopPropagation()">
+                                <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+                                  <div style="display:flex;align-items:center;gap:8px;">
+                                    <span class="micro-label" style="color:var(--accent-primary);">DIRECT RATING</span>
+                                    <span class="tabular-num" style="font-size:15px;font-weight:700;color:var(--highlight);">${qrStars > 0 ? `${qrStars.toFixed(1)} ★` : 'Select rating'}</span>
+                                    ${qrSent ? `<span class="sentiment-pill soft ${qrSent.key}" style="font-size:9px;padding:2px 7px;">${qrSent.shortLabel.toUpperCase()}</span>` : ''}
+                                  </div>
+                                  <div style="display:flex;gap:6px;">
+                                    <button type="button" class="capsule-pill" id="btn-comm-qr-minus" style="height:28px;padding:0 10px;font-size:11.5px;">−0.1 ★</button>
+                                    <button type="button" class="capsule-pill" id="btn-comm-qr-plus" style="height:28px;padding:0 10px;font-size:11.5px;">+0.1 ★</button>
+                                  </div>
+                                </div>
+                                <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+                                  <div style="display:inline-flex;gap:4px;">
+                                    ${[1, 2, 3, 4, 5]
+                                      .map(
+                                        (st) =>
+                                          `<button type="button" data-comm-qr-star="${st}" style="background:none;border:none;cursor:pointer;font-size:24px;line-height:1;color:${
+                                            qrStars >= st - 0.5 ? 'var(--accent-primary)' : '#383D4E'
+                                          };">★</button>`
+                                      )
+                                      .join('')}
+                                  </div>
+                                  <input
+                                    type="range"
+                                    id="comm-qr-slider"
+                                    class="rating-tenth-slider"
+                                    min="0.1"
+                                    max="5.0"
+                                    step="0.1"
+                                    value="${qrStars > 0 ? qrStars.toFixed(1) : '4.0'}"
+                                    style="flex:1;min-width:100px;"
+                                  />
+                                </div>
+                                <div style="display:flex;gap:8px;justify-content:flex-end;">
+                                  <button type="button" class="btn-secondary" id="btn-comm-qr-close" style="height:34px;padding:0 14px;font-size:12px;">Cancel</button>
+                                  <button type="button" class="btn-primary" id="btn-comm-qr-save" style="height:34px;padding:0 16px;font-size:12px;" ${
+                                    state.communityQuickRate.saving || qrStars <= 0 ? 'disabled' : ''
+                                  }>${state.communityQuickRate.saving ? 'SAVING...' : 'SAVE RATING'}</button>
+                                </div>
+                              </div>
+                            `;
+                          })()
+                        : ''
+                    }
                   </div>
                 `;
               })
@@ -7224,13 +7720,27 @@ function renderSettingsScreen() {
           `
           : cat === 'PREFERENCES'
           ? `
-            <div class="app-card" style="display:flex;flex-direction:column;gap:16px;">
+            <div class="app-card" style="display:flex;flex-direction:column;gap:18px;">
               <div>
                 <div class="micro-label" style="color:var(--accent-primary);margin-bottom:8px;">PREFERRED TITLE LANGUAGE</div>
                 <div style="display:flex;gap:8px;flex-wrap:wrap;">
                   ${['ENGLISH', 'ROMAJI', 'NATIVE']
                     .map((l) => `<button class="capsule-pill gold-solid ${state.prefs.titleLanguage === l ? 'active' : ''}" data-set-lang="${l}">${l}</button>`)
                     .join('')}
+                </div>
+              </div>
+              <div style="border-top:1px solid var(--border-subtle);padding-top:14px;display:flex;flex-direction:column;gap:10px;">
+                <div class="micro-label" style="color:var(--accent-primary);">SYSTEM &amp; BACKGROUND NOTIFICATIONS</div>
+                <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;">
+                  Receive Community replies &amp; @mentions both inside Anime Universe and in your device notification bar — even when the app is closed.
+                </div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                  <button type="button" class="btn-primary" id="btn-enable-os-notifs" style="height:38px;padding:0 16px;font-size:12.5px;">
+                    ${state.osNotifPermission === 'granted' ? '✓ Notifications Enabled' : 'Enable System Notifications'}
+                  </button>
+                  <button type="button" class="btn-secondary" id="btn-test-os-notifs" style="height:38px;padding:0 14px;font-size:12.5px;">
+                    Send Test Alert
+                  </button>
                 </div>
               </div>
             </div>
@@ -7277,16 +7787,47 @@ function renderAnimeDetailScreen() {
   if (!a) return '';
   const title = resolveTitle(a);
   const subJp = a.titleNative || (a.titleRomaji !== title ? a.titleRomaji : '');
-  const isMovie = String(a.format || '').toUpperCase() === 'MOVIE';
+  const rawFmtUpper = String(a.format || '').toUpperCase();
+  const isMovie = rawFmtUpper === 'MOVIE';
+  const isOvaOrSpecial = rawFmtUpper === 'OVA' || rawFmtUpper === 'SPECIAL';
   const isDonghua = String(a.countryOfOrigin || '').toUpperCase() === 'CN';
-  const total = a.totalEpisodes || (isMovie ? 1 : null);
-  const watched = a.watchedEpisodes || 0;
+  const seasons = state.detailRich?.seasons || [];
+  const moviesAndOvas = state.detailRich?.moviesAndOvas || [];
+  const relatedMedia = state.detailRich?.relatedMedia || [];
+  const franchiseId = state.detailRich?.franchiseId || a.animeId;
+  const rawMainSeasonNodeCount = state.detailRich?.rawMainSeasonNodeCount || seasons.length;
+
+  const activeMergedSeason = getActiveMergedSeasonForDetail();
+  const total = activeMergedSeason
+    ? (activeMergedSeason.episodes || a.totalEpisodes || null)
+    : (a.totalEpisodes || (isMovie || isOvaOrSpecial ? 1 : null));
+  const watched = activeMergedSeason
+    ? computeWebContinuousWatched(activeMergedSeason, a)
+    : (a.watchedEpisodes || 0);
+  const isTrackedInVault =
+    Boolean(a.inWatchlist) ||
+    Boolean(
+      activeMergedSeason &&
+        activeMergedSeason.subEntries.some((seg) => state.vault.some((v) => Number(v.animeId) === Number(seg.id)))
+    );
+
+  const isFranchiseMergedAsOne =
+    seasons.length === 1 && ((seasons[0]?.subEntries?.length || 0) > 1 || rawMainSeasonNodeCount > 1);
+  const canToggleSeasonMerge =
+    rawMainSeasonNodeCount > 1 ||
+    seasons.length > 1 ||
+    seasons.some((s) => (s.subEntries?.length || 0) > 1);
+  const showSeasonsSelector =
+    seasons.length > 1 ||
+    isFranchiseMergedAsOne ||
+    (seasons.length > 0 && moviesAndOvas.length > 0);
+
   const stars = rating10ToStars(a.rating10) || 0;
   const sentiment = sentimentFromRating10(a.rating10);
-  const seasons = isMovie ? [] : (state.detailRich?.seasons || []);
-  const relatedMedia = state.detailRich?.relatedMedia || [];
   const formatTag = isMovie
     ? (isDonghua ? 'DONGHUA MOVIE' : 'MOVIE')
+    : isOvaOrSpecial
+    ? rawFmtUpper
     : isDonghua
     ? 'DONGHUA'
     : String(a.format || 'TV').replace(/_/g, ' ');
@@ -7329,32 +7870,48 @@ function renderAnimeDetailScreen() {
 
       <div class="app-card" style="border-radius:24px;margin-bottom:16px;display:flex;flex-direction:column;gap:14px;">
         ${
-          seasons.length > 1
+          showSeasonsSelector
             ? (() => {
-                const activeSeason = seasons.find((s) => s.isCurrent || s.id === a.animeId);
+                const activeSeason = seasons.find(
+                  (s) => s.isCurrent || s.id === a.animeId || (Array.isArray(s.subEntries) && s.subEntries.some((seg) => seg.id === a.animeId))
+                );
                 const distinctSeasonCount = new Set(seasons.map((s) => s.seasonNumber)).size;
                 const totalLabel =
                   distinctSeasonCount === 1
-                    ? `1 Season (${seasons.length} Parts)`
+                    ? (activeSeason?.subEntries?.length > 1 ? `1 Continuous Season (${activeSeason.subEntries.length} Parts)` : '1 Season')
                     : `${distinctSeasonCount} Seasons`;
                 const activeMeta = activeSeason
                   ? `${activeSeason.displayLabel || `Season ${activeSeason.seasonNumber}`} • ${totalLabel}${activeSeason.seasonYear ? ` • ${activeSeason.seasonYear}` : ''}`
                   : totalLabel;
+                const toggleLabel = isFranchiseMergedAsOne ? 'Split Seasons' : 'Merge as 1 Season';
                 return `
               <div>
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;">
-                  <div class="micro-label" style="color:var(--accent-primary);">SEASONS</div>
-                  <div class="micro-label" style="color:var(--text-secondary);">${escapeHtml(activeMeta)}</div>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap;">
+                  <div>
+                    <div class="micro-label" style="color:var(--accent-primary);">SEASONS</div>
+                    <div class="micro-label" style="color:var(--text-secondary);margin-top:2px;">${escapeHtml(activeMeta)}</div>
+                  </div>
+                  ${
+                    canToggleSeasonMerge
+                      ? `<button type="button" class="capsule-pill" id="btn-detail-season-override-toggle" data-franchise-id="${franchiseId}" data-merged-one="${isFranchiseMergedAsOne ? '1' : '0'}" style="height:32px;padding:0 12px;font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--accent-primary);border-color:var(--accent-border);">
+                          ${escapeHtml(toggleLabel)}
+                        </button>`
+                      : ''
+                  }
                 </div>
                 <div class="capsule-strip" style="margin-bottom:4px;">
                   ${seasons
                     .map((s) => {
                       const isUpcoming = String(s.status || '').toUpperCase() === 'NOT_YET_RELEASED';
+                      const isSel = Boolean(
+                        s.isCurrent || s.id === a.animeId || (Array.isArray(s.subEntries) && s.subEntries.some((seg) => seg.id === a.animeId))
+                      );
                       const tooltip = `${s.title || s.displayLabel || `Season ${s.seasonNumber}`}${s.seasonYear ? ` (${s.seasonYear})` : ''}`;
                       return `
-                      <button class="capsule-pill gold-solid ${s.isCurrent ? 'active' : ''}" data-open-detail="${s.id}" title="${escapeHtml(tooltip)}" style="min-width:52px;height:44px;justify-content:center;font-size:14px;gap:5px;padding:0 14px;">
+                      <button class="capsule-pill gold-solid ${isSel ? 'active' : ''}" data-open-detail="${s.id}" title="${escapeHtml(tooltip)}" style="min-width:52px;height:44px;justify-content:center;font-size:14px;gap:6px;padding:0 14px;">
                         <span>${escapeHtml(s.shortLabel || String(s.seasonNumber))}</span>
-                        ${isUpcoming && !s.isCurrent ? '<span style="width:6px;height:6px;border-radius:50%;background:var(--warning);display:inline-block;"></span>' : ''}
+                        ${s.isMergedContinuousRun && s.episodes ? `<span style="font-size:10px;opacity:0.85;">• ${s.episodes} EPS</span>` : ''}
+                        ${isUpcoming && !isSel ? '<span style="width:6px;height:6px;border-radius:50%;background:var(--warning);display:inline-block;"></span>' : ''}
                       </button>`;
                     })
                     .join('')}
@@ -7365,14 +7922,49 @@ function renderAnimeDetailScreen() {
             : ''
         }
 
+        ${
+          moviesAndOvas.length > 0
+            ? `
+              <div style="${showSeasonsSelector ? 'border-top:1px solid var(--border-subtle);padding-top:12px;' : ''}">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;">
+                  <div class="micro-label" style="color:var(--accent-primary);">MOVIES &amp; OVAs</div>
+                  <div class="micro-label" style="color:var(--text-secondary);">${moviesAndOvas.length} ${moviesAndOvas.length === 1 ? 'ITEM' : 'ITEMS'}</div>
+                </div>
+                <div class="capsule-strip" style="margin-bottom:2px;gap:10px;">
+                  ${moviesAndOvas
+                    .map((m) => {
+                      const isSel = Boolean(m.isCurrent || Number(m.id) === Number(a.animeId));
+                      const vaultItem = Number(m.id) === Number(a.animeId) ? a : state.vault.find((v) => Number(v.animeId) === Number(m.id));
+                      const mWatched = Number(vaultItem?.watchedEpisodes || 0);
+                      const mTotal = Math.max(1, Number(vaultItem?.totalEpisodes || m.episodes || 1));
+                      return `
+                      <button type="button" data-open-detail="${m.id}" style="display:flex;flex-direction:column;align-items:flex-start;gap:4px;min-width:170px;max-width:240px;padding:10px 12px;border-radius:16px;background:${isSel ? 'rgba(229,193,128,0.16)' : 'var(--elevated-surface)'};border:1px solid ${isSel ? 'var(--accent-primary)' : 'var(--border-subtle)'};cursor:pointer;text-align:left;flex-shrink:0;">
+                        <div style="display:flex;justify-content:space-between;align-items:center;width:100%;gap:8px;">
+                          <span style="font-size:9px;font-weight:700;letter-spacing:0.08em;padding:2px 6px;border-radius:6px;background:${isSel ? 'var(--accent-primary)' : 'var(--card-bg)'};color:${isSel ? '#08080C' : 'var(--accent-primary)'};">${escapeHtml(m.formatBadge)}</span>
+                          <span class="tabular-num" style="font-size:10px;font-weight:600;color:${isSel ? 'var(--accent-primary)' : 'var(--text-secondary)'};">${m.releaseYear || 'TBA'} • EP ${mWatched} / ${mTotal}</span>
+                        </div>
+                        <div style="font-size:12.5px;font-weight:600;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;width:100%;">${escapeHtml(m.title)}</div>
+                      </button>`;
+                    })
+                    .join('')}
+                </div>
+              </div>
+            `
+            : ''
+        }
+
         <div class="micro-label" style="color:var(--accent-primary);">${
-          isMovie ? 'MOVIE PROGRESS • 0 = UNWATCHED, 1 = WATCHED' : 'EPISODE PROGRESS • CLICK NUMBER TO EDIT'
+          isMovie
+            ? 'MOVIE PROGRESS • 0 = UNWATCHED, 1 = WATCHED'
+            : activeMergedSeason
+            ? `${escapeHtml(activeMergedSeason.displayLabel.toUpperCase())} • CONTINUOUS EPISODE COUNTER`
+            : 'EPISODE PROGRESS • CLICK NUMBER TO EDIT'
         }</div>
         ${
-          !a.inWatchlist
+          !isTrackedInVault
             ? `<button class="btn-primary" id="btn-detail-add" style="width:100%;">+ ADD TO HOME &amp; LIBRARY</button>`
             : `
-              ${renderInlineEpisodeStepper({ ...a, totalEpisodes: total }, 'detail')}
+              ${renderInlineEpisodeStepper({ ...a, watchedEpisodes: watched, totalEpisodes: total }, 'detail')}
               <div class="capsule-strip" style="margin-bottom:0;">
                 ${WATCH_STATUSES.map(
                   (st) => `
@@ -7402,20 +7994,35 @@ function renderAnimeDetailScreen() {
             </div>
           </div>
           <div style="display:flex;gap:6px;">
-            <button class="capsule-pill" id="btn-star-minus">−0.5 ★</button>
-            <button class="capsule-pill" id="btn-star-plus">+0.5 ★</button>
+            <button class="capsule-pill" id="btn-star-minus">−0.1 ★</button>
+            <button class="capsule-pill" id="btn-star-plus">+0.1 ★</button>
           </div>
         </div>
 
-        <div style="display:flex;justify-content:space-evenly;background:var(--elevated-surface);border-radius:20px;padding:12px;">
-          ${[1, 2, 3, 4, 5]
-            .map(
-              (idx) => `
-              <button data-star-val="${idx}" style="background:none;border:none;font-size:32px;cursor:pointer;color:${
-                stars >= idx - 0.5 ? 'var(--accent-primary)' : 'var(--text-muted)'
-              };">★</button>`
-            )
-            .join('')}
+        <div style="display:flex;flex-direction:column;gap:10px;background:var(--elevated-surface);border-radius:20px;padding:12px 14px;">
+          <div style="display:flex;justify-content:space-evenly;">
+            ${[1, 2, 3, 4, 5]
+              .map(
+                (idx) => `
+                <button data-star-val="${idx}" style="background:none;border:none;font-size:32px;cursor:pointer;color:${
+                  stars >= idx - 0.5 ? 'var(--accent-primary)' : 'var(--text-muted)'
+                };">★</button>`
+              )
+              .join('')}
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span class="tabular-num" style="font-size:11px;color:var(--text-muted);">0.1</span>
+            <input
+              type="range"
+              id="detail-star-slider"
+              class="rating-tenth-slider"
+              min="0.1"
+              max="5.0"
+              step="0.1"
+              value="${stars > 0 ? stars.toFixed(1) : '0.1'}"
+            />
+            <span class="tabular-num" style="font-size:11px;color:var(--text-muted);">5.0</span>
+          </div>
         </div>
 
         <div class="capsule-strip" style="margin-bottom:0;">
@@ -8113,147 +8720,24 @@ function mergePlatformConfig(basePlat = {}, overridePlat = {}) {
 }
 
 async function loadDownloadsConfig() {
+  if (isTauriAppEnvironment()) return;
   try {
     const resp = await fetch(`/downloads-config.json?_t=${Date.now()}`, { cache: 'no-store' });
     if (resp.ok) {
       const fileCfg = await resp.json();
-      const savedOverride = JSON.parse(localStorage.getItem('anime_universe_downloads_admin_override') || 'null');
-      if (savedOverride) {
-        state.downloadsConfig = {
-          ...fileCfg,
-          ...savedOverride,
-          platforms: {
-            android: mergePlatformConfig(fileCfg.platforms?.android, savedOverride.platforms?.android),
-            windows: mergePlatformConfig(fileCfg.platforms?.windows, savedOverride.platforms?.windows),
-            macos: mergePlatformConfig(fileCfg.platforms?.macos, savedOverride.platforms?.macos)
-          },
-          currentRelease: { ...(fileCfg.currentRelease || {}), ...(savedOverride.currentRelease || {}) },
-          previousVersions: savedOverride.previousVersions?.length ? savedOverride.previousVersions : (fileCfg.previousVersions || [])
-        };
-      } else {
-        state.downloadsConfig = fileCfg;
-      }
-    }
-  } catch (_) {}
-
-  // Also check Supabase public.app_releases table for any published platform builds
-  try {
-    const rows = await supabaseRequest('/rest/v1/app_releases?select=*&order=version_code.desc,published_at.desc');
-    if (Array.isArray(rows) && rows.length > 0) {
-      for (const row of rows) {
-        const platKey = String(row.platform || '').toLowerCase();
-        const dlUrl = String(row.download_url || '').trim();
-        if (
-          (platKey === 'android' || platKey === 'windows' || platKey === 'macos') &&
-          isHttpsUrlReady(dlUrl) &&
-          !dlUrl.includes('play.google.com/store/apps/details')
-        ) {
-          const target = state.downloadsConfig.platforms?.[platKey];
-          if (target && !isPlatformDownloadReady(target)) {
-            target.downloadUrl = dlUrl;
-            target.version = row.version_name ? (String(row.version_name).startsWith('v') ? row.version_name : `v${row.version_name}`) : target.version;
-            target.available = true;
-          }
+      state.downloadsConfig = {
+        ...state.downloadsConfig,
+        ...fileCfg,
+        platforms: {
+          android: mergePlatformConfig(state.downloadsConfig.platforms?.android, fileCfg.platforms?.android),
+          windows: mergePlatformConfig(state.downloadsConfig.platforms?.windows, fileCfg.platforms?.windows),
+          macos: mergePlatformConfig(state.downloadsConfig.platforms?.macos, fileCfg.platforms?.macos)
         }
-      }
+      };
     }
   } catch (_) {}
 
-  if (state.downloadsConfig?.githubRepo && state.downloadsConfig?.autoFetchGithubReleases !== false) {
-    await syncReleasesFromGitHub(state.downloadsConfig.githubRepo, true);
-  }
   if (state.tab === 'downloads') renderApp();
-}
-
-async function syncReleasesFromGitHub(repoSlug, silent = false) {
-  const cleanRepo = String(repoSlug || '').trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\/+$/, '');
-  if (!cleanRepo || !cleanRepo.includes('/')) {
-    if (!silent) {
-      state.githubSyncMessage = 'Enter a valid GitHub repository in owner/repo format.';
-      renderApp();
-    }
-    return;
-  }
-
-  if (!silent) {
-    state.githubSyncMessage = `Fetching releases from https://api.github.com/repos/${cleanRepo}/releases...`;
-    renderApp();
-  }
-
-  try {
-    const resp = await fetch(`https://api.github.com/repos/${cleanRepo}/releases?per_page=15`, {
-      headers: { Accept: 'application/vnd.github+json' }
-    });
-    if (!resp.ok) throw new Error(`GitHub API returned HTTP ${resp.status}`);
-    const releases = await resp.json();
-    if (!Array.isArray(releases) || releases.length === 0) {
-      if (!silent) {
-        state.githubSyncMessage = 'No published GitHub Releases found in this repository yet.';
-        renderApp();
-      }
-      return;
-    }
-
-    const platforms = state.downloadsConfig.platforms;
-    let foundAny = { android: false, windows: false, macos: false };
-
-    const formatBytesMB = (bytes) => {
-      if (!bytes || isNaN(bytes)) return null;
-      return `${(Number(bytes) / (1024 * 1024)).toFixed(1)} MB`;
-    };
-
-    for (const rel of releases) {
-      const assets = Array.isArray(rel.assets) ? rel.assets : [];
-      const pubDate = formatReviewDate(rel.published_at || rel.created_at) || state.downloadsConfig.lastUpdated;
-      const verTag = rel.tag_name || rel.name || 'v2.1.0';
-
-      for (const asset of assets) {
-        const nameLower = String(asset.name || '').toLowerCase();
-        const dlUrl = asset.browser_download_url || '';
-        if (!dlUrl.startsWith('https://')) continue;
-
-        if (!foundAny.android && nameLower.endsWith('.apk')) {
-          platforms.android.downloadUrl = dlUrl;
-          platforms.android.fileName = asset.name;
-          platforms.android.fileSize = formatBytesMB(asset.size) || platforms.android.fileSize;
-          platforms.android.version = verTag;
-          platforms.android.releaseDate = pubDate;
-          platforms.android.available = true;
-          foundAny.android = true;
-        } else if (!foundAny.windows && (nameLower.endsWith('.exe') || nameLower.endsWith('.msi'))) {
-          platforms.windows.downloadUrl = dlUrl;
-          platforms.windows.fileName = asset.name;
-          platforms.windows.fileSize = formatBytesMB(asset.size) || platforms.windows.fileSize;
-          platforms.windows.version = verTag;
-          platforms.windows.releaseDate = pubDate;
-          platforms.windows.available = true;
-          foundAny.windows = true;
-        } else if (!foundAny.macos && nameLower.endsWith('.dmg')) {
-          platforms.macos.downloadUrl = dlUrl;
-          platforms.macos.fileName = asset.name;
-          platforms.macos.fileSize = formatBytesMB(asset.size) || platforms.macos.fileSize;
-          platforms.macos.version = verTag;
-          platforms.macos.releaseDate = pubDate;
-          platforms.macos.available = true;
-          foundAny.macos = true;
-        }
-      }
-    }
-
-    state.downloadsConfig.githubRepo = cleanRepo;
-    localStorage.setItem('anime_universe_downloads_admin_override', JSON.stringify(state.downloadsConfig));
-    if (!silent) {
-      const syncedList = Object.entries(foundAny).filter(([, v]) => v).map(([k]) => k.toUpperCase());
-      state.githubSyncMessage = syncedList.length > 0
-        ? `Synced HTTPS packages from GitHub Releases: ${syncedList.join(', ')}`
-        : 'Connected to GitHub Releases. Packages without published assets remain in Coming Soon state.';
-    }
-  } catch (err) {
-    if (!silent) {
-      state.githubSyncMessage = `Could not sync GitHub Releases: ${err.message}`;
-    }
-  }
-  renderApp();
 }
 
 async function startPlatformDownload(taskKey, downloadUrl, fileName) {
@@ -8263,127 +8747,119 @@ async function startPlatformDownload(taskKey, downloadUrl, fileName) {
 
   state.downloadTasks[taskKey] = {
     active: true,
-    progress: 4,
+    progress: 12,
     loadedMB: '0.0',
     totalMB: null,
-    statusText: 'Connecting via secure HTTPS...'
+    statusText: 'Preparing download...'
   };
   renderApp();
 
   try {
     const isSameOrigin = resolvedUrl.startsWith(window.location.origin);
-    const response = await fetch(resolvedUrl, { mode: isSameOrigin ? 'same-origin' : 'cors', credentials: 'omit' });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const contentType = (response.headers.get('content-type') || '').toLowerCase();
-    if (contentType.includes('text/html')) {
-      throw new Error('Package binary not found at endpoint');
-    }
-
-    const contentLength = Number(response.headers.get('content-length') || 0);
-    const totalMB = contentLength > 0 ? (contentLength / (1024 * 1024)).toFixed(1) : null;
-
-    if (response.body && typeof response.body.getReader === 'function') {
-      const reader = response.body.getReader();
-      const chunks = [];
-      let receivedLength = 0;
-      let lastRender = 0;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (value) {
-          chunks.push(value);
-          receivedLength += value.length;
-          const loadedMB = (receivedLength / (1024 * 1024)).toFixed(1);
-          const pct = contentLength > 0
-            ? Math.min(99, Math.max(5, Math.round((receivedLength / contentLength) * 100)))
-            : Math.min(92, (state.downloadTasks[taskKey].progress || 10) + 7);
-
-          state.downloadTasks[taskKey] = {
-            active: true,
-            progress: pct,
-            loadedMB,
-            totalMB,
-            statusText: totalMB ? `Downloading package... ${loadedMB} MB / ${totalMB} MB` : `Downloading package... ${loadedMB} MB`
-          };
-
-          const now = Date.now();
-          if (now - lastRender > 120) {
-            lastRender = now;
-            renderApp();
-          }
-        }
+    if (isSameOrigin) {
+      const response = await fetch(resolvedUrl, { mode: 'same-origin', credentials: 'omit' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const contentType = (response.headers.get('content-type') || '').toLowerCase();
+      if (contentType.includes('text/html')) {
+        throw new Error('Package binary not found at endpoint');
       }
 
-      const blob = new Blob(chunks, { type: response.headers.get('content-type') || 'application/octet-stream' });
-      const blobUrl = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = blobUrl;
-      a.download = fileName || downloadUrl.split('/').pop() || 'AnimeUniverse-Package';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
+      const contentLength = Number(response.headers.get('content-length') || 0);
+      const totalMB = contentLength > 0 ? (contentLength / (1024 * 1024)).toFixed(1) : null;
 
-      state.downloadTasks[taskKey] = {
-        active: false,
-        progress: 100,
-        loadedMB: totalMB || (receivedLength / (1024 * 1024)).toFixed(1),
-        totalMB,
-        statusText: 'Download complete • Package verified via HTTPS'
-      };
-      renderApp();
-      return;
+      if (response.body && typeof response.body.getReader === 'function') {
+        const reader = response.body.getReader();
+        const chunks = [];
+        let receivedLength = 0;
+        let lastRender = 0;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) {
+            chunks.push(value);
+            receivedLength += value.length;
+            const loadedMB = (receivedLength / (1024 * 1024)).toFixed(1);
+            const pct = contentLength > 0
+              ? Math.min(99, Math.max(5, Math.round((receivedLength / contentLength) * 100)))
+              : Math.min(92, (state.downloadTasks[taskKey].progress || 10) + 7);
+
+            state.downloadTasks[taskKey] = {
+              active: true,
+              progress: pct,
+              loadedMB,
+              totalMB,
+              statusText: totalMB ? `Downloading package... ${loadedMB} MB / ${totalMB} MB` : `Downloading package... ${loadedMB} MB`
+            };
+
+            const now = Date.now();
+            if (now - lastRender > 120) {
+              lastRender = now;
+              renderApp();
+            }
+          }
+        }
+
+        const blob = new Blob(chunks, { type: response.headers.get('content-type') || 'application/octet-stream' });
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = fileName || downloadUrl.split('/').pop() || 'AnimeUniverse-Package';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
+
+        state.downloadTasks[taskKey] = {
+          active: false,
+          progress: 100,
+          loadedMB: totalMB || (receivedLength / (1024 * 1024)).toFixed(1),
+          totalMB,
+          statusText: 'Download complete ✓'
+        };
+        renderApp();
+        return;
+      }
     }
   } catch (_) {
-    // Fallback when cross-origin host (e.g. GitHub Releases S3 redirect) blocks CORS fetch streaming:
-    // Show smooth progress feedback and trigger native HTTPS browser download of the genuine asset.
+    // Fall through to native browser download
   }
 
   state.downloadTasks[taskKey] = {
     active: true,
-    progress: 48,
+    progress: 70,
     loadedMB: null,
     totalMB: null,
-    statusText: 'Verifying HTTPS release signature...'
+    statusText: 'Starting download...'
   };
   renderApp();
 
-  await new Promise((r) => setTimeout(r, 420));
-  state.downloadTasks[taskKey] = {
-    active: true,
-    progress: 86,
-    loadedMB: null,
-    totalMB: null,
-    statusText: 'Starting secure browser transfer...'
-  };
-  renderApp();
-
-  // Trigger native browser attachment download in-place (Content-Disposition: attachment prevents page navigation and avoids iframe CSP frame-ancestors 'none')
   const a = document.createElement('a');
   a.href = resolvedUrl;
   a.download = fileName || resolvedUrl.split('/').pop() || 'AnimeUniverse-Package';
+  a.target = '_blank';
   a.rel = 'noopener noreferrer';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
 
-  await new Promise((r) => setTimeout(r, 380));
+  await new Promise((r) => setTimeout(r, 320));
   state.downloadTasks[taskKey] = {
     active: false,
     progress: 100,
     loadedMB: null,
     totalMB: null,
-    statusText: 'Direct download started ✓'
+    statusText: 'Download started ✓'
   };
   renderApp();
 }
 
 function renderDownloadsScreen() {
+  if (isTauriAppEnvironment()) {
+    return renderHomeScreen();
+  }
   const cfg = state.downloadsConfig || {};
   const platforms = cfg.platforms || {};
-  const currentRel = cfg.currentRelease || {};
-  const prevVersions = Array.isArray(cfg.previousVersions) ? cfg.previousVersions : [];
   const visitorOs = detectVisitorPlatformKey();
 
   const topBar = renderObsidianTopBar({
@@ -8431,22 +8907,6 @@ function renderDownloadsScreen() {
                   </div>
                 </div>
 
-                <!-- Metadata Grid: Version, File Size, Release Date -->
-                <div class="download-meta-grid">
-                  <div class="download-meta-item">
-                    <span class="download-meta-label">Version</span>
-                    <span class="download-meta-val" style="color:var(--highlight);">${escapeHtml(p.version || 'v2.1.0')}</span>
-                  </div>
-                  <div class="download-meta-item">
-                    <span class="download-meta-label">File Size</span>
-                    <span class="download-meta-val">${escapeHtml(p.fileSize || '—')}</span>
-                  </div>
-                  <div class="download-meta-item">
-                    <span class="download-meta-label">Release Date</span>
-                    <span class="download-meta-val">${escapeHtml(p.releaseDate || 'Nov 18, 2026')}</span>
-                  </div>
-                </div>
-
                 <!-- Supported Operating System -->
                 <div class="download-os-box">
                   <span class="download-meta-label">Supported Operating System</span>
@@ -8456,7 +8916,7 @@ function renderDownloadsScreen() {
                 </div>
               </div>
 
-              <!-- Download Action or Coming Soon State + Progress Indicator -->
+              <!-- Download Action + Progress Indicator -->
               <div style="display:flex;flex-direction:column;gap:10px;">
                 ${
                   task
@@ -8490,11 +8950,11 @@ function renderDownloadsScreen() {
                       </button>
                       <div style="display:flex;align-items:center;justify-content:center;gap:6px;font-size:11px;color:var(--text-muted);">
                         <span style="width:13px;height:13px;display:inline-flex;color:var(--success);">${SVG_ICONS.checkCircle}</span>
-                        <span>Direct HTTPS • ${escapeHtml(p.fileName || p.packageType || 'Verified Build')}</span>
+                        <span>${escapeHtml(p.fileName || p.packageType || 'Official Build')}</span>
                       </div>
                     `
                     : `
-                      <div class="btn-coming-soon" title="Build package is not yet published. Configure an HTTPS URL in Release Settings once built.">
+                      <div class="btn-coming-soon">
                         <span style="width:17px;height:17px;display:inline-flex;">${SVG_ICONS.clock}</span>
                         <span>COMING SOON</span>
                       </div>
@@ -8508,110 +8968,6 @@ function renderDownloadsScreen() {
           `;
         })
         .join('')}
-    </div>
-
-    <!-- Release Notes & Previous Versions Section -->
-    <div class="release-notes-grid">
-      <!-- Current Release Notes Card -->
-      <div class="app-card" style="display:flex;flex-direction:column;gap:14px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
-          <div>
-            <div class="micro-label" style="color:var(--accent-primary);">RELEASE NOTES • ${escapeHtml(currentRel.channel || 'STABLE')}</div>
-            <h3 class="serif-heading" style="font-size:26px;color:var(--text-primary);margin-top:2px;">
-              ${escapeHtml(currentRel.version || 'v2.1.0')} — ${escapeHtml(currentRel.title || 'Latest Release')}
-            </h3>
-          </div>
-          <span class="show-count-pill">${escapeHtml(currentRel.releaseDate || 'Nov 18, 2026')}</span>
-        </div>
-
-        ${
-          currentRel.summary
-            ? `<p style="font-size:13.5px;color:var(--text-secondary);line-height:1.6;">${escapeHtml(currentRel.summary)}</p>`
-            : ''
-        }
-
-        <div style="display:flex;flex-direction:column;gap:10px;">
-          ${(currentRel.highlights || [])
-            .map(
-              (h) => `
-              <div class="release-highlight-row">
-                <span class="release-tag-pill">${escapeHtml(h.tag || 'UPDATE')}</span>
-                <span style="font-size:13px;color:var(--text-primary);line-height:1.5;">${escapeHtml(h.text || '')}</span>
-              </div>
-            `
-            )
-            .join('')}
-        </div>
-      </div>
-
-      <!-- Previous Versions Archive Card -->
-      <div class="app-card" style="display:flex;flex-direction:column;gap:14px;">
-        <div>
-          <div class="micro-label" style="color:var(--accent-primary);">VERSION ARCHIVE</div>
-          <h3 class="serif-heading" style="font-size:26px;color:var(--text-primary);margin-top:2px;">
-            Previous Versions
-          </h3>
-        </div>
-
-        ${
-          prevVersions.length === 0
-            ? `<div style="color:var(--text-secondary);font-size:13px;padding:12px 0;">No archived builds listed yet.</div>`
-            : `<div style="display:flex;flex-direction:column;gap:12px;">
-                ${prevVersions
-                  .map((pv, idx) => {
-                    const dlMap = pv.downloads || {};
-                    return `
-                      <div class="prev-version-card">
-                        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-                          <div>
-                            <span class="serif-heading" style="font-size:21px;color:var(--highlight);font-weight:600;">${escapeHtml(pv.version || '')}</span>
-                            <span style="font-size:13px;color:var(--text-primary);margin-left:8px;">${escapeHtml(pv.title || '')}</span>
-                          </div>
-                          <span style="font-size:11.5px;color:var(--text-muted);">${escapeHtml(pv.releaseDate || '')}</span>
-                        </div>
-
-                        <ul style="padding-left:18px;display:flex;flex-direction:column;gap:4px;font-size:12.5px;color:var(--text-secondary);line-height:1.45;">
-                          ${(pv.notes || []).map((n) => `<li>${escapeHtml(n)}</li>`).join('')}
-                        </ul>
-
-                        <div style="display:flex;flex-wrap:wrap;gap:8px;padding-top:4px;">
-                          ${[
-                            { k: 'android', label: 'Android APK' },
-                            { k: 'windows', label: 'Windows EXE' },
-                            { k: 'macos', label: 'macOS DMG' }
-                          ]
-                            .map(({ k, label }) => {
-                              const d = dlMap[k] || {};
-                              const ready = isPlatformDownloadReady(d);
-                              const prevTaskKey = `prev_${idx}_${k}`;
-                              if (ready) {
-                                return `
-                                  <button
-                                    class="capsule-pill active"
-                                    data-trigger-download="${prevTaskKey}"
-                                    data-dl-url="${escapeHtml(d.downloadUrl)}"
-                                    data-dl-filename="${escapeHtml(d.fileName || `${k}-${pv.version}`)}"
-                                  >
-                                    <span style="width:13px;height:13px;display:inline-flex;">${SVG_ICONS.download}</span>
-                                    <span>${label} (${escapeHtml(d.fileSize || pv.version)})</span>
-                                  </button>
-                                `;
-                              }
-                              return `
-                                <span class="capsule-pill" style="opacity:0.55;cursor:not-allowed;" title="Archived build not available">
-                                  ${label} • Coming Soon
-                                </span>
-                              `;
-                            })
-                            .join('')}
-                        </div>
-                      </div>
-                    `;
-                  })
-                  .join('')}
-              </div>`
-        }
-      </div>
     </div>
   `;
 }
@@ -8704,13 +9060,34 @@ function renderCollectionContextMenuOverlay() {
   `;
 }
 
+function renderInAppNotifBannerOverlay() {
+  const b = state.inAppNotifBanner;
+  if (!b) return '';
+  return `
+    <div id="in-app-notif-banner" class="in-app-notif-banner" role="alert">
+      <div style="flex-shrink:0;">
+        ${renderAvatarCircle(b.senderAvatar || 'avatar_1', b.senderName || 'Anime Universe', 36)}
+      </div>
+      <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;">
+        <div style="font-size:11px;font-weight:700;color:var(--accent-primary);letter-spacing:0.06em;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+          ${escapeHtml(b.title || 'Anime Universe')}
+        </div>
+        <div style="font-size:13px;font-weight:500;color:var(--text-primary);line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;">
+          ${escapeHtml(b.body || 'New community notification')}
+        </div>
+      </div>
+      <button type="button" class="in-app-notif-close" id="btn-dismiss-in-app-notif" aria-label="Dismiss notification">✕</button>
+    </div>
+  `;
+}
+
 function renderToastOverlay() {
   if (!state.toastMessage) return '';
   return `<div id="au-toast-banner" class="au-toast ${state.toastError ? 'error' : ''}">${escapeHtml(state.toastMessage)}</div>`;
 }
 
 function renderModals() {
-  let overlays = `${renderContextMenuOverlay()}${renderCollectionContextMenuOverlay()}${renderToastOverlay()}`;
+  let overlays = `${renderContextMenuOverlay()}${renderCollectionContextMenuOverlay()}${renderInAppNotifBannerOverlay()}${renderToastOverlay()}`;
 
   if (state.confirmRemoveHomeAnime) {
     const target = state.confirmRemoveHomeAnime;
@@ -8755,16 +9132,33 @@ function renderModals() {
             <button class="stepper-circle-btn plus" id="qe-inc" style="width:40px;height:40px;">+</button>
           </div>
 
-          <div class="micro-label" style="color:var(--accent-primary);">STAR RATING (${stars > 0 ? `${stars.toFixed(1)} ★` : 'UNRATED'})</div>
-          <div style="display:flex;justify-content:space-evenly;background:var(--elevated-surface);border-radius:18px;padding:10px;">
-            ${[1, 2, 3, 4, 5]
-              .map(
-                (idx) => `
-                <button data-qe-star="${idx}" style="background:none;border:none;font-size:28px;cursor:pointer;color:${
-                  stars >= idx - 0.5 ? 'var(--accent-primary)' : 'var(--text-muted)'
-                };">★</button>`
-              )
-              .join('')}
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+            <div class="micro-label" style="color:var(--accent-primary);">STAR RATING (${stars > 0 ? `${stars.toFixed(1)} ★` : 'UNRATED'})</div>
+            <div style="display:flex;gap:6px;">
+              <button type="button" class="capsule-pill" id="qe-star-minus" style="height:28px;padding:0 10px;font-size:11.5px;">−0.1 ★</button>
+              <button type="button" class="capsule-pill" id="qe-star-plus" style="height:28px;padding:0 10px;font-size:11.5px;">+0.1 ★</button>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:8px;background:var(--elevated-surface);border-radius:18px;padding:10px 12px;">
+            <div style="display:flex;justify-content:space-evenly;">
+              ${[1, 2, 3, 4, 5]
+                .map(
+                  (idx) => `
+                  <button data-qe-star="${idx}" style="background:none;border:none;font-size:28px;cursor:pointer;color:${
+                    stars >= idx - 0.5 ? 'var(--accent-primary)' : 'var(--text-muted)'
+                  };">★</button>`
+                )
+                .join('')}
+            </div>
+            <input
+              type="range"
+              id="qe-star-slider"
+              class="rating-tenth-slider"
+              min="0.1"
+              max="5.0"
+              step="0.1"
+              value="${stars > 0 ? stars.toFixed(1) : '0.1'}"
+            />
           </div>
 
           <textarea id="qe-notes" class="auth-input" style="height:78px;padding:10px;" placeholder="Add a review note...">${escapeHtml(a.reviewNotes || '')}</textarea>
@@ -8965,23 +9359,41 @@ function renderModals() {
                     ${
                       state.session
                         ? `<div class="hub-reviews-composer">
-                            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-                              <span class="micro-label" style="color:var(--accent-primary);">YOUR RATING &amp; REVIEW</span>
-                              <div style="display:inline-flex;align-items:center;gap:4px;">
+                            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+                              <div style="display:flex;align-items:center;gap:8px;">
+                                <span class="micro-label" style="color:var(--accent-primary);">YOUR RATING &amp; REVIEW</span>
+                                ${
+                                  draftStars > 0
+                                    ? `<span class="tabular-num" style="font-size:13px;font-weight:700;color:var(--highlight);">${draftStars.toFixed(1)} ★</span>`
+                                    : ''
+                                }
+                              </div>
+                              <div style="display:inline-flex;align-items:center;gap:5px;">
+                                <button type="button" class="capsule-pill" id="btn-comm-modal-star-minus" style="height:26px;padding:0 9px;font-size:11px;">−0.1 ★</button>
+                                <button type="button" class="capsule-pill" id="btn-comm-modal-star-plus" style="height:26px;padding:0 9px;font-size:11px;">+0.1 ★</button>
+                              </div>
+                            </div>
+                            <div style="display:flex;align-items:center;gap:10px;">
+                              <div style="display:inline-flex;align-items:center;gap:3px;">
                                 ${[1, 2, 3, 4, 5]
                                   .map(
                                     (st) =>
-                                      `<button type="button" data-comm-modal-star="${st}" style="background:none;border:none;cursor:pointer;font-size:20px;color:${
+                                      `<button type="button" data-comm-modal-star="${st}" style="background:none;border:none;cursor:pointer;font-size:21px;line-height:1;color:${
                                         draftStars >= st - 0.5 ? 'var(--accent-primary)' : '#383D4E'
                                       };">★</button>`
                                   )
                                   .join('')}
-                                ${
-                                  draftStars > 0
-                                    ? `<span class="tabular-num" style="font-size:12.5px;font-weight:700;color:var(--highlight);margin-left:4px;">${draftStars.toFixed(1)}</span>`
-                                    : ''
-                                }
                               </div>
+                              <input
+                                type="range"
+                                id="comm-modal-star-slider"
+                                class="rating-tenth-slider"
+                                min="0.1"
+                                max="5.0"
+                                step="0.1"
+                                value="${draftStars > 0 ? draftStars.toFixed(1) : '4.0'}"
+                                style="flex:1;min-width:90px;"
+                              />
                             </div>
                             <div style="display:flex;gap:8px;align-items:center;">
                               <input
@@ -9058,6 +9470,10 @@ function renderApp() {
   const root = document.getElementById('app');
   if (!root) return;
 
+  if (isTauriAppEnvironment() && state.tab === 'downloads') {
+    state.tab = 'home';
+  }
+
   const liveDetailNotesEl = document.getElementById('inp-detail-notes');
   if (liveDetailNotesEl && state.tab === 'detail') {
     state.detailNoteDraft = liveDetailNotesEl.value;
@@ -9065,6 +9481,17 @@ function renderApp() {
   const prevScrollY = window.scrollY;
   const prevCommListScroll = document.querySelector('.community-comments-list')?.scrollTop ?? null;
   const prevModalDiscScroll = document.querySelector('.community-modal-discussion-scroll')?.scrollTop ?? null;
+  const prevHScrollMap = new Map();
+  document.querySelectorAll('[data-hscroll-key]').forEach((el) => {
+    const key = el.getAttribute('data-hscroll-key');
+    if (key) prevHScrollMap.set(key, el.scrollLeft);
+  });
+  const prevCapsuleScrolls = Array.from(document.querySelectorAll('.capsule-strip')).map((el) => el.scrollLeft);
+  const weekStripBefore = document.querySelector('.week-strip');
+  if (weekStripBefore) {
+    state._weekStripScrollLeft = weekStripBefore.scrollLeft;
+    prevHScrollMap.set('home-week-strip', weekStripBefore.scrollLeft);
+  }
   const sameTab = state.lastRenderedTab === state.tab;
 
   const needsOnboarding = Boolean(
@@ -9189,6 +9616,32 @@ function renderApp() {
 
   bindAppEvents();
   state.lastRenderedTab = state.tab;
+
+  const restoreHorizontalScrolls = () => {
+    prevHScrollMap.forEach((leftVal, key) => {
+      const targetEl = document.querySelector(`[data-hscroll-key="${key}"]`);
+      if (targetEl && typeof leftVal === 'number') {
+        targetEl.scrollLeft = leftVal;
+      }
+    });
+    if (sameTab && prevCapsuleScrolls.length > 0) {
+      const newCapsules = document.querySelectorAll('.capsule-strip');
+      if (newCapsules.length === prevCapsuleScrolls.length) {
+        newCapsules.forEach((el, idx) => {
+          if (!el.hasAttribute('data-hscroll-key')) {
+            el.scrollLeft = prevCapsuleScrolls[idx];
+          }
+        });
+      }
+    }
+    const weekStripAfter = document.querySelector('.week-strip');
+    if (weekStripAfter && typeof state._weekStripScrollLeft === 'number') {
+      weekStripAfter.scrollLeft = state._weekStripScrollLeft;
+    }
+  };
+
+  restoreHorizontalScrolls();
+  requestAnimationFrame(() => restoreHorizontalScrolls());
 
   if (prevCommListScroll !== null) {
     const commListEl = document.querySelector('.community-comments-list');
@@ -9713,6 +10166,9 @@ function bindAppEvents() {
   document.querySelectorAll('[data-nav]').forEach((el) => {
     el.onclick = () => {
       const target = el.getAttribute('data-nav');
+      if (target === 'downloads' && isTauriAppEnvironment()) {
+        return;
+      }
       state.settingsCategory = null;
       state.tab = target;
       if (target !== 'detail' && !state.communityCommentsAnimeId) {
@@ -9754,9 +10210,18 @@ function bindAppEvents() {
     };
   }
 
+  const weekStripEl = document.querySelector('.week-strip');
+  if (weekStripEl) {
+    weekStripEl.onscroll = () => {
+      state._weekStripScrollLeft = weekStripEl.scrollLeft;
+    };
+  }
+
   const btnAllDays = document.getElementById('btn-home-all-days');
   if (btnAllDays) {
     btnAllDays.onclick = () => {
+      const ws = document.querySelector('.week-strip');
+      if (ws) state._weekStripScrollLeft = ws.scrollLeft;
       state.homeAllWeekDays = true;
       renderApp();
     };
@@ -9764,6 +10229,8 @@ function bindAppEvents() {
 
   document.querySelectorAll('[data-select-day]').forEach((btn) => {
     btn.onclick = () => {
+      const ws = document.querySelector('.week-strip');
+      if (ws) state._weekStripScrollLeft = ws.scrollLeft;
       state.homeAllWeekDays = false;
       state.selectedDay = Number(btn.getAttribute('data-select-day'));
       renderApp();
@@ -9788,23 +10255,30 @@ function bindAppEvents() {
     card.oncontextmenu = (e) => {
       e.preventDefault();
       e.stopPropagation();
-      state.contextMenu = { animeId: aid, x: e.clientX, y: e.clientY };
+      if (state.contextMenu && Date.now() - Number(state.contextMenu.openedAt || 0) < 800) {
+        return;
+      }
+      state.contextMenu = { animeId: aid, x: e.clientX, y: e.clientY, openedAt: Date.now() };
       renderApp();
     };
 
     let touchTimer = null;
+    let longPressFired = false;
     let startX = 0;
     let startY = 0;
     card.ontouchstart = (e) => {
       if (!e.touches || e.touches.length !== 1) return;
+      longPressFired = false;
       startX = e.touches[0].clientX;
       startY = e.touches[0].clientY;
       touchTimer = setTimeout(() => {
         touchTimer = null;
+        longPressFired = true;
         state._suppressNextCardClick = true;
-        state.contextMenu = { animeId: aid, x: startX, y: startY };
+        state._ignoreContextBackdropUntil = Date.now() + 750;
+        state.contextMenu = { animeId: aid, x: startX, y: startY, openedAt: Date.now(), fromTouch: true };
         renderApp();
-      }, 500);
+      }, 480);
     };
     card.ontouchmove = (e) => {
       if (!touchTimer || !e.touches || e.touches.length !== 1) return;
@@ -9815,10 +10289,15 @@ function bindAppEvents() {
         touchTimer = null;
       }
     };
-    card.ontouchend = () => {
+    card.ontouchend = (e) => {
       if (touchTimer) {
         clearTimeout(touchTimer);
         touchTimer = null;
+      }
+      if (longPressFired) {
+        e.preventDefault();
+        e.stopPropagation();
+        longPressFired = false;
       }
     };
     card.ontouchcancel = () => {
@@ -9826,17 +10305,43 @@ function bindAppEvents() {
         clearTimeout(touchTimer);
         touchTimer = null;
       }
+      longPressFired = false;
     };
   });
 
   const ctxBackdrop = document.getElementById('anime-context-backdrop');
   if (ctxBackdrop) {
-    ctxBackdrop.onclick = () => {
+    let ctxBackdropArmed = false;
+    ctxBackdrop.onpointerdown = (e) => {
+      if (e.target === ctxBackdrop) ctxBackdropArmed = true;
+    };
+    ctxBackdrop.ontouchstart = (e) => {
+      if (e.target === ctxBackdrop) ctxBackdropArmed = true;
+    };
+    ctxBackdrop.onmousedown = (e) => {
+      if (e.target === ctxBackdrop) ctxBackdropArmed = true;
+    };
+    ctxBackdrop.onclick = (e) => {
+      if (e.target !== ctxBackdrop || !ctxBackdropArmed) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      ctxBackdropArmed = false;
       state.contextMenu = null;
       renderApp();
     };
     ctxBackdrop.oncontextmenu = (e) => {
       e.preventDefault();
+      e.stopPropagation();
+      if (
+        !ctxBackdropArmed ||
+        Date.now() < Number(state._ignoreContextBackdropUntil || 0) ||
+        Date.now() - Number(state.contextMenu?.openedAt || 0) < 900
+      ) {
+        return;
+      }
+      ctxBackdropArmed = false;
       state.contextMenu = null;
       renderApp();
     };
@@ -9896,9 +10401,14 @@ function bindAppEvents() {
   const submitInlineEpisodeEdit = async (aid, scope) => {
     const item = state.vault.find((v) => Number(v.animeId) === Number(aid));
     if (!item || !state.inlineEpEdit || state.inlineEpEdit.saving) return;
+    const activeMergedSeason =
+      scope === 'detail' && state.tab === 'detail' && state.detailAnime && Number(state.detailAnime.animeId) === Number(aid)
+        ? getActiveMergedSeasonForDetail()
+        : null;
+    const effectiveTotal = activeMergedSeason ? activeMergedSeason.episodes : item.totalEpisodes;
     const inputEl = document.getElementById(`inline-ep-input-${scope}-${aid}`);
     const rawDraft = inputEl ? inputEl.value : state.inlineEpEdit.draft;
-    const check = validateEpisodeInput(rawDraft, item.totalEpisodes);
+    const check = validateEpisodeInput(rawDraft, effectiveTotal);
     if (!check.valid) {
       state.inlineEpEdit = { ...state.inlineEpEdit, draft: rawDraft, error: check.error };
       renderApp();
@@ -9911,16 +10421,23 @@ function bindAppEvents() {
 
     state.inlineEpEdit = { ...state.inlineEpEdit, draft: String(check.value), saving: true, error: '' };
     renderApp();
-    const res = await commitEpisodeProgress(aid, check.value);
+    const res = activeMergedSeason
+      ? await commitWebContinuousEpisodeProgress(activeMergedSeason, check.value)
+      : await commitEpisodeProgress(aid, check.value);
     if (res.ok) {
       state.inlineEpEdit = null;
       renderApp();
     } else {
       const restored = state.vault.find((v) => Number(v.animeId) === Number(aid));
+      const fallbackWatched = activeMergedSeason
+        ? computeWebContinuousWatched(activeMergedSeason, restored || item)
+        : restored
+        ? restored.watchedEpisodes
+        : item.watchedEpisodes || 0;
       state.inlineEpEdit = {
         animeId: aid,
         scope,
-        draft: String(restored ? restored.watchedEpisodes : item.watchedEpisodes || 0),
+        draft: String(fallbackWatched),
         saving: false,
         error: res.error || 'Failed to save episode progress.'
       };
@@ -9935,10 +10452,17 @@ function bindAppEvents() {
       const scope = el.getAttribute('data-inline-ep-scope') || 'card';
       const item = state.vault.find((v) => Number(v.animeId) === aid);
       if (!item) return;
+      const activeMergedSeason =
+        scope === 'detail' && state.tab === 'detail' && state.detailAnime && Number(state.detailAnime.animeId) === aid
+          ? getActiveMergedSeasonForDetail()
+          : null;
+      const currentWatched = activeMergedSeason
+        ? computeWebContinuousWatched(activeMergedSeason, item)
+        : item.watchedEpisodes || 0;
       state.inlineEpEdit = {
         animeId: aid,
         scope,
-        draft: String(item.watchedEpisodes || 0),
+        draft: String(currentWatched),
         saving: false,
         error: ''
       };
@@ -9999,6 +10523,22 @@ function bindAppEvents() {
       const id = Number(btn.getAttribute('data-inc-id'));
       const item = state.vault.find((v) => Number(v.animeId) === id);
       if (!item) return;
+      const activeMergedSeason =
+        state.tab === 'detail' && state.detailAnime && Number(state.detailAnime.animeId) === id
+          ? getActiveMergedSeasonForDetail()
+          : null;
+      if (activeMergedSeason) {
+        const cur = computeWebContinuousWatched(activeMergedSeason, item);
+        const next = cur + 1;
+        const clamped =
+          activeMergedSeason.episodes && activeMergedSeason.episodes > 0
+            ? Math.min(activeMergedSeason.episodes, next)
+            : next;
+        const res = await commitWebContinuousEpisodeProgress(activeMergedSeason, clamped);
+        if (!res.ok) showToast(res.error || 'Failed to update progress', true);
+        renderApp();
+        return;
+      }
       const next = (item.watchedEpisodes || 0) + 1;
       const clamped = item.totalEpisodes && item.totalEpisodes > 0 ? Math.min(item.totalEpisodes, next) : next;
       const res = await commitEpisodeProgress(id, clamped);
@@ -10013,6 +10553,18 @@ function bindAppEvents() {
       const id = Number(btn.getAttribute('data-dec-id'));
       const item = state.vault.find((v) => Number(v.animeId) === id);
       if (!item) return;
+      const activeMergedSeason =
+        state.tab === 'detail' && state.detailAnime && Number(state.detailAnime.animeId) === id
+          ? getActiveMergedSeasonForDetail()
+          : null;
+      if (activeMergedSeason) {
+        const cur = computeWebContinuousWatched(activeMergedSeason, item);
+        const next = Math.max(0, cur - 1);
+        const res = await commitWebContinuousEpisodeProgress(activeMergedSeason, next);
+        if (!res.ok) showToast(res.error || 'Failed to update progress', true);
+        renderApp();
+        return;
+      }
       const next = Math.max(0, (item.watchedEpisodes || 0) - 1);
       const res = await commitEpisodeProgress(id, next);
       if (!res.ok) showToast(res.error || 'Failed to update progress', true);
@@ -10168,26 +10720,34 @@ function bindAppEvents() {
       btn.oncontextmenu = (e) => {
         e.preventDefault();
         e.stopPropagation();
+        if (state.collectionContextMenu && Date.now() - Number(state.collectionContextMenu.openedAt || 0) < 850) {
+          return;
+        }
         state.collectionContextMenu = {
           id: colId,
           name: colName,
           count: colCount,
           x: e.clientX || 120,
-          y: e.clientY || 160
+          y: e.clientY || 160,
+          openedAt: Date.now()
         };
         renderApp();
       };
 
       let colTouchTimer = null;
+      let colLongPressFired = false;
       let startX = 0;
       let startY = 0;
       btn.ontouchstart = (e) => {
         if (!e.touches || e.touches.length !== 1) return;
+        colLongPressFired = false;
         startX = e.touches[0].clientX;
         startY = e.touches[0].clientY;
         colTouchTimer = setTimeout(() => {
           colTouchTimer = null;
+          colLongPressFired = true;
           state._suppressNextCategoryClick = true;
+          state._ignoreContextBackdropUntil = Date.now() + 800;
           try {
             if (navigator.vibrate) navigator.vibrate(18);
           } catch (_) {}
@@ -10196,7 +10756,9 @@ function bindAppEvents() {
             name: colName,
             count: colCount,
             x: startX,
-            y: startY
+            y: startY,
+            openedAt: Date.now(),
+            fromTouch: true
           };
           renderApp();
         }, 450);
@@ -10210,10 +10772,15 @@ function bindAppEvents() {
           colTouchTimer = null;
         }
       };
-      btn.ontouchend = () => {
+      btn.ontouchend = (e) => {
         if (colTouchTimer) {
           clearTimeout(colTouchTimer);
           colTouchTimer = null;
+        }
+        if (colLongPressFired) {
+          e.preventDefault();
+          e.stopPropagation();
+          colLongPressFired = false;
         }
       };
       btn.ontouchcancel = () => {
@@ -10221,18 +10788,44 @@ function bindAppEvents() {
           clearTimeout(colTouchTimer);
           colTouchTimer = null;
         }
+        colLongPressFired = false;
       };
     }
   });
 
   const colCtxBackdrop = document.getElementById('collection-context-backdrop');
   if (colCtxBackdrop) {
-    colCtxBackdrop.onclick = () => {
+    let colBackdropArmed = false;
+    colCtxBackdrop.onpointerdown = (e) => {
+      if (e.target === colCtxBackdrop) colBackdropArmed = true;
+    };
+    colCtxBackdrop.ontouchstart = (e) => {
+      if (e.target === colCtxBackdrop) colBackdropArmed = true;
+    };
+    colCtxBackdrop.onmousedown = (e) => {
+      if (e.target === colCtxBackdrop) colBackdropArmed = true;
+    };
+    colCtxBackdrop.onclick = (e) => {
+      if (e.target !== colCtxBackdrop || !colBackdropArmed) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      colBackdropArmed = false;
       state.collectionContextMenu = null;
       renderApp();
     };
     colCtxBackdrop.oncontextmenu = (e) => {
       e.preventDefault();
+      e.stopPropagation();
+      if (
+        !colBackdropArmed ||
+        Date.now() < Number(state._ignoreContextBackdropUntil || 0) ||
+        Date.now() - Number(state.collectionContextMenu?.openedAt || 0) < 950
+      ) {
+        return;
+      }
+      colBackdropArmed = false;
       state.collectionContextMenu = null;
       renderApp();
     };
@@ -10443,17 +11036,199 @@ function bindAppEvents() {
       );
     };
   });
+  // Direct inline Community card rating with 0.1 precision
+  document.querySelectorAll('[data-comm-quick-rate]').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const aid = Number(btn.getAttribute('data-comm-quick-rate'));
+      const existingStars = Number(btn.getAttribute('data-comm-my-stars') || 0);
+      if (state.communityQuickRate && Number(state.communityQuickRate.animeId) === aid) {
+        state.communityQuickRate = null;
+      } else {
+        state.communityQuickRate = {
+          animeId: aid,
+          stars: existingStars > 0 ? roundStarsTenth(existingStars) : 4.0,
+          saving: false
+        };
+      }
+      renderApp();
+    };
+  });
+  document.querySelectorAll('[data-comm-qr-star]').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      if (!state.communityQuickRate) return;
+      const clicked = Number(btn.getAttribute('data-comm-qr-star'));
+      const cur = Number(state.communityQuickRate.stars || 0);
+      state.communityQuickRate.stars = cur === clicked ? roundStarsTenth(Math.max(0.1, clicked - 0.1)) : clicked;
+      renderApp();
+    };
+  });
+  const btnCommQrMinus = document.getElementById('btn-comm-qr-minus');
+  if (btnCommQrMinus && state.communityQuickRate) {
+    btnCommQrMinus.onclick = (e) => {
+      e.stopPropagation();
+      const cur = Number(state.communityQuickRate.stars || 0);
+      state.communityQuickRate.stars = roundStarsTenth(Math.max(0.1, (cur > 0 ? cur : 0.2) - 0.1));
+      renderApp();
+    };
+  }
+  const btnCommQrPlus = document.getElementById('btn-comm-qr-plus');
+  if (btnCommQrPlus && state.communityQuickRate) {
+    btnCommQrPlus.onclick = (e) => {
+      e.stopPropagation();
+      const cur = Number(state.communityQuickRate.stars || 0);
+      state.communityQuickRate.stars = roundStarsTenth(Math.min(5.0, (cur > 0 ? cur : 0) + 0.1));
+      renderApp();
+    };
+  }
+  const commQrSlider = document.getElementById('comm-qr-slider');
+  if (commQrSlider && state.communityQuickRate) {
+    commQrSlider.onclick = (e) => e.stopPropagation();
+    commQrSlider.oninput = (e) => {
+      e.stopPropagation();
+      state.communityQuickRate.stars = roundStarsTenth(e.target.value);
+      renderApp();
+    };
+  }
+  const btnCommQrClose = document.getElementById('btn-comm-qr-close');
+  if (btnCommQrClose) {
+    btnCommQrClose.onclick = (e) => {
+      e.stopPropagation();
+      state.communityQuickRate = null;
+      renderApp();
+    };
+  }
+  const btnCommQrSave = document.getElementById('btn-comm-qr-save');
+  if (btnCommQrSave && state.communityQuickRate) {
+    btnCommQrSave.onclick = async (e) => {
+      e.stopPropagation();
+      if (state.communityQuickRate.saving) return;
+      const aid = Number(state.communityQuickRate.animeId);
+      const starsVal = roundStarsTenth(state.communityQuickRate.stars);
+      const rating10Val = starsToRating10(starsVal);
+      if (!aid || !rating10Val) return;
+      const allGroups = groupCommunityReviewsByAnime(state.communityReviews);
+      const grp = allGroups.find((g) => Number(g.anime_id) === aid);
+      const myRev = grp?.reviews?.find((r) => r.user_id === state.session?.userId);
+      const myVault = state.vault.find((v) => Number(v.animeId) === aid);
+      const existingNote = myRev?.review_notes || myVault?.reviewNotes || '';
+      state.communityQuickRate.saving = true;
+      renderApp();
+      try {
+        await submitCommunityCommentNote(aid, rating10Val, existingNote, grp || null, { throwOnError: true, silentToast: true });
+        state.communityQuickRate = null;
+        showToast(`Rated ${starsVal.toFixed(1)} ★ in Community`);
+      } catch (err) {
+        if (state.communityQuickRate) state.communityQuickRate.saving = false;
+        showToast(err?.message || 'Failed to save rating', true);
+      } finally {
+        renderApp();
+      }
+    };
+  }
+
+  // In-App Floating Notification Banner click & dismiss
+  const inAppBanner = document.getElementById('in-app-notif-banner');
+  if (inAppBanner && state.inAppNotifBanner) {
+    inAppBanner.onclick = () => {
+      const b = state.inAppNotifBanner;
+      state.inAppNotifBanner = null;
+      if (b?.animeId) {
+        openCommunityHubForAnime(b.animeId, {
+          tab: 'discussion',
+          fallbackTitle: b.animeTitle || '',
+          fallbackCover: b.animeCover || '',
+          notificationId: b.id || null,
+          jumpTarget: b.commentId || b.threadId || b.replyId ? {
+            commentId: b.commentId || null,
+            threadId: b.threadId || null,
+            replyId: b.replyId || null
+          } : null
+        });
+      } else {
+        state.tab = 'community';
+        state.communityViewTab = 'tagged';
+        loadUserNotifications(true);
+        renderApp();
+      }
+    };
+  }
+  const btnDismissInAppNotif = document.getElementById('btn-dismiss-in-app-notif');
+  if (btnDismissInAppNotif) {
+    btnDismissInAppNotif.onclick = (e) => {
+      e.stopPropagation();
+      state.inAppNotifBanner = null;
+      renderApp();
+    };
+  }
+
+  // Settings: Enable / Test System & Background Notifications
+  const btnEnableOsNotifs = document.getElementById('btn-enable-os-notifs');
+  if (btnEnableOsNotifs) {
+    btnEnableOsNotifs.onclick = async () => {
+      const granted = await NativeNotificationBridge.requestPermissionInteractive();
+      showToast(granted ? 'System & background notifications enabled' : 'Please allow notifications in system settings', !granted);
+      renderApp();
+    };
+  }
+  const btnTestOsNotifs = document.getElementById('btn-test-os-notifs');
+  if (btnTestOsNotifs) {
+    btnTestOsNotifs.onclick = async () => {
+      await NativeNotificationBridge.requestPermissionInteractive();
+      await NativeNotificationBridge.dispatchAlert({
+        id: `test_${Date.now()}`,
+        title: 'Anime Universe • Notification Active',
+        body: 'In-app banners & OS notification bar alerts are working!',
+        senderName: state.profile.username || 'Anime Universe',
+        senderAvatar: state.profile.avatarKey || 'avatar_1',
+        forceShow: true
+      });
+    };
+  }
+
   document.querySelectorAll('[data-comm-modal-star]').forEach((btn) => {
     btn.onclick = (e) => {
       e.stopPropagation();
       const clicked = Number(btn.getAttribute('data-comm-modal-star'));
       const cur = Number(state.communityCommentDraftStars || 0);
-      state.communityCommentDraftStars = cur === clicked ? Math.max(0, clicked - 0.5) : clicked;
+      state.communityCommentDraftStars = cur === clicked ? roundStarsTenth(Math.max(0.1, clicked - 0.1)) : clicked;
       const inp = document.getElementById('inp-comm-modal-note');
       if (inp) state.communityCommentDraftNote = inp.value;
       renderApp();
     };
   });
+  const btnCommModalStarMinus = document.getElementById('btn-comm-modal-star-minus');
+  if (btnCommModalStarMinus) {
+    btnCommModalStarMinus.onclick = (e) => {
+      e.stopPropagation();
+      const inp = document.getElementById('inp-comm-modal-note');
+      if (inp) state.communityCommentDraftNote = inp.value;
+      const cur = Number(state.communityCommentDraftStars || 0);
+      state.communityCommentDraftStars = roundStarsTenth(Math.max(0.1, (cur > 0 ? cur : 0.2) - 0.1));
+      renderApp();
+    };
+  }
+  const btnCommModalStarPlus = document.getElementById('btn-comm-modal-star-plus');
+  if (btnCommModalStarPlus) {
+    btnCommModalStarPlus.onclick = (e) => {
+      e.stopPropagation();
+      const inp = document.getElementById('inp-comm-modal-note');
+      if (inp) state.communityCommentDraftNote = inp.value;
+      const cur = Number(state.communityCommentDraftStars || 0);
+      state.communityCommentDraftStars = roundStarsTenth(Math.min(5.0, (cur > 0 ? cur : 0) + 0.1));
+      renderApp();
+    };
+  }
+  const commModalStarSlider = document.getElementById('comm-modal-star-slider');
+  if (commModalStarSlider) {
+    commModalStarSlider.oninput = (e) => {
+      const inp = document.getElementById('inp-comm-modal-note');
+      if (inp) state.communityCommentDraftNote = inp.value;
+      state.communityCommentDraftStars = roundStarsTenth(e.target.value);
+      renderApp();
+    };
+  }
   const inpCommModalNote = document.getElementById('inp-comm-modal-note');
   if (inpCommModalNote) {
     inpCommModalNote.oninput = (e) => {
@@ -10473,7 +11248,7 @@ function bindAppEvents() {
       const aid = Number(state.communityCommentsAnimeId);
       if (!aid) return;
       const noteText = (document.getElementById('inp-comm-modal-note')?.value ?? state.communityCommentDraftNote ?? '').trim();
-      const stars = Number(state.communityCommentDraftStars || 0);
+      const stars = roundStarsTenth(state.communityCommentDraftStars || 0);
       if (!noteText && stars <= 0) {
         state.communityNoteError = 'Please select a star rating or enter a comment.';
         state.communityNoteFeedback = '';
@@ -10483,7 +11258,7 @@ function bindAppEvents() {
 
       const allGroups = groupCommunityReviewsByAnime(state.communityReviews);
       const grp = allGroups.find((g) => Number(g.anime_id) === aid);
-      const rating10Val = stars > 0 ? Math.round(stars * 2) : null;
+      const rating10Val = stars > 0 ? starsToRating10(stars) : null;
 
       state.communityNoteSaving = true;
       state.communityNoteFeedback = '';
@@ -10493,7 +11268,7 @@ function bindAppEvents() {
         // Part 1: Adding a community note/comment/rating NEVER adds the anime to Home
         await submitCommunityCommentNote(aid, rating10Val, noteText, grp || null, { throwOnError: true, silentToast: true });
         state.communityCommentDraftNote = '';
-        state.communityNoteFeedback = noteText ? 'Comment posted successfully' : 'Rating saved';
+        state.communityNoteFeedback = noteText ? 'Comment posted successfully' : `Rated ${stars.toFixed(1)} ★`;
         showToast(state.communityNoteFeedback);
       } catch (err) {
         state.communityNoteError = err?.message || 'Failed to post. Please try again.';
@@ -10524,7 +11299,7 @@ function bindAppEvents() {
       const cat = el.getAttribute('data-settings-cat');
       if (cat === 'DOWNLOADS_LINK') {
         state.settingsCategory = null;
-        state.tab = 'downloads';
+        state.tab = isTauriAppEnvironment() ? 'home' : 'downloads';
       } else {
         state.settingsCategory = cat;
       }
@@ -10576,6 +11351,44 @@ function bindAppEvents() {
   if (btnDetailBack) {
     btnDetailBack.onclick = () => {
       state.tab = state.previousTab || 'home';
+      renderApp();
+    };
+  }
+  const btnDetailSeasonOverrideToggle = document.getElementById('btn-detail-season-override-toggle');
+  if (btnDetailSeasonOverrideToggle) {
+    btnDetailSeasonOverrideToggle.onclick = async (e) => {
+      e.stopPropagation();
+      const fid = Number(
+        btnDetailSeasonOverrideToggle.getAttribute('data-franchise-id') ||
+          state.detailRich?.franchiseId ||
+          state.detailAnime?.animeId ||
+          0
+      );
+      if (!fid) return;
+      const seasonsList = state.detailRich?.seasons || [];
+      const currentMode = getFranchiseSeasonOverride(fid);
+      const isCurrentlyMerged =
+        currentMode === 'merge_one' ||
+        (currentMode === 'auto' &&
+          (seasonsList.length === 1 || seasonsList.some((s) => Array.isArray(s.subEntries) && s.subEntries.length > 1)));
+      const nextMode = isCurrentlyMerged ? 'split_all' : 'merge_one';
+      setFranchiseSeasonOverride(fid, nextMode);
+      if (state.detailRootMedia) {
+        const resolved = await resolveFullSeasonChain(state.detailRootMedia, nextMode);
+        if (state.detailRich) {
+          state.detailRich = {
+            ...state.detailRich,
+            seasons: resolved.seasons,
+            moviesAndOvas: resolved.moviesAndOvas,
+            franchiseId: resolved.franchiseId,
+            rawMainSeasonNodeCount: resolved.rawMainSeasonNodeCount
+          };
+        }
+      } else if (state.detailAnime?.animeId) {
+        await openAnimeDetail(state.detailAnime.animeId);
+        return;
+      }
+      showToast(nextMode === 'merge_one' ? 'Merged franchise as 1 continuous season' : 'Split franchise into separate seasons');
       renderApp();
     };
   }
@@ -10679,8 +11492,8 @@ function bindAppEvents() {
       if (!state.detailAnime) return;
       const clicked = Number(btn.getAttribute('data-star-val'));
       const currentStars = rating10ToStars(state.detailAnime.rating10) || 0;
-      const nextStars = currentStars === clicked ? clicked - 0.5 : clicked;
-      const nextRating10 = Math.round(nextStars * 2);
+      const nextStars = currentStars === clicked ? roundStarsTenth(Math.max(0.1, clicked - 0.1)) : clicked;
+      const nextRating10 = starsToRating10(nextStars);
       await saveDetailRatingOrNote(nextRating10, undefined, 'rating');
     };
   });
@@ -10688,7 +11501,7 @@ function bindAppEvents() {
     btn.onclick = async () => {
       if (!state.detailAnime) return;
       const st = Number(btn.getAttribute('data-pick-sentiment-stars'));
-      const nextRating10 = Math.round(st * 2);
+      const nextRating10 = starsToRating10(st);
       await saveDetailRatingOrNote(nextRating10, undefined, 'rating');
     };
   });
@@ -10696,16 +11509,29 @@ function bindAppEvents() {
   if (btnStarMinus && state.detailAnime) {
     btnStarMinus.onclick = async () => {
       const cur = rating10ToStars(state.detailAnime.rating10) || 0;
-      const nextRating10 = Math.round(Math.max(0.5, cur - 0.5) * 2);
-      await saveDetailRatingOrNote(nextRating10, undefined, 'rating');
+      const nextStars = roundStarsTenth(Math.max(0.1, (cur > 0 ? cur : 0.2) - 0.1));
+      await saveDetailRatingOrNote(starsToRating10(nextStars), undefined, 'rating');
     };
   }
   const btnStarPlus = document.getElementById('btn-star-plus');
   if (btnStarPlus && state.detailAnime) {
     btnStarPlus.onclick = async () => {
       const cur = rating10ToStars(state.detailAnime.rating10) || 0;
-      const nextRating10 = Math.round(Math.min(5.0, cur + 0.5) * 2);
-      await saveDetailRatingOrNote(nextRating10, undefined, 'rating');
+      const nextStars = roundStarsTenth(Math.min(5.0, cur + 0.1));
+      await saveDetailRatingOrNote(starsToRating10(nextStars), undefined, 'rating');
+    };
+  }
+  const detailStarSlider = document.getElementById('detail-star-slider');
+  if (detailStarSlider && state.detailAnime) {
+    detailStarSlider.oninput = (e) => {
+      const nextStars = roundStarsTenth(e.target.value);
+      state.detailAnime = { ...state.detailAnime, rating10: starsToRating10(nextStars) };
+      const headingEl = btnStarMinus?.closest('.app-card')?.querySelector('.serif-heading');
+      if (headingEl) headingEl.textContent = `${nextStars.toFixed(1)} ★`;
+    };
+    detailStarSlider.onchange = async (e) => {
+      const nextStars = roundStarsTenth(e.target.value);
+      await saveDetailRatingOrNote(starsToRating10(nextStars), undefined, 'rating');
     };
   }
   const inpDetailNotes = document.getElementById('inp-detail-notes');
@@ -11232,11 +12058,37 @@ function bindAppEvents() {
       btn.onclick = () => {
         const clicked = Number(btn.getAttribute('data-qe-star'));
         const cur = rating10ToStars(state.quickEditAnime.rating10) || 0;
-        const next = cur === clicked ? clicked - 0.5 : clicked;
-        state.quickEditAnime.rating10 = Math.round(next * 2);
+        const next = cur === clicked ? roundStarsTenth(Math.max(0.1, clicked - 0.1)) : clicked;
+        state.quickEditAnime.rating10 = starsToRating10(next);
         renderApp();
       };
     });
+    const qeStarMinus = document.getElementById('qe-star-minus');
+    if (qeStarMinus) {
+      qeStarMinus.onclick = () => {
+        const cur = rating10ToStars(state.quickEditAnime.rating10) || 0;
+        const next = roundStarsTenth(Math.max(0.1, (cur > 0 ? cur : 0.2) - 0.1));
+        state.quickEditAnime.rating10 = starsToRating10(next);
+        renderApp();
+      };
+    }
+    const qeStarPlus = document.getElementById('qe-star-plus');
+    if (qeStarPlus) {
+      qeStarPlus.onclick = () => {
+        const cur = rating10ToStars(state.quickEditAnime.rating10) || 0;
+        const next = roundStarsTenth(Math.min(5.0, cur + 0.1));
+        state.quickEditAnime.rating10 = starsToRating10(next);
+        renderApp();
+      };
+    }
+    const qeStarSlider = document.getElementById('qe-star-slider');
+    if (qeStarSlider) {
+      qeStarSlider.oninput = (e) => {
+        const next = roundStarsTenth(e.target.value);
+        state.quickEditAnime.rating10 = starsToRating10(next);
+        renderApp();
+      };
+    }
     const qeSave = document.getElementById('qe-save');
     if (qeSave) {
       qeSave.onclick = async () => {
@@ -11311,6 +12163,217 @@ setInterval(async () => {
     } catch (_) {}
   }
 }, 4000);
+
+// Native Tauri v2 + Web OS Notification Bar & In-App Notification Banner Bridge
+let inAppBannerTimer = null;
+const NativeNotificationBridge = {
+  knownUnreadIds: new Set(),
+  hasPrimedUnread: false,
+  alertedIds: new Set(),
+  getTauriInvoke() {
+    if (typeof window === 'undefined') return null;
+    if (typeof window.__TAURI__?.core?.invoke === 'function') return window.__TAURI__.core.invoke;
+    if (typeof window.__TAURI_INTERNALS__?.invoke === 'function') return window.__TAURI_INTERNALS__.invoke;
+    return null;
+  },
+  async syncAuthToTauri(session) {
+    const invoke = this.getTauriInvoke();
+    if (!invoke || !session?.userId || !session?.accessToken) return;
+    try {
+      await invoke('sync_notification_auth', {
+        supabaseUrl: getVaultBaseUrl(),
+        anonKey: getVaultPublicKey(),
+        accessToken: session.accessToken,
+        refreshToken: session.refreshToken || '',
+        userId: session.userId
+      });
+    } catch (_) {}
+  },
+  async clearAuthInTauri() {
+    const invoke = this.getTauriInvoke();
+    this.knownUnreadIds.clear();
+    this.hasPrimedUnread = false;
+    this.alertedIds.clear();
+    if (!invoke) return;
+    try {
+      await invoke('clear_notification_auth');
+    } catch (_) {}
+  },
+  async markSeenInNative(ids) {
+    const invoke = this.getTauriInvoke();
+    if (!invoke || !Array.isArray(ids) || ids.length === 0) return;
+    try {
+      await invoke('mark_seen_notification_ids', { ids: ids.map(String) });
+    } catch (_) {}
+  },
+  async ensurePermissionSilently() {
+    try {
+      const tNotif = typeof window !== 'undefined' ? window.__TAURI__?.notification : null;
+      if (tNotif && typeof tNotif.isPermissionGranted === 'function') {
+        let granted = await tNotif.isPermissionGranted();
+        if (!granted && typeof tNotif.requestPermission === 'function') {
+          const perm = await tNotif.requestPermission();
+          granted = perm === 'granted';
+        }
+        state.osNotifPermission = granted ? 'granted' : 'denied';
+        return granted;
+      }
+      if (typeof Notification !== 'undefined') {
+        state.osNotifPermission = Notification.permission;
+        if (Notification.permission === 'default' && isTauriAppEnvironment()) {
+          const perm = await Notification.requestPermission();
+          state.osNotifPermission = perm;
+        }
+        return state.osNotifPermission === 'granted';
+      }
+    } catch (_) {}
+    return false;
+  },
+  async requestPermissionInteractive() {
+    try {
+      const tNotif = typeof window !== 'undefined' ? window.__TAURI__?.notification : null;
+      if (tNotif && typeof tNotif.isPermissionGranted === 'function') {
+        let granted = await tNotif.isPermissionGranted();
+        if (!granted && typeof tNotif.requestPermission === 'function') {
+          const perm = await tNotif.requestPermission();
+          granted = perm === 'granted';
+        }
+        state.osNotifPermission = granted ? 'granted' : 'denied';
+        return granted;
+      }
+      if (typeof Notification !== 'undefined') {
+        const perm = await Notification.requestPermission();
+        state.osNotifPermission = perm;
+        return perm === 'granted';
+      }
+    } catch (_) {}
+    return false;
+  },
+  showInAppBanner(alertData) {
+    state.inAppNotifBanner = alertData;
+    if (inAppBannerTimer) clearTimeout(inAppBannerTimer);
+    inAppBannerTimer = setTimeout(() => {
+      if (state.inAppNotifBanner && state.inAppNotifBanner.id === alertData.id) {
+        state.inAppNotifBanner = null;
+        const el = document.getElementById('in-app-notif-banner');
+        if (el) el.remove();
+      }
+    }, 7000);
+    renderApp();
+  },
+  async sendOsNotificationBar(title, body, data = {}) {
+    const cleanTitle = String(title || 'Anime Universe');
+    const cleanBody = String(body || 'You have a new community notification.');
+    // 1) Tauri v2 Rust native command (works on Windows, macOS, Android)
+    const invoke = this.getTauriInvoke();
+    if (invoke) {
+      try {
+        await invoke('send_native_notification', { title: cleanTitle, body: cleanBody });
+        return true;
+      } catch (_) {}
+    }
+    // 2) Tauri v2 JS notification plugin fallback
+    const tNotif = typeof window !== 'undefined' ? window.__TAURI__?.notification : null;
+    if (tNotif && typeof tNotif.sendNotification === 'function') {
+      try {
+        let granted = typeof tNotif.isPermissionGranted === 'function' ? await tNotif.isPermissionGranted() : true;
+        if (!granted && typeof tNotif.requestPermission === 'function') {
+          granted = (await tNotif.requestPermission()) === 'granted';
+        }
+        if (granted) {
+          tNotif.sendNotification({ title: cleanTitle, body: cleanBody });
+          return true;
+        }
+      } catch (_) {}
+    }
+    // 3) Web Service Worker / Browser Notification API
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      try {
+        if (navigator.serviceWorker && navigator.serviceWorker.ready) {
+          const reg = await navigator.serviceWorker.ready;
+          if (reg && typeof reg.showNotification === 'function') {
+            await reg.showNotification(cleanTitle, {
+              body: cleanBody,
+              icon: '/icon-192.png',
+              badge: '/icon-192.png',
+              tag: data.notificationId ? `au-notif-${data.notificationId}` : 'au-notif',
+              renotify: true,
+              data
+            });
+            return true;
+          }
+        }
+        new Notification(cleanTitle, { body: cleanBody, icon: '/icon-192.png' });
+        return true;
+      } catch (_) {}
+    }
+    return false;
+  },
+  async dispatchAlert(payload) {
+    const nid = String(payload?.id || '');
+    if (!payload?.forceShow && nid && this.alertedIds.has(nid)) return;
+    if (nid) {
+      this.alertedIds.add(nid);
+      this.knownUnreadIds.add(nid);
+      this.markSeenInNative([nid]);
+    }
+    this.showInAppBanner(payload);
+    await this.sendOsNotificationBar(payload.title, payload.body, {
+      notificationId: nid,
+      animeId: payload.animeId || null,
+      animeTitle: payload.animeTitle || '',
+      animeCover: payload.animeCover || '',
+      commentId: payload.commentId || null,
+      threadId: payload.threadId || null,
+      replyId: payload.replyId || null
+    });
+  },
+  async alertNewlyDetectedUnread(notifId, summary) {
+    if (!notifId || this.alertedIds.has(notifId)) return;
+    const rawList = Array.isArray(summary?.anime) ? summary.anime : [];
+    const top = rawList[0] || null;
+    const actionWord = top?.latest_notification_type === 'reply' ? 'replied to you' : 'tagged you';
+    const sender = top?.latest_sender_username || 'Community Member';
+    const title = top?.anime_title ? `${sender} ${actionWord} • ${top.anime_title}` : 'Anime Universe • New Notification';
+    const body = top?.latest_preview
+      ? formatPlainPreviewWithEmojis(top.latest_preview).slice(0, 120)
+      : 'Open Anime Universe to view your new reply or @mention.';
+    await this.dispatchAlert({
+      id: notifId,
+      title,
+      body,
+      senderName: sender,
+      senderAvatar: top?.latest_sender_avatar_key || 'avatar_1',
+      animeId: top?.anime_id || null,
+      animeTitle: top?.anime_title || '',
+      animeCover: top?.anime_cover_image || '',
+      commentId: top?.latest_comment_id || null,
+      threadId: top?.latest_thread_id || null,
+      replyId: top?.latest_reply_id || null
+    });
+  }
+};
+
+if (typeof navigator !== 'undefined' && navigator.serviceWorker) {
+  navigator.serviceWorker.addEventListener('message', (event) => {
+    if (event?.data?.type === 'AU_NOTIFICATION_CLICK') {
+      const d = event.data.data || {};
+      if (d.animeId) {
+        openCommunityHubForAnime(d.animeId, {
+          tab: 'discussion',
+          fallbackTitle: d.animeTitle || '',
+          fallbackCover: d.animeCover || '',
+          notificationId: d.notificationId || null,
+          jumpTarget: d.commentId || d.threadId || d.replyId ? {
+            commentId: d.commentId || null,
+            threadId: d.threadId || null,
+            replyId: d.replyId || null
+          } : null
+        });
+      }
+    }
+  });
+}
 
 // Real-time Supabase Notification Socket (INSERT + UPDATE) + Reconnect/Resume Reconciliation
 const NotificationRealtimeManager = {
@@ -11396,8 +12459,24 @@ const NotificationRealtimeManager = {
                 refreshUnreadNotificationCount().then(() => updateCommunityRedDotsInPlace());
               }
               if (rec.sender_user_id && rec.sender_user_id !== uid) {
-                const preview = formatPlainPreviewWithEmojis(rec.preview_text || '').slice(0, 60);
-                showToast(preview ? `New reply/mention: ${preview}` : 'You have a new reply or @mention!');
+                const preview = formatPlainPreviewWithEmojis(rec.preview_text || '').slice(0, 120);
+                const notifTitle =
+                  rec.notification_type === 'reply'
+                    ? 'Anime Universe • New Reply'
+                    : rec.notification_type === 'mention'
+                    ? 'Anime Universe • Tagged You'
+                    : 'Anime Universe • Community Alert';
+                NativeNotificationBridge.dispatchAlert({
+                  id: String(rec.id || `rt_${Date.now()}`),
+                  title: notifTitle,
+                  body: preview || 'You have a new reply or @mention in Community!',
+                  senderName: rec.sender_username || 'Member',
+                  senderAvatar: rec.sender_avatar_key || 'avatar_1',
+                  animeId: rec.anime_id ? Number(rec.anime_id) : null,
+                  commentId: rec.comment_id || null,
+                  threadId: rec.thread_id || null,
+                  replyId: rec.reply_id || null
+                });
               }
             }
           } else if (evType === 'UPDATE') {
@@ -11483,7 +12562,7 @@ function triggerThrottledSilentSync() {
 }
 
 setInterval(() => {
-  if (state.session && !document.hidden) {
+  if (state.session && (!document.hidden || isTauriAppEnvironment())) {
     NotificationRealtimeManager.ensureConnected();
     refreshUnreadNotificationCount().then(() => updateCommunityRedDotsInPlace());
   }
@@ -11497,6 +12576,8 @@ setInterval(() => {
 }, 30000);
 
 if (state.session) {
+  NativeNotificationBridge.syncAuthToTauri(state.session);
+  NativeNotificationBridge.ensurePermissionSilently();
   NotificationRealtimeManager.ensureConnected();
   refreshUnreadNotificationCount().then(() => updateCommunityRedDotsInPlace());
 }

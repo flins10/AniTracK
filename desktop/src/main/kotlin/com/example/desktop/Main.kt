@@ -2211,6 +2211,21 @@ $aliasBlocks        }
     DesktopDiscoverPage(items = finalItems, hasNextPage = primaryHasNext && finalItems.isNotEmpty())
 }
 
+enum class DesktopSeasonOverrideMode {
+    AUTO,
+    MERGE_ONE,
+    SPLIT_ALL
+}
+
+data class DesktopSeasonSegment(
+    val animeId: Int,
+    val title: String,
+    val episodes: Int?,
+    val startEpisodeOffset: Int,
+    val status: String?,
+    val seasonYear: Int?
+)
+
 data class DesktopSeasonEntry(
     val id: Int,
     val seasonNumber: Int,
@@ -2226,7 +2241,31 @@ data class DesktopSeasonEntry(
         "Season $seasonNumber • Part $partNumber"
     } else {
         "Season $seasonNumber"
-    }
+    },
+    val subEntries: List<DesktopSeasonSegment> = emptyList()
+) {
+    val isMergedContinuousRun: Boolean
+        get() = subEntries.size > 1
+
+    fun containsAnimeId(targetId: Int): Boolean =
+        id == targetId || subEntries.any { it.animeId == targetId }
+}
+
+data class DesktopMovieOvaEntry(
+    val id: Int,
+    val title: String,
+    val formatBadge: String,
+    val status: String?,
+    val episodes: Int,
+    val releaseYear: Int?,
+    val isCurrent: Boolean
+)
+
+data class DesktopFranchiseResolution(
+    val franchiseId: Int,
+    val seasons: List<DesktopSeasonEntry>,
+    val moviesAndOvas: List<DesktopMovieOvaEntry>,
+    val rawMainSeasonNodeCount: Int
 )
 
 private data class DesktopChainNode(
@@ -2245,6 +2284,9 @@ private data class DesktopChainNode(
     val startYear: Int?,
     val startMonth: Int?,
     val startDay: Int?,
+    val endYear: Int?,
+    val endMonth: Int?,
+    val endDay: Int?,
     val edges: List<Pair<String, DesktopChainNode>>
 ) {
     val displayTitle: String
@@ -2266,7 +2308,12 @@ private object DesktopSeasonResolver {
     private const val MAX_WAVES = 25
     private const val MAX_NODES = 60
     private const val BATCH_SIZE = 25
-    private val NON_SEASON_FORMATS = setOf("MOVIE", "OVA", "MUSIC", "MANGA", "NOVEL", "ONE_SHOT")
+    private const val CONTINUOUS_RUN_MAX_GAP_DAYS = 21L
+    private val TRAVERSABLE_MAIN_RELATIONS = setOf("PREQUEL", "SEQUEL", "PARENT")
+    private val ALL_COLLECTABLE_RELATIONS = setOf("PREQUEL", "SEQUEL", "PARENT", "SIDE_STORY", "SPIN_OFF", "SUMMARY", "ALTERNATIVE")
+    private val EXCLUDED_RELATIONS_FROM_MAIN = setOf("SIDE_STORY", "SPIN_OFF", "SUMMARY", "ALTERNATIVE", "CHARACTER", "OTHER")
+    private val MOVIE_OVA_SPECIAL_FORMATS = setOf("MOVIE", "OVA", "SPECIAL")
+    private val NON_SEASON_FORMATS = setOf("MOVIE", "OVA", "SPECIAL", "MUSIC", "MANGA", "NOVEL", "ONE_SHOT")
     private val MAIN_EPISODIC_FORMATS = setOf("TV", "ONA", "TV_SHORT")
     private val EXPLICIT_SEASON_TITLE_REGEX = Regex(
         "(?i)(?:\\bseason\\s*(\\d{1,2})\\b|\\b(\\d{1,2})(?:st|nd|rd|th)\\s+season\\b|\\bs(\\d{1,2})\\b|\\bdi\\s*(\\d{1,2})\\s*ji\\b|\\bdai\\s*(\\d{1,2})\\s*ki\\b|\\bfinal\\s+season\\b|\\bfinal\\s+chapters?\\b)"
@@ -2283,7 +2330,43 @@ private object DesktopSeasonResolver {
         "(?i)(?:\\bmini\\s*theater\\b|\\bxiao\\s*juchang\\b|\\bchibi\\b|\\bq[- ]?ban\\b|\\bpetite\\b|\\bmini\\s*anime\\b|\\bshort\\s*theater\\b|\\bgekijou\\b|\\blittle\\s*theater\\b|\\brecap\\b|\\bsummary\\b|\\bdigest\\b|\\bpreview\\b|\\bteaser\\b|\\btrailer\\b|\\bpv\\b|\\bcm\\b|\\bcommercial\\b|\\bpromotional\\b|\\bspecial\\s+program\\b|\\bmusic\\s+video\\b|\\btebie\\s*pian\\b|\\bfanwai\\b|\\bomake\\b|\\bpicture\\s*drama\\b|\\bprologue\\b|\\bepisode\\s*0\\b|\\bep\\.?\\s*0\\b|\\bova\\b|\\boad\\b|\\bmovie\\b|\\bjuchang\\s*ban\\b|\\bgekijouban\\b|\\bspecials?\\b|\\bspecial\\s*\\d+\\b|\\bsan\\s*nian\\s*zhi\\s*yue\\b|\\bthree[- ]year\\s+agreement\\b|\\byuan\\s*qi\\b|\\borigin\\s*(?::|$))"
     )
     private val NON_SEASON_BEFORE_ROMAN_REGEX = Regex("(?i)\\b(?:part|cour|movie|film|special|ova|oad|episode|ep|chapter|act|vol|volume)\\s*$")
+    private val TRAILING_SPLIT_SUFFIX_REGEX = Regex(
+        "(?i)(?:[\\s:\\-–—•]+(?:part|cour|chapter|arc|vol\\.?|volume)?\\s*\\d{1,2}|\\s+\\d{1,2})\\s*$"
+    )
     private val nodeCache = java.util.concurrent.ConcurrentHashMap<Int, DesktopChainNode>()
+    private val overridesFile: File by lazy {
+        val dir = File(System.getProperty("user.home"), ".anime_universe")
+        if (!dir.exists()) dir.mkdirs()
+        File(dir, "desktop_season_overrides_v1.json")
+    }
+    private val overrideModes = java.util.concurrent.ConcurrentHashMap<Int, DesktopSeasonOverrideMode>()
+
+    init {
+        runCatching {
+            if (overridesFile.exists()) {
+                val obj = gson.fromJson(overridesFile.readText(Charsets.UTF_8), JsonObject::class.java)
+                obj?.entrySet()?.forEach { (k, v) ->
+                    val fid = k.toIntOrNull() ?: return@forEach
+                    val modeStr = v.asStringOrNull().orEmpty()
+                    val mode = runCatching { DesktopSeasonOverrideMode.valueOf(modeStr) }.getOrDefault(DesktopSeasonOverrideMode.AUTO)
+                    if (mode != DesktopSeasonOverrideMode.AUTO) overrideModes[fid] = mode
+                }
+            }
+        }
+    }
+
+    fun getOverrideMode(franchiseId: Int): DesktopSeasonOverrideMode =
+        overrideModes[franchiseId] ?: DesktopSeasonOverrideMode.AUTO
+
+    fun setOverrideMode(franchiseId: Int, mode: DesktopSeasonOverrideMode) {
+        if (mode == DesktopSeasonOverrideMode.AUTO) overrideModes.remove(franchiseId)
+        else overrideModes[franchiseId] = mode
+        runCatching {
+            val obj = JsonObject()
+            overrideModes.forEach { (k, v) -> obj.addProperty(k.toString(), v.name) }
+            overridesFile.writeText(gson.toJson(obj), Charsets.UTF_8)
+        }
+    }
 
     private const val BATCH_QUERY = """
         query(${'$'}ids: [Int]) {
@@ -2300,6 +2383,7 @@ private object DesktopSeasonResolver {
               duration
               seasonYear
               startDate { year month day }
+              endDate { year month day }
               relations {
                 edges {
                   relationType
@@ -2315,6 +2399,7 @@ private object DesktopSeasonResolver {
                     duration
                     seasonYear
                     startDate { year month day }
+                    endDate { year month day }
                   }
                 }
               }
@@ -2327,6 +2412,7 @@ private object DesktopSeasonResolver {
         val id = obj.get("id").asInt
         val titleObj = obj.get("title")?.takeIf { it.isJsonObject }?.asJsonObject
         val startObj = obj.get("startDate")?.takeIf { it.isJsonObject }?.asJsonObject
+        val endObj = obj.get("endDate")?.takeIf { it.isJsonObject }?.asJsonObject
         val synonyms = obj.get("synonyms")?.takeIf { it.isJsonArray }?.asJsonArray
             ?.mapNotNull { it.asStringOrNull()?.trim()?.takeIf { s -> s.isNotEmpty() } }
             ?: emptyList()
@@ -2336,7 +2422,7 @@ private object DesktopSeasonResolver {
         edgesArr?.forEach { el ->
             val edgeObj = el.takeIf { it.isJsonObject }?.asJsonObject ?: return@forEach
             val relType = edgeObj.get("relationType").asStringOrNull()?.uppercase()?.trim() ?: return@forEach
-            if (relType != "PREQUEL" && relType != "SEQUEL") return@forEach
+            if (relType !in ALL_COLLECTABLE_RELATIONS) return@forEach
             val nodeObj = edgeObj.get("node")?.takeIf { it.isJsonObject }?.asJsonObject ?: return@forEach
             val nodeType = nodeObj.get("type").asStringOrNull()
             if (!nodeType.isNullOrBlank() && !nodeType.equals("ANIME", ignoreCase = true)) return@forEach
@@ -2358,6 +2444,9 @@ private object DesktopSeasonResolver {
             startYear = startObj?.get("year").asIntOrNull(),
             startMonth = startObj?.get("month").asIntOrNull(),
             startDay = startObj?.get("day").asIntOrNull(),
+            endYear = endObj?.get("year").asIntOrNull(),
+            endMonth = endObj?.get("month").asIntOrNull(),
+            endDay = endObj?.get("day").asIntOrNull(),
             edges = relEdges
         )
     }
@@ -2410,22 +2499,85 @@ private object DesktopSeasonResolver {
         return Triple(parsedSeason, parsedPart, isAnnual)
     }
 
-    private fun isSeasonCandidate(node: DesktopChainNode, franchiseHasFullSeries: Boolean): Boolean {
+    private fun hasExplicitMultiSeasonLabel(node: DesktopChainNode): Boolean {
+        val (sNum, _, _) = extractSeasonAndPart(node)
+        if (sNum != null && sNum >= 2) return true
+        val primary = listOfNotNull(node.titleEnglish, node.titleUserPreferred, node.titleRomaji)
+            .filter { it.isNotBlank() }.joinToString(" | ")
+        return EXPLICIT_SEASON_TITLE_REGEX.containsMatchIn(primary)
+    }
+
+    private fun normalizeBaseTitle(raw: String): String {
+        var cleaned = raw.trim()
+        var idx = 0
+        while (idx < 2) {
+            val next = TRAILING_SPLIT_SUFFIX_REGEX.replace(cleaned, "").trim()
+            if (next.isNotBlank() && next != cleaned) cleaned = next else break
+            idx++
+        }
+        return cleaned.lowercase()
+            .replace(Regex("[^a-z0-9\\u4e00-\\u9fff]+"), " ")
+            .trim()
+    }
+
+    private fun sharesBaseTitle(a: DesktopChainNode, b: DesktopChainNode): Boolean {
+        val aSet = listOfNotNull(a.titleEnglish, a.titleUserPreferred, a.titleRomaji, a.displayTitle)
+            .map { normalizeBaseTitle(it) }.filter { it.length >= 2 }.toSet()
+        val bSet = listOfNotNull(b.titleEnglish, b.titleUserPreferred, b.titleRomaji, b.displayTitle)
+            .map { normalizeBaseTitle(it) }.filter { it.length >= 2 }.toSet()
+        if (aSet.isEmpty() || bSet.isEmpty()) return false
+        for (x in aSet) {
+            for (y in bSet) {
+                if (x == y) return true
+                if (x.length >= 6 && y.length >= 6 && (x.startsWith(y) || y.startsWith(x))) return true
+            }
+        }
+        return false
+    }
+
+    private fun toEpochDayOrNull(year: Int?, month: Int?, day: Int?): Long? {
+        val y = year ?: return null
+        val m = (month ?: 1).coerceIn(1, 12)
+        val d = (day ?: 1).coerceIn(1, 28)
+        return runCatching { java.time.LocalDate.of(y, m, d).toEpochDay() }.getOrNull()
+    }
+
+    private fun computeBroadcastGapDays(prev: DesktopChainNode, next: DesktopChainNode): Long? {
+        val prevEnd = toEpochDayOrNull(prev.endYear, prev.endMonth, prev.endDay) ?: return null
+        val nextStart = toEpochDayOrNull(next.startYear, next.startMonth, next.startDay) ?: return null
+        return nextStart - prevEnd
+    }
+
+    private fun shouldMergeContinuousPair(prev: DesktopChainNode, next: DesktopChainNode): Boolean {
+        if (hasExplicitMultiSeasonLabel(next)) return false
+        if (!sharesBaseTitle(prev, next)) return false
+        val gap = computeBroadcastGapDays(prev, next) ?: return false
+        return gap in -14L..CONTINUOUS_RUN_MAX_GAP_DAYS
+    }
+
+    private fun isMovieOvaSpecialNode(node: DesktopChainNode): Boolean {
         if (!node.type.isNullOrBlank() && !node.type.equals("ANIME", ignoreCase = true)) return false
         if (node.status.equals("CANCELLED", ignoreCase = true)) return false
         val fmt = node.format?.uppercase()?.trim().orEmpty()
+        return fmt in MOVIE_OVA_SPECIAL_FORMATS
+    }
+
+    private fun isSeasonCandidate(
+        node: DesktopChainNode,
+        franchiseHasFullSeries: Boolean,
+        discoveredStrictlyViaSideRelation: Boolean
+    ): Boolean {
+        if (!node.type.isNullOrBlank() && !node.type.equals("ANIME", ignoreCase = true)) return false
+        if (node.status.equals("CANCELLED", ignoreCase = true)) return false
+        if (discoveredStrictlyViaSideRelation) return false
+        val fmt = node.format?.uppercase()?.trim().orEmpty()
         if (fmt in NON_SEASON_FORMATS) return false
+        if (fmt.isNotEmpty() && fmt !in MAIN_EPISODIC_FORMATS) return false
 
         val primary = listOfNotNull(node.titleEnglish, node.titleUserPreferred, node.titleRomaji)
             .filter { it.isNotBlank() }.joinToString(" | ")
         val hasExplicitSeason = EXPLICIT_SEASON_TITLE_REGEX.containsMatchIn(primary)
         val hasSideMarker = NON_SEASON_SIDE_REGEX.containsMatchIn(primary)
-
-        if (fmt == "SPECIAL") {
-            return Regex("(?i)(?:\\bfinal\\s+season\\b|\\bfinal\\s+chapters?\\b|\\bseason\\s+\\d+\\b)").containsMatchIn(primary) &&
-                !Regex("(?i)(?:\\brecap\\b|\\bsummary\\b|\\bdigest\\b|\\bpreview\\b|\\bpv\\b|\\bspecial\\s+program\\b|\\bchibi\\b|\\bmini\\b|\\bxiao\\s*juchang\\b)").containsMatchIn(primary)
-        }
-        if (fmt.isNotEmpty() && fmt !in MAIN_EPISODIC_FORMATS) return false
         if (hasSideMarker && !hasExplicitSeason) return false
 
         if (franchiseHasFullSeries) {
@@ -2502,16 +2654,25 @@ private object DesktopSeasonResolver {
         return cached + fetched
     }
 
-    suspend fun resolveSeasons(rootId: Int): List<DesktopSeasonEntry> = withContext(Dispatchers.IO) {
+    suspend fun resolveFranchise(
+        rootId: Int,
+        explicitOverride: DesktopSeasonOverrideMode? = null
+    ): DesktopFranchiseResolution = withContext(Dispatchers.IO) {
         val initialNodes = fetchBatch(listOf(rootId))
-        val root = initialNodes.firstOrNull { it.id == rootId } ?: return@withContext emptyList()
-        if (root.edges.isEmpty()) return@withContext emptyList()
+        val root = initialNodes.firstOrNull { it.id == rootId }
+            ?: return@withContext DesktopFranchiseResolution(rootId, emptyList(), emptyList(), 0)
+        if (root.edges.isEmpty()) {
+            return@withContext DesktopFranchiseResolution(rootId, emptyList(), emptyList(), 1)
+        }
 
         val nodesById = LinkedHashMap<Int, DesktopChainNode>()
         val outgoing = HashMap<Int, MutableSet<Int>>()
+        val reachedViaMainRelation = HashSet<Int>()
+        val reachedViaSideRelation = HashSet<Int>()
         val expanded = HashSet<Int>()
         val queued = HashSet<Int>()
         val frontier = ArrayDeque<Int>()
+        reachedViaMainRelation.add(rootId)
 
         fun merge(candidate: DesktopChainNode) {
             val prev = nodesById[candidate.id]
@@ -2526,6 +2687,9 @@ private object DesktopSeasonResolver {
                     startYear = candidate.startYear ?: prev.startYear,
                     startMonth = candidate.startMonth ?: prev.startMonth,
                     startDay = candidate.startDay ?: prev.startDay,
+                    endYear = candidate.endYear ?: prev.endYear,
+                    endMonth = candidate.endMonth ?: prev.endMonth,
+                    endDay = candidate.endDay ?: prev.endDay,
                     seasonYear = candidate.seasonYear ?: prev.seasonYear,
                     episodes = candidate.episodes ?: prev.episodes,
                     duration = candidate.duration ?: prev.duration
@@ -2537,6 +2701,9 @@ private object DesktopSeasonResolver {
                     startYear = prev.startYear ?: candidate.startYear,
                     startMonth = prev.startMonth ?: candidate.startMonth,
                     startDay = prev.startDay ?: candidate.startDay,
+                    endYear = prev.endYear ?: candidate.endYear,
+                    endMonth = prev.endMonth ?: candidate.endMonth,
+                    endDay = prev.endDay ?: candidate.endDay,
                     seasonYear = prev.seasonYear ?: candidate.seasonYear,
                     episodes = prev.episodes ?: candidate.episodes,
                     duration = prev.duration ?: candidate.duration,
@@ -2555,13 +2722,27 @@ private object DesktopSeasonResolver {
         fun ingest(node: DesktopChainNode) {
             merge(node)
             expanded.add(node.id)
+            val sourceIsMain = node.id in reachedViaMainRelation
             for ((rel, target) in node.edges) {
                 if (target.id <= 0) continue
                 if (target.id !in nodesById && nodesById.size >= MAX_NODES) continue
                 merge(target)
-                if (rel == "SEQUEL") outgoing.getOrPut(node.id) { LinkedHashSet() }.add(target.id)
-                else outgoing.getOrPut(target.id) { LinkedHashSet() }.add(node.id)
-                enqueue(target.id)
+                val targetFmt = target.format?.uppercase()?.trim().orEmpty()
+                if (rel in TRAVERSABLE_MAIN_RELATIONS) {
+                    if (sourceIsMain) reachedViaMainRelation.add(target.id)
+                    else reachedViaSideRelation.add(target.id)
+                    when (rel) {
+                        "SEQUEL" -> outgoing.getOrPut(node.id) { LinkedHashSet() }.add(target.id)
+                        "PREQUEL" -> outgoing.getOrPut(target.id) { LinkedHashSet() }.add(node.id)
+                    }
+                    // Walk THROUGH Movie, OVA, Special, TV, ONA nodes before filtering
+                    enqueue(target.id)
+                } else if (rel in EXCLUDED_RELATIONS_FROM_MAIN) {
+                    reachedViaSideRelation.add(target.id)
+                    if (targetFmt in MOVIE_OVA_SPECIAL_FORMATS) {
+                        enqueue(target.id)
+                    }
+                }
             }
         }
 
@@ -2587,6 +2768,24 @@ private object DesktopSeasonResolver {
             }
         }
 
+        // Collect all Movie, OVA & Special nodes into one unified horizontal list
+        val cmp = Comparator<Int> { aId, bId -> compareChrono(nodesById[aId], nodesById[bId], aId, bId) }
+        val moviesAndOvas = nodesById.values
+            .filter { isMovieOvaSpecialNode(it) }
+            .sortedWith { a, b -> compareChrono(a, b, a.id, b.id) }
+            .map { n ->
+                val fmt = n.format?.uppercase()?.trim().orEmpty().ifBlank { "SPECIAL" }
+                DesktopMovieOvaEntry(
+                    id = n.id,
+                    title = n.displayTitle,
+                    formatBadge = fmt,
+                    status = n.status,
+                    episodes = (n.episodes ?: 1).coerceAtLeast(1),
+                    releaseYear = n.startYear ?: n.seasonYear,
+                    isCurrent = n.id == rootId
+                )
+            }
+
         val franchiseHasFullSeries = nodesById.values.any { n ->
             val fmt = n.format?.uppercase()?.trim().orEmpty()
             (fmt == "TV" || fmt == "ONA") &&
@@ -2595,8 +2794,21 @@ private object DesktopSeasonResolver {
                     (n.status.equals("RELEASING", ignoreCase = true) && (n.duration == null || n.duration >= 10)))
         }
 
-        val seasonIds = nodesById.values.filter { isSeasonCandidate(it, franchiseHasFullSeries) }.map { it.id }.toSet()
-        if (rootId !in seasonIds || seasonIds.size <= 1) return@withContext emptyList()
+        val seasonIds = nodesById.values
+            .filter { n ->
+                val strictlySide = n.id in reachedViaSideRelation && n.id !in reachedViaMainRelation
+                isSeasonCandidate(n, franchiseHasFullSeries, strictlySide)
+            }
+            .map { it.id }
+            .toSet()
+
+        val canonicalFranchiseId = (seasonIds.minWithOrNull(cmp))
+            ?: (nodesById.keys.minWithOrNull(cmp))
+            ?: rootId
+
+        if (seasonIds.isEmpty() || (seasonIds.size <= 1 && moviesAndOvas.isEmpty())) {
+            return@withContext DesktopFranchiseResolution(canonicalFranchiseId, emptyList(), moviesAndOvas, seasonIds.size)
+        }
 
         val seasonOutgoing = HashMap<Int, MutableSet<Int>>()
         val inDegree = HashMap<Int, Int>()
@@ -2605,6 +2817,7 @@ private object DesktopSeasonResolver {
             inDegree[sid] = 0
         }
 
+        // Contract paths across intermediate Movie / OVA / Special bridge nodes
         for (startId in seasonIds) {
             val seen = HashSet<Int>()
             val queue = ArrayDeque<Int>()
@@ -2622,7 +2835,6 @@ private object DesktopSeasonResolver {
             }
         }
 
-        val cmp = Comparator<Int> { aId, bId -> compareChrono(nodesById[aId], nodesById[bId], aId, bId) }
         val ready = java.util.PriorityQueue(cmp)
         seasonIds.filter { (inDegree[it] ?: 0) == 0 }.forEach { ready.add(it) }
 
@@ -2641,10 +2853,75 @@ private object DesktopSeasonResolver {
             orderedIds.addAll(seasonIds.filter { it !in placed }.sortedWith(cmp))
         }
 
+        val orderedNodes = orderedIds.map { nodesById.getValue(it) }
+        val mode = explicitOverride ?: getOverrideMode(canonicalFranchiseId)
+
+        val groupedNodes = mutableListOf<MutableList<DesktopChainNode>>()
+        when (mode) {
+            DesktopSeasonOverrideMode.MERGE_ONE -> {
+                if (orderedNodes.isNotEmpty()) groupedNodes.add(orderedNodes.toMutableList())
+            }
+            DesktopSeasonOverrideMode.SPLIT_ALL -> {
+                orderedNodes.forEach { groupedNodes.add(mutableListOf(it)) }
+            }
+            DesktopSeasonOverrideMode.AUTO -> {
+                for (node in orderedNodes) {
+                    val currentGroup = groupedNodes.lastOrNull()
+                    if (currentGroup != null && shouldMergeContinuousPair(currentGroup.last(), node)) {
+                        currentGroup.add(node)
+                    } else {
+                        groupedNodes.add(mutableListOf(node))
+                    }
+                }
+            }
+        }
+
         val entries = mutableListOf<DesktopSeasonEntry>()
         var currentSeasonNum = 0
-        for (id in orderedIds) {
-            val n = nodesById.getValue(id)
+        for (group in groupedNodes) {
+            if (group.size > 1) {
+                val lead = group.first()
+                currentSeasonNum += 1
+                val assignedSeason = currentSeasonNum
+                var runningOffset = 0
+                var allHaveEpisodes = true
+                val segments = group.map { seg ->
+                    val segEps = seg.episodes
+                    if (segEps == null || segEps <= 0) allHaveEpisodes = false
+                    val item = DesktopSeasonSegment(
+                        animeId = seg.id,
+                        title = seg.displayTitle,
+                        episodes = segEps,
+                        startEpisodeOffset = runningOffset,
+                        status = seg.status,
+                        seasonYear = seg.seasonYear ?: seg.startYear
+                    )
+                    runningOffset += (segEps ?: 0).coerceAtLeast(0)
+                    item
+                }
+                val totalMergedEps = if (allHaveEpisodes && runningOffset > 0) runningOffset else runningOffset.takeIf { it > 0 }
+                val activeNode = group.firstOrNull { it.id == rootId } ?: lead
+                val anyReleasing = group.any { it.status.equals("RELEASING", ignoreCase = true) }
+                entries.add(
+                    DesktopSeasonEntry(
+                        id = activeNode.id,
+                        seasonNumber = assignedSeason,
+                        title = lead.displayTitle,
+                        format = lead.format,
+                        status = if (anyReleasing) "RELEASING" else lead.status,
+                        episodes = totalMergedEps,
+                        seasonYear = lead.seasonYear ?: lead.startYear,
+                        isCurrent = group.any { it.id == rootId },
+                        partNumber = null,
+                        shortLabel = assignedSeason.toString(),
+                        displayLabel = "Season $assignedSeason • Continuous (${group.size} Runs)",
+                        subEntries = segments
+                    )
+                )
+                continue
+            }
+
+            val n = group.first()
             val (parsedSeason, parsedPart, isAnnual) = extractSeasonAndPart(n)
             val assignedSeason: Int
             val assignedPart: Int?
@@ -2652,10 +2929,14 @@ private object DesktopSeasonResolver {
                 assignedSeason = parsedSeason?.coerceIn(1, 20) ?: 1
                 assignedPart = parsedPart
                 currentSeasonNum = assignedSeason
-            } else if (parsedPart != null && parsedPart >= 2 && (parsedSeason == null || parsedSeason == currentSeasonNum)) {
+            } else if (mode != DesktopSeasonOverrideMode.SPLIT_ALL &&
+                parsedPart != null && parsedPart >= 2 && (parsedSeason == null || parsedSeason == currentSeasonNum)
+            ) {
                 assignedSeason = currentSeasonNum
                 assignedPart = parsedPart
-            } else if (parsedSeason != null && parsedSeason == currentSeasonNum && parsedPart != null) {
+            } else if (mode != DesktopSeasonOverrideMode.SPLIT_ALL &&
+                parsedSeason != null && parsedSeason == currentSeasonNum && parsedPart != null
+            ) {
                 assignedSeason = currentSeasonNum
                 assignedPart = parsedPart
             } else if (parsedSeason != null && parsedSeason in (currentSeasonNum + 1)..(currentSeasonNum + 3)) {
@@ -2675,22 +2956,40 @@ private object DesktopSeasonResolver {
             }
             entries.add(
                 DesktopSeasonEntry(
-                    id = id,
+                    id = n.id,
                     seasonNumber = assignedSeason,
                     title = n.displayTitle,
                     format = n.format,
                     status = n.status,
                     episodes = n.episodes,
                     seasonYear = n.seasonYear ?: n.startYear,
-                    isCurrent = id == rootId,
+                    isCurrent = n.id == rootId,
                     partNumber = assignedPart,
                     shortLabel = shortLabel,
-                    displayLabel = displayLabel
+                    displayLabel = displayLabel,
+                    subEntries = listOf(
+                        DesktopSeasonSegment(
+                            animeId = n.id,
+                            title = n.displayTitle,
+                            episodes = n.episodes,
+                            startEpisodeOffset = 0,
+                            status = n.status,
+                            seasonYear = n.seasonYear ?: n.startYear
+                        )
+                    )
                 )
             )
         }
-        entries
+        DesktopFranchiseResolution(
+            franchiseId = canonicalFranchiseId,
+            seasons = entries,
+            moviesAndOvas = moviesAndOvas,
+            rawMainSeasonNodeCount = orderedNodes.size
+        )
     }
+
+    suspend fun resolveSeasons(rootId: Int): List<DesktopSeasonEntry> =
+        resolveFranchise(rootId).seasons
 
     suspend fun fetchSingleAnimeItem(anilistId: Int): DesktopAnimeItem? = withContext(Dispatchers.IO) {
         val query = """
@@ -7142,14 +7441,49 @@ private fun DesktopCommunityScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(
-                                    if (myExisting != null) "UPDATE YOUR NOTE & RATING" else "ADD YOUR NOTE & RATING",
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    letterSpacing = 1.4.sp,
-                                    color = ChampagneGold
-                                )
-                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        if (myExisting != null) "UPDATE YOUR NOTE & RATING" else "ADD YOUR NOTE & RATING",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        letterSpacing = 1.4.sp,
+                                        color = ChampagneGold
+                                    )
+                                    if (draftStars > 0f) {
+                                        Text(
+                                            "${String.format(Locale.US, "%.1f", draftStars)} ★",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = ChampagneGold
+                                        )
+                                    }
+                                }
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = ObsidianPillBg,
+                                        modifier = Modifier.clickable {
+                                            val base = if (draftStars > 0f) draftStars else 0.2f
+                                            draftStars = kotlin.math.round((base - 0.1f).coerceAtLeast(0.1f) * 10f) / 10f
+                                        }
+                                    ) {
+                                        Text("−0.1 ★", fontSize = 10.sp, color = WarmSilver, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
+                                    }
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = ObsidianPillBg,
+                                        modifier = Modifier.clickable {
+                                            draftStars = kotlin.math.round((draftStars + 0.1f).coerceAtMost(5.0f) * 10f) / 10f
+                                        }
+                                    ) {
+                                        Text("+0.1 ★", fontSize = 10.sp, color = ChampagneGold, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
+                                    }
                                     (1..5).forEach { idx ->
                                         val active = draftStars >= idx - 0.5f
                                         Text(
@@ -7157,7 +7491,11 @@ private fun DesktopCommunityScreen(
                                             fontSize = 20.sp,
                                             color = if (active) ChampagneGold else Color(0xFF393E4F),
                                             modifier = Modifier.clickable {
-                                                draftStars = if (draftStars == idx.toFloat()) idx - 0.5f else idx.toFloat()
+                                                draftStars = if (draftStars == idx.toFloat()) {
+                                                    kotlin.math.round((idx - 0.1f).coerceAtLeast(0.1f) * 10f) / 10f
+                                                } else {
+                                                    idx.toFloat()
+                                                }
                                             }
                                         )
                                     }
@@ -7851,17 +8189,54 @@ private fun DesktopDetailScreen(
     onRequestRemoveFromHome: () -> Unit,
     onDelete: (DesktopAnimeItem) -> Unit
 ) {
+    val scope = rememberCoroutineScope()
     var watchStatus by remember(item.id, item.watchStatus) { mutableStateOf(item.watchStatus) }
     var watchedEps by remember(item.id, item.watchedEpisodes) { mutableStateOf(item.watchedEpisodes) }
     var stars by remember(item.id, item.userStars) { mutableStateOf(item.userStars) }
     var notes by remember(item.id, item.notes) { mutableStateOf(item.notes) }
     var seasons by remember(item.id) { mutableStateOf<List<DesktopSeasonEntry>>(emptyList()) }
+    var moviesAndOvas by remember(item.id) { mutableStateOf<List<DesktopMovieOvaEntry>>(emptyList()) }
+    var franchiseId by remember(item.id) { mutableStateOf(item.id) }
+    var rawMainSeasonNodeCount by remember(item.id) { mutableStateOf(1) }
+    var seasonOverrideMode by remember(item.id) { mutableStateOf(DesktopSeasonOverrideMode.AUTO) }
     var isSavingDetail by remember(item.id) { mutableStateOf(false) }
     var detailSavedFeedback by remember(item.id) { mutableStateOf<String?>(null) }
 
     LaunchedEffect(item.id) {
-        seasons = DesktopSeasonResolver.resolveSeasons(item.id)
+        val resolved = DesktopSeasonResolver.resolveFranchise(item.id)
+        franchiseId = resolved.franchiseId
+        seasons = resolved.seasons
+        moviesAndOvas = resolved.moviesAndOvas
+        rawMainSeasonNodeCount = resolved.rawMainSeasonNodeCount
+        seasonOverrideMode = DesktopSeasonResolver.getOverrideMode(resolved.franchiseId)
     }
+
+    val activeMergedSeason = seasons.firstOrNull {
+        it.isMergedContinuousRun && (it.isCurrent || it.containsAnimeId(item.id))
+    }
+
+    val computeDesktopContinuousWatched: (DesktopSeasonEntry) -> Int = { merged ->
+        var maxContinuous = 0
+        for (seg in merged.subEntries) {
+            val tracked = if (seg.animeId == item.id) watchedEps
+            else session.watchlist.firstOrNull { it.id == seg.animeId }?.watchedEpisodes ?: 0
+            if (tracked > 0) {
+                val cap = seg.episodes?.takeIf { it > 0 }
+                val clamped = if (cap != null) tracked.coerceAtMost(cap) else tracked
+                val candidate = seg.startEpisodeOffset + clamped
+                if (candidate > maxContinuous) maxContinuous = candidate
+            }
+        }
+        val totalCap = merged.episodes?.takeIf { it > 0 }
+        if (totalCap != null) maxContinuous.coerceAtMost(totalCap) else maxContinuous
+    }
+
+    val displayWatchedEps = if (activeMergedSeason != null) {
+        computeDesktopContinuousWatched(activeMergedSeason)
+    } else {
+        watchedEps
+    }
+    val displayTotalEps = activeMergedSeason?.episodes ?: item.totalEpisodes
 
     Column(
         modifier = Modifier
@@ -7934,42 +8309,106 @@ private fun DesktopDetailScreen(
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    if (seasons.size > 1) {
-                        val activeSeason = seasons.firstOrNull { it.isCurrent || it.id == item.id }
+                    val showSeasonsBlock = seasons.size > 1 || rawMainSeasonNodeCount > 1 ||
+                        seasons.any { it.isMergedContinuousRun } ||
+                        (seasons.isNotEmpty() && moviesAndOvas.isNotEmpty())
+                    if (showSeasonsBlock && seasons.isNotEmpty()) {
+                        val activeSeason = seasons.firstOrNull { it.isCurrent || it.containsAnimeId(item.id) }
+                        val isCurrentlyMerged = seasonOverrideMode == DesktopSeasonOverrideMode.MERGE_ONE ||
+                            (seasonOverrideMode == DesktopSeasonOverrideMode.AUTO &&
+                                (seasons.size == 1 || seasons.any { it.isMergedContinuousRun }))
+                        val toggleLabel = if (isCurrentlyMerged) "Split Seasons" else "Merge as 1 Season"
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                "SEASONS",
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = 1.6.sp,
-                                color = ChampagneGold
-                            )
-                            val distinctSeasonCount = seasons.map { it.seasonNumber }.distinct().size
-                            val metaText = if (activeSeason != null) {
-                                val yr = activeSeason.seasonYear?.let { " • $it" }.orEmpty()
-                                val totalLabel = if (distinctSeasonCount == 1) {
-                                    "1 Season (${seasons.size} Parts)"
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    "SEASONS",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = 1.6.sp,
+                                    color = ChampagneGold
+                                )
+                                val distinctSeasonCount = seasons.map { it.seasonNumber }.distinct().size
+                                val metaText = if (activeSeason != null) {
+                                    val yr = activeSeason.seasonYear?.let { " • $it" }.orEmpty()
+                                    val totalLabel = when {
+                                        activeSeason.isMergedContinuousRun ->
+                                            "1 Continuous Season (${activeSeason.subEntries.size} Runs)"
+                                        distinctSeasonCount == 1 && seasons.size > 1 ->
+                                            "1 Season (${seasons.size} Parts)"
+                                        distinctSeasonCount == 1 -> "1 Season"
+                                        else -> "$distinctSeasonCount Seasons"
+                                    }
+                                    "${activeSeason.displayLabel} • $totalLabel$yr"
                                 } else {
                                     "$distinctSeasonCount Seasons"
                                 }
-                                "${activeSeason.displayLabel} • $totalLabel$yr"
-                            } else {
-                                "$distinctSeasonCount Seasons"
+                                Text(
+                                    metaText,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = WarmSilver
+                                )
                             }
-                            Text(
-                                metaText,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = WarmSilver
-                            )
+
+                            if (rawMainSeasonNodeCount > 1 || seasons.size > 1) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = if (seasonOverrideMode != DesktopSeasonOverrideMode.AUTO) {
+                                        ChampagneGold.copy(alpha = 0.16f)
+                                    } else {
+                                        ObsidianPillBg
+                                    },
+                                    border = BorderStroke(
+                                        1.dp,
+                                        if (seasonOverrideMode != DesktopSeasonOverrideMode.AUTO) ChampagneGold else ObsidianBorder
+                                    ),
+                                    modifier = Modifier
+                                        .clip(CircleShape)
+                                        .pointerHoverIcon(PointerIcon.Hand)
+                                        .clickable {
+                                            val nextMode = if (isCurrentlyMerged) {
+                                                DesktopSeasonOverrideMode.SPLIT_ALL
+                                            } else {
+                                                DesktopSeasonOverrideMode.MERGE_ONE
+                                            }
+                                            DesktopSeasonResolver.setOverrideMode(franchiseId, nextMode)
+                                            seasonOverrideMode = nextMode
+                                            scope.launch {
+                                                val reResolved = DesktopSeasonResolver.resolveFranchise(item.id, nextMode)
+                                                seasons = reResolved.seasons
+                                                moviesAndOvas = reResolved.moviesAndOvas
+                                                rawMainSeasonNodeCount = reResolved.rawMainSeasonNodeCount
+                                                onShowToast(
+                                                    if (nextMode == DesktopSeasonOverrideMode.MERGE_ONE) {
+                                                        "Merged franchise as 1 continuous season"
+                                                    } else {
+                                                        "Split franchise into separate seasons"
+                                                    },
+                                                    false
+                                                )
+                                            }
+                                        }
+                                ) {
+                                    Text(
+                                        text = toggleLabel,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (seasonOverrideMode != DesktopSeasonOverrideMode.AUTO) ChampagneGold else IvoryText,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+                                    )
+                                }
+                            }
                         }
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(seasons, key = { it.id }) { s ->
-                                val isSelected = s.isCurrent || s.id == item.id
+                            items(seasons, key = { "${it.id}_${it.seasonNumber}" }) { s ->
+                                val isSelected = s.isCurrent || s.containsAnimeId(item.id)
                                 val isUpcoming = s.status.equals("NOT_YET_RELEASED", ignoreCase = true)
                                 Surface(
                                     shape = CircleShape,
@@ -7993,6 +8432,14 @@ private fun DesktopDetailScreen(
                                             fontWeight = FontWeight.Bold,
                                             color = if (isSelected) ChampagneOnGold else IvoryText
                                         )
+                                        if (s.isMergedContinuousRun && s.episodes != null) {
+                                            Text(
+                                                text = "${s.episodes} EP",
+                                                fontSize = 10.5.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = if (isSelected) ChampagneOnGold.copy(alpha = 0.85f) else WarmSilver
+                                            )
+                                        }
                                         if (isUpcoming && !isSelected) {
                                             Box(
                                                 modifier = Modifier
@@ -8001,6 +8448,100 @@ private fun DesktopDetailScreen(
                                                     .background(Color(0xFFF59E0B))
                                             )
                                         }
+                                    }
+                                }
+                            }
+                        }
+                        if (moviesAndOvas.isEmpty()) {
+                            HorizontalDivider(color = ObsidianBorder, thickness = 1.dp)
+                        }
+                    }
+
+                    if (moviesAndOvas.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "MOVIES & OVAs",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.6.sp,
+                                color = ChampagneGold
+                            )
+                            Text(
+                                "${moviesAndOvas.size} ${if (moviesAndOvas.size == 1) "Entry" else "Entries"} • Chronological",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = WarmSilver
+                            )
+                        }
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            items(moviesAndOvas, key = { "movie_ova_${it.id}" }) { entry ->
+                                val isSelected = entry.isCurrent || entry.id == item.id
+                                val trackedEntry = if (entry.id == item.id) item else session.watchlist.firstOrNull { it.id == entry.id }
+                                val entryWatched = if (entry.id == item.id) watchedEps else (trackedEntry?.watchedEpisodes ?: 0)
+                                val entryTotal = (trackedEntry?.totalEpisodes ?: entry.episodes).coerceAtLeast(1)
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = if (isSelected) ChampagneGold.copy(alpha = 0.16f) else ObsidianPillBg,
+                                    border = BorderStroke(1.dp, if (isSelected) ChampagneGold else ObsidianBorder),
+                                    modifier = Modifier
+                                        .widthIn(min = 175.dp, max = 240.dp)
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .pointerHoverIcon(PointerIcon.Hand)
+                                        .clickable(enabled = !isSelected) { onSelectSeason(entry.id) }
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Row(
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Surface(
+                                                    shape = RoundedCornerShape(6.dp),
+                                                    color = if (isSelected) ChampagneGold else ObsidianCard
+                                                ) {
+                                                    Text(
+                                                        text = entry.formatBadge,
+                                                        fontSize = 9.5.sp,
+                                                        fontWeight = FontWeight.ExtraBold,
+                                                        color = if (isSelected) ChampagneOnGold else ChampagneGold,
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                    )
+                                                }
+                                                entry.releaseYear?.let { yr ->
+                                                    Text(
+                                                        text = yr.toString(),
+                                                        fontSize = 11.sp,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        color = WarmSilver
+                                                    )
+                                                }
+                                            }
+                                            Text(
+                                                text = "EP $entryWatched / $entryTotal",
+                                                fontSize = 10.5.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (isSelected) ChampagneGold else WarmSilver
+                                            )
+                                        }
+                                        Text(
+                                            text = entry.title,
+                                            fontSize = 12.5.sp,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                                            color = IvoryText,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
                                     }
                                 }
                             }
@@ -8052,14 +8593,24 @@ private fun DesktopDetailScreen(
                     )
 
                     DesktopInlineEpisodeStepper(
-                        watchedEpisodes = watchedEps,
-                        totalEpisodes = item.totalEpisodes ?: if (isMovieFormat) 1 else null,
+                        watchedEpisodes = displayWatchedEps,
+                        totalEpisodes = displayTotalEps ?: if (isMovieFormat) 1 else null,
                         compact = false,
                         onCommitEpisode = { nextEps ->
-                            val res = onCommitEpisodes(nextEps)
+                            val localEps = if (activeMergedSeason != null) {
+                                val seg = activeMergedSeason.subEntries.firstOrNull { it.animeId == item.id }
+                                if (seg != null) {
+                                    val rawLocal = (nextEps - seg.startEpisodeOffset).coerceAtLeast(0)
+                                    val cap = seg.episodes?.takeIf { it > 0 }
+                                    if (cap != null) rawLocal.coerceAtMost(cap) else rawLocal
+                                } else nextEps
+                            } else {
+                                nextEps
+                            }
+                            val res = onCommitEpisodes(localEps)
                             res.onSuccess {
-                                watchedEps = nextEps
-                                if (DesktopTrackingRules.shouldAutoComplete(item.status, item.totalEpisodes, nextEps)) {
+                                watchedEps = localEps
+                                if (DesktopTrackingRules.shouldAutoComplete(item.status, displayTotalEps, nextEps)) {
                                     watchStatus = "completed"
                                 }
                             }
@@ -8083,8 +8634,41 @@ private fun DesktopDetailScreen(
                             Text(
                                 "★",
                                 fontSize = 28.sp,
-                                color = if (stars >= i) ChampagneGold else AshMuted,
-                                modifier = Modifier.clickable { stars = i.toFloat() }
+                                color = if (stars >= i - 0.5f) ChampagneGold else AshMuted,
+                                modifier = Modifier.clickable {
+                                    stars = if (stars == i.toFloat()) {
+                                        kotlin.math.round((i - 0.1f).coerceAtLeast(0.1f) * 10f) / 10f
+                                    } else {
+                                        i.toFloat()
+                                    }
+                                }
+                            )
+                        }
+                        Surface(
+                            shape = CircleShape,
+                            color = ObsidianPillBg,
+                            modifier = Modifier.clickable {
+                                val base = if (stars > 0f) stars else 0.2f
+                                stars = kotlin.math.round((base - 0.1f).coerceAtLeast(0.1f) * 10f) / 10f
+                            }
+                        ) {
+                            Text("−0.1 ★", fontSize = 11.sp, color = WarmSilver, modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp))
+                        }
+                        Surface(
+                            shape = CircleShape,
+                            color = ObsidianPillBg,
+                            modifier = Modifier.clickable {
+                                stars = kotlin.math.round((stars + 0.1f).coerceAtMost(5.0f) * 10f) / 10f
+                            }
+                        ) {
+                            Text("+0.1 ★", fontSize = 11.sp, color = ChampagneGold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp))
+                        }
+                        if (stars > 0f) {
+                            Text(
+                                "${String.format(Locale.US, "%.1f", stars)} ★",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = ChampagneGold
                             )
                         }
                         SentimentTier.fromStars(stars)?.let { tier ->

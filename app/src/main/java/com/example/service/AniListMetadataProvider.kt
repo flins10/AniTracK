@@ -501,28 +501,65 @@ class AniListMetadataProvider(
         return cached + fetched
     }
 
-    override suspend fun getRichDetailWithSeasons(rootMedia: AniListMedia): AnimeRichDetail = withContext(Dispatchers.IO) {
+    override fun getCachedSeasonMedia(anilistId: Int): AniListMedia? = seasonNodeCache[anilistId]
+
+    override suspend fun getRichDetailWithSeasons(
+        rootMedia: AniListMedia,
+        overrideMode: com.example.model.FranchiseSeasonOverrideMode
+    ): AnimeRichDetail = withContext(Dispatchers.IO) {
         seasonNodeCache[rootMedia.id] = rootMedia
         val base = mapRichDetail(rootMedia)
 
         val hasImmediateLink = rootMedia.relations?.edges.orEmpty().any { edge ->
-            val rel = edge.relationType?.uppercase().orEmpty()
+            val rel = edge.relationType?.uppercase()?.trim().orEmpty()
             val node = edge.node ?: return@any false
-            (rel == "PREQUEL" || rel == "SEQUEL") && isAnimeMediaType(node.type)
+            rel in setOf("PREQUEL", "SEQUEL", "PARENT", "SIDE_STORY", "SPIN_OFF", "SUMMARY", "ALTERNATIVE") &&
+                isAnimeMediaType(node.type)
         }
         if (!hasImmediateLink) {
-            return@withContext base.copy(seasons = emptyList())
+            val isSelfMovieOvaSpecial = rootMedia.format?.uppercase()?.trim() in setOf("MOVIE", "OVA", "SPECIAL")
+            val selfMoviesAndOvas = if (isSelfMovieOvaSpecial) {
+                val fmt = rootMedia.format?.uppercase()?.trim() ?: "SPECIAL"
+                listOf(
+                    com.example.model.AnimeMovieOvaEntry(
+                        id = rootMedia.id,
+                        title = base.relations.firstOrNull { it.id == rootMedia.id }?.title
+                            ?: rootMedia.title?.english
+                            ?: rootMedia.title?.userPreferred
+                            ?: rootMedia.title?.romaji
+                            ?: "Special",
+                        coverImage = rootMedia.coverImage?.extraLarge ?: rootMedia.coverImage?.large.orEmpty(),
+                        formatBadge = if (fmt == "MOVIE" || fmt == "OVA") fmt else "SPECIAL",
+                        status = rootMedia.status,
+                        episodes = rootMedia.episodes?.takeIf { it > 0 } ?: 1,
+                        releaseYear = rootMedia.startDate?.year ?: rootMedia.seasonYear,
+                        isCurrent = true
+                    )
+                )
+            } else {
+                emptyList()
+            }
+            return@withContext base.copy(
+                seasons = emptyList(),
+                moviesAndOvas = selfMoviesAndOvas,
+                franchiseId = rootMedia.id,
+                rawMainSeasonNodeCount = if (isSelfMovieOvaSpecial) 0 else 1
+            )
         }
 
         val resolved = SeasonChainResolver.resolve(
             rootMedia = rootMedia,
+            overrideMode = overrideMode,
             fetchBatch = { batchIds -> fetchChainBatch(batchIds) }
         )
         val mergedRelations = (base.relations + resolved.bridgeRelations).distinctBy { it.id }
 
         base.copy(
             relations = mergedRelations,
-            seasons = resolved.seasons
+            seasons = resolved.seasons,
+            moviesAndOvas = resolved.moviesAndOvas,
+            franchiseId = resolved.franchiseId,
+            rawMainSeasonNodeCount = resolved.rawMainSeasonNodeCount
         )
     }
 

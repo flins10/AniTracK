@@ -362,6 +362,28 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
     private var searchJob: Job? = null
 
     // Anime Detail
+    private val seasonOverridePrefs = application.getSharedPreferences(
+        "anime_universe_season_overrides_v1",
+        android.content.Context.MODE_PRIVATE
+    )
+    private val _franchiseSeasonOverrides = MutableStateFlow<Map<Int, com.example.model.FranchiseSeasonOverrideMode>>(
+        loadSavedFranchiseOverrides()
+    )
+    val franchiseSeasonOverrides = _franchiseSeasonOverrides.asStateFlow()
+    private var lastDetailRootMedia: com.example.data.remote.AniListMedia? = null
+
+    private fun loadSavedFranchiseOverrides(): Map<Int, com.example.model.FranchiseSeasonOverrideMode> {
+        val result = mutableMapOf<Int, com.example.model.FranchiseSeasonOverrideMode>()
+        for ((k, v) in seasonOverridePrefs.all) {
+            val fid = k.toIntOrNull() ?: continue
+            val mode = com.example.model.FranchiseSeasonOverrideMode.fromStorage(v as? String)
+            if (mode != com.example.model.FranchiseSeasonOverrideMode.AUTO) {
+                result[fid] = mode
+            }
+        }
+        return result
+    }
+
     private val _selectedAnimeId = MutableStateFlow<Int?>(null)
     @OptIn(ExperimentalCoroutinesApi::class)
     val selectedAnimeDetail: StateFlow<AnimeEntity?> = _selectedAnimeId
@@ -1924,13 +1946,28 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
             launch { loadAnimeDiscussion(animeId, reset = true) }
             metadataProvider.getMediaDetails(animeId).onSuccess { media ->
                 if (media != null) {
+                    lastDetailRootMedia = media
                     val existing = repository.getAnimeByIdSync(media.id)
                     val mapped = AniListMetadataProvider.mapMediaToEntity(media, existing)
                     repository.upsertCatalogItems(listOf(mapped), keepFullSynopsis = true)
                     _selectedRichDetail.value = AniListMetadataProvider.mapRichDetail(media)
-                    val enriched = metadataProvider.getRichDetailWithSeasons(media)
+                    val initialEnriched = metadataProvider.getRichDetailWithSeasons(
+                        rootMedia = media,
+                        overrideMode = com.example.model.FranchiseSeasonOverrideMode.AUTO
+                    )
+                    val savedMode = _franchiseSeasonOverrides.value[initialEnriched.franchiseId]
+                        ?: com.example.model.FranchiseSeasonOverrideMode.AUTO
+                    val finalEnriched = if (savedMode != com.example.model.FranchiseSeasonOverrideMode.AUTO) {
+                        metadataProvider.getRichDetailWithSeasons(
+                            rootMedia = media,
+                            overrideMode = savedMode
+                        )
+                    } else {
+                        initialEnriched
+                    }
+                    cacheFranchiseCatalogNodes(finalEnriched)
                     if (_selectedAnimeId.value == animeId) {
-                        _selectedRichDetail.value = enriched
+                        _selectedRichDetail.value = finalEnriched
                     }
                 }
             }
@@ -1942,6 +1979,159 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                     }
             }
             _isDetailLoading.value = false
+        }
+    }
+
+    private suspend fun cacheFranchiseCatalogNodes(richDetail: AnimeRichDetail) {
+        val candidateIds = (
+            richDetail.seasons.flatMap { s -> listOf(s.id) + s.subEntries.map { it.id } } +
+                richDetail.moviesAndOvas.map { it.id }
+            ).distinct()
+        val toUpsert = mutableListOf<AnimeEntity>()
+        for (cid in candidateIds) {
+            val cachedMedia = metadataProvider.getCachedSeasonMedia(cid) ?: continue
+            val existing = repository.getAnimeByIdSync(cid)
+            toUpsert.add(AniListMetadataProvider.mapMediaToEntity(cachedMedia, existing))
+        }
+        if (toUpsert.isNotEmpty()) {
+            repository.upsertCatalogItems(toUpsert)
+        }
+    }
+
+    fun toggleFranchiseSeasonOverride(franchiseId: Int, currentlyMergedAsOne: Boolean) {
+        if (franchiseId <= 0) return
+        val nextMode = if (currentlyMergedAsOne) {
+            com.example.model.FranchiseSeasonOverrideMode.SPLIT_ALL
+        } else {
+            com.example.model.FranchiseSeasonOverrideMode.MERGE_ONE
+        }
+        seasonOverridePrefs.edit().putString(franchiseId.toString(), nextMode.storageValue).apply()
+        val updatedMap = _franchiseSeasonOverrides.value.toMutableMap()
+        updatedMap[franchiseId] = nextMode
+        _franchiseSeasonOverrides.value = updatedMap
+
+        val media = lastDetailRootMedia
+        val currentId = _selectedAnimeId.value
+        if (media != null && currentId != null) {
+            viewModelScope.launch {
+                val reResolved = metadataProvider.getRichDetailWithSeasons(
+                    rootMedia = media,
+                    overrideMode = nextMode
+                )
+                cacheFranchiseCatalogNodes(reResolved)
+                if (_selectedAnimeId.value == currentId) {
+                    _selectedRichDetail.value = reResolved
+                }
+                _userMessage.value = if (nextMode == com.example.model.FranchiseSeasonOverrideMode.MERGE_ONE) {
+                    "Merged franchise into 1 continuous season."
+                } else {
+                    "Split franchise into separate numbered seasons."
+                }
+            }
+        }
+    }
+
+    fun computeContinuousWatchedProgress(
+        seasonEntry: com.example.model.AnimeSeasonEntry?,
+        currentEntity: AnimeEntity,
+        trackedById: Map<Int, AnimeEntity>
+    ): Int {
+        if (seasonEntry == null || seasonEntry.subEntries.size <= 1) {
+            return currentEntity.watchedEpisodeCount
+        }
+        var sumOfWatched = 0
+        var maxOffsetPlusWatched = 0
+        for (seg in seasonEntry.subEntries) {
+            val entity = if (seg.id == currentEntity.id) currentEntity else trackedById[seg.id]
+            val w = entity?.watchedEpisodeCount ?: 0
+            if (w > 0) {
+                val segCap = seg.episodes?.takeIf { it > 0 } ?: w
+                sumOfWatched += w.coerceIn(0, segCap)
+                val impliedContinuous = seg.startEpisodeOffset + w
+                if (impliedContinuous > maxOffsetPlusWatched) {
+                    maxOffsetPlusWatched = impliedContinuous
+                }
+            }
+        }
+        return maxOf(sumOfWatched, maxOffsetPlusWatched)
+    }
+
+    suspend fun commitMergedContinuousEpisodeProgress(
+        seasonEntry: com.example.model.AnimeSeasonEntry,
+        targetContinuousEpisode: Int
+    ): Result<AnimeEntity> {
+        val currentId = _selectedAnimeId.value ?: seasonEntry.id
+        if (seasonEntry.subEntries.size <= 1) {
+            return commitEpisodeProgress(currentId, targetContinuousEpisode)
+        }
+        val totalMerged = seasonEntry.episodes
+        val validation = com.example.model.ProgressRules.validateEpisodeInput(
+            rawInput = targetContinuousEpisode.toString(),
+            totalEpisodes = totalMerged
+        )
+        val validatedContinuousEp = when (validation) {
+            is com.example.model.EpisodeInputValidation.Invalid -> {
+                return Result.failure(Exception(validation.message))
+            }
+            is com.example.model.EpisodeInputValidation.Valid -> validation.episodes
+        }
+
+        // Determine which segment owns validatedContinuousEp
+        val activeSegment = seasonEntry.subEntries.lastOrNull { seg ->
+            validatedContinuousEp > seg.startEpisodeOffset
+        } ?: seasonEntry.subEntries.first()
+
+        var primaryUpdated: AnimeEntity? = null
+        for (seg in seasonEntry.subEntries) {
+            val segMax = seg.episodes?.takeIf { it > 0 }
+            val localEp = if (segMax != null) {
+                (validatedContinuousEp - seg.startEpisodeOffset).coerceIn(0, segMax)
+            } else {
+                (validatedContinuousEp - seg.startEpisodeOffset).coerceAtLeast(0)
+            }
+            var existing = repository.getAnimeByIdSync(seg.id)
+            if (existing == null) {
+                val cachedMedia = metadataProvider.getCachedSeasonMedia(seg.id)
+                if (cachedMedia != null) {
+                    val mapped = AniListMetadataProvider.mapMediaToEntity(cachedMedia, null)
+                    repository.upsertCatalogItems(listOf(mapped))
+                    existing = repository.getAnimeByIdSync(seg.id)
+                }
+            }
+            val shouldUpdateSeg = seg.id == currentId ||
+                seg.id == activeSegment.id ||
+                existing?.inWatchlist == true ||
+                (existing?.watchedEpisodeCount ?: 0) > 0 ||
+                localEp > 0
+            if (shouldUpdateSeg && existing != null) {
+                if (existing.watchedEpisodeCount != localEp || !existing.inWatchlist) {
+                    val res = commitEpisodeProgress(seg.id, localEp)
+                    if (seg.id == currentId) {
+                        primaryUpdated = res.getOrNull()
+                    }
+                } else if (seg.id == currentId) {
+                    primaryUpdated = existing
+                }
+            }
+        }
+        val finalEntity = primaryUpdated ?: repository.getAnimeByIdSync(currentId)
+            ?: return Result.failure(Exception("Unable to save continuous episode progress."))
+        return Result.success(finalEntity)
+    }
+
+    fun stepMergedContinuousEpisode(
+        seasonEntry: com.example.model.AnimeSeasonEntry,
+        currentContinuousWatched: Int,
+        delta: Int
+    ) {
+        viewModelScope.launch {
+            val maxEp = seasonEntry.episodes
+            val nextEp = (currentContinuousWatched + delta).coerceAtLeast(0).let {
+                if (maxEp != null && maxEp > 0) it.coerceAtMost(maxEp) else it
+            }
+            commitMergedContinuousEpisodeProgress(seasonEntry, nextEp).onFailure { err ->
+                _userMessage.value = err.message ?: "Unable to update episode progress."
+            }
         }
     }
 

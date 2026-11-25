@@ -7,6 +7,7 @@
     "urls": ["https://animeuniverse.pages.dev/*"]
   },
   "permissions": [
-    "core:default"
+    "core:default",
+    "notification:default"
   ]
 }

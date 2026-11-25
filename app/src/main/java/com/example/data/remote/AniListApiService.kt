@@ -100,6 +100,7 @@ data class AniListMedia(
     val synonyms: List<String>? = emptyList(),
     val nextAiringEpisode: AniListNextAiringEpisode? = null,
     val startDate: AniListFuzzyDate? = null,
+    val endDate: AniListFuzzyDate? = null,
     val studios: AniListStudioConnection? = null,
     val characters: AniListCharacterConnection? = null,
     val relations: AniListRelationsConnection? = null,
@@ -213,9 +214,13 @@ interface AnimeMetadataProvider {
     suspend fun getPopularReleasing(page: Int = 1, perPage: Int = 25): Result<List<AniListMedia>>
     suspend fun getAiringSchedule(startUnix: Int, endUnix: Int, page: Int = 1): Result<List<AniListAiringSchedule>>
     suspend fun getMediaDetails(anilistId: Int): Result<AniListMedia?>
-    suspend fun getRichDetailWithSeasons(rootMedia: AniListMedia): AnimeRichDetail {
+    suspend fun getRichDetailWithSeasons(
+        rootMedia: AniListMedia,
+        overrideMode: com.example.model.FranchiseSeasonOverrideMode = com.example.model.FranchiseSeasonOverrideMode.AUTO
+    ): AnimeRichDetail {
         return com.example.service.AniListMetadataProvider.mapRichDetail(rootMedia)
     }
+    fun getCachedSeasonMedia(anilistId: Int): AniListMedia? = null
 }
 
 interface AniListApiService {
@@ -680,6 +685,11 @@ $aliasBlocks            }
               month
               day
             }
+            endDate {
+              year
+              month
+              day
+            }
             description(asHtml: false)
             countryOfOrigin
             synonyms
@@ -729,6 +739,11 @@ $aliasBlocks            }
                   countryOfOrigin
                   synonyms
                   startDate {
+                    year
+                    month
+                    day
+                  }
+                  endDate {
                     year
                     month
                     day
@@ -787,6 +802,11 @@ $aliasBlocks            }
               month
               day
             }
+            endDate {
+              year
+              month
+              day
+            }
             averageScore
             relations {
               edges {
@@ -811,6 +831,11 @@ $aliasBlocks            }
                   countryOfOrigin
                   synonyms
                   startDate {
+                    year
+                    month
+                    day
+                  }
+                  endDate {
                     year
                     month
                     day
@@ -851,6 +876,11 @@ $aliasBlocks            }
                 month
                 day
               }
+              endDate {
+                year
+                month
+                day
+              }
               averageScore
               relations {
                 edges {
@@ -876,6 +906,11 @@ $aliasBlocks            }
                     countryOfOrigin
                     synonyms
                     startDate {
+                      year
+                      month
+                      day
+                    }
+                    endDate {
                       year
                       month
                       day

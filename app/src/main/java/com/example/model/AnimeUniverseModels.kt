@@ -369,6 +369,43 @@ data class AnimeRelationItem(
     val seasonYear: Int? = null
 )
 
+enum class FranchiseSeasonOverrideMode(val storageValue: String) {
+    AUTO("auto"),
+    MERGE_ONE("merge_one"),
+    SPLIT_ALL("split_all");
+
+    companion object {
+        fun fromStorage(raw: String?): FranchiseSeasonOverrideMode {
+            return when (raw?.trim()?.lowercase()) {
+                "merge_one", "merge" -> MERGE_ONE
+                "split_all", "split" -> SPLIT_ALL
+                else -> AUTO
+            }
+        }
+    }
+}
+
+data class AnimeSeasonSegment(
+    val id: Int,
+    val title: String,
+    val episodes: Int?,
+    val startEpisodeOffset: Int,
+    val status: String?,
+    val format: String?,
+    val seasonYear: Int?
+)
+
+data class AnimeMovieOvaEntry(
+    val id: Int,
+    val title: String,
+    val coverImage: String,
+    val formatBadge: String,
+    val status: String?,
+    val episodes: Int,
+    val releaseYear: Int?,
+    val isCurrent: Boolean = false
+)
+
 data class AnimeSeasonEntry(
     val id: Int,
     val seasonNumber: Int,
@@ -385,8 +422,14 @@ data class AnimeSeasonEntry(
         "Season $seasonNumber • Part $partNumber"
     } else {
         "Season $seasonNumber"
+    },
+    val subEntries: List<AnimeSeasonSegment> = emptyList(),
+    val isMergedContinuousRun: Boolean = subEntries.size > 1
+) {
+    fun containsAnimeId(targetId: Int): Boolean {
+        return id == targetId || subEntries.any { it.id == targetId }
     }
-)
+}
 
 data class AnimeRecommendationItem(
     val id: Int,
@@ -408,7 +451,10 @@ data class AnimeRichDetail(
     val characters: List<AnimeCharacterItem> = emptyList(),
     val relations: List<AnimeRelationItem> = emptyList(),
     val recommendations: List<AnimeRecommendationItem> = emptyList(),
-    val seasons: List<AnimeSeasonEntry> = emptyList()
+    val seasons: List<AnimeSeasonEntry> = emptyList(),
+    val moviesAndOvas: List<AnimeMovieOvaEntry> = emptyList(),
+    val franchiseId: Int = animeId,
+    val rawMainSeasonNodeCount: Int = seasons.size
 )
 
 enum class ThemeModePreference(val label: String) {
@@ -652,26 +698,32 @@ enum class SentimentCategory(
 }
 
 object StarRatingUtils {
+    fun roundTenth(stars: Float): Float {
+        if (stars <= 0f) return 0f
+        val tenths = kotlin.math.round(stars * 10.0).toInt().coerceIn(1, 50)
+        return tenths / 10f
+    }
+
     fun score100ToStars(score100: Int?): Float {
         if (score100 == null || score100 <= 0) return 0f
-        val halfSteps = kotlin.math.round(score100 / 10.0).toInt().coerceIn(1, 10)
-        return halfSteps / 2f
+        val tenths = kotlin.math.round(score100 / 2.0).toInt().coerceIn(1, 50)
+        return tenths / 10f
     }
 
     fun rating10ToStars(rating10: Double?): Float {
         if (rating10 == null || rating10 <= 0.0) return 0f
-        val halfSteps = kotlin.math.round(rating10).toInt().coerceIn(1, 10)
-        return halfSteps / 2f
+        val tenths = kotlin.math.round(rating10 * 5.0).toInt().coerceIn(1, 50)
+        return tenths / 10f
     }
 
     fun starsToScore100(stars: Float): Int {
         if (stars <= 0f) return 0
-        val halfSteps = kotlin.math.round(stars * 2.0).toInt().coerceIn(1, 10)
-        return halfSteps * 10
+        val tenths = kotlin.math.round(stars * 10.0).toInt().coerceIn(1, 50)
+        return tenths * 2
     }
 
     fun formatStars(stars: Float): String {
         val clamped = stars.coerceIn(0f, 5f)
-        return if (clamped % 1f == 0f) "%.1f".format(clamped) else "%.1f".format(clamped)
+        return "%.1f".format(java.util.Locale.US, clamped)
     }
 }

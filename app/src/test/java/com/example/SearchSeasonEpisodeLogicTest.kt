@@ -127,9 +127,13 @@ class SearchSeasonEpisodeLogicTest {
         val graph = listOf(mainS1, chibi, prologue, movie, pvSpecial, shortBonusOna).associateBy { it.id }
         val resolved = SeasonChainResolver.resolve(mainS1) { ids -> ids.mapNotNull { graph[it] } }
 
-        // Ongoing S1 must NOT inflate into Season 5+ — only 1 real season exists, so switcher stays empty
-        assertTrue("Expected empty season switcher for single ongoing S1, got ${resolved.seasons}", resolved.seasons.isEmpty())
-        // Side entries must remain discoverable in bridgeRelations
+        // Ongoing S1 must NOT inflate into Season 5+ — only 1 real season exists alongside Movies & OVAs
+        assertEquals("Expected single Season 1 pill for ongoing S1 with movie/special, got ${resolved.seasons}", 1, resolved.seasons.size)
+        assertEquals(1, resolved.seasons.first().seasonNumber)
+        assertEquals(mainS1.id, resolved.seasons.first().id)
+        // Movie & Special are merged into moviesAndOvas sorted by release date
+        assertEquals(listOf(pvSpecial.id, movie.id), resolved.moviesAndOvas.map { it.id })
+        // Side entries must also remain discoverable in bridgeRelations
         assertTrue(resolved.bridgeRelations.any { it.id == movie.id })
         assertTrue(resolved.bridgeRelations.any { it.id == prologue.id })
     }
@@ -175,18 +179,19 @@ class SearchSeasonEpisodeLogicTest {
         val resolved = SeasonChainResolver.resolve(s2p2) { ids -> ids.mapNotNull { graph[it] } }
 
         assertEquals(4, resolved.seasons.size)
-        assertEquals(listOf(1, 1, 2, 2), resolved.seasons.map { it.seasonNumber })
-        assertEquals(listOf(null, 2, null, 2), resolved.seasons.map { it.partNumber })
-        assertEquals(listOf("1", "1 Pt 2", "2", "2 Pt 2"), resolved.seasons.map { it.shortLabel })
-        assertEquals("Season 2 • Part 2", resolved.seasons.last().displayLabel)
+        assertEquals(listOf(1, 2, 3, 4), resolved.seasons.map { it.seasonNumber })
+        assertEquals(listOf("1", "2", "3", "4"), resolved.seasons.map { it.shortLabel })
+        assertEquals("Season 4", resolved.seasons.last().displayLabel)
         assertTrue(resolved.seasons.last().isCurrent)
-        // Movie bridge excluded from seasons, included in bridgeRelations
+        // Movie bridge excluded from seasons, included in unified moviesAndOvas and bridgeRelations
         assertFalse(resolved.seasons.any { it.id == movieBridge.id })
+        assertTrue(resolved.moviesAndOvas.any { it.id == movieBridge.id && it.formatBadge == "MOVIE" })
         assertTrue(resolved.bridgeRelations.any { it.id == movieBridge.id })
 
-        // Opening the Movie itself must NOT show a season switcher pretending the movie is a season
+        // Opening the Movie itself excludes the Movie from numbered seasons and highlights it in moviesAndOvas
         val resolvedFromMovie = SeasonChainResolver.resolve(movieBridge) { ids -> ids.mapNotNull { graph[it] } }
-        assertTrue(resolvedFromMovie.seasons.isEmpty())
+        assertFalse(resolvedFromMovie.seasons.any { it.id == movieBridge.id })
+        assertTrue(resolvedFromMovie.moviesAndOvas.any { it.id == movieBridge.id && it.isCurrent })
     }
 
     @Test

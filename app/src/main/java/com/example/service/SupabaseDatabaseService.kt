@@ -1294,7 +1294,7 @@ class SupabaseDatabaseService {
                         val officialStatus = a.optString("status", "RELEASING")
                         val totalEps = if (a.isNull("episodes")) null else a.optInt("episodes")
                         val progress = row.optInt("episode_progress", 0)
-                        val personalRating = if (row.isNull("personal_rating")) null else (row.optDouble("personal_rating") * 10).toInt()
+                        val personalRating = if (row.isNull("personal_rating")) null else kotlin.math.round(row.optDouble("personal_rating") * 10.0).toInt()
                         val genresArr = a.optJSONArray("genres")
                         val genres = buildList {
                             if (genresArr != null) {
