@@ -213,6 +213,39 @@ function roundStarsTenth(raw) {
   return Math.round(Math.min(5.0, Math.max(0.1, n)) * 10) / 10;
 }
 
+function starSliderPct(raw) {
+  const n = Number(raw);
+  const clamped = Number.isFinite(n) ? Math.min(5.0, Math.max(0.1, n)) : 0.1;
+  return `${(((clamped - 0.1) / 4.9) * 100).toFixed(2)}%`;
+}
+
+function bindSmoothRatingSlider(sliderEl, { stopProp = false, onLive, onCommit } = {}) {
+  if (!sliderEl) return;
+  sliderEl.style.setProperty('--slider-pct', starSliderPct(sliderEl.value));
+  if (stopProp) {
+    const halt = (e) => e.stopPropagation();
+    sliderEl.onclick = halt;
+    sliderEl.onpointerdown = halt;
+    sliderEl.ontouchstart = halt;
+  }
+  sliderEl.oninput = (e) => {
+    if (stopProp) e.stopPropagation();
+    const raw = Number(e.target.value);
+    e.target.style.setProperty('--slider-pct', starSliderPct(raw));
+    const stars = roundStarsTenth(raw);
+    if (onLive) onLive(stars, raw);
+  };
+  sliderEl.onchange = (e) => {
+    if (stopProp) e.stopPropagation();
+    const stars = roundStarsTenth(e.target.value);
+    if (stars > 0) {
+      e.target.value = stars.toFixed(1);
+      e.target.style.setProperty('--slider-pct', starSliderPct(stars));
+    }
+    if (onCommit) onCommit(stars);
+  };
+}
+
 function starsToRating10(stars) {
   const clean = roundStarsTenth(stars);
   if (clean <= 0) return null;
@@ -7512,8 +7545,8 @@ function renderCommunityScreen() {
                                 <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
                                   <div style="display:flex;align-items:center;gap:8px;">
                                     <span class="micro-label" style="color:var(--accent-primary);">DIRECT RATING</span>
-                                    <span class="tabular-num" style="font-size:15px;font-weight:700;color:var(--highlight);">${qrStars > 0 ? `${qrStars.toFixed(1)} ★` : 'Select rating'}</span>
-                                    ${qrSent ? `<span class="sentiment-pill soft ${qrSent.key}" style="font-size:9px;padding:2px 7px;">${qrSent.shortLabel.toUpperCase()}</span>` : ''}
+                                    <span id="comm-qr-val-label" class="tabular-num" style="font-size:15px;font-weight:700;color:var(--highlight);">${qrStars > 0 ? `${qrStars.toFixed(1)} ★` : 'Select rating'}</span>
+                                    <span id="comm-qr-sentiment-slot">${qrSent ? `<span class="sentiment-pill soft ${qrSent.key}" style="font-size:9px;padding:2px 7px;">${qrSent.shortLabel.toUpperCase()}</span>` : ''}</span>
                                   </div>
                                   <div style="display:flex;gap:6px;">
                                     <button type="button" class="capsule-pill" id="btn-comm-qr-minus" style="height:28px;padding:0 10px;font-size:11.5px;">−0.1 ★</button>
@@ -7521,7 +7554,7 @@ function renderCommunityScreen() {
                                   </div>
                                 </div>
                                 <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
-                                  <div style="display:inline-flex;gap:4px;">
+                                  <div id="comm-qr-stars-row" style="display:inline-flex;gap:4px;">
                                     ${[1, 2, 3, 4, 5]
                                       .map(
                                         (st) =>
@@ -7537,9 +7570,9 @@ function renderCommunityScreen() {
                                     class="rating-tenth-slider"
                                     min="0.1"
                                     max="5.0"
-                                    step="0.1"
+                                    step="0.01"
                                     value="${qrStars > 0 ? qrStars.toFixed(1) : '4.0'}"
-                                    style="flex:1;min-width:100px;"
+                                    style="flex:1;min-width:100px;--slider-pct:${starSliderPct(qrStars > 0 ? qrStars : 4.0)};"
                                   />
                                 </div>
                                 <div style="display:flex;gap:8px;justify-content:flex-end;">
@@ -7989,7 +8022,7 @@ function renderAnimeDetailScreen() {
         <div style="display:flex;justify-content:space-between;align-items:center;">
           <div>
             <div class="micro-label" style="color:var(--accent-primary);">YOUR STAR RATING</div>
-            <div class="serif-heading" style="font-size:28px;color:${stars > 0 ? 'var(--highlight)' : 'var(--text-muted)'};">
+            <div id="detail-star-heading" class="serif-heading" style="font-size:28px;color:${stars > 0 ? 'var(--highlight)' : 'var(--text-muted)'};">
               ${stars > 0 ? `${stars.toFixed(1)} ★` : 'Unrated'}
             </div>
           </div>
@@ -8000,7 +8033,7 @@ function renderAnimeDetailScreen() {
         </div>
 
         <div style="display:flex;flex-direction:column;gap:10px;background:var(--elevated-surface);border-radius:20px;padding:12px 14px;">
-          <div style="display:flex;justify-content:space-evenly;">
+          <div id="detail-stars-row" style="display:flex;justify-content:space-evenly;">
             ${[1, 2, 3, 4, 5]
               .map(
                 (idx) => `
@@ -8018,17 +8051,18 @@ function renderAnimeDetailScreen() {
               class="rating-tenth-slider"
               min="0.1"
               max="5.0"
-              step="0.1"
+              step="0.01"
               value="${stars > 0 ? stars.toFixed(1) : '0.1'}"
+              style="--slider-pct:${starSliderPct(stars > 0 ? stars : 0.1)};"
             />
             <span class="tabular-num" style="font-size:11px;color:var(--text-muted);">5.0</span>
           </div>
         </div>
 
-        <div class="capsule-strip" style="margin-bottom:0;">
+        <div id="detail-sentiment-strip" class="capsule-strip" style="margin-bottom:0;">
           ${SENTIMENTS.map(
             (s) => `
-            <button class="capsule-pill ${sentiment?.key === s.key ? 'active' : ''}" data-pick-sentiment-stars="${s.suggestedStars}">
+            <button class="capsule-pill ${sentiment?.key === s.key ? 'active' : ''}" data-sentiment-key="${s.key}" data-pick-sentiment-stars="${s.suggestedStars}">
               ${s.shortLabel.toUpperCase()} • ${s.suggestedStars.toFixed(1)}★
             </button>`
           ).join('')}
@@ -9133,14 +9167,14 @@ function renderModals() {
           </div>
 
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-            <div class="micro-label" style="color:var(--accent-primary);">STAR RATING (${stars > 0 ? `${stars.toFixed(1)} ★` : 'UNRATED'})</div>
+            <div id="qe-star-label" class="micro-label" style="color:var(--accent-primary);">STAR RATING (${stars > 0 ? `${stars.toFixed(1)} ★` : 'UNRATED'})</div>
             <div style="display:flex;gap:6px;">
               <button type="button" class="capsule-pill" id="qe-star-minus" style="height:28px;padding:0 10px;font-size:11.5px;">−0.1 ★</button>
               <button type="button" class="capsule-pill" id="qe-star-plus" style="height:28px;padding:0 10px;font-size:11.5px;">+0.1 ★</button>
             </div>
           </div>
           <div style="display:flex;flex-direction:column;gap:8px;background:var(--elevated-surface);border-radius:18px;padding:10px 12px;">
-            <div style="display:flex;justify-content:space-evenly;">
+            <div id="qe-stars-row" style="display:flex;justify-content:space-evenly;">
               ${[1, 2, 3, 4, 5]
                 .map(
                   (idx) => `
@@ -9156,8 +9190,9 @@ function renderModals() {
               class="rating-tenth-slider"
               min="0.1"
               max="5.0"
-              step="0.1"
+              step="0.01"
               value="${stars > 0 ? stars.toFixed(1) : '0.1'}"
+              style="--slider-pct:${starSliderPct(stars > 0 ? stars : 0.1)};"
             />
           </div>
 
@@ -9362,11 +9397,9 @@ function renderModals() {
                             <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
                               <div style="display:flex;align-items:center;gap:8px;">
                                 <span class="micro-label" style="color:var(--accent-primary);">YOUR RATING &amp; REVIEW</span>
-                                ${
-                                  draftStars > 0
-                                    ? `<span class="tabular-num" style="font-size:13px;font-weight:700;color:var(--highlight);">${draftStars.toFixed(1)} ★</span>`
-                                    : ''
-                                }
+                                <span id="comm-modal-star-label" class="tabular-num" style="font-size:13px;font-weight:700;color:var(--highlight);">${
+                                  draftStars > 0 ? `${draftStars.toFixed(1)} ★` : ''
+                                }</span>
                               </div>
                               <div style="display:inline-flex;align-items:center;gap:5px;">
                                 <button type="button" class="capsule-pill" id="btn-comm-modal-star-minus" style="height:26px;padding:0 9px;font-size:11px;">−0.1 ★</button>
@@ -9374,7 +9407,7 @@ function renderModals() {
                               </div>
                             </div>
                             <div style="display:flex;align-items:center;gap:10px;">
-                              <div style="display:inline-flex;align-items:center;gap:3px;">
+                              <div id="comm-modal-stars-row" style="display:inline-flex;align-items:center;gap:3px;">
                                 ${[1, 2, 3, 4, 5]
                                   .map(
                                     (st) =>
@@ -9390,9 +9423,9 @@ function renderModals() {
                                 class="rating-tenth-slider"
                                 min="0.1"
                                 max="5.0"
-                                step="0.1"
+                                step="0.01"
                                 value="${draftStars > 0 ? draftStars.toFixed(1) : '4.0'}"
-                                style="flex:1;min-width:90px;"
+                                style="flex:1;min-width:90px;--slider-pct:${starSliderPct(draftStars > 0 ? draftStars : 4.0)};"
                               />
                             </div>
                             <div style="display:flex;gap:8px;align-items:center;">
@@ -11084,12 +11117,28 @@ function bindAppEvents() {
   }
   const commQrSlider = document.getElementById('comm-qr-slider');
   if (commQrSlider && state.communityQuickRate) {
-    commQrSlider.onclick = (e) => e.stopPropagation();
-    commQrSlider.oninput = (e) => {
-      e.stopPropagation();
-      state.communityQuickRate.stars = roundStarsTenth(e.target.value);
-      renderApp();
-    };
+    bindSmoothRatingSlider(commQrSlider, {
+      stopProp: true,
+      onLive: (nextStars) => {
+        if (!state.communityQuickRate) return;
+        state.communityQuickRate.stars = nextStars;
+        const valEl = document.getElementById('comm-qr-val-label');
+        if (valEl) valEl.textContent = `${nextStars.toFixed(1)} ★`;
+        const sentSlot = document.getElementById('comm-qr-sentiment-slot');
+        if (sentSlot) {
+          const sent = sentimentFromRating10(starsToRating10(nextStars));
+          sentSlot.innerHTML = sent
+            ? `<span class="sentiment-pill soft ${sent.key}" style="font-size:9px;padding:2px 7px;">${sent.shortLabel.toUpperCase()}</span>`
+            : '';
+        }
+        document.querySelectorAll('#comm-qr-stars-row [data-comm-qr-star]').forEach((b) => {
+          const idx = Number(b.getAttribute('data-comm-qr-star'));
+          b.style.color = nextStars >= idx - 0.5 ? 'var(--accent-primary)' : '#383D4E';
+        });
+        const saveBtn = document.getElementById('btn-comm-qr-save');
+        if (saveBtn && !state.communityQuickRate.saving) saveBtn.disabled = nextStars <= 0;
+      }
+    });
   }
   const btnCommQrClose = document.getElementById('btn-comm-qr-close');
   if (btnCommQrClose) {
@@ -11222,12 +11271,19 @@ function bindAppEvents() {
   }
   const commModalStarSlider = document.getElementById('comm-modal-star-slider');
   if (commModalStarSlider) {
-    commModalStarSlider.oninput = (e) => {
-      const inp = document.getElementById('inp-comm-modal-note');
-      if (inp) state.communityCommentDraftNote = inp.value;
-      state.communityCommentDraftStars = roundStarsTenth(e.target.value);
-      renderApp();
-    };
+    bindSmoothRatingSlider(commModalStarSlider, {
+      onLive: (nextStars) => {
+        const inp = document.getElementById('inp-comm-modal-note');
+        if (inp) state.communityCommentDraftNote = inp.value;
+        state.communityCommentDraftStars = nextStars;
+        const lbl = document.getElementById('comm-modal-star-label');
+        if (lbl) lbl.textContent = `${nextStars.toFixed(1)} ★`;
+        document.querySelectorAll('#comm-modal-stars-row [data-comm-modal-star]').forEach((b) => {
+          const idx = Number(b.getAttribute('data-comm-modal-star'));
+          b.style.color = nextStars >= idx - 0.5 ? 'var(--accent-primary)' : '#383D4E';
+        });
+      }
+    });
   }
   const inpCommModalNote = document.getElementById('inp-comm-modal-note');
   if (inpCommModalNote) {
@@ -11523,16 +11579,29 @@ function bindAppEvents() {
   }
   const detailStarSlider = document.getElementById('detail-star-slider');
   if (detailStarSlider && state.detailAnime) {
-    detailStarSlider.oninput = (e) => {
-      const nextStars = roundStarsTenth(e.target.value);
-      state.detailAnime = { ...state.detailAnime, rating10: starsToRating10(nextStars) };
-      const headingEl = btnStarMinus?.closest('.app-card')?.querySelector('.serif-heading');
-      if (headingEl) headingEl.textContent = `${nextStars.toFixed(1)} ★`;
-    };
-    detailStarSlider.onchange = async (e) => {
-      const nextStars = roundStarsTenth(e.target.value);
-      await saveDetailRatingOrNote(starsToRating10(nextStars), undefined, 'rating');
-    };
+    bindSmoothRatingSlider(detailStarSlider, {
+      onLive: (nextStars) => {
+        if (!state.detailAnime) return;
+        const r10 = starsToRating10(nextStars);
+        state.detailAnime = { ...state.detailAnime, rating10: r10 };
+        const headingEl = document.getElementById('detail-star-heading');
+        if (headingEl) {
+          headingEl.textContent = `${nextStars.toFixed(1)} ★`;
+          headingEl.style.color = 'var(--highlight)';
+        }
+        document.querySelectorAll('#detail-stars-row [data-star-val]').forEach((b) => {
+          const idx = Number(b.getAttribute('data-star-val'));
+          b.style.color = nextStars >= idx - 0.5 ? 'var(--accent-primary)' : 'var(--text-muted)';
+        });
+        const sent = sentimentFromRating10(r10);
+        document.querySelectorAll('#detail-sentiment-strip [data-sentiment-key]').forEach((pill) => {
+          pill.classList.toggle('active', Boolean(sent && pill.getAttribute('data-sentiment-key') === sent.key));
+        });
+      },
+      onCommit: async (nextStars) => {
+        await saveDetailRatingOrNote(starsToRating10(nextStars), undefined, 'rating');
+      }
+    });
   }
   const inpDetailNotes = document.getElementById('inp-detail-notes');
   if (inpDetailNotes) {
@@ -12083,11 +12152,18 @@ function bindAppEvents() {
     }
     const qeStarSlider = document.getElementById('qe-star-slider');
     if (qeStarSlider) {
-      qeStarSlider.oninput = (e) => {
-        const next = roundStarsTenth(e.target.value);
-        state.quickEditAnime.rating10 = starsToRating10(next);
-        renderApp();
-      };
+      bindSmoothRatingSlider(qeStarSlider, {
+        onLive: (nextStars) => {
+          if (!state.quickEditAnime) return;
+          state.quickEditAnime.rating10 = starsToRating10(nextStars);
+          const lbl = document.getElementById('qe-star-label');
+          if (lbl) lbl.textContent = `STAR RATING (${nextStars.toFixed(1)} ★)`;
+          document.querySelectorAll('#qe-stars-row [data-qe-star]').forEach((b) => {
+            const idx = Number(b.getAttribute('data-qe-star'));
+            b.style.color = nextStars >= idx - 0.5 ? 'var(--accent-primary)' : 'var(--text-muted)';
+          });
+        }
+      });
     }
     const qeSave = document.getElementById('qe-save');
     if (qeSave) {
