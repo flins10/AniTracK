@@ -13226,7 +13226,6 @@ const NativeNotificationBridge = {
    */
   async detectActualOsPermission() {
     this.getOrCreateDeviceId();
-    // Purge any stale cached permission key from earlier builds so we only trust real OS status
     try { localStorage.removeItem('au_os_notif_permission_v1'); } catch (_) {}
 
     // 1. Direct Android Kotlin @JavascriptInterface bridge (MainActivity.kt)
@@ -13259,17 +13258,19 @@ const NativeNotificationBridge = {
         }
       } catch (_) {}
 
-      // 3. Official tauri-plugin-notification mobile & desktop check_permissions IPC command
-      try {
-        const checkRes = await invoke('plugin:notification|check_permissions');
-        const p = this.normalizePermissionValue(checkRes);
-        if (p) {
-          return this.applyResolvedOsPermission(p);
-        }
-      } catch (_) {}
+      // 3. Official tauri-plugin-notification permission_state & check_permissions IPC commands
+      for (const cmd of ['plugin:notification|permission_state', 'plugin:notification|check_permissions']) {
+        try {
+          const checkRes = await invoke(cmd);
+          const p = this.normalizePermissionValue(checkRes);
+          if (p) {
+            return this.applyResolvedOsPermission(p);
+          }
+        } catch (_) {}
+      }
 
-      // 4. Official tauri-plugin-notification desktop is_permission_granted IPC command
-      // Note: On Android/mobile, is_permission_granted returns null, so we only accept boolean true/false
+      // 4. Official tauri-plugin-notification is_permission_granted IPC command
+      // Note: On Android, Rust mobile.rs returns Ok(None) (null in JS). Only accept explicit boolean/string.
       try {
         const pluginGranted = await invoke('plugin:notification|is_permission_granted');
         if (typeof pluginGranted === 'boolean') {
@@ -13295,14 +13296,24 @@ const NativeNotificationBridge = {
         }
       }
 
-      // Only use Web Notification.permission in standard browsers outside Tauri/Android WebView
-      if (!isTauriAppEnvironment() && typeof Notification !== 'undefined') {
-        const rawPerm = Notification.permission;
-        const perm = rawPerm === 'default' ? 'prompt' : rawPerm;
-        return this.applyResolvedOsPermission(perm);
+      // In Tauri v2, tauri-plugin-notification injects init.js which polyfills window.Notification
+      // and updates window.Notification.permission ('granted' | 'denied' | 'default').
+      if (typeof Notification !== 'undefined' && typeof Notification.permission === 'string') {
+        const rawPerm = Notification.permission.toLowerCase();
+        if (rawPerm === 'granted') {
+          return this.applyResolvedOsPermission('granted');
+        }
+        if (rawPerm === 'denied') {
+          return this.applyResolvedOsPermission('denied');
+        }
       }
     } catch (_) {}
 
+    // Preserve already-verified 'granted' or 'denied' runtime state instead of resetting to 'prompt'
+    // when Android's is_permission_granted returns null.
+    if (state.osNotifPermission === 'granted') {
+      return this.applyResolvedOsPermission('granted');
+    }
     return this.applyResolvedOsPermission(state.osNotifPermission === 'denied' ? 'denied' : 'prompt');
   },
 
@@ -13382,79 +13393,75 @@ const NativeNotificationBridge = {
 
     const invoke = this.getTauriInvoke();
     if (invoke) {
-      // Pre-check via check_permissions so we don't hit the Tauri v2 Android hang when already granted
-      try {
-        const preCheck = await invoke('plugin:notification|check_permissions');
-        if (this.normalizePermissionValue(preCheck) === 'granted') {
-          this.applyResolvedOsPermission('granted');
-          return true;
-        }
-      } catch (_) {}
+      // Pre-check via permission_state / check_permissions
+      for (const checkCmd of ['plugin:notification|permission_state', 'plugin:notification|check_permissions']) {
+        try {
+          const preCheck = await invoke(checkCmd);
+          if (this.normalizePermissionValue(preCheck) === 'granted') {
+            this.applyResolvedOsPermission('granted');
+            return true;
+          }
+        } catch (_) {}
+      }
 
-      // 2. Official tauri-plugin-notification mobile/desktop request_permissions (plural)
-      try {
-        const reqPlural = await invoke('plugin:notification|request_permissions');
-        const parsedPlural = this.normalizePermissionValue(reqPlural);
-        if (parsedPlural === 'granted') {
-          this.applyResolvedOsPermission('granted');
-          return true;
-        }
-        if (parsedPlural === 'denied') {
-          this.applyResolvedOsPermission('denied');
-          return false;
-        }
-      } catch (_) {}
-
-      // 3. Official tauri-plugin-notification request_permission (singular)
-      try {
-        const reqSingular = await invoke('plugin:notification|request_permission');
-        const parsedSingular = this.normalizePermissionValue(reqSingular);
-        if (parsedSingular === 'granted') {
-          this.applyResolvedOsPermission('granted');
-          return true;
-        }
-        if (parsedSingular === 'denied') {
-          this.applyResolvedOsPermission('denied');
-          return false;
-        }
-      } catch (_) {}
-
-      // 4. Custom Rust command request_os_notification_permission
-      try {
-        const rustPerm = await invoke('request_os_notification_permission');
-        const parsedRust = this.normalizePermissionValue(rustPerm);
-        if (parsedRust === 'granted') {
-          this.applyResolvedOsPermission('granted');
-          return true;
-        }
-        if (parsedRust === 'denied') {
-          this.applyResolvedOsPermission('denied');
-          return false;
-        }
-      } catch (_) {}
-
-      // Verify actual OS permission after attempting native Tauri commands
-      const verified = await this.detectActualOsPermission();
-      if (verified === 'granted') return true;
-      this.applyResolvedOsPermission('denied');
-      return false;
+      // Try Tauri v2 notification permission request commands (with timeout guard against older Android plugin hang)
+      for (const reqCmd of [
+        'plugin:notification|request_permission',
+        'plugin:notification|request_permissions',
+        'request_os_notification_permission'
+      ]) {
+        try {
+          const reqRes = await Promise.race([
+            invoke(reqCmd),
+            new Promise((resolve) => setTimeout(() => resolve('__timeout__'), 8000))
+          ]);
+          if (reqRes !== '__timeout__') {
+            const parsed = this.normalizePermissionValue(reqRes);
+            if (parsed === 'granted') {
+              this.applyResolvedOsPermission('granted');
+              return true;
+            }
+            if (parsed === 'denied') {
+              this.applyResolvedOsPermission('denied');
+              return false;
+            }
+          }
+        } catch (_) {}
+      }
     }
 
+    // Fallback to tauri-plugin-notification's injected window.Notification.requestPermission() polyfill
+    // (or standard browser Notification.requestPermission())
     try {
       const tNotif = typeof window !== 'undefined' ? window.__TAURI__?.notification : null;
       if (tNotif && typeof tNotif.requestPermission === 'function') {
         const perm = await tNotif.requestPermission();
         const parsed = this.normalizePermissionValue(perm);
-        const finalPerm = this.applyResolvedOsPermission(parsed === 'granted' ? 'granted' : 'denied');
-        return finalPerm === 'granted';
+        if (parsed === 'granted') {
+          this.applyResolvedOsPermission('granted');
+          return true;
+        }
+        if (parsed === 'denied') {
+          this.applyResolvedOsPermission('denied');
+          return false;
+        }
       }
-      if (!isTauriAppEnvironment() && typeof Notification !== 'undefined' && typeof Notification.requestPermission === 'function') {
+      if (typeof Notification !== 'undefined' && typeof Notification.requestPermission === 'function') {
         const perm = await Notification.requestPermission();
-        const finalPerm = this.applyResolvedOsPermission(perm === 'granted' ? 'granted' : 'denied');
-        return finalPerm === 'granted';
+        const parsed = this.normalizePermissionValue(perm);
+        if (parsed === 'granted') {
+          this.applyResolvedOsPermission('granted');
+          return true;
+        }
+        if (parsed === 'denied') {
+          this.applyResolvedOsPermission('denied');
+          return false;
+        }
       }
     } catch (_) {}
 
+    const verified = await this.detectActualOsPermission();
+    if (verified === 'granted') return true;
     this.applyResolvedOsPermission('denied');
     return false;
   },
@@ -13869,8 +13876,8 @@ const NativeNotificationBridge = {
 
   async sendOsNotificationBar(title, body, data = {}) {
     if (!this.isCategoryEnabled(data?.type)) return false;
-    const actualPerm = await this.detectActualOsPermission();
-    if (actualPerm !== 'granted') return false;
+    let actualPerm = await this.detectActualOsPermission();
+    if (actualPerm === 'denied') return false;
 
     const cleanTitle = String(title || 'Anime Universe');
     const cleanBody = String(body || 'You have a new notification.');
@@ -13878,21 +13885,24 @@ const NativeNotificationBridge = {
     // 1) Direct Android Kotlin @JavascriptInterface bridge (MainActivity.kt)
     if (typeof window !== 'undefined' && window.AnimeNativeBridge && typeof window.AnimeNativeBridge.sendLocalNotification === 'function') {
       try {
+        if (actualPerm !== 'granted') {
+          const grantedNow = await this.requestPermissionInteractive();
+          if (!grantedNow) return false;
+        }
         if (window.AnimeNativeBridge.sendLocalNotification(cleanTitle, cleanBody)) {
+          this.applyResolvedOsPermission('granted');
           return true;
         }
       } catch (_) {}
     }
 
-    // 2) Tauri v2 Rust native command & official plugin:notification|notify IPC
+    // 2) Tauri v2 official plugin:notification|notify & custom Rust command
+    // Note: Do NOT abort when actualPerm is 'prompt' because on Android Tauri v2,
+    // plugin:notification|is_permission_granted returns null even when permission is granted.
     const invoke = this.getTauriInvoke();
     if (invoke) {
+      const numericId = Math.floor(Math.random() * 899999 + 100000);
       try {
-        await invoke('send_native_notification', { title: cleanTitle, body: cleanBody });
-        return true;
-      } catch (_) {}
-      try {
-        const numericId = Math.floor(Math.random() * 899999 + 100000);
         await invoke('plugin:notification|notify', {
           options: {
             id: numericId,
@@ -13900,24 +13910,49 @@ const NativeNotificationBridge = {
             body: cleanBody
           }
         });
+        this.applyResolvedOsPermission('granted');
+        return true;
+      } catch (_) {
+        // If notify failed because Android 13+ POST_NOTIFICATIONS wasn't requested yet in this session,
+        // request native permission once and immediately retry delivering to the OS notification tray.
+        try {
+          const granted = await this.requestPermissionInteractive();
+          if (granted) {
+            await invoke('plugin:notification|notify', {
+              options: {
+                id: numericId,
+                title: cleanTitle,
+                body: cleanBody
+              }
+            });
+            return true;
+          }
+        } catch (_) {}
+      }
+
+      try {
+        await invoke('send_native_notification', { title: cleanTitle, body: cleanBody });
+        this.applyResolvedOsPermission('granted');
         return true;
       } catch (_) {}
     }
-    // 3) Tauri v2 JS notification plugin fallback
+
+    // 3) Tauri v2 JS notification plugin object fallback
     const tNotif = typeof window !== 'undefined' ? window.__TAURI__?.notification : null;
     if (tNotif && typeof tNotif.sendNotification === 'function') {
       try {
-        const granted = typeof tNotif.isPermissionGranted === 'function' ? await tNotif.isPermissionGranted() : false;
-        if (granted) {
-          tNotif.sendNotification({ title: cleanTitle, body: cleanBody });
-          return true;
-        }
+        tNotif.sendNotification({ title: cleanTitle, body: cleanBody });
+        this.applyResolvedOsPermission('granted');
+        return true;
       } catch (_) {}
     }
-    // 4) Web Service Worker / Browser Notification API (outside Tauri)
-    if (!isTauriAppEnvironment() && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+
+    // 4) Service Worker showNotification (Web/PWA) & window.Notification
+    // (In Tauri v2, tauri-plugin-notification injects init.js which polyfills window.Notification
+    // to call plugin:notification|notify directly)
+    if (typeof Notification !== 'undefined') {
       try {
-        if (navigator.serviceWorker && navigator.serviceWorker.ready) {
+        if (!isTauriAppEnvironment() && navigator.serviceWorker && navigator.serviceWorker.ready && Notification.permission === 'granted') {
           const reg = await navigator.serviceWorker.ready;
           if (reg && typeof reg.showNotification === 'function') {
             await reg.showNotification(cleanTitle, {
@@ -13931,8 +13966,11 @@ const NativeNotificationBridge = {
             return true;
           }
         }
-        new Notification(cleanTitle, { body: cleanBody, icon: '/icon-192.png' });
-        return true;
+        if (isTauriAppEnvironment() || Notification.permission === 'granted') {
+          new Notification(cleanTitle, { body: cleanBody, icon: '/icon-192.png' });
+          this.applyResolvedOsPermission('granted');
+          return true;
+        }
       } catch (_) {}
     }
     return false;

@@ -1,14 +1,20 @@
 package com.example
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import androidx.compose.ui.window.DialogProperties
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
@@ -137,6 +143,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
 
         try {
+            ScheduleUpdateWorker.createNotificationChannel(applicationContext)
             val syncWorkRequest = PeriodicWorkRequestBuilder<ScheduleUpdateWorker>(
                 30, TimeUnit.MINUTES
             ).build()
@@ -186,6 +193,28 @@ class MainActivity : ComponentActivity() {
                     onboardingStage == OnboardingStage.NONE &&
                     authSession!!.onboardingCompleted
                 val showWorkspace = hasSignedInAccount || isLocalPreviewMode
+
+                var requestedPostNotifications by rememberSaveable { mutableStateOf(false) }
+                val notifPermissionLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.RequestPermission()
+                ) { _ -> }
+
+                LaunchedEffect(showWorkspace, showSplash) {
+                    if (showWorkspace && !showSplash && !requestedPostNotifications) {
+                        requestedPostNotifications = true
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            val granted = ContextCompat.checkSelfPermission(
+                                this@MainActivity,
+                                Manifest.permission.POST_NOTIFICATIONS
+                            ) == PackageManager.PERMISSION_GRANTED
+                            if (!granted) {
+                                runCatching {
+                                    notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                }
+                            }
+                        }
+                    }
+                }
 
                 Box(
                     modifier = Modifier

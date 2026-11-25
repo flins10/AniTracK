@@ -49,6 +49,7 @@ import com.example.service.SupabaseDatabaseService
 import com.example.service.SupabaseDiscussionService
 import com.example.util.DiscussionRules
 import com.example.util.ErrorSanitizer
+import com.example.worker.ScheduleUpdateWorker
 import okhttp3.WebSocket
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -447,6 +448,8 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
 
     private var hasTriggeredInitialAuthRestore = false
     private val notificationSyncReducer = NotificationSyncReducer()
+    private val alertedSystemNotificationIds = mutableSetOf<String>()
+    private var hasPrimedSystemNotifications = false
     private var notificationRealtimeSocket: WebSocket? = null
     private var notificationRealtimeUserId: String? = null
     private var notificationRealtimeToken: String? = null
@@ -808,7 +811,16 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 if (outcome.delta != 0) {
                     _unreadNotificationCount.value = outcome.unreadCount
-                    reconcileUnseenAnimeMetadataOnly(currentSession)
+                    if (!ev.isRead && ev.id.isNotBlank() && alertedSystemNotificationIds.add(ev.id)) {
+                        val preview = ev.previewText.trim().ifEmpty { "You have a new reply or mention in Anime Universe." }
+                        ScheduleUpdateWorker.sendCommunityNotification(
+                            context = getApplication(),
+                            notificationId = ev.id,
+                            title = "Anime Universe • Community Alert",
+                            message = preview
+                        )
+                    }
+                    reconcileUnseenAnimeMetadataOnly(currentSession, newlyInsertedNotificationId = ev.id)
                 }
             }
             is NotificationRealtimeEvent.Update -> {
@@ -844,7 +856,10 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun reconcileUnseenAnimeMetadataOnly(session: AuthSession) {
+    private fun reconcileUnseenAnimeMetadataOnly(
+        session: AuthSession,
+        newlyInsertedNotificationId: String? = null
+    ) {
         val capturedUserId = session.userId
         val startGen = notificationSyncReducer.currentGeneration()
         viewModelScope.launch {
@@ -852,6 +867,18 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                 if (_authSession.value?.userId != capturedUserId) return@onSuccess
                 if (startGen < notificationSyncReducer.currentGeneration()) return@onSuccess
                 _unseenDiscussionAnime.value = if (_unreadNotificationCount.value == 0) emptyList() else summary.anime
+                val top = summary.anime.firstOrNull()
+                if (!newlyInsertedNotificationId.isNullOrBlank() && top != null) {
+                    val action = if (top.latestNotificationType == "thread_reply") "replied to you" else "tagged you"
+                    val richTitle = "${top.latestSenderUsername} $action • ${top.animeTitle}"
+                    val richBody = top.latestPreview.trim().ifEmpty { "Open Anime Universe to view the discussion." }
+                    ScheduleUpdateWorker.sendCommunityNotification(
+                        context = getApplication(),
+                        notificationId = newlyInsertedNotificationId,
+                        title = richTitle,
+                        message = richBody
+                    )
+                }
             }
         }
     }
@@ -873,6 +900,14 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
 
             val snap = snapRes.getOrNull()
             if (snap != null) {
+                val newlyDetectedIds = if (hasPrimedSystemNotifications) {
+                    snap.unreadIds.filter { it !in alertedSystemNotificationIds }
+                } else {
+                    emptyList()
+                }
+                alertedSystemNotificationIds.addAll(snap.unreadIds)
+                hasPrimedSystemNotifications = true
+
                 val applied = notificationSyncReducer.applyAuthoritativeUnreadIds(
                     fetchedUnreadIds = snap.unreadIds,
                     fetchStartedGeneration = startGen
@@ -889,11 +924,29 @@ class AnimeViewModel(application: Application) : AndroidViewModel(application) {
                             } else item
                         }
                     }
+                    val summaryAnime = summaryRes.getOrNull()?.anime
                     _unseenDiscussionAnime.value = if (exactCount == 0) {
                         emptyList()
                     } else {
-                        summaryRes.getOrNull()?.anime?.filter { (snap.unreadCountByAnime[it.animeId] ?: 0) > 0 }
+                        summaryAnime?.filter { (snap.unreadCountByAnime[it.animeId] ?: 0) > 0 }
                             ?: _unseenDiscussionAnime.value.filter { (snap.unreadCountByAnime[it.animeId] ?: 0) > 0 }
+                    }
+                    if (newlyDetectedIds.isNotEmpty()) {
+                        val top = summaryAnime?.firstOrNull()
+                        val action = if (top?.latestNotificationType == "thread_reply") "replied to you" else "tagged you"
+                        val title = if (top != null && top.animeTitle.isNotBlank()) {
+                            "${top.latestSenderUsername} $action • ${top.animeTitle}"
+                        } else {
+                            "Anime Universe • New Notification"
+                        }
+                        val body = top?.latestPreview?.trim()?.takeIf { it.isNotEmpty() }
+                            ?: "Open Anime Universe to view your new notification."
+                        ScheduleUpdateWorker.sendCommunityNotification(
+                            context = getApplication(),
+                            notificationId = newlyDetectedIds.first(),
+                            title = title,
+                            message = body
+                        )
                     }
                 }
             } else {

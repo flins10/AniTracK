@@ -1,12 +1,18 @@
 package com.example.worker
 
+import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import com.example.MainActivity
 import com.example.data.local.AppDatabase
 import com.example.data.repository.AnimeRepository
 import java.time.LocalDate
@@ -63,19 +69,43 @@ class ScheduleUpdateWorker(
     companion object {
         const val CHANNEL_ID = "anime_universe_release_notifications"
         const val CHANNEL_NAME = "Anime Universe Releases"
+        const val COMMUNITY_CHANNEL_ID = "anime_universe_community_alerts"
+        const val COMMUNITY_CHANNEL_NAME = "Anime Universe Community & Replies"
 
         fun createNotificationChannel(context: Context) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val channel = NotificationChannel(
+                val notificationManager =
+                    context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+                val releaseChannel = NotificationChannel(
                     CHANNEL_ID,
                     CHANNEL_NAME,
                     NotificationManager.IMPORTANCE_DEFAULT
                 ).apply {
                     description = "Notifications when a tracked airing anime episode releases"
                 }
-                val notificationManager =
-                    context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                notificationManager.createNotificationChannel(channel)
+                notificationManager.createNotificationChannel(releaseChannel)
+
+                val communityChannel = NotificationChannel(
+                    COMMUNITY_CHANNEL_ID,
+                    COMMUNITY_CHANNEL_NAME,
+                    NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "Mentions, replies, and community discussion alerts"
+                    enableVibration(true)
+                }
+                notificationManager.createNotificationChannel(communityChannel)
+            }
+        }
+
+        fun hasNotificationPermission(context: Context): Boolean {
+            return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+            } else {
+                true
             }
         }
 
@@ -85,12 +115,13 @@ class ScheduleUpdateWorker(
             title: String,
             episodeNumber: Int
         ) {
+            if (!hasNotificationPermission(context)) return
             createNotificationChannel(context)
             val notificationManager =
                 context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
             val builder = NotificationCompat.Builder(context, CHANNEL_ID)
-                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setSmallIcon(context.applicationInfo.icon.takeIf { it != 0 } ?: android.R.drawable.ic_dialog_info)
                 .setContentTitle("New Episode Alert")
                 .setContentText("$title Episode $episodeNumber is airing soon!")
                 .setPriority(NotificationCompat.PRIORITY_DEFAULT)
@@ -98,5 +129,45 @@ class ScheduleUpdateWorker(
 
             notificationManager.notify(animeId, builder.build())
         }
+
+        fun sendCommunityNotification(
+            context: Context,
+            notificationId: String,
+            title: String,
+            message: String
+        ) {
+            if (!hasNotificationPermission(context)) return
+            runCatching {
+                createNotificationChannel(context)
+                val notificationManager =
+                    context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+                val launchIntent = Intent(context, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    putExtra("notification_id", notificationId)
+                }
+                val pendingIntent = PendingIntent.getActivity(
+                    context,
+                    notificationId.hashCode(),
+                    launchIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+
+                val cleanTitle = title.ifBlank { "Anime Universe • New Notification" }
+                val cleanBody = message.ifBlank { "Open Anime Universe to view your notification." }
+
+                val builder = NotificationCompat.Builder(context, COMMUNITY_CHANNEL_ID)
+                    .setSmallIcon(context.applicationInfo.icon.takeIf { it != 0 } ?: android.R.drawable.ic_dialog_info)
+                    .setContentTitle(cleanTitle)
+                    .setContentText(cleanBody)
+                    .setStyle(NotificationCompat.BigTextStyle().bigText(cleanBody))
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .setAutoCancel(true)
+                    .setContentIntent(pendingIntent)
+
+                notificationManager.notify(notificationId.hashCode(), builder.build())
+            }
+        }
     }
 }
+
