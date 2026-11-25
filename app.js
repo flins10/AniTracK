@@ -215,6 +215,22 @@ function roundStarsTenth(raw) {
 
 let activeRatingSliderDragCount = 0;
 let deferredRenderAfterSliderDrag = false;
+let commQuickRateAutoSaveTimer = null;
+let detailRatingAutoSaveTimer = null;
+
+function clearCommQuickRateAutoSave() {
+  if (commQuickRateAutoSaveTimer) {
+    clearTimeout(commQuickRateAutoSaveTimer);
+    commQuickRateAutoSaveTimer = null;
+  }
+}
+
+function clearDetailRatingAutoSave() {
+  if (detailRatingAutoSaveTimer) {
+    clearTimeout(detailRatingAutoSaveTimer);
+    detailRatingAutoSaveTimer = null;
+  }
+}
 
 function starSliderPct(raw) {
   const n = Number(raw);
@@ -222,10 +238,43 @@ function starSliderPct(raw) {
   return `${(((clamped - 0.1) / 4.9) * 100).toFixed(2)}%`;
 }
 
+function updateSmoothSliderScaleMarks(sliderEl, stars) {
+  const wrap = sliderEl?.closest('.smooth-rating-slider-wrap');
+  if (!wrap) return;
+  wrap.querySelectorAll('[data-scale-val]').forEach((sp) => {
+    const v = Number(sp.getAttribute('data-scale-val'));
+    sp.classList.toggle('lit', stars >= v - 0.05);
+  });
+}
+
+function animateSmoothSliderToStars(sliderEl, nextStars) {
+  if (!sliderEl) return;
+  const clean = roundStarsTenth(nextStars) || 0.1;
+  sliderEl.classList.add('is-animating');
+  sliderEl.style.setProperty('--slider-pct', starSliderPct(clean));
+  sliderEl.setAttribute('data-slider-val', clean.toFixed(1));
+  sliderEl.setAttribute('aria-valuenow', clean.toFixed(1));
+  const bubble = sliderEl.querySelector('.smooth-rating-slider-bubble');
+  if (bubble) bubble.textContent = `${clean.toFixed(1)} ★`;
+  updateSmoothSliderScaleMarks(sliderEl, clean);
+  clearTimeout(sliderEl.__animTimer);
+  sliderEl.__animTimer = setTimeout(() => {
+    sliderEl.classList.remove('is-animating');
+  }, 260);
+}
+
 function renderSmoothRatingSliderHtml({ id, value = 4.0, large = false, showScale = true, ariaLabel = 'Star rating slider' }) {
   const numVal = Number(value);
   const safeVal = Number.isFinite(numVal) && numVal > 0 ? Math.min(5.0, Math.max(0.1, numVal)) : 0.1;
   const pct = starSliderPct(safeVal);
+  const scaleMarks = [
+    { v: 0.1, label: '0.1 ★' },
+    { v: 1, label: '1' },
+    { v: 2, label: '2' },
+    { v: 3, label: '3' },
+    { v: 4, label: '4' },
+    { v: 5, label: '5.0 ★' }
+  ];
   return `
     <div class="smooth-rating-slider-wrap">
       <div
@@ -242,28 +291,54 @@ function renderSmoothRatingSliderHtml({ id, value = 4.0, large = false, showScal
       >
         <div class="smooth-rating-slider-track">
           <div class="smooth-rating-slider-fill"></div>
-          <div class="smooth-rating-slider-thumb"></div>
+          <div class="smooth-rating-slider-thumb">
+            <div class="smooth-rating-slider-bubble">${safeVal.toFixed(1)} ★</div>
+          </div>
         </div>
       </div>
       ${
         showScale
-          ? `<div class="smooth-rating-slider-scale"><span>0.1 ★</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5.0 ★</span></div>`
+          ? `<div class="smooth-rating-slider-scale">${scaleMarks
+              .map((m) => `<span data-scale-val="${m.v}" class="${safeVal >= m.v - 0.05 ? 'lit' : ''}">${m.label}</span>`)
+              .join('')}</div>`
           : ''
       }
     </div>
   `;
 }
 
-function bindSmoothRatingSlider(sliderEl, { stopProp = false, onLive, onCommit } = {}) {
+function bindSmoothRatingSlider(sliderEl, { stopProp = false, onDragStart, onLive, onCommit } = {}) {
   if (!sliderEl) return;
   const trackEl = sliderEl.querySelector('.smooth-rating-slider-track') || sliderEl;
+  const bubbleEl = sliderEl.querySelector('.smooth-rating-slider-bubble');
   let dragging = false;
   let activePointerId = null;
   let activeTouchId = null;
   let lastStars = roundStarsTenth(sliderEl.getAttribute('data-slider-val') || 0.1) || 0.1;
   let lastRaw = Number(sliderEl.getAttribute('data-slider-val')) || lastStars;
+  let targetRatio = Math.min(1, Math.max(0, (lastRaw - 0.1) / 4.9));
+  let displayedRatio = targetRatio;
+  let rafId = null;
 
-  const applyClientX = (clientX) => {
+  const paintRatio = (ratio) => {
+    const pct = `${(Math.min(1, Math.max(0, ratio)) * 100).toFixed(2)}%`;
+    sliderEl.style.setProperty('--slider-pct', pct);
+  };
+
+  const stepAnimation = () => {
+    const diff = targetRatio - displayedRatio;
+    if (Math.abs(diff) < 0.0012) {
+      displayedRatio = targetRatio;
+      paintRatio(displayedRatio);
+      rafId = null;
+      return;
+    }
+    displayedRatio += diff * 0.42;
+    paintRatio(displayedRatio);
+    rafId = requestAnimationFrame(stepAnimation);
+  };
+
+  const applyClientX = (clientX, immediate = false) => {
     const rect = trackEl.getBoundingClientRect();
     if (!rect || rect.width <= 0) return;
     const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
@@ -271,9 +346,21 @@ function bindSmoothRatingSlider(sliderEl, { stopProp = false, onLive, onCommit }
     const stars = roundStarsTenth(raw);
     lastRaw = raw;
     lastStars = stars;
-    sliderEl.style.setProperty('--slider-pct', `${(ratio * 100).toFixed(2)}%`);
+    targetRatio = ratio;
+    if (immediate) {
+      displayedRatio = ratio;
+      paintRatio(ratio);
+      if (rafId) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+    } else if (!rafId) {
+      rafId = requestAnimationFrame(stepAnimation);
+    }
     sliderEl.setAttribute('data-slider-val', raw.toFixed(2));
     sliderEl.setAttribute('aria-valuenow', stars.toFixed(1));
+    if (bubbleEl) bubbleEl.textContent = `${stars.toFixed(1)} ★`;
+    updateSmoothSliderScaleMarks(sliderEl, stars);
     if (onLive) onLive(stars, raw);
   };
 
@@ -294,15 +381,30 @@ function bindSmoothRatingSlider(sliderEl, { stopProp = false, onLive, onCommit }
     activePointerId = null;
     activeTouchId = null;
     cleanupWindowListeners();
+    if (rafId) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+    }
     sliderEl.classList.remove('is-dragging');
     if (pid !== null && sliderEl.releasePointerCapture) {
       try { sliderEl.releasePointerCapture(pid); } catch (_) {}
     }
     const finalStars = roundStarsTenth(lastRaw) || lastStars || 0.1;
     lastStars = finalStars;
+    lastRaw = finalStars;
+    const snappedRatio = Math.min(1, Math.max(0, (finalStars - 0.1) / 4.9));
+    targetRatio = snappedRatio;
+    displayedRatio = snappedRatio;
+    sliderEl.classList.add('is-animating');
     sliderEl.style.setProperty('--slider-pct', starSliderPct(finalStars));
     sliderEl.setAttribute('data-slider-val', finalStars.toFixed(1));
     sliderEl.setAttribute('aria-valuenow', finalStars.toFixed(1));
+    if (bubbleEl) bubbleEl.textContent = `${finalStars.toFixed(1)} ★`;
+    updateSmoothSliderScaleMarks(sliderEl, finalStars);
+    clearTimeout(sliderEl.__animTimer);
+    sliderEl.__animTimer = setTimeout(() => {
+      sliderEl.classList.remove('is-animating');
+    }, 240);
     activeRatingSliderDragCount = Math.max(0, activeRatingSliderDragCount - 1);
     const hadDeferred = deferredRenderAfterSliderDrag;
     deferredRenderAfterSliderDrag = false;
@@ -318,7 +420,7 @@ function bindSmoothRatingSlider(sliderEl, { stopProp = false, onLive, onCommit }
     if (activePointerId !== null && e.pointerId !== activePointerId) return;
     if (e.cancelable) e.preventDefault();
     if (stopProp) e.stopPropagation();
-    applyClientX(e.clientX);
+    applyClientX(e.clientX, false);
   };
 
   const onPointerEnd = (e) => {
@@ -335,13 +437,13 @@ function bindSmoothRatingSlider(sliderEl, { stopProp = false, onLive, onCommit }
     if (activeTouchId !== null && e.touches) {
       for (let i = 0; i < e.touches.length; i++) {
         if (e.touches[i].identifier === activeTouchId) {
-          applyClientX(e.touches[i].clientX);
+          applyClientX(e.touches[i].clientX, false);
           return;
         }
       }
     }
     if (e.touches && e.touches[0]) {
-      applyClientX(e.touches[0].clientX);
+      applyClientX(e.touches[0].clientX, false);
     }
   };
 
@@ -364,8 +466,13 @@ function bindSmoothRatingSlider(sliderEl, { stopProp = false, onLive, onCommit }
     activePointerId = pointerId;
     activeTouchId = touchId;
     activeRatingSliderDragCount += 1;
+    sliderEl.classList.remove('is-animating');
     sliderEl.classList.add('is-dragging');
-    applyClientX(clientX);
+    if (onDragStart) onDragStart();
+    // Sync displayedRatio with current DOM state before gliding smoothly to press point
+    const curVal = Number(sliderEl.getAttribute('data-slider-val')) || lastRaw;
+    displayedRatio = Math.min(1, Math.max(0, (curVal - 0.1) / 4.9));
+    applyClientX(clientX, false);
     if (pointerId !== null) {
       if (sliderEl.setPointerCapture) {
         try { sliderEl.setPointerCapture(pointerId); } catch (_) {}
@@ -373,7 +480,6 @@ function bindSmoothRatingSlider(sliderEl, { stopProp = false, onLive, onCommit }
       window.addEventListener('pointermove', onPointerMove, { capture: true, passive: false });
       window.addEventListener('pointerup', onPointerEnd, true);
       window.addEventListener('pointercancel', onPointerEnd, true);
-      // Also prevent WebView touch scroll while pointer dragging
       window.addEventListener('touchmove', onTouchMove, { capture: true, passive: false });
       window.addEventListener('touchend', onTouchEnd, true);
       window.addEventListener('touchcancel', onTouchEnd, true);
@@ -402,7 +508,7 @@ function bindSmoothRatingSlider(sliderEl, { stopProp = false, onLive, onCommit }
   );
 
   sliderEl.addEventListener('pointerdown', (e) => {
-    if (e.pointerType === 'touch') return; // Handled directly by non-passive touchstart for zero WebView sticking
+    if (e.pointerType === 'touch') return;
     if (e.button !== 0) return;
     if (e.cancelable) e.preventDefault();
     e.stopPropagation();
@@ -418,12 +524,13 @@ function bindSmoothRatingSlider(sliderEl, { stopProp = false, onLive, onCommit }
     else return;
     e.preventDefault();
     e.stopPropagation();
-    const nextStars = roundStarsTenth(Math.min(5.0, Math.max(0.1, lastStars + delta)));
+    const curVal = roundStarsTenth(sliderEl.getAttribute('data-slider-val') || lastStars) || 0.1;
+    const nextStars = roundStarsTenth(Math.min(5.0, Math.max(0.1, curVal + delta)));
     lastStars = nextStars;
     lastRaw = nextStars;
-    sliderEl.style.setProperty('--slider-pct', starSliderPct(nextStars));
-    sliderEl.setAttribute('data-slider-val', nextStars.toFixed(1));
-    sliderEl.setAttribute('aria-valuenow', nextStars.toFixed(1));
+    targetRatio = Math.min(1, Math.max(0, (nextStars - 0.1) / 4.9));
+    displayedRatio = targetRatio;
+    animateSmoothSliderToStars(sliderEl, nextStars);
     if (onLive) onLive(nextStars, nextStars);
     if (onCommit) onCommit(nextStars);
   });
@@ -794,6 +901,29 @@ const state = {
   communityQuickRate: null, // { animeId, stars, saving }
   inAppNotifBanner: null, // { id, title, body, senderName, senderAvatar, animeId, animeTitle, animeCover, commentId, threadId, replyId }
   osNotifPermission: typeof Notification !== 'undefined' ? Notification.permission : 'default',
+  showFirstTimeNotifPopup: false,
+  firstTimeNotifDeniedGuide: false,
+  notifPopupRequesting: false,
+  notificationSettings: {
+    master_enabled: true,
+    messages_enabled: true,
+    updates_enabled: true,
+    reminders_enabled: true,
+    os_permission_status: typeof Notification !== 'undefined' ? Notification.permission : 'prompt',
+    onboarding_dismissed: localStorage.getItem('au_notif_onboarding_dismissed_v1') === 'true',
+    saving: false,
+    loaded: false
+  },
+  deviceRegistration: {
+    device_id: localStorage.getItem('au_persistent_device_id_v1') || '',
+    platform: 'web',
+    push_provider: 'tauri_local',
+    push_token: null,
+    permission_status: 'prompt',
+    is_active: false,
+    registered_at: null,
+    syncing: false
+  },
 
   // Download Center Configuration State (Web-only)
   downloadsConfig: {
@@ -6285,18 +6415,39 @@ async function fetchAuthoritativeUnreadSnapshot() {
   if (!uid) {
     return { unreadIds: new Set(), unreadCount: 0, unreadCountByAnime: new Map() };
   }
-  const rows = await supabaseRequest(
-    `/rest/v1/user_notifications?select=id,anime_id&recipient_user_id=eq.${encodeURIComponent(uid)}&is_read=eq.false&limit=1000`,
-    'GET'
-  );
+  const [legacyRows, modernRows] = await Promise.all([
+    supabaseRequest(
+      `/rest/v1/user_notifications?select=id,anime_id&recipient_user_id=eq.${encodeURIComponent(uid)}&is_read=eq.false&limit=1000`,
+      'GET'
+    ).catch(() => []),
+    supabaseRequest(
+      `/rest/v1/notifications?select=id,legacy_notification_id,metadata&user_id=eq.${encodeURIComponent(uid)}&is_read=eq.false&limit=1000`,
+      'GET'
+    ).catch(() => [])
+  ]);
   const unreadIds = new Set();
   const unreadCountByAnime = new Map();
-  if (Array.isArray(rows)) {
-    rows.forEach((row) => {
+  const seenLegacyIds = new Set();
+  if (Array.isArray(legacyRows)) {
+    legacyRows.forEach((row) => {
       const id = String(row?.id || '').trim();
       if (!id) return;
       unreadIds.add(id);
+      seenLegacyIds.add(id);
       const aid = Number(row?.anime_id || 0);
+      if (aid > 0) {
+        unreadCountByAnime.set(aid, (unreadCountByAnime.get(aid) || 0) + 1);
+      }
+    });
+  }
+  if (Array.isArray(modernRows)) {
+    modernRows.forEach((row) => {
+      const legacyId = row?.legacy_notification_id != null ? String(row.legacy_notification_id).trim() : '';
+      if (legacyId && seenLegacyIds.has(legacyId)) return;
+      const id = String(row?.id || '').trim();
+      if (!id) return;
+      unreadIds.add(id);
+      const aid = Number(row?.metadata?.anime_id || 0);
       if (aid > 0) {
         unreadCountByAnime.set(aid, (unreadCountByAnime.get(aid) || 0) + 1);
       }
@@ -6344,7 +6495,7 @@ async function refreshUnreadNotificationCount() {
     }
     if (state.notifications.items.length > 0) {
       state.notifications.items = state.notifications.items.map((n) => {
-        const shouldBeUnread = snap.unreadIds.has(n.id);
+        const shouldBeUnread = snap.unreadIds.has(String(n.id));
         return Boolean(n.is_read) === shouldBeUnread ? { ...n, is_read: !shouldBeUnread } : n;
       });
     }
@@ -6435,6 +6586,33 @@ async function markAnimeDiscussionSeen(animeId) {
   }
 }
 
+function normalizeModernNotificationRow(row) {
+  const meta = row?.metadata && typeof row.metadata === 'object' ? row.metadata : {};
+  return {
+    id: String(row.id),
+    modern_id: String(row.id),
+    legacy_notification_id: row.legacy_notification_id != null ? String(row.legacy_notification_id) : null,
+    title: row.title || 'Anime Universe',
+    message: row.message || '',
+    preview_text: row.message || '',
+    type: row.type || 'message',
+    notification_type: row.type || 'message',
+    is_read: Boolean(row.is_read),
+    read_at: row.read_at || null,
+    created_at: row.created_at || new Date().toISOString(),
+    sender_user_id: row.sender_user_id || meta.sender_user_id || null,
+    sender_username: meta.sender_name || meta.sender_username || 'Anime Universe',
+    sender_avatar_key: meta.sender_avatar || meta.sender_avatar_key || 'avatar_1',
+    anime_id: Number(meta.anime_id || 0) || null,
+    anime_title: meta.anime_title || '',
+    anime_cover_image: meta.anime_cover_image || '',
+    comment_id: meta.comment_id || meta.message_id || null,
+    thread_id: meta.thread_id || meta.parent_id || null,
+    reply_id: meta.reply_id || null,
+    metadata: meta
+  };
+}
+
 async function loadUserNotifications(reset = true) {
   const uid = state.session?.userId;
   if (!uid) {
@@ -6456,32 +6634,51 @@ async function loadUserNotifications(reset = true) {
   }
   renderApp();
   try {
-    const [data, snap] = await Promise.all([
+    const [data, modernRows, snap] = await Promise.all([
       supabaseRequest('/rest/v1/rpc/get_user_notifications', 'POST', {
         p_limit: 25,
         p_offset: offset
-      }),
+      }).catch(() => ({ notifications: [] })),
+      supabaseRequest(
+        `/rest/v1/notifications?select=*&user_id=eq.${encodeURIComponent(uid)}&order=created_at.desc&limit=25&offset=${offset}`,
+        'GET'
+      ).catch(() => []),
       fetchAuthoritativeUnreadSnapshot().catch(() => null)
     ]);
     if (state.session?.userId !== uid) return;
-    const incoming = Array.isArray(data?.notifications) ? data.notifications : [];
+    const legacyIncoming = Array.isArray(data?.notifications) ? data.notifications : [];
+    const legacyIds = new Set(legacyIncoming.map((n) => String(n.id)));
+
+    const modernIncoming = Array.isArray(modernRows)
+      ? modernRows
+          .filter((r) => {
+            const legId = r?.legacy_notification_id != null ? String(r.legacy_notification_id) : '';
+            return !legId || !legacyIds.has(legId);
+          })
+          .map(normalizeModernNotificationRow)
+      : [];
+
+    const mergedIncoming = [...legacyIncoming, ...modernIncoming].sort(
+      (a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+    );
+
     state.notifications.items = reset
-      ? incoming
+      ? mergedIncoming
       : [
           ...state.notifications.items,
-          ...incoming.filter((n) => !state.notifications.items.some((old) => old.id === n.id))
+          ...mergedIncoming.filter((n) => !state.notifications.items.some((old) => String(old.id) === String(n.id)))
         ];
     if (snap) {
       if (NotificationSyncState.applyAuthoritativeUnreadIds(snap.unreadIds, startGen)) {
         state.notifications.unreadCount = NotificationSyncState.unreadCount;
         if (state.notifications.unreadCount === 0) state.notifications.unseenAnime = [];
       }
-    } else if (NotificationSyncState.applyFetchedPage(incoming, Number(data?.unread_count ?? 0), startGen)) {
+    } else if (NotificationSyncState.applyFetchedPage(mergedIncoming, Number(data?.unread_count ?? 0), startGen)) {
       state.notifications.unreadCount = NotificationSyncState.unreadCount;
       if (state.notifications.unreadCount === 0) state.notifications.unseenAnime = [];
     }
-    state.notifications.totalCount = Number(data?.total_count ?? state.notifications.items.length);
-    state.notifications.hasMore = Boolean(data?.has_more);
+    state.notifications.totalCount = Math.max(Number(data?.total_count ?? 0), state.notifications.items.length);
+    state.notifications.hasMore = Boolean(data?.has_more) || modernIncoming.length >= 25;
     state.notifications.loading = false;
     state.notifications.loadingMore = false;
     updateCommunityRedDotsInPlace();
@@ -6499,8 +6696,10 @@ async function markNotificationRead(notificationId) {
   if (!uid || !notificationId) return;
   const readAtIso = new Date().toISOString();
   let targetAnimeId = 0;
+  let targetItem = null;
   state.notifications.items = state.notifications.items.map((n) => {
-    if (n.id === notificationId) {
+    if (String(n.id) === String(notificationId)) {
+      targetItem = n;
       targetAnimeId = Number(n.anime_id || 0);
       if (!n.is_read) {
         return { ...n, is_read: true, read_at: readAtIso };
@@ -6525,21 +6724,28 @@ async function markNotificationRead(notificationId) {
     }
   }
   updateCommunityRedDotsInPlace();
+  renderApp();
 
   try {
-    let persisted = false;
-    try {
-      await patchUserNotificationsRead(
-        `id=eq.${encodeURIComponent(notificationId)}&recipient_user_id=eq.${encodeURIComponent(uid)}&is_read=eq.false`,
-        readAtIso
-      );
-      persisted = true;
-    } catch (_) {}
-    if (!persisted) {
-      await supabaseRequest('/rest/v1/rpc/mark_notification_read', 'POST', {
+    await Promise.allSettled([
+      supabaseRequest(
+        `/rest/v1/notifications?id=eq.${encodeURIComponent(notificationId)}&user_id=eq.${encodeURIComponent(uid)}`,
+        'PATCH',
+        { is_read: true, read_at: readAtIso }
+      ),
+      targetItem?.legacy_notification_id
+        ? patchUserNotificationsRead(
+            `id=eq.${encodeURIComponent(targetItem.legacy_notification_id)}&recipient_user_id=eq.${encodeURIComponent(uid)}&is_read=eq.false`,
+            readAtIso
+          )
+        : patchUserNotificationsRead(
+            `id=eq.${encodeURIComponent(notificationId)}&recipient_user_id=eq.${encodeURIComponent(uid)}&is_read=eq.false`,
+            readAtIso
+          ),
+      supabaseRequest('/rest/v1/rpc/mark_notification_read', 'POST', {
         p_notification_id: notificationId
-      });
-    }
+      })
+    ]);
     const snap = await fetchAuthoritativeUnreadSnapshot();
     if (state.session?.userId === uid && NotificationSyncState.applyAuthoritativeUnreadIds(snap.unreadIds, mutGen)) {
       state.notifications.unreadCount = NotificationSyncState.unreadCount;
@@ -6568,27 +6774,63 @@ async function markAllNotificationsRead() {
   updateCommunityRedDotsInPlace();
   renderApp();
   try {
-    let persisted = false;
-    try {
-      await patchUserNotificationsRead(
+    await Promise.allSettled([
+      supabaseRequest(
+        `/rest/v1/notifications?user_id=eq.${encodeURIComponent(uid)}&is_read=eq.false`,
+        'PATCH',
+        { is_read: true, read_at: readAtIso }
+      ),
+      patchUserNotificationsRead(
         `recipient_user_id=eq.${encodeURIComponent(uid)}&is_read=eq.false`,
         readAtIso
-      );
-      persisted = true;
-    } catch (_) {}
-    if (!persisted) {
-      await supabaseRequest('/rest/v1/rpc/mark_all_notifications_read', 'POST', {});
-    }
+      ),
+      supabaseRequest('/rest/v1/rpc/mark_all_notifications_read', 'POST', {})
+    ]);
     const snap = await fetchAuthoritativeUnreadSnapshot();
     if (state.session?.userId === uid && NotificationSyncState.applyAuthoritativeUnreadIds(snap.unreadIds, mutGen)) {
       state.notifications.unreadCount = NotificationSyncState.unreadCount;
       if (state.notifications.unreadCount === 0) state.notifications.unseenAnime = [];
       updateCommunityRedDotsInPlace();
     }
-    showToast('All tagged notifications marked as read');
+    showToast('All notifications marked as read');
   } catch (_) {
     await refreshUnreadNotificationCount();
     updateCommunityRedDotsInPlace();
+  }
+}
+
+async function deleteUserNotification(notificationId) {
+  const uid = state.session?.userId;
+  if (!uid || !notificationId) return;
+  const target = state.notifications.items.find((n) => String(n.id) === String(notificationId));
+  state.notifications.items = state.notifications.items.filter((n) => String(n.id) !== String(notificationId));
+  if (target && !target.is_read) {
+    const nextUnread = NotificationSyncState.markLocalRead(notificationId);
+    state.notifications.unreadCount = nextUnread;
+  }
+  state.notifications.totalCount = Math.max(0, (state.notifications.totalCount || 1) - 1);
+  updateCommunityRedDotsInPlace();
+  renderApp();
+
+  try {
+    await Promise.allSettled([
+      supabaseRequest(
+        `/rest/v1/notifications?id=eq.${encodeURIComponent(notificationId)}&user_id=eq.${encodeURIComponent(uid)}`,
+        'DELETE'
+      ),
+      target?.legacy_notification_id
+        ? supabaseRequest(
+            `/rest/v1/user_notifications?id=eq.${encodeURIComponent(target.legacy_notification_id)}&recipient_user_id=eq.${encodeURIComponent(uid)}`,
+            'DELETE'
+          )
+        : supabaseRequest(
+            `/rest/v1/user_notifications?id=eq.${encodeURIComponent(notificationId)}&recipient_user_id=eq.${encodeURIComponent(uid)}`,
+            'DELETE'
+          )
+    ]);
+    showToast('Notification deleted');
+  } catch (_) {
+    await refreshUnreadNotificationCount();
   }
 }
 
@@ -7725,16 +7967,16 @@ function renderCommunityScreen() {
                             const qrSent = qrStars > 0 ? sentimentFromRating10(starsToRating10(qrStars)) : null;
                             return `
                               <div class="community-quick-rate-drawer" onclick="event.stopPropagation()">
-                                <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
-                                  <div style="display:flex;align-items:center;gap:8px;">
-                                    <span class="micro-label" style="color:var(--accent-primary);">DIRECT RATING</span>
-                                    <span id="comm-qr-val-label" class="tabular-num" style="font-size:15px;font-weight:700;color:var(--highlight);">${qrStars > 0 ? `${qrStars.toFixed(1)} ★` : 'Select rating'}</span>
-                                    <span id="comm-qr-sentiment-slot">${qrSent ? `<span class="sentiment-pill soft ${qrSent.key}" style="font-size:9px;padding:2px 7px;">${qrSent.shortLabel.toUpperCase()}</span>` : ''}</span>
+                                <div class="community-qr-header">
+                                  <div class="community-qr-header-left">
+                                    <span class="micro-label" style="color:var(--accent-primary);white-space:nowrap;">DIRECT RATING</span>
+                                    <span id="comm-qr-val-label" class="tabular-num community-qr-val">${qrStars > 0 ? `${qrStars.toFixed(1)} ★` : '4.0 ★'}</span>
                                   </div>
-                                  <div style="display:flex;gap:6px;">
-                                    <button type="button" class="capsule-pill" id="btn-comm-qr-minus" style="height:28px;padding:0 10px;font-size:11.5px;">−0.1 ★</button>
-                                    <button type="button" class="capsule-pill" id="btn-comm-qr-plus" style="height:28px;padding:0 10px;font-size:11.5px;">+0.1 ★</button>
-                                  </div>
+                                  <div id="comm-qr-sentiment-slot" class="community-qr-sent-slot">${
+                                    qrSent
+                                      ? `<span class="sentiment-pill soft ${qrSent.key}" style="font-size:9px;padding:2px 8px;white-space:nowrap;">${qrSent.shortLabel.toUpperCase()}</span>`
+                                      : ''
+                                  }</div>
                                 </div>
                                 <div style="padding:2px 0;">
                                   ${renderSmoothRatingSliderHtml({
@@ -7745,11 +7987,17 @@ function renderCommunityScreen() {
                                     ariaLabel: 'Community direct rating slider'
                                   })}
                                 </div>
-                                <div style="display:flex;gap:8px;justify-content:flex-end;">
-                                  <button type="button" class="btn-secondary" id="btn-comm-qr-close" style="height:34px;padding:0 14px;font-size:12px;">Cancel</button>
-                                  <button type="button" class="btn-primary" id="btn-comm-qr-save" style="height:34px;padding:0 16px;font-size:12px;" ${
-                                    state.communityQuickRate.saving || qrStars <= 0 ? 'disabled' : ''
-                                  }>${state.communityQuickRate.saving ? 'SAVING...' : 'SAVE RATING'}</button>
+                                <div class="community-qr-footer">
+                                  <div style="display:flex;gap:6px;flex-shrink:0;">
+                                    <button type="button" class="capsule-pill" id="btn-comm-qr-minus" style="height:30px;padding:0 10px;font-size:11.5px;">−0.1 ★</button>
+                                    <button type="button" class="capsule-pill" id="btn-comm-qr-plus" style="height:30px;padding:0 10px;font-size:11.5px;">+0.1 ★</button>
+                                  </div>
+                                  <div style="display:flex;gap:8px;flex-shrink:0;">
+                                    <button type="button" class="btn-secondary" id="btn-comm-qr-close" style="height:34px;padding:0 13px;font-size:12px;">Cancel</button>
+                                    <button type="button" class="btn-primary" id="btn-comm-qr-save" style="height:34px;padding:0 15px;font-size:12px;" ${
+                                      state.communityQuickRate.saving || qrStars <= 0 ? 'disabled' : ''
+                                    }>${state.communityQuickRate.saving ? 'SAVING...' : 'SAVE'}</button>
+                                  </div>
                                 </div>
                               </div>
                             `;
@@ -8583,13 +8831,16 @@ function renderNotificationsScreen() {
     <div style="max-width:860px;margin:0 auto;display:flex;flex-direction:column;gap:16px;">
       <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap;">
         <div>
-          <div class="micro-label" style="color:var(--accent-primary);">COMMUNITY ALERTS</div>
+          <div class="micro-label" style="color:var(--accent-primary);">IN-APP NOTIFICATION CENTER</div>
           <h1 class="serif-heading" style="font-size:34px;line-height:38px;">Notifications</h1>
           <div style="font-size:13px;color:var(--text-secondary);margin-top:4px;">
             ${nState.unreadCount > 0 ? `${nState.unreadCount} unread notification${nState.unreadCount === 1 ? '' : 's'}` : 'All caught up'}
           </div>
         </div>
-        <div style="display:flex;gap:8px;align-items:center;">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <button type="button" class="btn-secondary" id="btn-open-notif-settings" style="height:40px;padding:0 14px;font-size:12.5px;">
+            Notification Settings
+          </button>
           <button type="button" class="btn-secondary" id="btn-notif-refresh" style="height:40px;padding:0 14px;font-size:12.5px;">Refresh</button>
           ${
             nState.unreadCount > 0
@@ -8604,7 +8855,7 @@ function renderNotificationsScreen() {
       ${
         !state.session
           ? `<div class="app-card" style="border-radius:24px;text-align:center;padding:32px 20px;color:var(--text-secondary);">
-               Sign in to receive @mention and thread reply notifications.
+               Sign in to receive messages, reminders, updates, @mentions, and thread reply notifications.
              </div>`
           : nState.loading
           ? `<div class="app-card" style="border-radius:24px;text-align:center;padding:32px 20px;color:var(--text-secondary);">
@@ -8613,46 +8864,90 @@ function renderNotificationsScreen() {
           : nState.items.length === 0
           ? `<div class="app-card" style="border-radius:24px;text-align:center;padding:40px 20px;color:var(--text-secondary);">
                <div style="font-size:15px;font-weight:600;color:var(--text-primary);margin-bottom:6px;">No notifications yet</div>
-               <div style="font-size:13px;">When someone @mentions you or replies to you in an anime thread, it will appear here.</div>
+               <div style="font-size:13px;">Messages, reminders, updates, @mentions, and thread replies will appear here in real time.</div>
              </div>`
           : `
             <div style="display:flex;flex-direction:column;gap:10px;">
               ${nState.items
                 .map((n) => {
-                  const nType = n.notification_type || n.type;
-                  const nPreview = n.preview_text || n.content_preview || '';
-                  const typeLabel =
-                    nType === 'thread_reply'
-                      ? 'replied to your thread'
-                      : nType === 'mention_reply'
-                      ? 'mentioned you in a reply'
-                      : 'mentioned you in a comment';
+                  const nType = String(n.notification_type || n.type || 'message').toLowerCase();
+                  const nPreview = formatPlainPreviewWithEmojis(n.message || n.preview_text || n.content_preview || '');
+                  const badgeLabel =
+                    nType === 'thread_reply' || nType === 'reply'
+                      ? 'REPLY'
+                      : nType === 'mention_reply' || nType === 'mention_comment' || nType === 'mention'
+                      ? 'MENTION'
+                      : nType === 'update'
+                      ? 'UPDATE'
+                      : nType === 'reminder'
+                      ? 'REMINDER'
+                      : 'MESSAGE';
+                  const computedTitle =
+                    n.title ||
+                    (nType === 'thread_reply' || nType === 'reply'
+                      ? `@${n.sender_username || 'Member'} replied to your thread${n.anime_title ? ` on ${n.anime_title}` : ''}`
+                      : nType === 'mention_reply' || nType === 'mention_comment' || nType === 'mention'
+                      ? `@${n.sender_username || 'Member'} mentioned you${n.anime_title ? ` on ${n.anime_title}` : ''}`
+                      : 'Anime Universe Notification');
                   return `
-                    <button
-                      type="button"
+                    <div
                       class="notification-item ${n.is_read ? '' : 'unread'}"
-                      data-open-notification="${escapeHtml(n.id)}"
-                      data-notif-anime="${n.anime_id}"
-                      data-notif-comment="${escapeHtml(n.comment_id || '')}"
-                      data-notif-thread="${escapeHtml(n.thread_id || '')}"
-                      data-notif-reply="${escapeHtml(n.reply_id || '')}"
+                      style="display:flex;align-items:flex-start;gap:12px;text-align:left;position:relative;"
                     >
-                      ${renderAvatarCircle(n.sender_avatar_key || 'avatar_1', n.sender_username || 'Member', 40)}
-                      <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px;">
-                        <div style="font-size:14px;color:var(--text-primary);line-height:1.4;">
-                          <strong style="color:var(--highlight);">@${escapeHtml(n.sender_username || 'Member')}</strong>
-                          <span> ${typeLabel}</span>
-                          ${n.anime_title ? ` on <strong style="color:var(--accent-primary);">${escapeHtml(n.anime_title)}</strong>` : ''}
+                      <button
+                        type="button"
+                        data-open-notification="${escapeHtml(n.id)}"
+                        data-notif-anime="${Number(n.anime_id || 0)}"
+                        data-notif-comment="${escapeHtml(n.comment_id || '')}"
+                        data-notif-thread="${escapeHtml(n.thread_id || '')}"
+                        data-notif-reply="${escapeHtml(n.reply_id || '')}"
+                        style="flex:1;min-width:0;display:flex;align-items:flex-start;gap:12px;background:transparent;border:none;padding:0;color:inherit;text-align:left;cursor:pointer;"
+                      >
+                        ${renderAvatarCircle(n.sender_avatar_key || 'avatar_1', n.sender_username || 'Anime Universe', 40)}
+                        <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:5px;">
+                          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                            <span style="padding:2px 8px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:0.08em;background:rgba(232,200,143,0.14);color:var(--accent-primary);border:1px solid rgba(232,200,143,0.3);">
+                              ${escapeHtml(badgeLabel)}
+                            </span>
+                            <span style="font-size:11.5px;color:var(--text-muted);">${escapeHtml(formatDiscussionTimestamp(n.created_at))}</span>
+                            ${!n.is_read ? '<span class="notification-unread-dot" title="Unread" style="position:static;margin-left:2px;"></span>' : ''}
+                          </div>
+                          <div style="font-size:14px;font-weight:600;color:var(--text-primary);line-height:1.4;">
+                            ${escapeHtml(computedTitle)}
+                          </div>
+                          ${
+                            nPreview
+                              ? `<div style="font-size:13px;color:var(--text-secondary);line-height:1.45;">${escapeHtml(nPreview)}</div>`
+                              : ''
+                          }
                         </div>
+                      </button>
+                      <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;">
                         ${
-                          nPreview
-                            ? `<div style="font-size:13px;color:var(--text-secondary);line-height:1.45;">“${escapeHtml(nPreview)}”</div>`
+                          !n.is_read
+                            ? `<button
+                                 type="button"
+                                 class="capsule-pill"
+                                 data-mark-read-notif="${escapeHtml(n.id)}"
+                                 title="Mark as read"
+                                 style="height:30px;padding:0 10px;font-size:11px;"
+                               >
+                                 Mark read
+                               </button>`
                             : ''
                         }
-                        <div style="font-size:11.5px;color:var(--text-muted);">${escapeHtml(formatDiscussionTimestamp(n.created_at))}</div>
+                        <button
+                          type="button"
+                          class="app-icon-btn"
+                          data-delete-notif="${escapeHtml(n.id)}"
+                          title="Delete notification"
+                          aria-label="Delete notification"
+                          style="width:32px;height:32px;font-size:13px;color:var(--text-muted);"
+                        >
+                          ✕
+                        </button>
                       </div>
-                      ${!n.is_read ? '<span class="notification-unread-dot" title="Unread"></span>' : ''}
-                    </button>
+                    </div>
                   `;
                 })
                 .join('')}
@@ -9283,8 +9578,90 @@ function renderToastOverlay() {
   return `<div id="au-toast-banner" class="au-toast ${state.toastError ? 'error' : ''}">${escapeHtml(state.toastMessage)}</div>`;
 }
 
+function renderFirstTimeNotifPopupOverlay() {
+  if (!state.showFirstTimeNotifPopup) return '';
+  const dr = state.deviceRegistration || {};
+  const isDenied = Boolean(state.firstTimeNotifDeniedGuide || state.osNotifPermission === 'denied');
+  const sysGuideText =
+    dr.platform === 'android'
+      ? 'Open Android Settings → Apps → Anime Universe → Notifications → Turn ON "Allow notifications".'
+      : dr.platform === 'macos'
+      ? 'Open macOS System Settings → Notifications → Anime Universe → Turn ON "Allow Notifications".'
+      : dr.platform === 'windows'
+      ? 'Open Windows Settings → System → Notifications → Turn ON notifications for Anime Universe.'
+      : 'Open your browser or OS notification settings and allow notifications for Anime Universe.';
+
+  return `
+    <div class="notif-perm-popup-backdrop" id="first-time-notif-popup" role="dialog" aria-modal="true" aria-labelledby="notif-popup-heading">
+      <div class="notif-perm-popup-card" onclick="event.stopPropagation()">
+        <div class="notif-perm-bell-stage">
+          <div class="notif-perm-bell-ring ring-1"></div>
+          <div class="notif-perm-bell-ring ring-2"></div>
+          <div class="notif-perm-bell-circle">
+            <svg class="notif-perm-bell-svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 22C13.38 22 14.5 20.88 14.5 19.5H9.5C9.5 20.88 10.62 22 12 22Z" fill="currentColor"/>
+              <path d="M18.5 16V10.8C18.5 7.43 16.42 4.62 13.5 3.88V3.25C13.5 2.42 12.83 1.75 12 1.75C11.17 1.75 10.5 2.42 10.5 3.25V3.88C7.58 4.62 5.5 7.43 5.5 10.8V16L3.5 18V19H20.5V18L18.5 16Z" fill="currentColor"/>
+            </svg>
+            <span class="notif-perm-bell-sparkle">✦</span>
+          </div>
+        </div>
+
+        <div class="micro-label" style="color:var(--accent-primary);letter-spacing:0.16em;">REAL-TIME ALERTS</div>
+        <h2 id="notif-popup-heading" class="serif-heading" style="font-size:28px;line-height:1.15;color:var(--text-primary);margin:2px 0 4px;">
+          Stay in the Loop!
+        </h2>
+        <p style="font-size:14px;color:var(--text-secondary);line-height:1.58;margin:0;">
+          Enable notifications to receive important messages, reminders and updates, even when you're away.
+        </p>
+
+        ${
+          isDenied
+            ? `
+              <div class="notif-perm-denied-box">
+                <div style="font-size:12.5px;font-weight:700;color:#E57373;margin-bottom:4px;">
+                  Notifications are currently disabled in your system settings
+                </div>
+                <div style="font-size:12px;color:var(--text-secondary);line-height:1.5;">
+                  ${escapeHtml(sysGuideText)}
+                </div>
+              </div>
+              <div class="notif-perm-actions">
+                <button type="button" class="btn-primary notif-perm-btn-primary" id="btn-notif-popup-open-settings">
+                  Open System Settings
+                </button>
+                <button type="button" class="btn-secondary notif-perm-btn-secondary" id="btn-notif-popup-maybe-later">
+                  Maybe Later
+                </button>
+              </div>
+            `
+            : `
+              <div class="notif-perm-actions">
+                <button
+                  type="button"
+                  class="btn-primary notif-perm-btn-primary"
+                  id="btn-notif-popup-enable"
+                  ${state.notifPopupRequesting ? 'disabled' : ''}
+                >
+                  ${state.notifPopupRequesting ? 'Requesting OS Permission...' : 'Enable Notifications'}
+                </button>
+                <button
+                  type="button"
+                  class="btn-secondary notif-perm-btn-secondary"
+                  id="btn-notif-popup-maybe-later"
+                  ${state.notifPopupRequesting ? 'disabled' : ''}
+                >
+                  Maybe Later
+                </button>
+              </div>
+            `
+        }
+      </div>
+    </div>
+  `;
+}
+
 function renderModals() {
-  let overlays = `${renderContextMenuOverlay()}${renderCollectionContextMenuOverlay()}${renderInAppNotifBannerOverlay()}${renderToastOverlay()}`;
+  let overlays = `${renderContextMenuOverlay()}${renderCollectionContextMenuOverlay()}${renderInAppNotifBannerOverlay()}${renderFirstTimeNotifPopupOverlay()}${renderToastOverlay()}`;
 
   if (state.confirmRemoveHomeAnime) {
     const target = state.confirmRemoveHomeAnime;
@@ -9554,14 +9931,14 @@ function renderModals() {
                     ${
                       state.session
                         ? `<div class="hub-reviews-composer">
-                            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
-                              <div style="display:flex;align-items:center;gap:8px;">
-                                <span class="micro-label" style="color:var(--accent-primary);">YOUR RATING &amp; REVIEW</span>
-                                <span id="comm-modal-star-label" class="tabular-num" style="font-size:13px;font-weight:700;color:var(--highlight);">${
+                            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:nowrap;min-height:28px;">
+                              <div style="display:flex;align-items:center;gap:8px;min-width:0;">
+                                <span class="micro-label" style="color:var(--accent-primary);white-space:nowrap;">YOUR RATING &amp; REVIEW</span>
+                                <span id="comm-modal-star-label" class="tabular-num" style="font-size:13.5px;font-weight:800;color:var(--highlight);min-width:44px;white-space:nowrap;">${
                                   draftStars > 0 ? `${draftStars.toFixed(1)} ★` : ''
                                 }</span>
                               </div>
-                              <div style="display:inline-flex;align-items:center;gap:5px;">
+                              <div style="display:inline-flex;align-items:center;gap:5px;flex-shrink:0;">
                                 <button type="button" class="capsule-pill" id="btn-comm-modal-star-minus" style="height:26px;padding:0 9px;font-size:11px;">−0.1 ★</button>
                                 <button type="button" class="capsule-pill" id="btn-comm-modal-star-plus" style="height:26px;padding:0 9px;font-size:11px;">+0.1 ★</button>
                               </div>
@@ -11220,10 +11597,66 @@ function bindAppEvents() {
       );
     };
   });
-  // Direct inline Community card rating with 0.1 precision
+  // Direct inline Community card rating with 0.1 precision & silent 3s untouched auto-commit
+  const updateCommQrVisualsInPlace = (nextStars) => {
+    if (!state.communityQuickRate) return;
+    state.communityQuickRate.stars = nextStars;
+    const valEl = document.getElementById('comm-qr-val-label');
+    if (valEl) valEl.textContent = `${nextStars.toFixed(1)} ★`;
+    const sentSlot = document.getElementById('comm-qr-sentiment-slot');
+    if (sentSlot) {
+      const sent = sentimentFromRating10(starsToRating10(nextStars));
+      sentSlot.innerHTML = sent
+        ? `<span class="sentiment-pill soft ${sent.key}" style="font-size:9px;padding:2px 8px;white-space:nowrap;">${sent.shortLabel.toUpperCase()}</span>`
+        : '';
+    }
+    const saveBtn = document.getElementById('btn-comm-qr-save');
+    if (saveBtn && !state.communityQuickRate.saving) saveBtn.disabled = nextStars <= 0;
+  };
+
+  const commitCommunityQuickRate = async ({ silent = false } = {}) => {
+    clearCommQuickRateAutoSave();
+    if (!state.communityQuickRate || state.communityQuickRate.saving) return;
+    const aid = Number(state.communityQuickRate.animeId);
+    const starsVal = roundStarsTenth(state.communityQuickRate.stars);
+    const rating10Val = starsToRating10(starsVal);
+    if (!aid || !rating10Val) return;
+    const allGroups = groupCommunityReviewsByAnime(state.communityReviews);
+    const grp = allGroups.find((g) => Number(g.anime_id) === aid);
+    const myRev = grp?.reviews?.find((r) => r.user_id === state.session?.userId);
+    const myVault = state.vault.find((v) => Number(v.animeId) === aid);
+    const existingNote = myRev?.review_notes || myVault?.reviewNotes || '';
+    state.communityQuickRate.saving = true;
+    if (!silent) renderApp();
+    try {
+      await submitCommunityCommentNote(aid, rating10Val, existingNote, grp || null, { throwOnError: true, silentToast: true });
+      state.communityQuickRate = null;
+      if (!silent) showToast(`Rated ${starsVal.toFixed(1)} ★`);
+    } catch (err) {
+      if (state.communityQuickRate) state.communityQuickRate.saving = false;
+      if (!silent) showToast(err?.message || 'Failed to save rating', true);
+    } finally {
+      renderApp();
+    }
+  };
+
+  const scheduleCommQuickRateAutoSave = () => {
+    clearCommQuickRateAutoSave();
+    if (!state.communityQuickRate || state.communityQuickRate.saving) return;
+    const targetAid = Number(state.communityQuickRate.animeId);
+    commQuickRateAutoSaveTimer = setTimeout(() => {
+      commQuickRateAutoSaveTimer = null;
+      if (activeRatingSliderDragCount > 0) return;
+      if (!state.communityQuickRate || state.communityQuickRate.saving) return;
+      if (Number(state.communityQuickRate.animeId) !== targetAid) return;
+      commitCommunityQuickRate({ silent: true });
+    }, 3000);
+  };
+
   document.querySelectorAll('[data-comm-quick-rate]').forEach((btn) => {
     btn.onclick = (e) => {
       e.stopPropagation();
+      clearCommQuickRateAutoSave();
       const aid = Number(btn.getAttribute('data-comm-quick-rate'));
       const existingStars = Number(btn.getAttribute('data-comm-my-stars') || 0);
       if (state.communityQuickRate && Number(state.communityQuickRate.animeId) === aid) {
@@ -11238,23 +11671,16 @@ function bindAppEvents() {
       renderApp();
     };
   });
-  document.querySelectorAll('[data-comm-qr-star]').forEach((btn) => {
-    btn.onclick = (e) => {
-      e.stopPropagation();
-      if (!state.communityQuickRate) return;
-      const clicked = Number(btn.getAttribute('data-comm-qr-star'));
-      const cur = Number(state.communityQuickRate.stars || 0);
-      state.communityQuickRate.stars = cur === clicked ? roundStarsTenth(Math.max(0.1, clicked - 0.1)) : clicked;
-      renderApp();
-    };
-  });
+  const commQrSlider = document.getElementById('comm-qr-slider');
   const btnCommQrMinus = document.getElementById('btn-comm-qr-minus');
   if (btnCommQrMinus && state.communityQuickRate) {
     btnCommQrMinus.onclick = (e) => {
       e.stopPropagation();
       const cur = Number(state.communityQuickRate.stars || 0);
-      state.communityQuickRate.stars = roundStarsTenth(Math.max(0.1, (cur > 0 ? cur : 0.2) - 0.1));
-      renderApp();
+      const next = roundStarsTenth(Math.max(0.1, (cur > 0 ? cur : 0.2) - 0.1));
+      updateCommQrVisualsInPlace(next);
+      animateSmoothSliderToStars(commQrSlider, next);
+      scheduleCommQuickRateAutoSave();
     };
   }
   const btnCommQrPlus = document.getElementById('btn-comm-qr-plus');
@@ -11262,28 +11688,20 @@ function bindAppEvents() {
     btnCommQrPlus.onclick = (e) => {
       e.stopPropagation();
       const cur = Number(state.communityQuickRate.stars || 0);
-      state.communityQuickRate.stars = roundStarsTenth(Math.min(5.0, (cur > 0 ? cur : 0) + 0.1));
-      renderApp();
+      const next = roundStarsTenth(Math.min(5.0, (cur > 0 ? cur : 0) + 0.1));
+      updateCommQrVisualsInPlace(next);
+      animateSmoothSliderToStars(commQrSlider, next);
+      scheduleCommQuickRateAutoSave();
     };
   }
-  const commQrSlider = document.getElementById('comm-qr-slider');
   if (commQrSlider && state.communityQuickRate) {
     bindSmoothRatingSlider(commQrSlider, {
       stopProp: true,
-      onLive: (nextStars) => {
-        if (!state.communityQuickRate) return;
-        state.communityQuickRate.stars = nextStars;
-        const valEl = document.getElementById('comm-qr-val-label');
-        if (valEl) valEl.textContent = `${nextStars.toFixed(1)} ★`;
-        const sentSlot = document.getElementById('comm-qr-sentiment-slot');
-        if (sentSlot) {
-          const sent = sentimentFromRating10(starsToRating10(nextStars));
-          sentSlot.innerHTML = sent
-            ? `<span class="sentiment-pill soft ${sent.key}" style="font-size:9px;padding:2px 7px;">${sent.shortLabel.toUpperCase()}</span>`
-            : '';
-        }
-        const saveBtn = document.getElementById('btn-comm-qr-save');
-        if (saveBtn && !state.communityQuickRate.saving) saveBtn.disabled = nextStars <= 0;
+      onDragStart: () => clearCommQuickRateAutoSave(),
+      onLive: (nextStars) => updateCommQrVisualsInPlace(nextStars),
+      onCommit: (nextStars) => {
+        updateCommQrVisualsInPlace(nextStars);
+        scheduleCommQuickRateAutoSave();
       }
     });
   }
@@ -11291,6 +11709,7 @@ function bindAppEvents() {
   if (btnCommQrClose) {
     btnCommQrClose.onclick = (e) => {
       e.stopPropagation();
+      clearCommQuickRateAutoSave();
       state.communityQuickRate = null;
       renderApp();
     };
@@ -11299,28 +11718,7 @@ function bindAppEvents() {
   if (btnCommQrSave && state.communityQuickRate) {
     btnCommQrSave.onclick = async (e) => {
       e.stopPropagation();
-      if (state.communityQuickRate.saving) return;
-      const aid = Number(state.communityQuickRate.animeId);
-      const starsVal = roundStarsTenth(state.communityQuickRate.stars);
-      const rating10Val = starsToRating10(starsVal);
-      if (!aid || !rating10Val) return;
-      const allGroups = groupCommunityReviewsByAnime(state.communityReviews);
-      const grp = allGroups.find((g) => Number(g.anime_id) === aid);
-      const myRev = grp?.reviews?.find((r) => r.user_id === state.session?.userId);
-      const myVault = state.vault.find((v) => Number(v.animeId) === aid);
-      const existingNote = myRev?.review_notes || myVault?.reviewNotes || '';
-      state.communityQuickRate.saving = true;
-      renderApp();
-      try {
-        await submitCommunityCommentNote(aid, rating10Val, existingNote, grp || null, { throwOnError: true, silentToast: true });
-        state.communityQuickRate = null;
-        showToast(`Rated ${starsVal.toFixed(1)} ★ in Community`);
-      } catch (err) {
-        if (state.communityQuickRate) state.communityQuickRate.saving = false;
-        showToast(err?.message || 'Failed to save rating', true);
-      } finally {
-        renderApp();
-      }
+      await commitCommunityQuickRate({ silent: false });
     };
   }
 
@@ -11394,39 +11792,38 @@ function bindAppEvents() {
       renderApp();
     };
   });
+  const commModalStarSlider = document.getElementById('comm-modal-star-slider');
+  const updateCommModalStarsInPlace = (nextStars) => {
+    const inp = document.getElementById('inp-comm-modal-note');
+    if (inp) state.communityCommentDraftNote = inp.value;
+    state.communityCommentDraftStars = nextStars;
+    const lbl = document.getElementById('comm-modal-star-label');
+    if (lbl) lbl.textContent = `${nextStars.toFixed(1)} ★`;
+  };
   const btnCommModalStarMinus = document.getElementById('btn-comm-modal-star-minus');
   if (btnCommModalStarMinus) {
     btnCommModalStarMinus.onclick = (e) => {
       e.stopPropagation();
-      const inp = document.getElementById('inp-comm-modal-note');
-      if (inp) state.communityCommentDraftNote = inp.value;
       const cur = Number(state.communityCommentDraftStars || 0);
-      state.communityCommentDraftStars = roundStarsTenth(Math.max(0.1, (cur > 0 ? cur : 0.2) - 0.1));
-      renderApp();
+      const next = roundStarsTenth(Math.max(0.1, (cur > 0 ? cur : 0.2) - 0.1));
+      updateCommModalStarsInPlace(next);
+      animateSmoothSliderToStars(commModalStarSlider, next);
     };
   }
   const btnCommModalStarPlus = document.getElementById('btn-comm-modal-star-plus');
   if (btnCommModalStarPlus) {
     btnCommModalStarPlus.onclick = (e) => {
       e.stopPropagation();
-      const inp = document.getElementById('inp-comm-modal-note');
-      if (inp) state.communityCommentDraftNote = inp.value;
       const cur = Number(state.communityCommentDraftStars || 0);
-      state.communityCommentDraftStars = roundStarsTenth(Math.min(5.0, (cur > 0 ? cur : 0) + 0.1));
-      renderApp();
+      const next = roundStarsTenth(Math.min(5.0, (cur > 0 ? cur : 0) + 0.1));
+      updateCommModalStarsInPlace(next);
+      animateSmoothSliderToStars(commModalStarSlider, next);
     };
   }
-  const commModalStarSlider = document.getElementById('comm-modal-star-slider');
   if (commModalStarSlider) {
     bindSmoothRatingSlider(commModalStarSlider, {
       stopProp: true,
-      onLive: (nextStars) => {
-        const inp = document.getElementById('inp-comm-modal-note');
-        if (inp) state.communityCommentDraftNote = inp.value;
-        state.communityCommentDraftStars = nextStars;
-        const lbl = document.getElementById('comm-modal-star-label');
-        if (lbl) lbl.textContent = `${nextStars.toFixed(1)} ★`;
-      }
+      onLive: (nextStars) => updateCommModalStarsInPlace(nextStars)
     });
   }
   const inpCommModalNote = document.getElementById('inp-comm-modal-note');
@@ -11639,19 +12036,21 @@ function bindAppEvents() {
   if (btnDetailRemove && state.detailAnime) {
     btnDetailRemove.onclick = () => removeFromVault(state.detailAnime.animeId);
   }
-  const saveDetailRatingOrNote = async (rating10Val, noteText, actionKind = 'rating') => {
+  const saveDetailRatingOrNote = async (rating10Val, noteText, actionKind = 'rating', { silent = false } = {}) => {
+    clearDetailRatingAutoSave();
     if (!state.detailAnime || state.detailRatingSaving) return;
     const hadRatingBefore = Boolean(state.detailAnime.rating10 && Number(state.detailAnime.rating10) > 0);
     state.detailRatingSaving = true;
-    state.detailRatingFeedback = '';
-    state.detailRatingError = '';
+    if (!silent) {
+      state.detailRatingFeedback = '';
+      state.detailRatingError = '';
+    }
     const nextRating10 = rating10Val ?? state.detailAnime.rating10;
     const nextNotes = noteText !== undefined ? noteText : state.detailAnime.reviewNotes;
     state.detailAnime = { ...state.detailAnime, rating10: nextRating10, reviewNotes: nextNotes };
-    renderApp();
+    if (!silent) renderApp();
     try {
       if (state.detailAnime.inWatchlist) {
-        // Preserve Home status; never auto-add to Home when rating/noting
         await saveVaultEntry(
           {
             ...state.detailAnime,
@@ -11661,7 +12060,6 @@ function bindAppEvents() {
           { addToHome: false, throwOnError: true }
         );
       } else {
-        // Not in Library/Home -> post to independent Community notes without adding to Home!
         await submitCommunityCommentNote(
           state.detailAnime.animeId,
           nextRating10,
@@ -11670,80 +12068,104 @@ function bindAppEvents() {
           { throwOnError: true, silentToast: true }
         );
       }
-      const starsStr = nextRating10 ? `${(Number(nextRating10) / 2).toFixed(1)} ★` : '';
-      const msg =
-        actionKind === 'note'
-          ? (String(nextNotes || '').trim() ? 'Review note & rating saved successfully' : 'Rating saved successfully')
-          : hadRatingBefore
-          ? `Rating updated to ${starsStr}`
-          : `Rating saved (${starsStr})`;
-      state.detailRatingFeedback = msg;
-      showToast(msg);
+      if (!silent) {
+        const starsStr = nextRating10 ? `${(Number(nextRating10) / 2).toFixed(1)} ★` : '';
+        const msg =
+          actionKind === 'note'
+            ? (String(nextNotes || '').trim() ? 'Review note & rating saved successfully' : 'Rating saved successfully')
+            : hadRatingBefore
+            ? `Rating updated to ${starsStr}`
+            : `Rating saved (${starsStr})`;
+        state.detailRatingFeedback = msg;
+        showToast(msg);
+      }
     } catch (err) {
-      state.detailRatingError = err?.message || 'Failed to save rating. Please try again.';
-      showToast(state.detailRatingError, true);
+      if (!silent) {
+        state.detailRatingError = err?.message || 'Failed to save rating. Please try again.';
+        showToast(state.detailRatingError, true);
+      }
     } finally {
       state.detailRatingSaving = false;
-      renderApp();
+      if (!silent) renderApp();
     }
   };
+  const detailStarSlider = document.getElementById('detail-star-slider');
+  const updateDetailStarsInPlace = (nextStars) => {
+    if (!state.detailAnime) return;
+    const r10 = starsToRating10(nextStars);
+    state.detailAnime = { ...state.detailAnime, rating10: r10 };
+    const headingEl = document.getElementById('detail-star-heading');
+    if (headingEl) {
+      headingEl.textContent = `${nextStars.toFixed(1)} ★`;
+      headingEl.style.color = 'var(--highlight)';
+    }
+    document.querySelectorAll('#detail-stars-row [data-star-val]').forEach((b) => {
+      const idx = Number(b.getAttribute('data-star-val'));
+      b.style.color = nextStars >= idx - 0.5 ? 'var(--accent-primary)' : 'var(--text-muted)';
+    });
+    const sent = sentimentFromRating10(r10);
+    document.querySelectorAll('#detail-sentiment-strip [data-sentiment-key]').forEach((pill) => {
+      pill.classList.toggle('active', Boolean(sent && pill.getAttribute('data-sentiment-key') === sent.key));
+    });
+  };
+  const scheduleDetailRatingAutoSave = (nextStars) => {
+    clearDetailRatingAutoSave();
+    if (!state.detailAnime) return;
+    const targetAid = Number(state.detailAnime.animeId);
+    detailRatingAutoSaveTimer = setTimeout(() => {
+      detailRatingAutoSaveTimer = null;
+      if (activeRatingSliderDragCount > 0) return;
+      if (!state.detailAnime || Number(state.detailAnime.animeId) !== targetAid) return;
+      saveDetailRatingOrNote(starsToRating10(nextStars), undefined, 'rating', { silent: true });
+    }, 3000);
+  };
   document.querySelectorAll('[data-star-val]').forEach((btn) => {
-    btn.onclick = async () => {
+    btn.onclick = () => {
       if (!state.detailAnime) return;
       const clicked = Number(btn.getAttribute('data-star-val'));
       const currentStars = rating10ToStars(state.detailAnime.rating10) || 0;
       const nextStars = currentStars === clicked ? roundStarsTenth(Math.max(0.1, clicked - 0.1)) : clicked;
-      const nextRating10 = starsToRating10(nextStars);
-      await saveDetailRatingOrNote(nextRating10, undefined, 'rating');
+      updateDetailStarsInPlace(nextStars);
+      animateSmoothSliderToStars(detailStarSlider, nextStars);
+      scheduleDetailRatingAutoSave(nextStars);
     };
   });
   document.querySelectorAll('[data-pick-sentiment-stars]').forEach((btn) => {
-    btn.onclick = async () => {
+    btn.onclick = () => {
       if (!state.detailAnime) return;
       const st = Number(btn.getAttribute('data-pick-sentiment-stars'));
-      const nextRating10 = starsToRating10(st);
-      await saveDetailRatingOrNote(nextRating10, undefined, 'rating');
+      updateDetailStarsInPlace(st);
+      animateSmoothSliderToStars(detailStarSlider, st);
+      scheduleDetailRatingAutoSave(st);
     };
   });
   const btnStarMinus = document.getElementById('btn-star-minus');
   if (btnStarMinus && state.detailAnime) {
-    btnStarMinus.onclick = async () => {
+    btnStarMinus.onclick = () => {
       const cur = rating10ToStars(state.detailAnime.rating10) || 0;
       const nextStars = roundStarsTenth(Math.max(0.1, (cur > 0 ? cur : 0.2) - 0.1));
-      await saveDetailRatingOrNote(starsToRating10(nextStars), undefined, 'rating');
+      updateDetailStarsInPlace(nextStars);
+      animateSmoothSliderToStars(detailStarSlider, nextStars);
+      scheduleDetailRatingAutoSave(nextStars);
     };
   }
   const btnStarPlus = document.getElementById('btn-star-plus');
   if (btnStarPlus && state.detailAnime) {
-    btnStarPlus.onclick = async () => {
+    btnStarPlus.onclick = () => {
       const cur = rating10ToStars(state.detailAnime.rating10) || 0;
       const nextStars = roundStarsTenth(Math.min(5.0, cur + 0.1));
-      await saveDetailRatingOrNote(starsToRating10(nextStars), undefined, 'rating');
+      updateDetailStarsInPlace(nextStars);
+      animateSmoothSliderToStars(detailStarSlider, nextStars);
+      scheduleDetailRatingAutoSave(nextStars);
     };
   }
-  const detailStarSlider = document.getElementById('detail-star-slider');
   if (detailStarSlider && state.detailAnime) {
     bindSmoothRatingSlider(detailStarSlider, {
-      onLive: (nextStars) => {
-        if (!state.detailAnime) return;
-        const r10 = starsToRating10(nextStars);
-        state.detailAnime = { ...state.detailAnime, rating10: r10 };
-        const headingEl = document.getElementById('detail-star-heading');
-        if (headingEl) {
-          headingEl.textContent = `${nextStars.toFixed(1)} ★`;
-          headingEl.style.color = 'var(--highlight)';
-        }
-        document.querySelectorAll('#detail-stars-row [data-star-val]').forEach((b) => {
-          const idx = Number(b.getAttribute('data-star-val'));
-          b.style.color = nextStars >= idx - 0.5 ? 'var(--accent-primary)' : 'var(--text-muted)';
-        });
-        const sent = sentimentFromRating10(r10);
-        document.querySelectorAll('#detail-sentiment-strip [data-sentiment-key]').forEach((pill) => {
-          pill.classList.toggle('active', Boolean(sent && pill.getAttribute('data-sentiment-key') === sent.key));
-        });
-      },
-      onCommit: async (nextStars) => {
-        await saveDetailRatingOrNote(starsToRating10(nextStars), undefined, 'rating');
+      onDragStart: () => clearDetailRatingAutoSave(),
+      onLive: (nextStars) => updateDetailStarsInPlace(nextStars),
+      onCommit: (nextStars) => {
+        updateDetailStarsInPlace(nextStars);
+        scheduleDetailRatingAutoSave(nextStars);
       }
     });
   }
@@ -12100,12 +12522,35 @@ function bindAppEvents() {
   });
 
   // Notifications Screen events
+  const btnOpenNotifSettings = document.getElementById('btn-open-notif-settings');
+  if (btnOpenNotifSettings) {
+    btnOpenNotifSettings.onclick = () => {
+      state.previousTab = state.tab;
+      state.tab = 'settings';
+      state.settingsCategory = 'NOTIFICATIONS';
+      renderApp();
+    };
+  }
   const btnNotifRefresh = document.getElementById('btn-notif-refresh');
   if (btnNotifRefresh) btnNotifRefresh.onclick = () => loadUserNotifications(true);
   const btnNotifMarkAll = document.getElementById('btn-notif-mark-all');
   if (btnNotifMarkAll) btnNotifMarkAll.onclick = () => markAllNotificationsRead();
   const btnNotifLoadMore = document.getElementById('btn-notif-load-more');
   if (btnNotifLoadMore) btnNotifLoadMore.onclick = () => loadUserNotifications(false);
+  document.querySelectorAll('[data-mark-read-notif]').forEach((btn) => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const notifId = btn.getAttribute('data-mark-read-notif');
+      if (notifId) await markNotificationRead(notifId);
+    };
+  });
+  document.querySelectorAll('[data-delete-notif]').forEach((btn) => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const notifId = btn.getAttribute('data-delete-notif');
+      if (notifId) await deleteUserNotification(notifId);
+    };
+  });
   document.querySelectorAll('[data-open-notification]').forEach((btn) => {
     btn.onclick = async () => {
       const notifId = btn.getAttribute('data-open-notification');
@@ -12267,13 +12712,24 @@ function bindAppEvents() {
         }
       };
     }
+    const qeStarSlider = document.getElementById('qe-star-slider');
+    const updateQeStarsInPlace = (nextStars) => {
+      if (!state.quickEditAnime) return;
+      state.quickEditAnime.rating10 = starsToRating10(nextStars);
+      const lbl = document.getElementById('qe-star-label');
+      if (lbl) lbl.textContent = `STAR RATING (${nextStars.toFixed(1)} ★)`;
+      document.querySelectorAll('#qe-stars-row [data-qe-star]').forEach((b) => {
+        const idx = Number(b.getAttribute('data-qe-star'));
+        b.style.color = nextStars >= idx - 0.5 ? 'var(--accent-primary)' : 'var(--text-muted)';
+      });
+    };
     document.querySelectorAll('[data-qe-star]').forEach((btn) => {
       btn.onclick = () => {
         const clicked = Number(btn.getAttribute('data-qe-star'));
         const cur = rating10ToStars(state.quickEditAnime.rating10) || 0;
         const next = cur === clicked ? roundStarsTenth(Math.max(0.1, clicked - 0.1)) : clicked;
-        state.quickEditAnime.rating10 = starsToRating10(next);
-        renderApp();
+        updateQeStarsInPlace(next);
+        animateSmoothSliderToStars(qeStarSlider, next);
       };
     });
     const qeStarMinus = document.getElementById('qe-star-minus');
@@ -12281,8 +12737,8 @@ function bindAppEvents() {
       qeStarMinus.onclick = () => {
         const cur = rating10ToStars(state.quickEditAnime.rating10) || 0;
         const next = roundStarsTenth(Math.max(0.1, (cur > 0 ? cur : 0.2) - 0.1));
-        state.quickEditAnime.rating10 = starsToRating10(next);
-        renderApp();
+        updateQeStarsInPlace(next);
+        animateSmoothSliderToStars(qeStarSlider, next);
       };
     }
     const qeStarPlus = document.getElementById('qe-star-plus');
@@ -12290,23 +12746,13 @@ function bindAppEvents() {
       qeStarPlus.onclick = () => {
         const cur = rating10ToStars(state.quickEditAnime.rating10) || 0;
         const next = roundStarsTenth(Math.min(5.0, cur + 0.1));
-        state.quickEditAnime.rating10 = starsToRating10(next);
-        renderApp();
+        updateQeStarsInPlace(next);
+        animateSmoothSliderToStars(qeStarSlider, next);
       };
     }
-    const qeStarSlider = document.getElementById('qe-star-slider');
     if (qeStarSlider) {
       bindSmoothRatingSlider(qeStarSlider, {
-        onLive: (nextStars) => {
-          if (!state.quickEditAnime) return;
-          state.quickEditAnime.rating10 = starsToRating10(nextStars);
-          const lbl = document.getElementById('qe-star-label');
-          if (lbl) lbl.textContent = `STAR RATING (${nextStars.toFixed(1)} ★)`;
-          document.querySelectorAll('#qe-stars-row [data-qe-star]').forEach((b) => {
-            const idx = Number(b.getAttribute('data-qe-star'));
-            b.style.color = nextStars >= idx - 0.5 ? 'var(--accent-primary)' : 'var(--text-muted)';
-          });
-        }
+        onLive: (nextStars) => updateQeStarsInPlace(nextStars)
       });
     }
     const qeSave = document.getElementById('qe-save');
@@ -12390,12 +12836,47 @@ const NativeNotificationBridge = {
   knownUnreadIds: new Set(),
   hasPrimedUnread: false,
   alertedIds: new Set(),
+  onboardingEvaluated: false,
+
   getTauriInvoke() {
     if (typeof window === 'undefined') return null;
     if (typeof window.__TAURI__?.core?.invoke === 'function') return window.__TAURI__.core.invoke;
     if (typeof window.__TAURI_INTERNALS__?.invoke === 'function') return window.__TAURI_INTERNALS__.invoke;
     return null;
   },
+
+  detectClientPlatform() {
+    const ua = typeof navigator !== 'undefined' ? String(navigator.userAgent || '').toLowerCase() : '';
+    if (ua.includes('android')) return 'android';
+    if (ua.includes('mac os') || ua.includes('macintosh')) return isTauriAppEnvironment() ? 'macos' : 'web';
+    if (ua.includes('windows')) return isTauriAppEnvironment() ? 'windows' : 'web';
+    return isTauriAppEnvironment() ? 'windows' : 'web';
+  },
+
+  getOrCreateDeviceId() {
+    if (state.deviceRegistration?.device_id && state.deviceRegistration.device_id.length >= 8) {
+      return state.deviceRegistration.device_id;
+    }
+    let existing = '';
+    try {
+      existing = localStorage.getItem('au_persistent_device_id_v1') || '';
+    } catch (_) {}
+    if (!existing || existing.length < 8) {
+      const plat = this.detectClientPlatform();
+      const rand =
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      existing = `au-${plat}-${rand}`;
+      try {
+        localStorage.setItem('au_persistent_device_id_v1', existing);
+      } catch (_) {}
+    }
+    state.deviceRegistration.device_id = existing;
+    state.deviceRegistration.platform = this.detectClientPlatform();
+    return existing;
+  },
+
   async syncAuthToTauri(session) {
     const invoke = this.getTauriInvoke();
     if (!invoke || !session?.userId || !session?.accessToken) return;
@@ -12409,16 +12890,22 @@ const NativeNotificationBridge = {
       });
     } catch (_) {}
   },
+
   async clearAuthInTauri() {
     const invoke = this.getTauriInvoke();
     this.knownUnreadIds.clear();
     this.hasPrimedUnread = false;
     this.alertedIds.clear();
+    this.onboardingEvaluated = false;
+    if (state.session) {
+      await this.unregisterDeviceFromBackend().catch(() => {});
+    }
     if (!invoke) return;
     try {
       await invoke('clear_notification_auth');
     } catch (_) {}
   },
+
   async markSeenInNative(ids) {
     const invoke = this.getTauriInvoke();
     if (!invoke || !Array.isArray(ids) || ids.length === 0) return;
@@ -12426,50 +12913,509 @@ const NativeNotificationBridge = {
       await invoke('mark_seen_notification_ids', { ids: ids.map(String) });
     } catch (_) {}
   },
-  async ensurePermissionSilently() {
+
+  async syncLocalPrefsToNative() {
+    const invoke = this.getTauriInvoke();
+    if (!invoke) return;
+    const ns = state.notificationSettings || {};
     try {
-      const tNotif = typeof window !== 'undefined' ? window.__TAURI__?.notification : null;
-      if (tNotif && typeof tNotif.isPermissionGranted === 'function') {
-        let granted = await tNotif.isPermissionGranted();
-        if (!granted && typeof tNotif.requestPermission === 'function') {
-          const perm = await tNotif.requestPermission();
-          granted = perm === 'granted';
-        }
-        state.osNotifPermission = granted ? 'granted' : 'denied';
-        return granted;
-      }
-      if (typeof Notification !== 'undefined') {
-        state.osNotifPermission = Notification.permission;
-        if (Notification.permission === 'default' && isTauriAppEnvironment()) {
-          const perm = await Notification.requestPermission();
-          state.osNotifPermission = perm;
-        }
-        return state.osNotifPermission === 'granted';
-      }
+      await invoke('sync_local_notification_preferences', {
+        masterEnabled: ns.master_enabled !== false,
+        messagesEnabled: ns.messages_enabled !== false,
+        updatesEnabled: ns.updates_enabled !== false,
+        remindersEnabled: ns.reminders_enabled !== false,
+        osPermissionStatus: String(state.osNotifPermission || ns.os_permission_status || 'prompt')
+      });
     } catch (_) {}
-    return false;
   },
-  async requestPermissionInteractive() {
+
+  /**
+   * Detects the actual OS notification permission WITHOUT triggering any OS prompt.
+   */
+  async detectActualOsPermission() {
+    this.getOrCreateDeviceId();
+    const invoke = this.getTauriInvoke();
+    if (invoke) {
+      try {
+        const status = await invoke('get_device_notification_status');
+        if (status && typeof status === 'object') {
+          if (status.device_id) {
+            state.deviceRegistration.device_id = status.device_id;
+            try { localStorage.setItem('au_persistent_device_id_v1', status.device_id); } catch (_) {}
+          }
+          if (status.platform) state.deviceRegistration.platform = status.platform;
+          if (status.push_provider) state.deviceRegistration.push_provider = status.push_provider;
+          if (status.push_token) state.deviceRegistration.push_token = status.push_token;
+          if (status.os_permission_status) {
+            state.osNotifPermission = status.os_permission_status;
+            state.notificationSettings.os_permission_status = status.os_permission_status;
+            state.deviceRegistration.permission_status = status.os_permission_status;
+            return status.os_permission_status;
+          }
+        }
+      } catch (_) {}
+    }
+
     try {
       const tNotif = typeof window !== 'undefined' ? window.__TAURI__?.notification : null;
       if (tNotif && typeof tNotif.isPermissionGranted === 'function') {
-        let granted = await tNotif.isPermissionGranted();
-        if (!granted && typeof tNotif.requestPermission === 'function') {
-          const perm = await tNotif.requestPermission();
-          granted = perm === 'granted';
-        }
-        state.osNotifPermission = granted ? 'granted' : 'denied';
-        return granted;
-      }
-      if (typeof Notification !== 'undefined') {
-        const perm = await Notification.requestPermission();
+        const granted = await tNotif.isPermissionGranted();
+        const perm = granted ? 'granted' : (state.osNotifPermission === 'denied' ? 'denied' : 'prompt');
         state.osNotifPermission = perm;
-        return perm === 'granted';
+        state.notificationSettings.os_permission_status = perm;
+        state.deviceRegistration.permission_status = perm;
+        return perm;
+      }
+      if (typeof Notification !== 'undefined') {
+        const rawPerm = Notification.permission;
+        const perm = rawPerm === 'default' ? 'prompt' : rawPerm;
+        state.osNotifPermission = perm;
+        state.notificationSettings.os_permission_status = perm;
+        state.deviceRegistration.permission_status = perm;
+        return perm;
+      }
+    } catch (_) {}
+    return 'prompt';
+  },
+
+  /**
+   * Checks permission state on app launch and shows the custom "Stay in the Loop!"
+   * first-time notification popup if permission is not granted and not dismissed.
+   */
+  async ensurePermissionSilently() {
+    const perm = await this.detectActualOsPermission();
+    await this.loadNotificationSettingsFromBackend();
+    await this.consumePendingNotificationClick();
+
+    if (perm === 'granted') {
+      state.showFirstTimeNotifPopup = false;
+      await this.registerDeviceWithBackend('granted');
+      return true;
+    }
+
+    const dismissedLocal = localStorage.getItem('au_notif_onboarding_dismissed_v1') === 'true';
+    const dismissedCloud = Boolean(state.notificationSettings?.onboarding_dismissed);
+    if (!this.onboardingEvaluated && !dismissedLocal && !dismissedCloud && state.session) {
+      this.onboardingEvaluated = true;
+      state.showFirstTimeNotifPopup = true;
+      state.firstTimeNotifDeniedGuide = perm === 'denied';
+      renderApp();
+    }
+    return false;
+  },
+
+  /**
+   * Triggers the real native OS notification permission flow (Android POST_NOTIFICATIONS,
+   * macOS UNUserNotificationCenter, Windows Toast registration, or Web Notification API).
+   */
+  async requestPermissionInteractive() {
+    const invoke = this.getTauriInvoke();
+    if (invoke) {
+      try {
+        const perm = await invoke('request_os_notification_permission');
+        const normalized = perm === 'granted' ? 'granted' : perm === 'denied' ? 'denied' : 'prompt';
+        state.osNotifPermission = normalized;
+        state.notificationSettings.os_permission_status = normalized;
+        state.deviceRegistration.permission_status = normalized;
+        if (normalized === 'granted') return true;
+      } catch (_) {}
+    }
+
+    try {
+      const tNotif = typeof window !== 'undefined' ? window.__TAURI__?.notification : null;
+      if (tNotif && typeof tNotif.requestPermission === 'function') {
+        const perm = await tNotif.requestPermission();
+        const granted = perm === 'granted';
+        state.osNotifPermission = granted ? 'granted' : 'denied';
+        state.notificationSettings.os_permission_status = state.osNotifPermission;
+        state.deviceRegistration.permission_status = state.osNotifPermission;
+        return granted;
+      }
+      if (typeof Notification !== 'undefined' && typeof Notification.requestPermission === 'function') {
+        const perm = await Notification.requestPermission();
+        const normalized = perm === 'granted' ? 'granted' : perm === 'denied' ? 'denied' : 'prompt';
+        state.osNotifPermission = normalized;
+        state.notificationSettings.os_permission_status = normalized;
+        state.deviceRegistration.permission_status = normalized;
+        return normalized === 'granted';
       }
     } catch (_) {}
     return false;
   },
+
+  async handleFirstTimeEnableClicked() {
+    if (state.notifPopupRequesting) return;
+    state.notifPopupRequesting = true;
+    renderApp();
+
+    const granted = await this.requestPermissionInteractive();
+    state.notifPopupRequesting = false;
+
+    if (granted) {
+      state.showFirstTimeNotifPopup = false;
+      state.firstTimeNotifDeniedGuide = false;
+      state.notificationSettings.onboarding_dismissed = true;
+      try { localStorage.setItem('au_notif_onboarding_dismissed_v1', 'true'); } catch (_) {}
+      await this.registerDeviceWithBackend('granted');
+      await this.saveNotificationSettingsToBackend({
+        os_permission_status: 'granted',
+        onboarding_dismissed: true
+      });
+      showToast('Notifications enabled! You are all set.');
+      renderApp();
+    } else {
+      state.firstTimeNotifDeniedGuide = true;
+      await this.registerDeviceWithBackend('denied');
+      await this.saveNotificationSettingsToBackend({
+        os_permission_status: 'denied'
+      });
+      renderApp();
+    }
+  },
+
+  async handleFirstTimeMaybeLaterClicked() {
+    state.showFirstTimeNotifPopup = false;
+    state.firstTimeNotifDeniedGuide = false;
+    state.notificationSettings.onboarding_dismissed = true;
+    try { localStorage.setItem('au_notif_onboarding_dismissed_v1', 'true'); } catch (_) {}
+    if (state.session) {
+      await this.saveNotificationSettingsToBackend({
+        onboarding_dismissed: true,
+        os_permission_status: String(state.osNotifPermission || 'prompt')
+      });
+    }
+    renderApp();
+  },
+
+  async openOsNotificationSettings() {
+    const invoke = this.getTauriInvoke();
+    if (invoke) {
+      try {
+        const opened = await invoke('open_os_notification_settings');
+        if (opened) {
+          showToast('Opened system notification settings');
+          return;
+        }
+      } catch (_) {}
+    }
+    const plat = state.deviceRegistration?.platform || this.detectClientPlatform();
+    if (plat === 'android') {
+      showToast('Open Android Settings → Apps → Anime Universe → Notifications');
+    } else if (plat === 'macos') {
+      showToast('Open macOS System Settings → Notifications → Anime Universe');
+    } else if (plat === 'windows') {
+      showToast('Open Windows Settings → System → Notifications → Anime Universe');
+    } else {
+      showToast('Click the lock/settings icon in your address bar to allow notifications');
+    }
+  },
+
+  async invokeEdgeFunction(functionName, payload = {}) {
+    const token = state.session?.accessToken;
+    if (!token) throw new Error('Authentication required');
+    const url = `${getVaultBaseUrl()}/functions/v1/${functionName}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: getVaultPublicKey(),
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      throw new Error(errBody.error || `Edge Function ${functionName} failed (${res.status})`);
+    }
+    return res.json();
+  },
+
+  async registerDeviceWithBackend(permissionOverride = null) {
+    if (!state.session?.userId) return null;
+    await this.detectActualOsPermission();
+    const deviceId = this.getOrCreateDeviceId();
+    const platform = state.deviceRegistration.platform || this.detectClientPlatform();
+    const perm = String(permissionOverride || state.osNotifPermission || 'prompt').toLowerCase();
+    const pushToken = state.deviceRegistration.push_token || null;
+    const defaultProvider =
+      pushToken
+        ? (platform === 'android' ? 'fcm' : platform === 'macos' ? 'apns' : platform === 'windows' ? 'wns' : 'webpush')
+        : 'tauri_local';
+    const pushProvider = state.deviceRegistration.push_provider || defaultProvider;
+
+    state.deviceRegistration.permission_status = perm;
+    state.deviceRegistration.is_active = perm === 'granted' && state.notificationSettings.master_enabled !== false;
+    await this.syncLocalPrefsToNative();
+
+    // 1. Try register-device Edge Function first
+    try {
+      const resp = await this.invokeEdgeFunction('register-device', {
+        device_id: deviceId,
+        platform,
+        push_token: pushToken,
+        push_provider: pushProvider,
+        permission_status: perm,
+        device_name: `${platform.toUpperCase()} Client`,
+        app_version: '2.1.0'
+      });
+      if (resp?.device) {
+        state.deviceRegistration.is_active = Boolean(resp.device.is_active);
+        state.deviceRegistration.registered_at = resp.device.updated_at || new Date().toISOString();
+        return resp.device;
+      }
+    } catch (_) {}
+
+    // 2. Fallback to upsert_user_device RPC or direct RLS table upsert on public.user_devices
+    try {
+      const rpcRow = await supabaseRequest('/rest/v1/rpc/upsert_user_device', 'POST', {
+        p_device_id: deviceId,
+        p_platform: platform,
+        p_push_token: pushToken,
+        p_push_provider: pushProvider,
+        p_permission_status: perm,
+        p_device_name: `${platform.toUpperCase()} Client`,
+        p_app_version: '2.1.0'
+      });
+      if (rpcRow) {
+        state.deviceRegistration.is_active = perm === 'granted';
+        state.deviceRegistration.registered_at = new Date().toISOString();
+        return rpcRow;
+      }
+    } catch (_) {
+      try {
+        await supabaseRequest(
+          '/rest/v1/user_devices?on_conflict=user_id,device_id',
+          'POST',
+          {
+            user_id: state.session.userId,
+            device_id: deviceId,
+            platform,
+            push_token: pushToken,
+            push_provider: pushProvider,
+            permission_status: perm,
+            is_active: perm === 'granted',
+            last_seen_at: new Date().toISOString()
+          },
+          'resolution=merge-duplicates,return=minimal'
+        );
+        state.deviceRegistration.is_active = perm === 'granted';
+        state.deviceRegistration.registered_at = new Date().toISOString();
+      } catch (_2) {}
+    }
+    return null;
+  },
+
+  async unregisterDeviceFromBackend() {
+    if (!state.session?.userId) return;
+    const deviceId = this.getOrCreateDeviceId();
+    try {
+      await this.invokeEdgeFunction('unregister-device', { device_id: deviceId });
+      return;
+    } catch (_) {}
+    try {
+      await supabaseRequest(
+        `/rest/v1/user_devices?user_id=eq.${encodeURIComponent(state.session.userId)}&device_id=eq.${encodeURIComponent(deviceId)}`,
+        'PATCH',
+        { is_active: false, push_token: null }
+      );
+    } catch (_) {}
+  },
+
+  async loadNotificationSettingsFromBackend() {
+    const uid = state.session?.userId;
+    if (!uid) return;
+    try {
+      const rows = await supabaseRequest(
+        `/rest/v1/user_notification_settings?select=*&user_id=eq.${encodeURIComponent(uid)}&limit=1`,
+        'GET'
+      );
+      if (Array.isArray(rows) && rows[0]) {
+        const r = rows[0];
+        state.notificationSettings = {
+          ...state.notificationSettings,
+          master_enabled: r.master_enabled !== false,
+          messages_enabled: r.messages_enabled !== false,
+          updates_enabled: r.updates_enabled !== false,
+          reminders_enabled: r.reminders_enabled !== false,
+          os_permission_status: state.osNotifPermission || r.os_permission_status || 'prompt',
+          onboarding_dismissed:
+            Boolean(r.onboarding_dismissed) ||
+            localStorage.getItem('au_notif_onboarding_dismissed_v1') === 'true',
+          loaded: true
+        };
+        if (r.onboarding_dismissed) {
+          try { localStorage.setItem('au_notif_onboarding_dismissed_v1', 'true'); } catch (_) {}
+        }
+      }
+      const devRows = await supabaseRequest(
+        `/rest/v1/user_devices?select=*&user_id=eq.${encodeURIComponent(uid)}&device_id=eq.${encodeURIComponent(this.getOrCreateDeviceId())}&limit=1`,
+        'GET'
+      ).catch(() => []);
+      if (Array.isArray(devRows) && devRows[0]) {
+        state.deviceRegistration.is_active = Boolean(devRows[0].is_active);
+        state.deviceRegistration.registered_at = devRows[0].updated_at;
+        if (devRows[0].push_token && !state.deviceRegistration.push_token) {
+          state.deviceRegistration.push_token = devRows[0].push_token;
+        }
+      }
+      await this.syncLocalPrefsToNative();
+    } catch (_) {}
+  },
+
+  async saveNotificationSettingsToBackend(patch = {}) {
+    const uid = state.session?.userId;
+    Object.assign(state.notificationSettings, patch);
+    await this.syncLocalPrefsToNative();
+    if (!uid) return;
+
+    const payload = {
+      master_enabled: state.notificationSettings.master_enabled !== false,
+      messages_enabled: state.notificationSettings.messages_enabled !== false,
+      updates_enabled: state.notificationSettings.updates_enabled !== false,
+      reminders_enabled: state.notificationSettings.reminders_enabled !== false,
+      os_permission_status: String(state.osNotifPermission || state.notificationSettings.os_permission_status || 'prompt'),
+      onboarding_dismissed: Boolean(state.notificationSettings.onboarding_dismissed),
+      device_id: this.getOrCreateDeviceId()
+    };
+
+    try {
+      await this.invokeEdgeFunction('update-notification-settings', payload);
+      return;
+    } catch (_) {}
+
+    try {
+      await supabaseRequest(
+        '/rest/v1/user_notification_settings?on_conflict=user_id',
+        'POST',
+        {
+          user_id: uid,
+          master_enabled: payload.master_enabled,
+          messages_enabled: payload.messages_enabled,
+          updates_enabled: payload.updates_enabled,
+          reminders_enabled: payload.reminders_enabled,
+          os_permission_status: payload.os_permission_status,
+          onboarding_dismissed: payload.onboarding_dismissed
+        },
+        'resolution=merge-duplicates,return=minimal'
+      );
+    } catch (_) {}
+  },
+
+  async updateNotificationSetting(key, nextValue) {
+    state.notificationSettings[key] = Boolean(nextValue);
+    renderApp();
+    await this.saveNotificationSettingsToBackend({ [key]: Boolean(nextValue) });
+    showToast('Notification preferences saved');
+  },
+
+  async consumePendingNotificationClick() {
+    const invoke = this.getTauriInvoke();
+    if (!invoke) return;
+    try {
+      const clickData = await invoke('consume_pending_notification_click');
+      if (!clickData || typeof clickData !== 'object') return;
+      if (clickData.notification_id) {
+        await markNotificationRead(String(clickData.notification_id)).catch(() => {});
+      }
+      const aid = Number(clickData.anime_id || 0);
+      if (aid > 0) {
+        await openAnimeDetail(aid);
+      } else if (clickData.target_screen === 'community') {
+        state.tab = 'community';
+        state.communityViewTab = 'tagged';
+        loadUserNotifications(true);
+        renderApp();
+      } else {
+        state.tab = 'notifications';
+        loadUserNotifications(true);
+        renderApp();
+      }
+    } catch (_) {}
+  },
+
+  async sendTestNotification() {
+    await this.detectActualOsPermission();
+    if (state.notificationSettings?.master_enabled === false) {
+      showToast('Master notifications are turned off. Enable them first.', true);
+      return;
+    }
+    if (state.osNotifPermission !== 'granted') {
+      const granted = await this.requestPermissionInteractive();
+      if (!granted) {
+        showToast('OS notification permission is denied. Enable it in System Settings.', true);
+        renderApp();
+        return;
+      }
+      await this.registerDeviceWithBackend('granted');
+    }
+
+    const title = 'Anime Universe • Notification Verified';
+    const message = `Native & cloud notification system is active on ${String(state.deviceRegistration.platform || 'your device').toUpperCase()}.`;
+
+    // Persist in Supabase via send-notification Edge Function (or direct table insert fallback)
+    if (state.session?.userId) {
+      let sentViaEdge = false;
+      try {
+        await this.invokeEdgeFunction('send-notification', {
+          recipient_user_id: state.session.userId,
+          title,
+          message,
+          type: 'system',
+          metadata: {
+            target_screen: 'notifications',
+            sender_name: state.profile.username || 'Anime Universe',
+            sender_avatar: state.profile.avatarKey || 'avatar_1'
+          },
+          deliver_remote_push: true
+        });
+        sentViaEdge = true;
+      } catch (_) {}
+
+      if (!sentViaEdge) {
+        try {
+          await supabaseRequest('/rest/v1/notifications', 'POST', {
+            user_id: state.session.userId,
+            sender_user_id: state.session.userId,
+            title,
+            message,
+            type: 'system',
+            is_read: false,
+            metadata: {
+              target_screen: 'notifications',
+              sender_name: state.profile.username || 'Anime Universe',
+              sender_avatar: state.profile.avatarKey || 'avatar_1'
+            }
+          });
+        } catch (_) {}
+      }
+      refreshUnreadNotificationCount().then(() => updateCommunityRedDotsInPlace());
+    }
+
+    await this.dispatchAlert({
+      id: `test_${Date.now()}`,
+      title,
+      body: message,
+      type: 'system',
+      senderName: state.profile.username || 'Anime Universe',
+      senderAvatar: state.profile.avatarKey || 'avatar_1',
+      forceShow: true
+    });
+  },
+
+  isCategoryEnabled(type) {
+    const ns = state.notificationSettings || {};
+    if (ns.master_enabled === false) return false;
+    const t = String(type || 'message').toLowerCase();
+    if (t === 'message' || t === 'reply' || t === 'mention' || t === 'thread_reply' || t === 'mention_reply' || t === 'mention_comment') {
+      return ns.messages_enabled !== false;
+    }
+    if (t === 'update') return ns.updates_enabled !== false;
+    if (t === 'reminder') return ns.reminders_enabled !== false;
+    return true;
+  },
+
   showInAppBanner(alertData) {
+    if (!this.isCategoryEnabled(alertData?.type)) return;
     state.inAppNotifBanner = alertData;
     if (inAppBannerTimer) clearTimeout(inAppBannerTimer);
     inAppBannerTimer = setTimeout(() => {
@@ -12481,9 +13427,14 @@ const NativeNotificationBridge = {
     }, 7000);
     renderApp();
   },
+
   async sendOsNotificationBar(title, body, data = {}) {
+    // Strictly never show OS notifications when permission is denied or master toggle is off
+    if (state.osNotifPermission === 'denied') return false;
+    if (!this.isCategoryEnabled(data?.type)) return false;
+
     const cleanTitle = String(title || 'Anime Universe');
-    const cleanBody = String(body || 'You have a new community notification.');
+    const cleanBody = String(body || 'You have a new notification.');
     // 1) Tauri v2 Rust native command (works on Windows, macOS, Android)
     const invoke = this.getTauriInvoke();
     if (invoke) {
@@ -12496,10 +13447,7 @@ const NativeNotificationBridge = {
     const tNotif = typeof window !== 'undefined' ? window.__TAURI__?.notification : null;
     if (tNotif && typeof tNotif.sendNotification === 'function') {
       try {
-        let granted = typeof tNotif.isPermissionGranted === 'function' ? await tNotif.isPermissionGranted() : true;
-        if (!granted && typeof tNotif.requestPermission === 'function') {
-          granted = (await tNotif.requestPermission()) === 'granted';
-        }
+        const granted = typeof tNotif.isPermissionGranted === 'function' ? await tNotif.isPermissionGranted() : false;
         if (granted) {
           tNotif.sendNotification({ title: cleanTitle, body: cleanBody });
           return true;
@@ -12529,7 +13477,9 @@ const NativeNotificationBridge = {
     }
     return false;
   },
+
   async dispatchAlert(payload) {
+    if (!this.isCategoryEnabled(payload?.type)) return;
     const nid = String(payload?.id || '');
     if (!payload?.forceShow && nid && this.alertedIds.has(nid)) return;
     if (nid) {
@@ -12540,6 +13490,7 @@ const NativeNotificationBridge = {
     this.showInAppBanner(payload);
     await this.sendOsNotificationBar(payload.title, payload.body, {
       notificationId: nid,
+      type: payload.type || 'message',
       animeId: payload.animeId || null,
       animeTitle: payload.animeTitle || '',
       animeCover: payload.animeCover || '',
@@ -12548,20 +13499,24 @@ const NativeNotificationBridge = {
       replyId: payload.replyId || null
     });
   },
+
   async alertNewlyDetectedUnread(notifId, summary) {
     if (!notifId || this.alertedIds.has(notifId)) return;
     const rawList = Array.isArray(summary?.anime) ? summary.anime : [];
     const top = rawList[0] || null;
-    const actionWord = top?.latest_notification_type === 'reply' ? 'replied to you' : 'tagged you';
+    const ntype = top?.latest_notification_type || 'message';
+    if (!this.isCategoryEnabled(ntype)) return;
+    const actionWord = ntype === 'reply' ? 'replied to you' : 'tagged you';
     const sender = top?.latest_sender_username || 'Community Member';
     const title = top?.anime_title ? `${sender} ${actionWord} • ${top.anime_title}` : 'Anime Universe • New Notification';
     const body = top?.latest_preview
       ? formatPlainPreviewWithEmojis(top.latest_preview).slice(0, 120)
-      : 'Open Anime Universe to view your new reply or @mention.';
+      : 'Open Anime Universe to view your new notification.';
     await this.dispatchAlert({
       id: notifId,
       title,
       body,
+      type: ntype,
       senderName: sender,
       senderAvatar: top?.latest_sender_avatar_key || 'avatar_1',
       animeId: top?.anime_id || null,
@@ -12590,12 +13545,16 @@ if (typeof navigator !== 'undefined' && navigator.serviceWorker) {
             replyId: d.replyId || null
           } : null
         });
+      } else {
+        state.tab = 'notifications';
+        loadUserNotifications(true);
+        renderApp();
       }
     }
   });
 }
 
-// Real-time Supabase Notification Socket (INSERT + UPDATE) + Reconnect/Resume Reconciliation
+// Real-time Supabase Notification Socket (public.notifications + public.user_notifications)
 const NotificationRealtimeManager = {
   ws: null,
   heartbeatId: null,
@@ -12623,8 +13582,9 @@ const NotificationRealtimeManager = {
     const pubKey = getVaultPublicKey();
     if (!baseUrl.startsWith('http')) return;
     const wsUrl = `${baseUrl.replace(/^http/, 'ws')}/realtime/v1/websocket?apikey=${encodeURIComponent(pubKey)}&vsn=1.0.0`;
-    const topic = `realtime:public:user_notifications:${uid}`;
-    const filter = `recipient_user_id=eq.${uid}`;
+    const topic = `realtime:public:notifications_and_legacy:${uid}`;
+    const legacyFilter = `recipient_user_id=eq.${uid}`;
+    const modernFilter = `user_id=eq.${uid}`;
     try {
       const ws = new WebSocket(wsUrl);
       this.ws = ws;
@@ -12640,8 +13600,12 @@ const NotificationRealtimeManager = {
               broadcast: { self: false },
               presence: { key: '' },
               postgres_changes: [
-                { event: 'INSERT', schema: 'public', table: 'user_notifications', filter },
-                { event: 'UPDATE', schema: 'public', table: 'user_notifications', filter }
+                { event: 'INSERT', schema: 'public', table: 'user_notifications', filter: legacyFilter },
+                { event: 'UPDATE', schema: 'public', table: 'user_notifications', filter: legacyFilter },
+                { event: 'DELETE', schema: 'public', table: 'user_notifications', filter: legacyFilter },
+                { event: 'INSERT', schema: 'public', table: 'notifications', filter: modernFilter },
+                { event: 'UPDATE', schema: 'public', table: 'notifications', filter: modernFilter },
+                { event: 'DELETE', schema: 'public', table: 'notifications', filter: modernFilter }
               ]
             },
             access_token: token
@@ -12654,7 +13618,6 @@ const NotificationRealtimeManager = {
             ws.send(JSON.stringify({ topic: 'phoenix', event: 'heartbeat', payload: {}, ref: String(this.refCounter++) }));
           }
         }, 25000);
-        // Reconcile exact unread count on initial connect & every reconnect
         refreshUnreadNotificationCount().then(() => updateCommunityRedDotsInPlace());
       };
       ws.onmessage = (evt) => {
@@ -12662,11 +13625,51 @@ const NotificationRealtimeManager = {
           const msg = JSON.parse(evt.data);
           if (msg?.event !== 'postgres_changes') return;
           const data = msg?.payload?.data;
-          if (!data || data.table !== 'user_notifications') return;
+          if (!data || (data.table !== 'user_notifications' && data.table !== 'notifications')) return;
           const evType = String(data.type || '').toUpperCase();
           const rec = data.record;
           const oldRec = data.old_record;
-          if (!rec || rec.recipient_user_id !== uid) return;
+
+          if (data.table === 'notifications') {
+            if (evType === 'INSERT' && rec && rec.user_id === uid) {
+              // Skip if this row is simply a bridge mirror of a legacy notification we already handled
+              if (rec.legacy_notification_id && NativeNotificationBridge.knownUnreadIds.has(String(rec.legacy_notification_id))) {
+                return;
+              }
+              const normalized = normalizeModernNotificationRow(rec);
+              const outcome = NotificationSyncState.onRealtimeInsert({ id: normalized.id, recipient_user_id: uid, is_read: normalized.is_read }, uid);
+              state.notifications.unreadCount = outcome.unreadCount;
+              updateCommunityRedDotsInPlace();
+              if (state.tab === 'notifications' || (state.tab === 'community' && state.communityViewTab === 'tagged')) {
+                loadUserNotifications(true);
+              } else {
+                refreshUnreadNotificationCount().then(() => updateCommunityRedDotsInPlace());
+              }
+              NativeNotificationBridge.dispatchAlert({
+                id: normalized.id,
+                title: normalized.title,
+                body: formatPlainPreviewWithEmojis(normalized.message).slice(0, 140),
+                type: normalized.type,
+                senderName: normalized.sender_username,
+                senderAvatar: normalized.sender_avatar_key,
+                animeId: normalized.anime_id,
+                commentId: normalized.comment_id,
+                threadId: normalized.thread_id,
+                replyId: normalized.reply_id
+              });
+            } else if ((evType === 'UPDATE' || evType === 'DELETE') && (rec?.user_id === uid || oldRec?.user_id === uid)) {
+              refreshUnreadNotificationCount().then(() => {
+                updateCommunityRedDotsInPlace();
+                if (state.tab === 'notifications' || (state.tab === 'community' && state.communityViewTab === 'tagged')) {
+                  loadUserNotifications(true);
+                }
+              });
+            }
+            return;
+          }
+
+          if (!rec && !oldRec) return;
+          if (rec && rec.recipient_user_id !== uid) return;
 
           if (evType === 'INSERT') {
             const outcome = NotificationSyncState.onRealtimeInsert(rec, uid);
@@ -12690,6 +13693,7 @@ const NotificationRealtimeManager = {
                   id: String(rec.id || `rt_${Date.now()}`),
                   title: notifTitle,
                   body: preview || 'You have a new reply or @mention in Community!',
+                  type: rec.notification_type || 'message',
                   senderName: rec.sender_username || 'Member',
                   senderAvatar: rec.sender_avatar_key || 'avatar_1',
                   animeId: rec.anime_id ? Number(rec.anime_id) : null,
@@ -12707,7 +13711,7 @@ const NotificationRealtimeManager = {
             if (updatedId && state.notifications.items.length > 0) {
               let changedItem = false;
               state.notifications.items = state.notifications.items.map((n) => {
-                if (n.id === updatedId) {
+                if (String(n.id) === updatedId) {
                   changedItem = true;
                   return { ...n, is_read: newIsRead, read_at: newReadAt || n.read_at || null };
                 }
@@ -12723,7 +13727,7 @@ const NotificationRealtimeManager = {
             } else if (newIsRead && rec.anime_id) {
               const aid = Number(rec.anime_id);
               const stillUnreadForAnime = state.notifications.items.some((n) => Number(n.anime_id) === aid && !n.is_read);
-              if (!stillUnreadForAnime && state.notifications.items.some((n) => n.id === updatedId)) {
+              if (!stillUnreadForAnime && state.notifications.items.some((n) => String(n.id) === updatedId)) {
                 state.notifications.unseenAnime = (state.notifications.unseenAnime || []).filter((u) => Number(u.anime_id) !== aid);
               }
             }
@@ -12731,6 +13735,8 @@ const NotificationRealtimeManager = {
             if (outcome.needsReconcile) {
               refreshUnreadNotificationCount().then(() => updateCommunityRedDotsInPlace());
             }
+          } else if (evType === 'DELETE') {
+            refreshUnreadNotificationCount().then(() => updateCommunityRedDotsInPlace());
           }
         } catch (_) {}
       };
@@ -12766,6 +13772,7 @@ function reconcileNotificationsOnReturn(force = false) {
   const now = Date.now();
   if (!force && now - lastNotifReconcileAt < 2500) return;
   lastNotifReconcileAt = now;
+  NativeNotificationBridge.consumePendingNotificationClick();
   NotificationRealtimeManager.ensureConnected();
   refreshUnreadNotificationCount().then(() => updateCommunityRedDotsInPlace());
 }
@@ -12800,6 +13807,8 @@ if (state.session) {
   NativeNotificationBridge.ensurePermissionSilently();
   NotificationRealtimeManager.ensureConnected();
   refreshUnreadNotificationCount().then(() => updateCommunityRedDotsInPlace());
+} else {
+  NativeNotificationBridge.detectActualOsPermission();
 }
 
 window.addEventListener('focus', () => {

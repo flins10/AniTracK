@@ -144,6 +144,10 @@ serve(async (req: Request) => {
     await adminClient.from("user_anime").delete().eq("user_id", userId);
     await adminClient.from("privacy_settings").delete().eq("user_id", userId);
     await adminClient.from("community_members").delete().eq("user_id", userId);
+    await adminClient.from("notifications").delete().eq("user_id", userId);
+    await adminClient.from("user_devices").delete().eq("user_id", userId);
+    await adminClient.from("user_notification_settings").delete().eq("user_id", userId);
+    await adminClient.from("user_notifications").delete().eq("recipient_user_id", userId);
     await adminClient.from("user_push_tokens").delete().eq("user_id", userId);
     await adminClient.from("invitations").update({ created_by: null }).eq("created_by", userId);
     await adminClient.from("profiles").delete().eq("id", userId);

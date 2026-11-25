@@ -28,7 +28,7 @@ import java.util.concurrent.TimeUnit
 
 object AnimeNotifScheduler {
     private const val WORK_NAME = "anime_universe_bg_notifications"
-    const val CHANNEL_ID = "anime_universe_community_alerts"
+    const val CHANNEL_ID = "anime_community_alerts"
 
     fun ensureChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -36,10 +36,10 @@ object AnimeNotifScheduler {
             if (nm.getNotificationChannel(CHANNEL_ID) == null) {
                 val ch = NotificationChannel(
                     CHANNEL_ID,
-                    "Community Replies & Mentions",
+                    "Anime Universe Notifications",
                     NotificationManager.IMPORTANCE_HIGH
                 ).apply {
-                    description = "Notifications when someone replies to or tags you in Anime Universe"
+                    description = "Messages, reminders, updates, and community alerts from Anime Universe"
                     enableVibration(true)
                 }
                 nm.createNotificationChannel(ch)
@@ -87,6 +87,23 @@ class AnimeNotifWorker(
             if (!granted) return Result.success()
         }
 
+        // Check local notification preferences before polling
+        val prefsFile = File(applicationContext.filesDir, "notif_prefs.json")
+        var masterEnabled = true
+        var messagesEnabled = true
+        var updatesEnabled = true
+        var remindersEnabled = true
+        if (prefsFile.exists()) {
+            runCatching {
+                val p = JSONObject(prefsFile.readText())
+                masterEnabled = p.optBoolean("master_enabled", true)
+                messagesEnabled = p.optBoolean("messages_enabled", true)
+                updatesEnabled = p.optBoolean("updates_enabled", true)
+                remindersEnabled = p.optBoolean("reminders_enabled", true)
+            }
+        }
+        if (!masterEnabled) return Result.success()
+
         val sessionFile = File(applicationContext.filesDir, "notif_session.json")
         if (!sessionFile.exists()) return Result.success()
 
@@ -100,8 +117,8 @@ class AnimeNotifWorker(
             return Result.success()
         }
 
-        val endpoint = "$supabaseUrl/rest/v1/user_notifications?select=id,notification_type,preview_text,sender_user_id&recipient_user_id=eq.$userId&is_read=eq.false&order=created_at.desc&limit=10"
-        var (code, body) = httpGet(endpoint, anonKey, accessToken)
+        val primaryEndpoint = "$supabaseUrl/rest/v1/notifications?select=id,title,message,type,metadata,sender_user_id&user_id=eq.$userId&is_read=eq.false&order=created_at.desc&limit=10"
+        var (code, body) = httpGet(primaryEndpoint, anonKey, accessToken)
 
         if (code == 401 && refreshToken.isNotBlank()) {
             val refreshed = refreshAccessToken(supabaseUrl, anonKey, refreshToken)
@@ -111,10 +128,18 @@ class AnimeNotifWorker(
                 cfg.put("access_token", accessToken)
                 cfg.put("refresh_token", refreshToken)
                 runCatching { sessionFile.writeText(cfg.toString()) }
-                val retry = httpGet(endpoint, anonKey, accessToken)
+                val retry = httpGet(primaryEndpoint, anonKey, accessToken)
                 code = retry.first
                 body = retry.second
             }
+        }
+
+        // Fallback to user_notifications if public.notifications is not yet migrated
+        if (code !in 200..299) {
+            val fallbackEndpoint = "$supabaseUrl/rest/v1/user_notifications?select=id,notification_type,preview_text,sender_user_id&recipient_user_id=eq.$userId&is_read=eq.false&order=created_at.desc&limit=10"
+            val fallbackResp = httpGet(fallbackEndpoint, anonKey, accessToken)
+            code = fallbackResp.first
+            body = fallbackResp.second
         }
 
         if (code !in 200..299 || body.isBlank()) return Result.success()
@@ -134,11 +159,6 @@ class AnimeNotifWorker(
 
         var changed = false
         val nm = NotificationManagerCompat.from(applicationContext)
-        val launchIntent = applicationContext.packageManager.getLaunchIntentForPackage(applicationContext.packageName)
-            ?: Intent(applicationContext, MainActivity::class.java)
-        launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-        val pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        val pendingIntent = PendingIntent.getActivity(applicationContext, 1001, launchIntent, pendingFlags)
 
         for (i in rows.length() - 1 downTo 0) {
             val row = rows.optJSONObject(i) ?: continue
@@ -146,17 +166,43 @@ class AnimeNotifWorker(
             if (id.isBlank() || seen.contains(id)) continue
             seen.add(id)
             changed = true
-            val senderId = row.optString("sender_user_id")
-            if (senderId == userId) continue
 
-            val type = row.optString("notification_type")
-            val title = when (type) {
-                "reply" -> "Anime Universe • New Reply"
-                "mention" -> "Anime Universe • Tagged You"
-                else -> "Anime Universe • Community Alert"
+            val type = row.optString("type").ifBlank { row.optString("notification_type", "message") }
+            val allowed = when (type) {
+                "message", "reply", "mention" -> messagesEnabled
+                "update" -> updatesEnabled
+                "reminder" -> remindersEnabled
+                else -> true
             }
-            val preview = row.optString("preview_text").trim()
-                .ifEmpty { "You have a new notification in Community." }
+            if (!allowed) continue
+
+            val title = row.optString("title").trim().ifEmpty {
+                when (type) {
+                    "reply" -> "Anime Universe • New Reply"
+                    "mention" -> "Anime Universe • Tagged You"
+                    "update" -> "Anime Universe • Update"
+                    "reminder" -> "Anime Universe • Reminder"
+                    else -> "Anime Universe • Notification"
+                }
+            }
+            val preview = row.optString("message").trim()
+                .ifEmpty { row.optString("preview_text").trim() }
+                .ifEmpty { "You have a new notification in Anime Universe." }
+
+            val metadata = row.optJSONObject("metadata")
+            val targetScreen = metadata?.optString("target_screen")?.ifBlank { "notifications" } ?: "notifications"
+            val topic = metadata?.optString("topic") ?: "general"
+
+            val launchIntent = (applicationContext.packageManager.getLaunchIntentForPackage(applicationContext.packageName)
+                ?: Intent(applicationContext, MainActivity::class.java)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                putExtra("notification_id", id)
+                putExtra("target_screen", targetScreen)
+                putExtra("topic", topic)
+                putExtra("type", type)
+            }
+            val pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            val pendingIntent = PendingIntent.getActivity(applicationContext, id.hashCode(), launchIntent, pendingFlags)
 
             val notification = NotificationCompat.Builder(applicationContext, AnimeNotifScheduler.CHANNEL_ID)
                 .setSmallIcon(applicationContext.applicationInfo.icon)

@@ -87,6 +87,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.material.icons.filled.AlternateEmail
 import androidx.compose.material.icons.filled.DoneAll
+import kotlinx.coroutines.delay
 import com.example.model.CommunityAnimeGroup
 import com.example.model.CommunityReview
 import com.example.model.MemberStatus
@@ -1233,6 +1234,17 @@ internal fun CommunityAnimeTemplateCard(
     var draftQuickStars by remember(group.animeId, initialMyRatingStars) {
         mutableFloatStateOf(if (initialMyRatingStars > 0f) initialMyRatingStars else 4.0f)
     }
+    var quickRateTouched by remember(group.animeId) { mutableStateOf(false) }
+    var isQuickSliderDragging by remember(group.animeId) { mutableStateOf(false) }
+
+    LaunchedEffect(showQuickRate, draftQuickStars, quickRateTouched, isQuickSliderDragging) {
+        if (showQuickRate && quickRateTouched && !isQuickSliderDragging && onQuickRate != null) {
+            delay(3000L)
+            onQuickRate(StarRatingUtils.roundTenth(draftQuickStars))
+            quickRateTouched = false
+            showQuickRate = false
+        }
+    }
 
     AppCard(
         shape = RoundedCornerShape(24.dp),
@@ -1619,6 +1631,7 @@ internal fun CommunityAnimeTemplateCard(
                                         .clip(CircleShape)
                                         .clickable {
                                             draftQuickStars = StarRatingUtils.roundTenth((draftQuickStars - 0.1f).coerceAtLeast(0.1f))
+                                            quickRateTouched = true
                                         }
                                         .testTag("quick_rate_minus_${group.animeId}")
                                 ) {
@@ -1637,6 +1650,7 @@ internal fun CommunityAnimeTemplateCard(
                                         .clip(CircleShape)
                                         .clickable {
                                             draftQuickStars = StarRatingUtils.roundTenth((draftQuickStars + 0.1f).coerceAtMost(5.0f))
+                                            quickRateTouched = true
                                         }
                                         .testTag("quick_rate_plus_${group.animeId}")
                                 ) {
@@ -1651,8 +1665,16 @@ internal fun CommunityAnimeTemplateCard(
                         }
                         Slider(
                             value = draftQuickStars.coerceIn(0.1f, 5.0f),
-                            onValueChange = { raw -> draftQuickStars = raw.coerceIn(0.1f, 5.0f) },
-                            onValueChangeFinished = { draftQuickStars = StarRatingUtils.roundTenth(draftQuickStars) },
+                            onValueChange = { raw ->
+                                isQuickSliderDragging = true
+                                quickRateTouched = true
+                                draftQuickStars = raw.coerceIn(0.1f, 5.0f)
+                            },
+                            onValueChangeFinished = {
+                                draftQuickStars = StarRatingUtils.roundTenth(draftQuickStars)
+                                isQuickSliderDragging = false
+                                quickRateTouched = true
+                            },
                             valueRange = 0.1f..5.0f,
                             colors = SliderDefaults.colors(
                                 thumbColor = colors.accentPrimary,
