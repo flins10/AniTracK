@@ -142,20 +142,27 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        try {
+        runCatching {
             ScheduleUpdateWorker.createNotificationChannel(applicationContext)
-            val syncWorkRequest = PeriodicWorkRequestBuilder<ScheduleUpdateWorker>(
-                30, TimeUnit.MINUTES
-            ).build()
-            WorkManager.getInstance(applicationContext).enqueueUniquePeriodicWork(
-                "anime_universe_schedule_sync_work",
-                ExistingPeriodicWorkPolicy.KEEP,
-                syncWorkRequest
-            )
-        } catch (_: Exception) {
+        }
+        runCatching {
+            window?.decorView?.post {
+                runCatching {
+                    val syncWorkRequest = PeriodicWorkRequestBuilder<ScheduleUpdateWorker>(
+                        30, TimeUnit.MINUTES
+                    ).build()
+                    WorkManager.getInstance(applicationContext).enqueueUniquePeriodicWork(
+                        "anime_universe_schedule_sync_work",
+                        ExistingPeriodicWorkPolicy.KEEP,
+                        syncWorkRequest
+                    )
+                }
+            }
         }
 
-        viewModel.handleDeepLinkUri(intent?.data)
+        runCatching {
+            viewModel.handleDeepLinkUri(intent?.data)
+        }
 
         setContent {
             val preferences by viewModel.preferences.collectAsState()
@@ -395,13 +402,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        viewModel.onAppForegrounded()
+        runCatching { viewModel.onAppForegrounded() }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        setIntent(intent)
-        viewModel.handleDeepLinkUri(intent.data)
+        runCatching {
+            setIntent(intent)
+            viewModel.handleDeepLinkUri(intent.data)
+        }
     }
 }
 

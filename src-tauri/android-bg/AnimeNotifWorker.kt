@@ -37,46 +37,48 @@ object AnimeNotifScheduler {
     }
 
     fun ensureChannels(context: Context) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
 
-            if (nm.getNotificationChannel(CHANNEL_ID) == null) {
-                val ch = NotificationChannel(
-                    CHANNEL_ID,
-                    "Messages & Mentions",
-                    NotificationManager.IMPORTANCE_HIGH
-                ).apply {
-                    description = "Replies, mentions, and community discussion alerts from Anime Universe"
-                    enableVibration(true)
-                    enableLights(true)
-                    setShowBadge(true)
+                if (nm.getNotificationChannel(CHANNEL_ID) == null) {
+                    val ch = NotificationChannel(
+                        CHANNEL_ID,
+                        "Messages & Mentions",
+                        NotificationManager.IMPORTANCE_HIGH
+                    ).apply {
+                        description = "Replies, mentions, and community discussion alerts from Anime Universe"
+                        enableVibration(true)
+                        enableLights(true)
+                        setShowBadge(true)
+                    }
+                    nm.createNotificationChannel(ch)
                 }
-                nm.createNotificationChannel(ch)
-            }
 
-            if (nm.getNotificationChannel(CHANNEL_REMINDERS_ID) == null) {
-                val ch = NotificationChannel(
-                    CHANNEL_REMINDERS_ID,
-                    "Episode Reminders",
-                    NotificationManager.IMPORTANCE_HIGH
-                ).apply {
-                    description = "Upcoming episode release and schedule reminders"
-                    enableVibration(true)
-                    setShowBadge(true)
+                if (nm.getNotificationChannel(CHANNEL_REMINDERS_ID) == null) {
+                    val ch = NotificationChannel(
+                        CHANNEL_REMINDERS_ID,
+                        "Episode Reminders",
+                        NotificationManager.IMPORTANCE_HIGH
+                    ).apply {
+                        description = "Upcoming episode release and schedule reminders"
+                        enableVibration(true)
+                        setShowBadge(true)
+                    }
+                    nm.createNotificationChannel(ch)
                 }
-                nm.createNotificationChannel(ch)
-            }
 
-            if (nm.getNotificationChannel(CHANNEL_UPDATES_ID) == null) {
-                val ch = NotificationChannel(
-                    CHANNEL_UPDATES_ID,
-                    "Updates & Announcements",
-                    NotificationManager.IMPORTANCE_DEFAULT
-                ).apply {
-                    description = "Catalog updates, announcements, and system notifications"
-                    setShowBadge(true)
+                if (nm.getNotificationChannel(CHANNEL_UPDATES_ID) == null) {
+                    val ch = NotificationChannel(
+                        CHANNEL_UPDATES_ID,
+                        "Updates & Announcements",
+                        NotificationManager.IMPORTANCE_DEFAULT
+                    ).apply {
+                        description = "Catalog updates, announcements, and system notifications"
+                        setShowBadge(true)
+                    }
+                    nm.createNotificationChannel(ch)
                 }
-                nm.createNotificationChannel(ch)
             }
         }
     }
@@ -102,26 +104,30 @@ object AnimeNotifScheduler {
     }
 
     fun schedulePeriodic(context: Context) {
-        ensureChannels(context)
-        val constraints = Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED)
-            .build()
-        val req = PeriodicWorkRequestBuilder<AnimeNotifWorker>(15, TimeUnit.MINUTES)
-            .setConstraints(constraints)
-            .build()
-        WorkManager.getInstance(context).enqueueUniquePeriodicWork(
-            WORK_NAME,
-            ExistingPeriodicWorkPolicy.KEEP,
-            req
-        )
+        runCatching {
+            ensureChannels(context)
+            val constraints = Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .build()
+            val req = PeriodicWorkRequestBuilder<AnimeNotifWorker>(15, TimeUnit.MINUTES)
+                .setConstraints(constraints)
+                .build()
+            WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+                WORK_NAME,
+                ExistingPeriodicWorkPolicy.KEEP,
+                req
+            )
+        }
     }
 }
 
 class AnimeNotifBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
-        val action = intent?.action ?: return
-        if (action == Intent.ACTION_BOOT_COMPLETED || action == Intent.ACTION_MY_PACKAGE_REPLACED) {
-            AnimeNotifScheduler.schedulePeriodic(context)
+        runCatching {
+            val action = intent?.action ?: return
+            if (action == Intent.ACTION_BOOT_COMPLETED || action == Intent.ACTION_MY_PACKAGE_REPLACED) {
+                AnimeNotifScheduler.schedulePeriodic(context)
+            }
         }
     }
 }

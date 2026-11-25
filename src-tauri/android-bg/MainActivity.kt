@@ -30,18 +30,27 @@ class MainActivity : TauriActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Create all notification channels immediately so Android Settings -> Notifications
-        // lists every category cleanly on Android 8–16.
-        AnimeNotifScheduler.ensureChannels(applicationContext)
-        AnimeNotifScheduler.schedulePeriodic(applicationContext)
-        captureNotificationClickIntent(intent)
-        refreshFcmPushTokenIfAvailable()
+        // lists every category cleanly on Android 8–16 without ever crashing startup.
+        runCatching { AnimeNotifScheduler.ensureChannels(applicationContext) }
+        runCatching { captureNotificationClickIntent(intent) }
+        runCatching {
+            window?.decorView?.post {
+                runCatching { AnimeNotifScheduler.schedulePeriodic(applicationContext) }
+                runCatching { refreshFcmPushTokenIfAvailable() }
+            }
+        }.onFailure {
+            runCatching { AnimeNotifScheduler.schedulePeriodic(applicationContext) }
+            runCatching { refreshFcmPushTokenIfAvailable() }
+        }
     }
 
     override fun onResume() {
         super.onResume()
         // Immediately notify WebView if user just enabled/disabled notifications in Android Settings
-        val status = resolveCurrentOsPermissionStatus()
-        notifyWebViewPermissionChanged(status)
+        runCatching {
+            val status = resolveCurrentOsPermissionStatus()
+            notifyWebViewPermissionChanged(status)
+        }
     }
 
     override fun onWebViewCreate(webView: WebView) {
@@ -54,8 +63,10 @@ class MainActivity : TauriActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        setIntent(intent)
-        captureNotificationClickIntent(intent)
+        runCatching {
+            setIntent(intent)
+            captureNotificationClickIntent(intent)
+        }
     }
 
     override fun onRequestPermissionsResult(
@@ -65,88 +76,96 @@ class MainActivity : TauriActivity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQ_CODE_POST_NOTIFICATIONS) {
-            val status = resolveCurrentOsPermissionStatus()
-            notifyWebViewPermissionResult(status)
-            notifyWebViewPermissionChanged(status)
+            runCatching {
+                val status = resolveCurrentOsPermissionStatus()
+                notifyWebViewPermissionResult(status)
+                notifyWebViewPermissionChanged(status)
+            }
         }
     }
 
     fun resolveCurrentOsPermissionStatus(): String {
-        AnimeNotifScheduler.ensureChannels(applicationContext)
-        val areEnabledInManager = runCatching {
-            NotificationManagerCompat.from(applicationContext).areNotificationsEnabled()
-        }.getOrDefault(false)
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            val runtimeGranted = ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.POST_NOTIFICATIONS
-            ) == PackageManager.PERMISSION_GRANTED
-
-            if (runtimeGranted && areEnabledInManager) {
-                return "granted"
-            }
-            // If runtime permission is granted but user disabled the master toggle in Android Settings
-            if (runtimeGranted && !areEnabledInManager) {
-                return "denied"
-            }
-
-            val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            val requestedBefore = prefs.getBoolean(KEY_HAS_REQUESTED_ONCE, false)
-            val showRationale = ActivityCompat.shouldShowRequestPermissionRationale(
-                this,
-                Manifest.permission.POST_NOTIFICATIONS
-            )
-            return if (!requestedBefore || showRationale) {
-                "prompt"
-            } else {
-                "denied"
-            }
-        } else {
-            return if (areEnabledInManager) "granted" else "denied"
-        }
-    }
-
-    fun triggerNativePermissionRequest() {
-        runOnUiThread {
+        return runCatching {
             AnimeNotifScheduler.ensureChannels(applicationContext)
+            val areEnabledInManager = runCatching {
+                NotificationManagerCompat.from(applicationContext).areNotificationsEnabled()
+            }.getOrDefault(false)
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 val runtimeGranted = ContextCompat.checkSelfPermission(
                     this,
                     Manifest.permission.POST_NOTIFICATIONS
                 ) == PackageManager.PERMISSION_GRANTED
 
-                if (runtimeGranted) {
-                    val status = resolveCurrentOsPermissionStatus()
-                    notifyWebViewPermissionResult(status)
-                    return@runOnUiThread
+                if (runtimeGranted && areEnabledInManager) {
+                    return@runCatching "granted"
+                }
+                // If runtime permission is granted but user disabled the master toggle in Android Settings
+                if (runtimeGranted && !areEnabledInManager) {
+                    return@runCatching "denied"
                 }
 
                 val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 val requestedBefore = prefs.getBoolean(KEY_HAS_REQUESTED_ONCE, false)
-                val showRationale = ActivityCompat.shouldShowRequestPermissionRationale(
-                    this,
-                    Manifest.permission.POST_NOTIFICATIONS
-                )
-
-                // If Android permanently denied POST_NOTIFICATIONS, calling requestPermissions
-                // silently returns DENIED without showing any dialog. Return "denied" immediately
-                // so the app displays the 1-tap "Open System Settings" guide.
-                if (requestedBefore && !showRationale) {
-                    notifyWebViewPermissionResult("denied")
-                    return@runOnUiThread
-                }
-
-                prefs.edit().putBoolean(KEY_HAS_REQUESTED_ONCE, true).apply()
-
-                ActivityCompat.requestPermissions(
-                    this,
-                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
-                    REQ_CODE_POST_NOTIFICATIONS
-                )
+                val showRationale = runCatching {
+                    ActivityCompat.shouldShowRequestPermissionRationale(
+                        this,
+                        Manifest.permission.POST_NOTIFICATIONS
+                    )
+                }.getOrDefault(false)
+                if (!requestedBefore || showRationale) "prompt" else "denied"
             } else {
-                val status = resolveCurrentOsPermissionStatus()
-                notifyWebViewPermissionResult(status)
+                if (areEnabledInManager) "granted" else "denied"
+            }
+        }.getOrDefault("prompt")
+    }
+
+    fun triggerNativePermissionRequest() {
+        runOnUiThread {
+            runCatching {
+                AnimeNotifScheduler.ensureChannels(applicationContext)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    val runtimeGranted = ContextCompat.checkSelfPermission(
+                        this,
+                        Manifest.permission.POST_NOTIFICATIONS
+                    ) == PackageManager.PERMISSION_GRANTED
+
+                    if (runtimeGranted) {
+                        val status = resolveCurrentOsPermissionStatus()
+                        notifyWebViewPermissionResult(status)
+                        return@runCatching
+                    }
+
+                    val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    val requestedBefore = prefs.getBoolean(KEY_HAS_REQUESTED_ONCE, false)
+                    val showRationale = runCatching {
+                        ActivityCompat.shouldShowRequestPermissionRationale(
+                            this,
+                            Manifest.permission.POST_NOTIFICATIONS
+                        )
+                    }.getOrDefault(false)
+
+                    // If Android permanently denied POST_NOTIFICATIONS, calling requestPermissions
+                    // silently returns DENIED without showing any dialog. Return "denied" immediately
+                    // so the app displays the 1-tap "Open System Settings" guide.
+                    if (requestedBefore && !showRationale) {
+                        notifyWebViewPermissionResult("denied")
+                        return@runCatching
+                    }
+
+                    prefs.edit().putBoolean(KEY_HAS_REQUESTED_ONCE, true).apply()
+
+                    ActivityCompat.requestPermissions(
+                        this,
+                        arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                        REQ_CODE_POST_NOTIFICATIONS
+                    )
+                } else {
+                    val status = resolveCurrentOsPermissionStatus()
+                    notifyWebViewPermissionResult(status)
+                }
+            }.onFailure {
+                notifyWebViewPermissionResult("denied")
             }
         }
     }

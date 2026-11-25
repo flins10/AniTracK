@@ -219,23 +219,22 @@ jobs:
           if [ -d "src-tauri/gen/android" ]; then
             printf "sdk.dir=%s\nndk.dir=%s\n" "${SDK_ROOT}" "${NDK_DIR}" > src-tauri/gen/android/local.properties
           fi
+          if [ -f "src-tauri/gen/android/gradle.properties" ]; then
+            if ! grep -q "android.enableR8.fullMode" src-tauri/gen/android/gradle.properties; then
+              printf '\nandroid.enableR8.fullMode=false\n' >> src-tauri/gen/android/gradle.properties
+            fi
+          fi
           if [ -f "src-tauri/gen/android/app/build.gradle.kts" ]; then
             sed -i 's/compileSdk = [0-9]\+/compileSdk = 36\n    buildToolsVersion = "36.0.0"/' src-tauri/gen/android/app/build.gradle.kts || true
+            sed -i 's/isMinifyEnabled = true/isMinifyEnabled = false/g' src-tauri/gen/android/app/build.gradle.kts || true
+            sed -i 's/isShrinkResources = true/isShrinkResources = false/g' src-tauri/gen/android/app/build.gradle.kts || true
             if ! grep -q "work-runtime-ktx" src-tauri/gen/android/app/build.gradle.kts; then
               printf '\ndependencies {\n    implementation("androidx.work:work-runtime-ktx:2.9.1")\n}\n' >> src-tauri/gen/android/app/build.gradle.kts
             fi
           fi
           if [ -f "src-tauri/gen/android/app/proguard-rules.pro" ]; then
             if ! grep -q "com.animeuniverse.app" src-tauri/gen/android/app/proguard-rules.pro; then
-              cat << 'EOF' >> src-tauri/gen/android/app/proguard-rules.pro
--keep class app.tauri.** { *; }
--keep class com.animeuniverse.app.** { *; }
--keep class androidx.work.** { *; }
--keep class com.google.firebase.messaging.** { *; }
--keepclassmembers class * {
-    @android.webkit.JavascriptInterface <methods>;
-}
-EOF
+              printf '\n-keep class app.tauri.** { *; }\n-keep class org.tauri.** { *; }\n-keep class com.animeuniverse.app.** { *; }\n-keep class androidx.work.** { *; }\n-keep class androidx.startup.** { *; }\n-keep public class * extends androidx.work.ListenableWorker { public <init>(android.content.Context, androidx.work.WorkerParameters); }\n-keep class com.google.firebase.** { *; }\n-keepclasseswithmembernames class * { native <methods>; }\n-keepclassmembers class * { @android.webkit.JavascriptInterface <methods>; }\n-dontwarn app.tauri.**\n' >> src-tauri/gen/android/app/proguard-rules.pro
             fi
           fi
           mkdir -p src-tauri/gen/android/app/src/main/res/drawable
@@ -317,12 +316,15 @@ EOF
 
       - name: Build Android APK
         run: |
-          npx tauri android build --apk --target aarch64
+          npx tauri android build --apk
 
       - name: Sign & package installable Android APK
         run: |
           mkdir -p dist-android
-          RAW_APK=$(find src-tauri/gen/android/app/build/outputs/apk -name "*.apk" | head -n 1)
+          RAW_APK=$(find src-tauri/gen/android/app/build/outputs/apk -name "*universal*.apk" | head -n 1)
+          if [ -z "$RAW_APK" ]; then
+            RAW_APK=$(find src-tauri/gen/android/app/build/outputs/apk -name "*.apk" | head -n 1)
+          fi
           if [ -z "$RAW_APK" ]; then
             echo "No APK found in build outputs!"
             exit 1
